@@ -1,0 +1,8 @@
+=== 2026-08-17 (立项) ===
+[x] REQUIREMENTS / PLAN / DESIGN / README / .gitignore / TODO.txt 落盘
+[x] git init (main)
+[ ] M1: uv venv + 依赖安装（sherpa-onnx / onnxruntime / onnxruntime-directml / soundcard / argostranslate / pytest）
+[ ] M1-spike: 录音设备枚举（mic + loopback 是否可用）
+[ ] M1-spike: onnxruntime providers 枚举（CPU/DirectML）
+[ ] M1-spike: sherpa ASR+VAD 模型加载与一次识别冒烟
+[ ] M2: audio 模块（双源采集 + 环形缓冲 + 16k 重采样）

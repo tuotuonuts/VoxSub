@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# 构建产物
+build/
+dist/
+*.spec
+
+# 运行时数据（模型/下载缓存不入库）
+models/
+downloads/
+
+# 凭据与本地配置
+.env
+*.env
+config.local.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
