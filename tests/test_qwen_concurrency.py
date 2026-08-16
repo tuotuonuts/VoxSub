@@ -28,6 +28,9 @@ class _FakeProc:
     def poll(self):  # noqa: A003 - 对齐 subprocess.Popen.poll 语义
         return None  # None = 仍在运行
 
+    def wait(self, timeout: float | None = None) -> int:
+        return 0  # 假进程立即退出
+
     def terminate(self) -> None:
         pass
 

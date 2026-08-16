@@ -40,14 +40,15 @@ If (Test-Path $Work) { Remove-Item $Work -Recurse -Force }   # 清旧 workpath �
 $Icon = Join-Path $Root "assets\icon.ico"
 $SpecDir = Join-Path $Root "build"
 Run-Checked "pyinstaller" {
-    $Py = Join-Path $Root ".venv\Scripts\python.exe"     # 绝对 python, 避开 cwd
-    $Args = @(
+    $Py = Join-Path "D:\OneDrive\app_dve\VoxSub" ".venv\Scripts\python.exe"
+    # 全绝对路径内联 (不依赖脚本级变量, 规避 PowerShell 函数闭包变量解析坑)
+    & $Py @(
         "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
         "--name", "VoxSub",
-        "--icon", $Icon,
-        "--distpath", $Dist,
-        "--workpath", $Work,
-        "--specpath", $SpecDir,
+        "--icon", "D:/OneDrive/app_dve/VoxSub/assets/icon.ico",
+        "--distpath", "D:/OneDrive/app_dve/VoxSub/dist/VoxSub",
+        "--workpath", "$env:TEMP\VoxSub_pybuild",
+        "--specpath", "D:/OneDrive/app_dve/VoxSub/build",
         "--collect-all", "sherpa_onnx",
         "--collect-all", "soundcard",
         "--collect-all", "onnxruntime",
@@ -56,7 +57,6 @@ Run-Checked "pyinstaller" {
         "--hidden-import", "voxsub.translate.factory",
         "run_app.py"
     )
-    & $Py $Args
 }
 
 # 3) self-sign the exe via osslsigncode (PowerShell Set-AuthenticodeSignature
