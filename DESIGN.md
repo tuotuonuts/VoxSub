@@ -158,6 +158,49 @@ class TranslatorFactory:
 
 注：Qwen2.5 的 ONNX 权重在 HF 全部 gated(401)，故质量档弃 onnxruntime-genai 改走 **llama-cpp-python + GGUF**（官方仓储非 gated，ModelScope 有镜像，免转换运营）。
 
+## TTS 契约（M5）
+
+```python
+class TTSEngine:
+    """sherpa-onnx 1.13.5 OfflineTts 封装（vits/piper 生态）"""
+    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 1): ...
+    def synthesize(self, text: str, lang: str = "zh") -> np.ndarray | None
+        # 返回 16k mono float32; 失败返回 None（调用方静默降级为仅字幕）
+    def health(self) -> str: ...
+```
+
+- 模型：`models/tts/{zh,en}/` 下 sherpa-onnx piper 包（model.onnx + tokens.txt + model.card 字段）；从 k2-fsa/sherpa-onnx releases `asr-models` 找 vits-zh/vits-en 资产，用 model_fetch 工具下载
+- TTS 失败只降级（无朗读），绝不阻断字幕流程
+
+## Pipeline 契约（M6，UI 唯一依赖面）
+
+```python
+class Pipeline:
+    mode: str                       # "a" 麦克风同传 | "b" 系统声音字幕 | "c" 文件
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+    def set_mode(self, mode: str) -> None: ...
+    def on_utterance(self, cb: Callable[[str, str], None]) -> None: ...  # (原文, 译文)
+    def on_status(self, cb: Callable[[str], None]) -> None: ...          # 状态文本
+    def is_running(self) -> bool: ...
+```
+
+## 设备路由与诊断契约（M8）
+
+```python
+class DeviceInfo(NamedTuple):
+    provider: str            # "cpu" | "dml" | "cuda" | "npu"
+    name: str
+    score_ms: float | None   # 实测延迟; None=未测
+
+def enumerate_devices() -> list[DeviceInfo]: ...   # onnxruntime providers + DirectML 设备
+def select_device(task: str) -> DeviceInfo: ...    # task ∈ {asr, tts, translate}; 实测分排序, 降级链 dml→cpu
+
+def run_self_check() -> list[dict]: ...   # 每项 {check, status: ok|warn|fail, detail}
+    # 项: 模型完整性(manifest 比对) / ORT providers / ASR 冒烟 / VAD 冒烟 / TTS 冒烟 / 磁盘内存余量
+def export_report() -> str: ...           # 纯文本报告(诊断页一键导出)
+```
+
 ## UI 设计规范（M7，风格=柔和高级感 Soft Premium，已定）
 
 ### 三旋钮（全程门控）
