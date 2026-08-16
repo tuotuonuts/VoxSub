@@ -119,7 +119,9 @@ def fetch_file(url: str, dest: Path, expected_sha: str | None = None,
             existing = part.stat().st_size if part.exists() else 0
             headers = {"Range": f"bytes={existing}-"} if existing else {}
             req = urlrequest.Request(src, headers=headers)
-            with urlrequest.urlopen(req, timeout=60) as resp, part.open("ab") as out:
+            with urlrequest.urlopen(req, timeout=60) as resp, part.open("ab" if resp.status == 206 else "wb") as out:
+                # 注意: 部分服务器/CDN 忽略 Range 并返回 200 全量,
+                # 此时必须清空重写, 否则会与已有 .part 重复拼接损坏文件
                 while True:
                     block = resp.read(CHUNK)
                     if not block:

@@ -50,6 +50,7 @@
 6. 模型与运行时数据不入 git（`%LOCALAPPDATA%\VoxSub\models`）
 7. 产品名：语幕 VoxSub（中英双名，需 M9 前做撞名查重）
 8. UI 风格（2026-08-17 用户选定）：**柔和高级感 Soft Premium**；三档主题（浅/深/跟随系统）；技术底座 QFluentWidgets 1.11.3（Fluent 设计语言、无边框窗、darkdetect 主题跟随）；详细令牌见 DESIGN.md「UI 设计规范」
+9. 翻译质量档技术路线（2026-08-17 查证）：Qwen2.5 ONNX 权重在 HF 全部 gated(401, 含 onnx-community 镜像) → 弃 onnxruntime-genai，改 **llama-cpp-python + Qwen2.5-1.5B-Instruct-GGUF(Q4_K_M, 官方非 gated, ModelScope 有镜像)**；快档用 Xenova OPUS-MT onnx int8 + ORT 手写 seq2seq 循环（与主推理栈统一）
 
 ## 下一步（当前唯一任务线）
 
