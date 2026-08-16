@@ -185,6 +185,37 @@ class Pipeline:
     def is_running(self) -> bool: ...
 ```
 
+## Pipeline 编排设计（M6）
+
+### 线程模型（三模式共用）
+
+```
+[采集线程] audio.read_chunk() 循环 ──队列──▶ [处理线程] segmenter.feed() → asr
+        ──on_utterance(原文)──▶ 翻译(预取/缓存/降级) ──▶ UI 回调(线程安全: queue.Queue + Qt 信号桥)
+```
+
+- audio/asr/translate/tts 各在自己的线程/调用链中; UI 回调经 `queue.Queue` 桥接, 绝不在推理线程碰 Qt 控件
+- 停止语义: stop() 置停止标志 → 采集线程退出 → segmenter.flush() 处理尾句 → 线程 join(超时 3s)
+
+### 三模式组装
+
+| 模式 | 输入 | 处理 |
+|---|---|---|
+| A 麦克风同传 | MicSource | 实时 segmenter → 翻译 → 可选 TTS → 字幕 |
+| B 系统声音字幕 | LoopbackSource | 同上（输入源不同，管线同一）|
+| C 文件字幕 | ffmpeg 提轨 → 16k wav | **离线识别**（sherpa OfflineRecognizer，1.13.5 提供，天然带词级时间戳）→ 分句 → 批量翻译（可并发 4 路）→ 导出 srt/vtt/纯文本；进度回调 on_progress(pct) |
+
+### C 模式导出格式
+
+- `srt`: 序号 + `HH:MM:SS,mmm --> HH:MM:SS,mmm` + 双语两行（原文行 / 译文行）
+- `vtt`: 同构（WEBVTT 头 + `HH:MM:SS.mmm` 时间轴）
+- 纯文本: 每句一行，原文 ⇄ 译文分栏（tab 分隔）
+- 分句规则: 句尾标点（。！？.!?）+ 时长上限 8s 硬切（长句兜底）
+
+### 设备路由接入
+
+Pipeline 构造时调用 `router.select_device("asr"|"tts"|"translate")` 决定各模块 provider 参数（M8 模块）；未实现时默认 "cpu"（向后兼容）。
+
 ## 设备路由与诊断契约（M8）
 
 ```python
