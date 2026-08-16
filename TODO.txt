@@ -43,7 +43,10 @@
 [x] 档位对比实盘: 快档 OPUS 对**中英混合句**(DAY AFTER TOMORROW是星期)译失实(灌音乐符号);
     质量档 Qwen 正确(→"DAY AFTER TOMORROW is the following day", 0.52s)
     → 验证双模设计价值: 混合语言/术语必须走质量档; 纯单语短句快档够用
-[ ] M6↔UI 连线 demo → 自审门禁 → M9 打包分发
+[x] M6↔UI 连线验证: _HAS_PIPELINE=True, UI 自动接真实 Pipeline(stub 无缝切换); 桌面启动冒烟 exit=0
+[x] A 模式字幕全链 demo: 真实语音→分句→识别"就是加了一般现在时"→快档英译"I'm just adding the usual time." → 1.01s
+[x] 端到端完整验证: A(实时字幕) + C(文件srt导出) 两模式真实模型全链路均可行
+[ ] 自审门禁: requesting-code-review → M9 打包分发
 
 === 2026-08-17 (并行开发中) ===
 [~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）—— 运行中

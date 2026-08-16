@@ -25,6 +25,11 @@ DEFAULT_ALLOWLIST = {
     "api.openai.com",
     "api.moonshot.cn",
     "dashscope.aliyuncs.com",
+    # 回环地址始终放行: 本地 llama-server (质量档) 与本地 mock 端点测试
+    # 都挂在 127.0.0.1/localhost, 属于进程自身可控边界, 不构成越权调用。
+    "127.0.0.1",
+    "localhost",
+    "::1",
 }
 
 

@@ -101,3 +101,110 @@ def test_factory_unknown_kind_raises() -> None:
     from voxsub.translate.base import TranslationError
     with pytest.raises(TranslationError):
         TranslatorFactory.create("nope")
+
+
+# ---------- cloud (mock 端点) ----------
+
+def _serve_once(handler):
+    """起一个本地 HTTP 服务器, 处理一次请求后返回响应体/记录收到的消息。"""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured: dict = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            captured["endpoint"] = self.path
+            captured["messages"] = body.get("messages")
+            captured["model"] = body.get("model")
+            payload = json.dumps(
+                {"choices": [{"message": {"role": "assistant",
+                                           "content": "Hola 译文"}}]},
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.handle_request, daemon=True)  # 只处理一次
+    t.start()
+    return srv, port, captured
+
+
+def test_cloud_translate_via_mock_endpoint() -> None:
+    from voxsub.translate.cloud import CloudTranslator
+    srv, port, captured = _serve_once(lambda: None)
+    tr = CloudTranslator({"api_key": "sk-test",
+                          "base_url": f"http://127.0.0.1:{port}"})
+    try:
+        out = tr.translate("你好", "zh", "en")
+    finally:
+        srv.server_close()
+    assert out == "Hola 译文"
+    assert captured["messages"][-1]["content"] == "你好"   # 用户消息透传
+    assert captured["model"] == "deepseek-chat"
+
+
+def test_cloud_whitelist_rejects_unknown_host() -> None:
+    from voxsub.translate.cloud import CloudTranslator
+    from voxsub.translate.base import TranslationError
+    tr = CloudTranslator({"api_key": "k",
+                          "base_url": "http://evil.example.com/"})
+    assert tr.ready() is False                     # ready() 返回 bool, 不抛
+    with pytest.raises(TranslationError):          # 真正发起翻译时才拒绝
+        tr.translate("hi", "en", "zh")
+
+
+# ---------- 真实中英翻译 (opus 快档; 模型缺失则跳过) ----------
+
+MODELS_DIR = Path(os.environ.get("LOCALAPPDATA", ".")) / "VoxSub" / "models"
+_OPUS_DIR = MODELS_DIR / "nmt" / "opus_zh_en"
+if not (_OPUS_DIR / "encoder_model_int8.onnx").exists():
+    pytest.skip("缺少 opus_zh_en 模型, 跳过真实翻译测试", allow_module_level=True)
+
+
+@pytest.fixture(scope="module")
+def opus():
+    from voxsub.translate.opus import OpusFastTranslator
+    tr = OpusFastTranslator()
+    yield tr
+    tr.close()
+
+
+@pytest.mark.integration
+def test_opus_real_zh_to_en(opus) -> None:
+    """真实 zh→en: 手写样例, 断言译文非空、长度合理且含关键英文词。"""
+    cases = [
+        ("你好世界", "world"),
+        ("我想学习中文", "Chinese"),
+        ("今天天气很好，我们去公园散步吧", "park"),
+    ]
+    for src, keyword in cases:
+        out = opus.translate(src, "zh", "en")
+        assert out.strip(), f"译文不应为空: {src!r} -> {out!r}"
+        assert 3 <= len(out) <= 300, f"译文长度不合理: {out!r}"
+        assert keyword.lower() in out.lower(), \
+            f"译文应含关键词 {keyword!r}: {src!r} -> {out!r}"
+
+
+@pytest.mark.integration
+def test_opus_real_en_to_zh(opus) -> None:
+    """真实 en→zh: 断言译文非空且出现中文字符。"""
+    out = opus.translate("I want to learn Chinese today.", "en", "zh")
+    assert out.strip()
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in out), f"应输出中文: {out!r}"
+
+
+def test_opus_roundtrip_not_empty(opus) -> None:
+    """往返 sanity: 两次方向均返回非空合理文本 (模型加载一次, 共享会话)。"""
+    a = opus.translate("早上好", "zh", "en")
+    b = opus.translate("Good morning", "en", "zh")
+    assert a.strip() and b.strip()

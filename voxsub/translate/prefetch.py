@@ -67,10 +67,17 @@ class PrefetchEngine:
         if now - last_input < self._debounce_s:
             # 冷却后补发 (后台线程等防抖窗口过再发射), 保证终稿必达
             remaining = self._debounce_s - (now - last_input)
-            threading.Timer(remaining, self._delayed_final, args=(text, src, dst)).start()
+            self._later(remaining, self._delayed_final, (text, src, dst))
             return
 
         self._emit(text, src, dst)
+
+    @staticmethod
+    def _later(delay: float, fn, args) -> None:
+        """daemon 定时线程 (不阻塞解释器退出; 长时间防抖窗口内进程可正常结束)。"""
+        t = threading.Timer(max(delay, 0.0), fn, args=args)
+        t.daemon = True
+        t.start()
 
     def _delayed_final(self, text: str, src: str, dst: str) -> None:
         """防抖窗口过后补发的终稿。"""
@@ -78,8 +85,7 @@ class PrefetchEngine:
             if self._current_final != text:
                 return                       # 已被更新句覆盖
             if time.monotonic() - self._last_final_at < self._cooldown_s:
-                threading.Timer(self._cooldown_s, self._delayed_final,
-                               args=(text, src, dst)).start()
+                self._later(self._cooldown_s, self._delayed_final, (text, src, dst))
                 return
         self._emit(text, src, dst)
 
