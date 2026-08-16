@@ -38,7 +38,12 @@
     快档 OPUS 实盘: zh→en 573ms, en→zh 570ms；质量档 Qwen 实盘 0.69s/句（均 <1s 达标）
     M4 覆盖了主代理初版 cache/prefetch/factory；测试适配 M4 接口（max_size/len/TranslationError）
 [x] 全量 pytest 94 passed / 0 failed（M2-M8 全部集成）
-[ ] M6↔UI 连线 + 端到端 demo → 自审门禁 → M9
+=== 2026-08-17 (端到端验证 + 档位对比) ===
+[x] C 模式端到端全链路跑通: 真实中文 wav → ASR 分句 → 翻译 → srt 导出
+[x] 档位对比实盘: 快档 OPUS 对**中英混合句**(DAY AFTER TOMORROW是星期)译失实(灌音乐符号);
+    质量档 Qwen 正确(→"DAY AFTER TOMORROW is the following day", 0.52s)
+    → 验证双模设计价值: 混合语言/术语必须走质量档; 纯单语短句快档够用
+[ ] M6↔UI 连线 demo → 自审门禁 → M9 打包分发
 
 === 2026-08-17 (并行开发中) ===
 [~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）—— 运行中
