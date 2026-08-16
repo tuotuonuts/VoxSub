@@ -22,14 +22,12 @@
 ## 当前进度（里程碑视角）
 
 - [x] 阶段0-2：REQUIREMENTS / PLAN / DESIGN 完成（commit `4421e64`）
-- [x] M1 骨架：git init(main) + venv(CPython 3.11.15) + requirements.txt
-- [x] M1 spike 全绿：
-  - [x] 录音设备枚举 OK（12 输入设备：Comica 无线麦 ×2、网易虚拟、Dubbing AI、Steam Streaming、e2eSoft iVCam、Realtek、NVIDIA HD）
-  - [x] onnxruntime providers = **DmlExecutionProvider + CPUExecutionProvider**（DirectML 生效）
-  - [x] sherpa-onnx ASR+VAD 加载、create_stream / accept_waveform / decode 循环跑通
-  - [!] **BLOCKED: soundcard loopback 枚举不到**（include_loopback=True 无结果）→ M2 audio 子代理处理
-- [~] M2 audio 模块 + M3 asr 模块：**子代理并行开发中**
-- [ ] M4 翻译 → M5 TTS → M6 编排 → M7 UI → M8 诊断 → M9 发布
+- [x] M1 骨架 + spike 全绿：录音枚举 / Dml+CPU providers / sherpa ASR+VAD 冒烟（DirectML 生效）
+- [x] M2 audio 完成（子代理 + 主代理验收）：voxsub/audio.py；**loopback 闭环真机打通**（正弦播放→捕获 power≈0.097）；12 测试全绿
+- [x] M3 asr 完成：voxsub/asr.py（StreamingASR/WindowVAD/UtteranceSegmenter）；真实中文语音识别 + 自动分句；9 测试全绿
+- [x] 集成验收：**全量 pytest 21 passed / 0 failed**（含真机 integration）
+- [~] M4 翻译 / M5 TTS / M7 UI / M8 诊断：四子代理并行开发中（deleg_29f7cf30）
+- [ ] M6 Pipeline 编排（待 M2-M5 落地）→ 自审门禁 → M9 发布
 
 ## 环境事实（接手必知）
 

@@ -3,14 +3,27 @@
 [x] git init (main) + 初始 commit 4421e64
 [x] STATUS.md 项目状态书（交接单；里程碑后必更新，勿滞后）
 [x] M1: venv 重建 + 最小依赖集 + spike 全绿（录音枚举 / Dml+CPU providers / sherpa ASR+VAD 冒烟）
-[!] BLOCKED(已解): soundcard loopback 枚举 —— 源码确认 isloopback 属性识别法
 [x] model_fetch.py 模型管理工具（断点续传/SHA256/manifest/Range-200 兼容修复）
 [x] 模型就位登记: ASR+VAD+OPUS-MT zh-en int8 共 38 文件 751MB（manifest 在 %LOCALAPPDATA%\VoxSub\models\）
-[x] 翻译路线查证: Qwen ONNX 全 gated → 质量档改 llama-cpp-python+GGUF (Q4_K_M 官方非 gated)；快档 Xenova OPUS-MT onnx int8
-[x] UI 规范落盘: Soft Premium（用户选定）+ QFluentWidgets 1.11.3 + 三档主题 + 设计令牌 + M7 组件清单
+[x] 翻译路线查证: Qwen ONNX 全 gated → 质量档改 llama-cpp-python+GGUF；快档 Xenova OPUS-MT onnx int8
+[x] UI 规范落盘: Soft Premium（用户选定）+ QFluentWidgets + 三档主题 + 设计令牌 + 组件清单
 [x] 契约落盘: M4 翻译层 / M5 TTS / M6 Pipeline / M8 路由诊断
-[~] M2/M3 子代理: audio+asr 模块代码已落盘(voxsub/audio.py, voxsub/asr.py, tests/), 完成汇报待收
-[~] M4/M5/M7/M8 四子代理并行开发中（deleg_29f7cf30）
-[ ] 主代理: 集成验收（pytest 全量 + 真机走查）+ requesting-code-review 自审门禁
-[ ] M6: Pipeline 三模式编排（依赖 M2/M3/M4/M5 合并后实现）
+
+=== 2026-08-17 (M2/M3 完成 · 子代理 + 主代理验收) ===
+[x] M2 audio 模块: voxsub/audio.py + tests/test_audio.py（12 用例）
+    - loopback 闭环真机打通: 扬声器播 440Hz → loopback 采到 power≈0.097, 静音 <1e-3; 按 id 相等匹配
+    - 坑: loopback 识别必须用 isloopback 属性(名字=扬声器名不含 loopback 字样); 显式 WAVEFORMATEX 设备(Comica) MicSource 会断言失败→未来换 pyaudiowpatch
+[x] M3 asr 模块: voxsub/asr.py(StreamingASR/WindowVAD/UtteranceSegmenter) + tests/test_asr.py（9 用例）
+    - 真实识别: "昨天是 MONDAY TODAYS TOMORROW是星期" 等; 句间停顿≥500ms 自动分句(2 次回调)
+    - 坑: silero VAD 实际窗口 576 非 512——切窗一律读 window_size 属性, 勿硬编码
+[x] 主代理集成验收: 全量 pytest 21 passed / 0 failed（含 integration; mic smoke 曾 1 次间歇失败, 真机波动非代码问题）
+[x] commit: 集成 M2/M3 代码 + 文书（64804d9 前 4 commit 已含代码; 本次验收后状态归位）
+
+=== 2026-08-17 (并行开发中) ===
+[~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）
+[~] M5 TTS 子代理: voxsub/tts.py（sherpa-onnx OfflineTts + piper 模型）
+[~] M7 UI 壳层子代理: voxsub/ui/（PySide6 + QFluentWidgets Soft Premium）
+[~] M8 路由诊断子代理: voxsub/router.py + diagnostics.py + 模型管理模块化
+[ ] M6: Pipeline 三模式编排（等 M2-M5 全部落地后由主代理实现或派单）
+[ ] 自审门禁: requesting-code-review（M6 集成后统一跑）
 [ ] M9: 打包分发（PyInstaller+InnoSetup + 撞名复查决策 + RELEASE_NOTES）
