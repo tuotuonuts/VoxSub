@@ -2,12 +2,13 @@
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，可选云端高质量翻译。
 
-## 需求/规划/设计
+## 文档体系（按阅读顺序）
 
+- [STATUS.md](STATUS.md) — **项目状态书 / 交接单（先读这个）**
+- [TODO.txt](TODO.txt) — 修改追踪（时间戳分段）
 - [REQUIREMENTS.md](REQUIREMENTS.md) — 需求与范围
 - [PLAN.md](PLAN.md) — 技术选型与里程碑
 - [DESIGN.md](DESIGN.md) — 架构与接口契约
-- [TODO.txt](TODO.txt) — 修改追踪（时间戳分段）
 
 ## 开发环境
 

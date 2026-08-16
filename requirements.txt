@@ -1,0 +1,9 @@
+# 语幕 VoxSub - M1 核心依赖
+# 说明: onnxruntime-directml 同时提供 CPU EP 兜底, 不要与标准 onnxruntime 同装(包名冲突)
+# 后置里程碑: PySide6 (M7) / onnxruntime-genai (M4) 届时追加
+
+onnxruntime-directml
+sherpa-onnx
+soundcard
+argostranslate
+pytest
