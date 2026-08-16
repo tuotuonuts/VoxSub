@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from voxsub.translate.cache import TranslationCache, normalize_key
+from voxsub.translate.cache import TranslationCache, normalize_text as normalize_key
 from voxsub.translate.prefetch import PrefetchEngine
 
 
@@ -28,21 +28,25 @@ def test_cache_normalize_whitespace_and_case() -> None:
 
 
 def test_cache_evict_lru() -> None:
-    c = TranslationCache(max_items=2)
+    c = TranslationCache(max_size=2)
     c.put("a", "zh", "en", "A")
     c.put("b", "zh", "en", "B")
     c.get("a", "zh", "en")  # 标记 a 最近使用
     c.put("c", "zh", "en", "C")
     assert c.get("a", "zh", "en") == "A"  # a 仍命中(LRU 提升)
     assert c.get("b", "zh", "en") is None  # b 被淘汰
-    assert c.size() == 2
+    assert len(c) == 2
 
 
-def test_cache_ignore_empty() -> None:
+def test_cache_ignore_empty_translation() -> None:
+    """空译文不入缓存 (M4 契约: 仅忽略空 result, 不因空原文拒写)。"""
     c = TranslationCache()
-    c.put("", "zh", "en", "x")
-    c.put("x", "zh", "en", "")
-    assert c.size() == 0
+    c.put("x", "zh", "en", "")      # 空译文 → 不入缓存
+    assert len(c) == 0
+    c.put("x", "zh", "en", "译文")   # 正常写入
+    sec = TranslationCache(max_size=1)
+    sec.put("x", "zh", "en", "A")
+    assert len(sec) == 1
 
 
 # ---------- prefetch ----------
@@ -94,5 +98,6 @@ def test_factory_list_available_shape() -> None:
 
 def test_factory_unknown_kind_raises() -> None:
     from voxsub.translate.factory import TranslatorFactory
-    with pytest.raises(ValueError):
+    from voxsub.translate.base import TranslationError
+    with pytest.raises(TranslationError):
         TranslatorFactory.create("nope")

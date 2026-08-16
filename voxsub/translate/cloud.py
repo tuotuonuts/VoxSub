@@ -12,13 +12,11 @@ base_url 的主机必须命中 allowlist, 否则拒绝 (防止任意端点被进
 """
 from __future__ import annotations
 
-import json
 import os
 import threading
-from urllib import error as urlerror
-from urllib import request as urlrequest
 from urllib.parse import urlparse
 
+from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
 
 #: 允许的 OpenAI 兼容端点主机白名单 (安全边界)
@@ -98,41 +96,20 @@ class CloudTranslator(Translator):
             ("zh", "en"): "Translate to English.",
             ("en", "zh"): "Translate to Chinese.",
         }.get((src_lang, dst_lang), f"Translate from {src_lang} to {dst_lang}.")
-        payload = {
-            "model": self._model,
-            "messages": [
-                {"role": "system",
-                 "content": "You are a professional translator. " + lang_hint +
-                            " Reply with only the translation, no explanations."},
-                {"role": "user", "content": text},
-            ],
-            "temperature": 0.2,
-            "stream": False,
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urlrequest.Request(
-            endpoint, data=data,
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self._api_key}"})
+        messages = [
+            {"role": "system",
+             "content": "You are a professional translator. " + lang_hint +
+                        " Reply with only the translation, no explanations."},
+            {"role": "user", "content": text},
+        ]
         try:
             with self._lock:
-                with urlrequest.urlopen(req, timeout=max(timeout_ms, 1) / 1000.0) as resp:
-                    body = json.loads(resp.read().decode("utf-8"))
-        except urlerror.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8")[:200]
-            except Exception:
-                pass
-            raise TranslationError(f"云翻译 HTTP {exc.code}: {detail}") from exc
-        except urlerror.URLError as exc:
-            raise TranslationError(f"云翻译网络错误: {exc.reason}") from exc
-        except (TimeoutError, OSError) as exc:
-            raise TranslationError(f"云翻译超时/IO: {exc}") from exc
-        try:
-            out = body["choices"][0]["message"]["content"].strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            raise TranslationError(f"云翻译响应格式异常: {body}") from exc
+                out = chat_completion(
+                    endpoint, messages=messages, api_key=self._api_key,
+                    model=self._model, temperature=0.2,
+                    timeout_sec=max(timeout_ms, 1) / 1000.0)
+        except OpenAICompatError as exc:
+            raise TranslationError(str(exc)) from exc
         return out
 
     def close(self) -> None:

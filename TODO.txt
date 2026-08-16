@@ -33,7 +33,12 @@
     - 中文→英文: "Today the weather is nice, so we go for a walk in the park."
     - 性能: 0.69s/句 (prompt 304ms + 生成 379ms, 42 tok/s, CPU threads=4) —— 远超 2-5s 目标
 [x] 坑: git-bash 命令行中文被 GBK 转码 → llama-server 拒收 ill-formed UTF-8; 请求体必须走 UTF-8 文件 (--data @file)
-[~] M4 翻译层: 模块 7/9 完成, 测试阶段（GGUF 到位, qwen 可实测）
+=== 2026-08-17 (M4 收口 · 全量集成) ===
+[x] 翻译层 M4 全部模块落地: base/opus/qwen/cloud/tokenizer/_http_client/cache/prefetch/factory
+    快档 OPUS 实盘: zh→en 573ms, en→zh 570ms；质量档 Qwen 实盘 0.69s/句（均 <1s 达标）
+    M4 覆盖了主代理初版 cache/prefetch/factory；测试适配 M4 接口（max_size/len/TranslationError）
+[x] 全量 pytest 94 passed / 0 failed（M2-M8 全部集成）
+[ ] M6↔UI 连线 + 端到端 demo → 自审门禁 → M9
 
 === 2026-08-17 (并行开发中) ===
 [~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）—— 运行中

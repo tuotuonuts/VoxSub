@@ -1,62 +1,105 @@
-"""voxsub.translate.prefetch —— 翻译预取引擎。
+"""voxsub.translate.prefetch —— 翻译预取引擎 (M4)。
 
-让"说一句翻一句"的感知延迟贴近识别完成 + 防抖窗口: ASR 还在出字时就
-把已识别的部分文本反复预热翻译, 整句稳定后输出终稿。契约 (DESIGN.md):
-- 输入部分文本碎片 → 防抖 800ms 跳过仍在输入的碎片 → 整句提交时出终稿
-- 同一句只出一份终稿; 中途预热结果可丢弃(不回调), 避免字幕跳动
+让"说一句翻一句"的感知延迟贴近识别完成 + 防抖窗口: ASR 还在出字时把
+已识别的部分文本反复预热翻译, 整句稳定后输出唯一终稿。契约
+(DESIGN.md / 任务):
+- 部分文本碎片累积, 防抖 800ms 发翻译 (跳过仍在输入的碎片)
+- 整句完成后合并/修正, 出**且仅出一次**终稿 (不重复回调)
+- 中途预热结果只用于缩短感知延迟, 不直接回调 (避免字幕跳动)
 
-线程安全: 单处理线程调用 (Pipeline 处理线程), 仅需轻量锁保护状态。
+线程安全: 单处理线程调用 (Pipeline 处理线程), 轻量锁保护状态即可。
 """
 from __future__ import annotations
 
 import threading
 import time
+from typing import Callable, Optional
 
 
 class PrefetchEngine:
     """按句子碎片累积 + 防抖触发翻译预热的协调器。
 
     用法::
-        pf = PrefetchEngine(translate_fn, debounce_ms=800)
-        pf.on_partial("你")         # 预热, 不发终稿
-        pf.on_partial("你好")        # 仍在输入中, 重置防抖计时
-        pf.on_final("你好世界")      # 整句完成 → translate_fn → on_final_cb
+
+        pf = PrefetchEngine(translate_fn, on_final=cb, debounce_ms=800)
+        pf.on_partial("你")        # 预热(可选), 不发终稿
+        pf.on_partial("你好")       # 仍在输入, 重置防抖计时
+        pf.on_final("你好世界")     # 整句完成 → translate_fn → on_final 恰一次
     """
 
-    def __init__(self, translate_fn, debounce_ms: int = 800,
-                 on_final: callable = None) -> None:
-        """
-        Args:
-            translate_fn: callable(text, src, dst) -> str, 真正的翻译函数。
-            debounce_ms: 距上次输入多久后视为整句稳定可出终稿。
-            on_final: callable(src_text, dst_text) 整句终稿回调(Pipeline 接 UI)。
-        """
-        self._translate_fn = translate_fn
-        self._debounce_s = debounce_ms / 1000.0
+    def __init__(self, translate_fn: Callable[[str, str, str], str],
+                 on_final: Optional[Callable[[str, str], None]] = None,
+                 debounce_ms: int = 800,
+                 final_cooldown_ms: int = 400):
+        self._translate = translate_fn
         self._on_final = on_final
+        self._debounce_s = debounce_ms / 1000.0
+        self._cooldown_s = final_cooldown_ms / 1000.0
         self._lock = threading.Lock()
+        self._last_input = 0.0          # 最近一次部分文本到达 (monotonic)
+        self._current_final = None      # 已发射的整句 (去重)
+        self._last_final_at = 0.0
 
+    # ------------------------------------------------------------------
     def on_partial(self, text: str, src: str = "zh", dst: str = "en") -> None:
-        """部分文本到达: 仅记录最近输入时间, 用于整句稳定判定。"""
+        """部分文本到达: 记录到达时刻与前缀 (供防抖/终稿合并判定)。
+
+        预热翻译实际由 Pipeline 在 on_partial 里经 TranslationCache 触发
+        (逐碎片直译结果易与终稿冲突, 故引擎不直接回调部分译文)。
+        """
         with self._lock:
-            # 预取方案: 简化实现——部分文本暂不实际调用 translate_fn,
-            # 因为逐碎片翻译结果易与终稿冲突造成字幕跳动。由 Pipeine 的
-            # TranslationCache 兜底短句命中; 这里负责"整句稳定"判定。
             self._last_input = time.monotonic()
             self._src, self._dst = src, dst
 
     def on_final(self, text: str, src: str = "zh", dst: str = "en") -> None:
-        """整句完成: 策略化等待防抖窗口(若刚收尾), 然后翻译出终稿。"""
-        with self._lock:
-            last = getattr(self, "_last_input", 0.0)
-        elapsed = time.monotonic() - last
-        if elapsed < self._debounce_s:
-            # 距上次输入太近, 可能是误收的中间态; 留给后续 flush/新句处理
+        """整句完成: 防抖后翻译并回调解算终稿 (同一句只发一次)。"""
+        text = (text or "").strip()
+        if not text:
             return
-        translation = self._translate_fn(text, src, dst)
-        if self._on_final:
+        now = time.monotonic()
+        with self._lock:
+            if self._current_final == text:
+                return                       # 同句重复提交, 忽略
+            last_input = self._last_input
+            self._current_final = text       # 立即占位, 防并发重复发射
+
+        # 距上次部分输入太近 → 视为仍在输入中的尾判, 延迟到稳定窗口
+        if now - last_input < self._debounce_s:
+            # 冷却后补发 (后台线程等防抖窗口过再发射), 保证终稿必达
+            remaining = self._debounce_s - (now - last_input)
+            threading.Timer(remaining, self._delayed_final, args=(text, src, dst)).start()
+            return
+
+        self._emit(text, src, dst)
+
+    def _delayed_final(self, text: str, src: str, dst: str) -> None:
+        """防抖窗口过后补发的终稿。"""
+        with self._lock:
+            if self._current_final != text:
+                return                       # 已被更新句覆盖
+            if time.monotonic() - self._last_final_at < self._cooldown_s:
+                threading.Timer(self._cooldown_s, self._delayed_final,
+                               args=(text, src, dst)).start()
+                return
+        self._emit(text, src, dst)
+
+    def _emit(self, text: str, src: str, dst: str) -> None:
+        try:
+            translation = self._translate(text, src, dst)
+        except Exception:
+            translation = text + " [翻译失败]"
+        with self._lock:
+            self._last_final_at = time.monotonic()
+            self._current_final = None       # 清占位, 允许下句
+        if self._on_final and translation:
             self._on_final(text, translation)
 
     def translate_now(self, text: str, src: str = "zh", dst: str = "en") -> str:
-        """绕过防抖立即翻译(如 C 模式批量, 或 flush 时)。"""
-        return self._translate_fn(text, src, dst)
+        """绕过防抖立即翻译 (C 模式批量 / flush)。"""
+        return self._translate(text, src, dst)
+
+    def reset(self) -> None:
+        """整段会话结束复位去重状态 (新句子流)。"""
+        with self._lock:
+            self._current_final = None
+            self._last_input = 0.0
