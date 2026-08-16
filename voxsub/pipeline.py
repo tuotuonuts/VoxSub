@@ -18,7 +18,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from voxsub.audio import AudioSource, LoopbackSource, MicSource, resample_16k
+from voxsub.audio import AudioSource, LoopbackSource, MicSource, list_loopbacks, resample_16k
 from voxsub.asr import StreamingASR, UtteranceSegmenter, WindowVAD, models_dir, SAMPLE_RATE
 from voxsub.logging_setup import get_logger
 

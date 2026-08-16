@@ -130,3 +130,21 @@ def test_file_mode_translation_fallback(tmp_path: Path) -> None:
     p._translator = _Broken()  # 注入故障翻译器模拟 M4 缺失
     lines, _ = p._transcribe_file(wav)
     assert all("翻译失败" in ln.translation or ln.translation == "" for ln in lines)
+
+
+def test_pipeline_has_loopback_symbol() -> None:
+    """回归: B 模式用 list_loopbacks() 但有缺失 import 会 NameError(装机实测踩过)。
+
+    pipeline.py 之前只 import 了 LoopbackSource 而非 list_loopbacks 函数,
+    导致 B 模式 _make_source 报 'name list_loopbacks is not defined'。
+    """
+    import voxsub.pipeline as pl
+    # 模块级必须有该符号, 且可调用(不抛 NameError)
+    assert hasattr(pl, "list_loopbacks")
+    try:
+        # 真机枚举至少能返回列表(可能空, 但不应 NameError/缺失)
+        result = pl.list_loopbacks()
+        assert isinstance(result, list)
+    except Exception as exc:
+        # 若 audio 初始化整体失败也接受被上层捕获, 但绝不能是 NameError
+        assert not isinstance(exc, NameError), f"B 模式缺 import: {exc}"
