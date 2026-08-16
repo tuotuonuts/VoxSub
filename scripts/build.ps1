@@ -34,6 +34,10 @@ Set-Location $Root                      # 回到项目根, 消除调用方 cwd �
 Write-Host "[build] root = $Root" -ForegroundColor Cyan
 $Dist = Join-Path $Root "dist\VoxSub"
 Write-Host "[build] dist = $Dist" -ForegroundColor Cyan
+# 正式版发布目录(用户约定): D:\OneDrive\app_dve\Release
+$ReleaseDir = Join-Path $Root "..\Release"
+Write-Host "[build] release = $ReleaseDir" -ForegroundColor Cyan
+if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseDir | Out-Null }
 if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
 $Work = Join-Path $env:TEMP "VoxSub_pybuild"
 If (Test-Path $Work) { Remove-Item $Work -Recurse -Force }   # 清旧 workpath 防污染

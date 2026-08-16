@@ -35,6 +35,11 @@
 > 安装包/主程序 SHA256 由 build 后 `sign.ps1 verify` / Get-FileHash 生成，
 > 随正式发布物附上，用户可用 `certutil -hashfile <file> SHA256` 自校验。
 
+### 发布物（正式版统一输出到 D:\OneDrive\app_dve\Release，用户约定）
+
+> 正式版安装包/发布物编译到 `D:\OneDrive\app_dve\Release`（2026-08-17 用户指定）。
+> 每个正式版 = 安装包 + SHA256 + 签名 + 本文件更新。
+
 **内测版安装包 (dist\VoxSub-Setup.exe, v0.1.0-beta, 92.8MB)：**
 ```
 SHA256: 4EF7914448394C54AFFA11E55F0D3721AEC980B60266D65FE563BE7875DEAC6B

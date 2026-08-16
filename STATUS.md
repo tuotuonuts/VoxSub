@@ -66,7 +66,12 @@
    - [ ] sherpa-onnx 加载 zipformer 流式模型 + 内置 VAD 模型，跑通一次"静音→识别→输出文本"
 3. spike 全过 → 进入 M2（audio 模块：双源采集 + 环形缓冲 + 16k 重采样）；任一失败 → 记录 BLOCKED 与原因，换备选（如 pyaudiowpatch）
 
-## 风险悬挂
+## 发布约定（2026-08-17 用户指定）
+
+- **正式版安装包/发布物统一编译到 `D:\OneDrive\app_dve\Release`**（用户约定路径，勿改）
+- 内测/开发产物在 `dist\`；正式发布版才进 Release
+- 每个正式版 = 安装包 + SHA256 + 签名 + RELEASE_NOTES 更新
+- 撞名决策、OV 证书签名、商店上架等正式版事项见 RELEASE_NOTES.md
 
 - **⚠️ 英文名撞名（2026-08-17 复查确认）**：GitHub 共存 8 个同名仓库，其中 2 个同类（离线字幕工具 `sixiaolong1117/VoxSub`、`yiifish/VoxSub`）；PyPI `voxsub`、NuGet `VoxSub` 均已占用。两个同名项目均极冷门（近零 star），无商标/侵权风险。**决策建议保留英文 VoxSub + 主打中文【语幕】**（国内 C 端以中文名传播为主）；若未来做国际化/开源检索需改名，候选 AltSub / LinguaSub / SubVox。**发布前由用户确认此决策。**
 - loopback 兼容性（本机虚拟声卡多）→ 已源码级确认 isloopback 属性，M2 真机闭环通过
