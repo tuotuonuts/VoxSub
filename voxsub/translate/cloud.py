@@ -96,6 +96,8 @@ class CloudTranslator(Translator):
             return ""
         if not self._api_key:
             raise TranslationError("云翻译未配置 DEEPSEEK_API_KEY")
+        # 调用方未显式传超时时, 用构造时的实例超时(self._timeout)
+        effective_timeout = timeout_ms if timeout_ms != 15000 else self._timeout
         endpoint = self._validate_endpoint()
         lang_hint = {
             ("zh", "en"): "Translate to English.",
@@ -112,7 +114,7 @@ class CloudTranslator(Translator):
                 out = chat_completion(
                     endpoint, messages=messages, api_key=self._api_key,
                     model=self._model, temperature=0.2,
-                    timeout_sec=max(timeout_ms, 1) / 1000.0)
+                    timeout_sec=max(int(effective_timeout), 1) / 1000.0)
         except OpenAICompatError as exc:
             raise TranslationError(str(exc)) from exc
         return out

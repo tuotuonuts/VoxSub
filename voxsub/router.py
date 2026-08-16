@@ -27,6 +27,10 @@ from typing import NamedTuple
 
 import numpy as np
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("router")
+
 #: provider 内部名 -> 展示名 (DeviceInfo.name 直接取展示名)
 _PROVIDER_NAMES = {
     "DmlExecutionProvider": "DirectML",
@@ -76,8 +80,10 @@ def enumerate_devices() -> list[DeviceInfo]:
     """
     import onnxruntime as ort
 
+    providers = ort.get_available_providers()
+    logger.info("枚举 ORT 执行提供器: %s", ", ".join(providers) if providers else "(无)")
     return [DeviceInfo(provider=_norm_provider(p), name=_display_name(p), score_ms=None)
-            for p in ort.get_available_providers()]
+            for p in providers]
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +140,8 @@ def _smoke_score_asr(provider: str) -> float | None:
         return round(elapsed, 1)
     except Exception as exc:  # noqa: BLE001 -- 冒烟失败即视为不可测
         print(f"  [router] asr 冒烟失败 ({provider}): {type(exc).__name__}: {exc}")
+        logger.warning("ASR 冒烟计分失败 (provider=%s): %s: %s",
+                       provider, type(exc).__name__, exc, exc_info=True)
         return None
 
 
@@ -152,7 +160,8 @@ def _load_smoke_wav() -> np.ndarray:
                     if data.size > sr:  # 冒烟只取前 2 秒, 控制耗时
                         data = data[: sr * 2]
                     return data
-        except Exception:  # noqa: BLE001 -- 素材损坏则走合成
+        except Exception as exc:  # noqa: BLE001 -- 素材损坏则走合成
+            logger.debug("冒烟音频素材读取失败 (%s): %s, 改用合成音", wav.name, exc)
             pass
     silence = np.zeros(int(0.8 * sr), dtype=np.float32)
     t = np.arange(int(1.0 * sr), dtype=np.float32) / sr
@@ -183,6 +192,8 @@ def _smoke_score_translate(provider: str) -> float | None:
         return round((time.perf_counter() - t0) * 1000.0, 1)
     except Exception as exc:  # noqa: BLE001
         print(f"  [router] translate 冒烟失败 ({provider}): {type(exc).__name__}: {exc}")
+        logger.warning("translate 冒烟计分失败 (provider=%s): %s: %s",
+                       provider, type(exc).__name__, exc, exc_info=True)
         return None
 
 
@@ -212,6 +223,8 @@ def _smoke_score_tts(provider: str) -> float | None:
         return round((time.perf_counter() - t0) * 1000.0, 1)
     except Exception as exc:  # noqa: BLE001
         print(f"  [router] tts 冒烟失败 ({provider}): {type(exc).__name__}: {exc}")
+        logger.warning("TTS 冒烟计分失败 (provider=%s): %s: %s",
+                       provider, type(exc).__name__, exc, exc_info=True)
         return None
 
 
@@ -249,9 +262,14 @@ def select_device(task: str) -> DeviceInfo:
 
     # 1) DirectML 优先: 存在且任务模型就绪
     if "dml" in by_provider and _task_model_ready(task):
+        logger.info("设备路由: task=%s 选择 DirectML (模型就绪)", task)
         score = _smoke_score(task, "DmlExecutionProvider")
         return DeviceInfo(provider="dml", name="DirectML", score_ms=score)
 
-    # 2) CPU 兜底
+    # 2) CPU 兜底 (记录降级原因, 便于排查 GPU 缺席)
+    if "dml" in by_provider:
+        logger.warning("设备路由: task=%s 有 DirectML 但模型未就绪, 降级 CPU", task)
+    else:
+        logger.info("设备路由: task=%s 无 DirectML, 使用 CPU", task)
     score = _smoke_score(task, "CPUExecutionProvider")
     return DeviceInfo(provider="cpu", name="CPU", score_ms=score)

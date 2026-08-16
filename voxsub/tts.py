@@ -28,6 +28,10 @@ from pathlib import Path
 
 import numpy as np
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("tts")
+
 #: 全项目统一输出采样率 (audio/asr 同款, 见 DESIGN.md)
 SAMPLE_RATE = 16000
 
@@ -77,6 +81,10 @@ class TTSEngine:
         self._ready: dict[str, bool] = {}       # lang -> 模型文件就绪?
         for lang in _CANDIDATE_LANGS:
             self._ready[lang] = bool(self._find_model_files(lang))
+        logger.info("TTSEngine 初始化 (目录=%s): %s",
+                    self._model_dir.name,
+                    ", ".join(f"{lang}={'就绪' if v else '缺模型'}"
+                              for lang, v in self._ready.items()))
 
     # ------------------------------------------------------------------
     # 模型探测
@@ -117,6 +125,8 @@ class TTSEngine:
             )
             return sherpa_onnx.OfflineTts(cfg)
         except Exception:
+            logger.warning("TTS 模型构建失败 (lang=%s, 目录=%s), 本次返回 None",
+                           lang, d.name, exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -145,9 +155,11 @@ class TTSEngine:
                     return None
                 result = tts.generate(text, sid=0, speed=1.0)
                 if result is None or result.samples is None or len(result.samples) == 0:
+                    logger.warning("TTS 生成返回空结果 (lang=%s), 降级返回 None", lang)
                     return None
                 return _resample_to_16k(np.asarray(result.samples), int(result.sample_rate))
         except Exception:
+            logger.warning("TTS 合成异常 (lang=%s), 降级返回 None", lang, exc_info=True)
             return None
 
     def health(self) -> str:

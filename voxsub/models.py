@@ -27,6 +27,10 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("models")
+
 MANIFEST_NAME = "manifest.json"
 CHUNK = 1 << 20  # 1MB 分块读写
 
@@ -45,7 +49,8 @@ def load_manifest(models_dir: Path | str) -> dict:
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("manifest 读取/解析失败 (%s), 回退空清单: %s", p.name, exc)
             return {"version": 1, "files": {}}
     return {"version": 1, "files": {}}
 
@@ -85,6 +90,7 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     sources = [u for u in (url, mirror) if u]
+    logger.info("开始下载 %s (候选源 %d 个)", dest.name, len(sources))
 
     for src in sources:
         try:
@@ -99,21 +105,27 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
                         break
                     out.write(block)
             part.replace(dest)
-            print(f"  下载完成: {dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
+            size_mb = dest.stat().st_size / 1e6
+            print(f"  下载完成: {dest.name} ({size_mb:.1f} MB)")
+            logger.info("下载完成: %s (%.1f MB)", dest.name, size_mb)
             if expected_sha:
                 actual = sha256_of(dest)
                 if actual != expected_sha:
                     print(f"  [错误] SHA256 不匹配: 期望 {expected_sha}, 实际 {actual}")
+                    logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
+                                 dest.name, expected_sha, actual)
                     return False
                 print("  SHA256 校验通过")
             return True
         except (urlerror.URLError, OSError, TimeoutError) as exc:
             print(f"  源 {src} 失败: {exc}")
+            logger.warning("下载源失败: 目标=%s 源=%s 错误=%s", dest.name, src, exc)
             # 失败原因若是 HTTP 416(Range 越界), 说明本地 .part 已完整, 去掉续传重来
             if isinstance(exc, urlerror.HTTPError) and exc.code == 416:
                 part.unlink(missing_ok=True)
             continue
     print("  [错误] 所有源均失败")
+    logger.error("所有下载源均失败: %s", dest.name)
     return False
 
 
@@ -216,6 +228,8 @@ class ModelManager:
                 locked = True
             except OSError:
                 lock_fh.close()
+                logger.warning("获取模型下载锁失败 (.fetch.lock 被占用), "
+                               "判定另一下载进行中")
                 raise RuntimeError("另一个模型下载正在进行中，请稍后重试") from None
 
         try:
@@ -224,6 +238,7 @@ class ModelManager:
 
             ok = fetch_file(url, dest, expected_sha=sha256, mirror=mirror)
             if not ok:
+                logger.warning("下载失败, manifest 登记为 partial: %s", rel)
                 files[rel] = {"size": dest.stat().st_size if dest.exists() else 0,
                               "sha256": sha256 or "",
                               "mtime": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -236,6 +251,7 @@ class ModelManager:
                           "url": url, "mirror": mirror, "status": "ready"}
             self.save_manifest(manifest)
             print(f"登记完成: {rel} -> {dest}")
+            logger.info("模型登记完成: %s (%.1f MB)", rel, dest.stat().st_size / 1e6)
             return True
         finally:
             if locked:

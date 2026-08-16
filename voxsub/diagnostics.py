@@ -24,6 +24,9 @@ from pathlib import Path
 import numpy as np
 
 from voxsub.models import ModelManager
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("diagnostics")
 
 #: 磁盘余量警戒线 (GB) / 内存可用率警戒线 (%)
 DISK_WARN_GB = 5.0
@@ -49,12 +52,14 @@ def _check_model_integrity() -> dict:
     if problems:
         sample = ", ".join(f"{p['rel']}({p['reason']})" for p in problems[:5])
         more = f" 等 {len(problems)} 项" if len(problems) > 5 else ""
+        logger.warning("自检[模型完整性] %d/%d 就绪, %d 项异常", ready, total, len(problems))
         return {
             "check": "模型完整性",
             "status": "fail",
             "detail": f"{ready}/{total} 就绪, 问题项: {sample}{more}",
             "suggestion": "运行 model_fetch.py scan 重扫, 或用 fetch 重新下载缺失/损坏文件 (见 voxsub.models.ModelManager)",
         }
+    logger.info("自检[模型完整性] %d 条登记全部就绪", total)
     return {
         "check": "模型完整性",
         "status": "ok",
@@ -70,6 +75,7 @@ def _check_ort_providers() -> dict:
 
         providers = list(ort.get_available_providers())
     except Exception as exc:  # noqa: BLE001
+        logger.warning("自检[ORT providers] onnxruntime 导入失败: %s", exc)
         return {"check": "ORT providers", "status": "fail",
                 "detail": f"onnxruntime 导入失败: {type(exc).__name__}: {exc}",
                 "suggestion": "重装 onnxruntime-directml (勿与标准 onnxruntime 同装)"}
@@ -104,7 +110,8 @@ def _load_smoke_wav(max_sec: float = 2.0) -> np.ndarray | None:
                 if data.size > int(sr * max_sec):
                     data = data[: int(sr * max_sec)]
                 return data
-        except Exception:  # noqa: BLE001 -- 素材损坏则尝试下一个
+        except Exception as exc:  # noqa: BLE001 -- 素材损坏则尝试下一个
+            logger.debug("冒烟音频素材读取失败 (%s): %s, 尝试下一文件", wav.name, exc)
             continue
     return None
 
@@ -121,6 +128,8 @@ def _check_asr_smoke() -> dict:
     """加载流式 ASR, 对短音频做一次完整 decode (参考 spike_m1.py 方法)。"""
     asr_dir = models_dir() / "asr"
     if not (asr_dir / "tokens.txt").exists() or not list(asr_dir.glob("*encoder*.onnx")):
+        logger.warning("自检[ASR 冒烟] ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): %s",
+                       asr_dir.name)
         return {"check": "ASR 冒烟", "status": "fail",
                 "detail": f"ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): {asr_dir}",
                 "suggestion": "用 model_fetch.py fetch 补齐 asr 模型"}
@@ -151,6 +160,7 @@ def _check_asr_smoke() -> dict:
                 "detail": f"模型加载+解码通过, 耗时 {elapsed_ms:.0f}ms, 文本={text.strip()!r}",
                 "suggestion": "无需处理"}
     except Exception as exc:  # noqa: BLE001
+        logger.warning("自检[ASR 冒烟] 加载/解码异常: %s", exc, exc_info=True)
         return {"check": "ASR 冒烟", "status": "fail",
                 "detail": f"加载/解码异常: {type(exc).__name__}: {exc}",
                 "suggestion": "检查 asr 模型文件是否损坏, 重新下载"}
@@ -161,6 +171,7 @@ def _check_vad_smoke() -> dict:
     vad_dir = models_dir() / "vad"
     hits = sorted(vad_dir.glob("*.onnx"))
     if not hits:
+        logger.warning("自检[VAD 冒烟] 缺少 VAD 模型: %s", vad_dir.name)
         return {"check": "VAD 冒烟", "status": "fail",
                 "detail": f"缺少 VAD 模型: {vad_dir}",
                 "suggestion": "下载 silero_vad_v5.onnx 到 models/vad/"}
@@ -190,6 +201,7 @@ def _check_vad_smoke() -> dict:
                 "detail": f"模型加载通过, 触发 {speech_windows} 个语音窗口",
                 "suggestion": "无需处理"}
     except Exception as exc:  # noqa: BLE001
+        logger.warning("自检[VAD 冒烟] 加载/检测异常: %s", exc, exc_info=True)
         return {"check": "VAD 冒烟", "status": "fail",
                 "detail": f"加载/检测异常: {type(exc).__name__}: {exc}",
                 "suggestion": "检查 vad 模型文件是否损坏, 重新下载"}
@@ -199,6 +211,7 @@ def _check_tts_smoke() -> dict:
     """TTS 冒烟: 模型存在则合成 "测试"; 未安装则 warn (不阻断)。"""
     tts_dir = models_dir() / "tts"
     if not tts_dir.exists():
+        logger.info("自检[TTS 冒烟] 模型未安装 (models/tts 不存在), 标记 warn")
         return {"check": "TTS 冒烟", "status": "warn",
                 "detail": "TTS 模型未安装 (models/tts 不存在)",
                 "suggestion": "下载 sherpa-onnx piper/vits 模型到 models/tts/ 后重试 (缺朗读不影响字幕)"}
@@ -210,6 +223,7 @@ def _check_tts_smoke() -> dict:
             archives = sorted(tts_dir.glob("**/*.tar.bz2")) + sorted(tts_dir.glob("**/*.tar.gz"))
             hint = (f"; 检测到 {len(archives)} 个未解压的模型包 "
                     f"(如 {archives[0].name}), 需先解压出 model.onnx") if archives else ""
+            logger.warning("自检[TTS 冒烟] models/tts 下未找到 model.onnx%s", hint)
             return {"check": "TTS 冒烟", "status": "warn",
                     "detail": f"models/tts 下未找到 model.onnx{hint}",
                     "suggestion": "确认 tts 模型包结构 (model.onnx + tokens.txt)"}
@@ -230,6 +244,7 @@ def _check_tts_smoke() -> dict:
                 "detail": f"合成通过, 耗时 {elapsed_ms:.0f}ms, 采样数={len(samples) if samples is not None else 0}",
                 "suggestion": "无需处理"}
     except Exception as exc:  # noqa: BLE001
+        logger.warning("自检[TTS 冒烟] 合成异常: %s", exc, exc_info=True)
         return {"check": "TTS 冒烟", "status": "fail",
                 "detail": f"合成异常: {type(exc).__name__}: {exc}",
                 "suggestion": "检查 tts 模型是否损坏, 重新下载"}
@@ -250,7 +265,8 @@ def _check_resources() -> dict:
         avail_pct = vm.available / vm.total * 100.0
         mem_detail = f", 内存可用 {avail_pct:.0f}% ({vm.available / 1e9:.1f}GB / {vm.total / 1e9:.1f}GB)"
         mem_warn = avail_pct < MEM_WARN_PCT
-    except Exception:  # noqa: BLE001 -- psutil 缺失时仅报磁盘
+    except Exception as exc:  # noqa: BLE001 -- psutil 缺失时仅报磁盘
+        logger.debug("psutil 不可用, 跳过内存检查: %s", exc)
         mem_detail = ", 内存信息不可用 (psutil 未安装)"
 
     disk_warn = free_gb < DISK_WARN_GB
@@ -282,6 +298,7 @@ def run_self_check() -> list[dict]:
         _check_tts_smoke(),
         _check_resources(),
     ]
+    logger.info("自检完成 (共 %d 项)", len(checks))
     return checks
 
 

@@ -26,6 +26,10 @@ from typing import Callable
 import numpy as np
 import sherpa_onnx
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("asr")
+
 #: 全项目统一音频采样率 (audio 模块同样输出 16k, 见 DESIGN.md)
 SAMPLE_RATE = 16000
 
@@ -48,6 +52,8 @@ def _find_onnx(model_dir: Path, pattern: str, prefer_int8: bool = True) -> Path:
     """
     hits = sorted(model_dir.glob(pattern))
     if not hits:
+        logger.warning("ASR 模型缺失: 目录 %s 中未找到匹配 %r 的模型文件",
+                       model_dir.name, pattern)
         raise FileNotFoundError(f"在 {model_dir} 中未找到匹配 {pattern!r} 的模型文件")
     if prefer_int8:
         for hit in hits:
@@ -75,6 +81,8 @@ class StreamingASR:
         self._model_dir = Path(model_dir)
         tokens = self._model_dir / "tokens.txt"
         if not tokens.exists():
+            logger.warning("ASR 模型不完整: 缺少 token 表 %s (目录 %s)",
+                           tokens.name, self._model_dir.name)
             raise FileNotFoundError(f"缺少 token 表: {tokens}")
         self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
             tokens=str(tokens),
@@ -85,6 +93,8 @@ class StreamingASR:
             provider=provider,
             num_threads=num_threads,
         )
+        logger.info("ASR 模型加载成功 (provider=%s, num_threads=%d, 目录=%s)",
+                    provider, num_threads, self._model_dir.name)
 
     def create_stream(self) -> object:
         """新建一条独立解码流。"""
@@ -104,8 +114,12 @@ class StreamingASR:
 
     def decode(self, stream) -> str:
         """耗尽当前可解码帧, 返回流的最新累计文本 (流式部分结果)。"""
-        while self._recognizer.is_ready(stream):
-            self._recognizer.decode_stream(stream)
+        try:
+            while self._recognizer.is_ready(stream):
+                self._recognizer.decode_stream(stream)
+        except Exception:
+            logger.exception("ASR 解码循环异常 (decode_stream)")
+            raise  # 行为不变: 原样上抛, 仅补 traceback 记录
         return self._recognizer.get_result(stream)
 
     def get_result(self, stream) -> str:
@@ -146,6 +160,7 @@ class WindowVAD:
             provider="cpu",
         )
         self._vad = sherpa_onnx.VadModel.create(cfg)
+        logger.info("VAD 模型加载成功 (模型=%s)", Path(model_path).name)
 
     @property
     def window_size(self) -> int:

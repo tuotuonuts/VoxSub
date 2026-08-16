@@ -132,12 +132,23 @@ class QwenQualityTranslator(Translator):
         raise TranslationError(f"llama-server 60s 内未就绪 (port {port})")
 
     def _ensure(self) -> str:
+        """保证 llama-server 就绪并返回 endpoint。
+
+        并发安全 (double-checked locking): 检查在锁外做(快速路径), 但**重新检查**
+        在锁内做——两个线程并发首次调用时, 只有第一个真正 spawn, 第二个
+        看到 endpoint 已就绪直接复用, 避免双开 llama-server 导致孤儿进程
+        (每孤儿 ~1.5GB 模型驻留, 且耗尽 8080-8089 端口范围)。
+        """
         if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
-            self.close()
             with self._lock:
-                self._spawn()
-        assert self._endpoint is not None
-        return self._endpoint
+                # 锁内二次检查: 并发发起方可能已在等待时完成 spawn
+                if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
+                    self.close()
+                    self._spawn()
+        # 若 _spawn 抛错, 此处不会到达; endpoint 由 _spawn 赋值
+        endpoint = self._endpoint
+        assert endpoint is not None
+        return endpoint
 
     # ------------------------------------------------------------------
     def translate(self, text: str, src_lang: str, dst_lang: str, *,

@@ -1,0 +1,17 @@
+# 语幕 VoxSub —— 可观测性改造清单 (大项目首版 debug 基建, P0)
+# 基线: 61 处 except 但 0 处 logging —— 错误"捕获即吞", 无法排障。
+# 手段: 统一 logging_setup.get_logger + 让关键 except 从吞变为 logger.exception 记录。
+
+- [x] voxsub/logging_setup.py 基建 (轮转文件 + 控制台 + 内存环形事件队列 + 级别env)
+- [x] voxsub/pipeline.py 接入 logger (翻译/音频/flush/文件 四处关键失败已显式记录)
+- [ ] voxsub/audio.py         (设备枚举/采集异常)
+- [ ] voxsub/asr.py           (模型加载/解码异常)
+- [ ] voxsub/tts.py           (合成失败 - 现在返回None但无记录)
+- [ ] voxsub/models.py        (下载/校验失败)
+- [ ] voxsub/router.py        (设备冒烟/路由)
+- [ ] voxsub/diagnostics.py   (各检查项)
+- [ ] voxsub/translate/opus.py / qwen.py / cloud.py / _http_client.py / prefetch.py
+- [ ] voxsub/ui/ (app/main_window/subtitle_overlay/settings/diagnostics/pipeline_client/config_store)
+- [ ] UI 诊断页: 新增"日志"页签 (读 drain_events / tail_log_file)
+- [ ] setup_logging() 在 voxsub/ui/app.py 入口调用一次 (全局生效)
+- [ ] 回归: 全量 pytest + 端到端不受影响

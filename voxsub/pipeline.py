@@ -20,6 +20,9 @@ import numpy as np
 
 from voxsub.audio import AudioSource, LoopbackSource, MicSource, resample_16k
 from voxsub.asr import StreamingASR, UtteranceSegmenter, WindowVAD, models_dir, SAMPLE_RATE
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("pipeline")
 
 
 # ---------- 数据模型 ----------
@@ -59,10 +62,13 @@ def _load_translator() -> object:
         for kind in ("opus-fast", "qwen-quality", "cloud"):
             try:
                 return TranslatorFactory.create(kind, None), kind
-            except Exception:
+            except Exception as exc:
+                logger.warning("翻译档位 %s 创建失败: %s", kind, exc)
                 continue
+        logger.warning("无可用的翻译档位, 退回占位实现 (仅原文直通)")
         return _NoopTranslator(), None
-    except ImportError:
+    except ImportError as exc:
+        logger.debug("翻译层未安装, 用占位实现: %s", exc)
         return _NoopTranslator(), None
 
 
@@ -153,7 +159,8 @@ class Pipeline:
         """处理线程回调: 一句话识别完成 → 翻译 → 推送给 UI。"""
         try:
             translation = self._translator.translate(text, self._src_lang, self._dst_lang)
-        except Exception:
+        except Exception as exc:
+            logger.error("翻译失败 text=%r: %s", text, exc, exc_info=True)
             translation = text + " 〔翻译失败〕"
             self._emit_status("翻译失败(已保留原文)")
         self._emit_utterance(text, translation)
@@ -189,8 +196,8 @@ class Pipeline:
         if self._seg is not None:
             try:
                 self._seg.flush()  # 处理尾句
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error("flush 尾句失败: %s", exc, exc_info=True)
         self._running = False
         self._emit_status("已停止")
 
@@ -207,6 +214,7 @@ class Pipeline:
         try:
             source = self._make_source()
         except Exception as exc:
+            logger.error("音频设备启动失败: %s", exc, exc_info=True)
             self._emit_status(f"音频设备错误: {exc}")
             self._stop_evt.set()
             return
@@ -251,6 +259,7 @@ class Pipeline:
             self._emit_status(f"完成 → {out}")
             self._emit_utterance(f"已导出 {len(lines)} 条字幕", str(out))
         except Exception as exc:
+            logger.error("文件处理失败 path=%s: %s", self._in_path, exc, exc_info=True)
             self._emit_status(f"文件处理失败: {exc}")
         finally:
             self._running = False
