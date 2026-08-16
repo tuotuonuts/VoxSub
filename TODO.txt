@@ -27,3 +27,35 @@
 [ ] M6: Pipeline 三模式编排（等 M2-M5 全部落地后由主代理实现或派单）
 [ ] 自审门禁: requesting-code-review（M6 集成后统一跑）
 - [ ] M9: 打包分发（PyInstaller+InnoSetup + **代码签名规划: 内测自签名→正式OV证书→商店** + 撞名复查决策 + RELEASE_NOTES）
+=== 2026-08-17 (M5 TTS 完成 · 子代理) ===
+[x] M5 TTS 模块: voxsub/tts.py + tests/test_tts.py（10 用例, 全量 pytest 46 passed / 0 failed）
+    - 模型: vits-icefall-zh-aishell3.tar.bz2（k2-fsa/sherpa-onnx releases tts-models, 31.6MB, 原生 8kHz）
+      → %LOCALAPPDATA%/VoxSub/models/tts/zh/（model.onnx + tokens.txt + lexicon.txt）
+    - 模型: vits-icefall-en_US-ljspeech-low.tar.bz2（同源, 31.7MB, 原生 22050Hz）
+      → %LOCALAPPDATA%/VoxSub/models/tts/en/（model.onnx + tokens.txt + espeak-ng-data/）
+    - 实测: 中文"你好，语幕" 合成 1.70s @16k(引擎重采样, 模型原生 8k) 53.3KB; 英文 1.55s @16k 48.5KB
+    - 坑: ①TTS 模型不在 asr-models release, 在 tts-models tag（642 资产）; ②sherpa vits 按模型原生采样率输出
+      （8k/22050Hz 非 16k）且 samples 为 float64——引擎内须重采样+转 float32 满足契约; ③lexicon/data_dir
+      按包结构探测（aishell3 带 lexicon.txt, ljspeech 带 espeak-ng-data）; ④synthesize 全路径 try/except
+      返回 None 不抛（契约: 失败只降级不阻断字幕）
+    - 坑: scripts/model_fetch.py CLI 传参 bug（mgr.fetch 多传 dest 位置参, TypeError）未修（属 M8 models 模块,
+      M5 直接调 ModelManager.fetch 绕过）
+=== 2026-08-17 (M8 完成 · 设备路由+诊断+模型管理 子代理) ===
+[x] M8: voxsub/models.py —— 把 scripts/model_fetch.py 的 fetch_file/load_manifest/save_manifest/sha256_of
+    提炼为 ModelManager (scan/fetch/verify_all/get_missing), scripts/model_fetch.py 瘦身为薄 CLI 壳
+[x] M8: voxsub/router.py —— enumerate_devices (ORT providers -> DeviceInfo) + select_device(task)
+    降级链 dml->cpu; score_ms 实测冒烟: asr=sherpa 真实短语音 decode 计时 (dml 无解时显式映射 cpu,
+    sherpa 1.13.5 provider 仅支持 cpu/cuda/coreml), translate=ORT encoder dummy forward (缺模型 None),
+    tts=sherpa OfflineTts 合成计时 (缺模型 None)
+[x] M8: voxsub/diagnostics.py —— run_self_check 6 项 (模型完整性/ORT providers/ASR 冒烟/VAD 冒烟/
+    TTS 冒烟/磁盘内存余量) + export_report 纯文本 (时间戳/结论/建议)
+[x] M8: 实测 select_device: asr->dml 39.9ms, translate->dml 767.9ms (含 DML 首编), tts->cpu (当时无 tts 模型)
+[x] M8: run_self_check 实测 (最后): 6/6 ok —— 模型完整性 406 条全 ready / ORT=Dml+CPU /
+    ASR 冒烟 35ms 文本'昨天' / VAD 触发 54 语音窗 / TTS 合成 121ms 39936 采样 / 磁盘 175.7GB 内存 38%
+[x] M8: tests/test_router.py (7) + tests/test_diagnostics.py (8) 全绿; 全量 pytest 46 passed
+    (含 fetch 206 续传/200 覆盖/镜像切换 的本地 HTTP 伪造响应测试)
+[!] 坑1: sherpa-onnx 1.13.5 provider 只认 cpu/cuda/coreml, 传 DmlExecutionProvider 被 StringToProvider
+    拒绝并静默回退 CPU —— ASR 冒烟/计分显式映射 cpu, 避免误导警告
+[!] 坑2: silero VAD 对纯正弦音 0 触发 (非人声), 冒烟素材必须用真实语音 test_wavs (本机 54 窗)
+[!] 坑3: numpy 数组 truthiness (array or x) 抛 ValueError —— 冒烟素材选取用 `if x is None` 判断
+[!] 环境注: M8 期间并行会话持续登记/解压模型 (tts 等), manifest 38->40->406 条, verify_all 全程全绿

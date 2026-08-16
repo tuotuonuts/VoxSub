@@ -85,6 +85,38 @@ def _check_ort_providers() -> dict:
             "suggestion": "无需处理" if status == "ok" else "安装 onnxruntime-directml 以启用 GPU 加速"}
 
 
+def _load_smoke_wav(max_sec: float = 2.0) -> np.ndarray | None:
+    """取一段用于冒烟的真实语音 (models/asr/test_wavs/*.wav, 截取前 max_sec 秒)。
+
+    真实语音缺失时返回 None, 由调用方决定退化策略。
+    """
+    sr = 16000
+    hits = sorted((models_dir() / "asr" / "test_wavs").glob("*.wav"))
+    for wav in hits:
+        try:
+            import wave
+
+            with wave.open(str(wav), "rb") as w:
+                if w.getframerate() != sr or w.getnchannels() != 1:
+                    continue
+                raw = w.readframes(w.getnframes())
+                data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                if data.size > int(sr * max_sec):
+                    data = data[: int(sr * max_sec)]
+                return data
+        except Exception:  # noqa: BLE001 -- 素材损坏则尝试下一个
+            continue
+    return None
+
+
+def _synthetic_tone() -> np.ndarray:
+    """合成 静音+220Hz 正弦 (无真实语音素材时的退化输入, 仅验证管线不崩)。"""
+    sr = 16000
+    t = np.arange(int(1.0 * sr), dtype=np.float32) / sr
+    tone = 0.3 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+    return np.concatenate([np.zeros(int(0.6 * sr), dtype=np.float32), tone])
+
+
 def _check_asr_smoke() -> dict:
     """加载流式 ASR, 对短音频做一次完整 decode (参考 spike_m1.py 方法)。"""
     asr_dir = models_dir() / "asr"
@@ -104,10 +136,9 @@ def _check_asr_smoke() -> dict:
             decoding_method="greedy_search", provider="cpu", num_threads=2)
 
         sr = 16000
-        silence = np.zeros(int(0.6 * sr), dtype=np.float32)
-        t = np.arange(int(1.0 * sr), dtype=np.float32) / sr
-        tone = 0.3 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
-        samples = np.concatenate([silence, tone, np.zeros(int(0.4 * sr), dtype=np.float32)])
+        samples = _load_smoke_wav()
+        if samples is None:
+            samples = _synthetic_tone()
 
         stream = recognizer.create_stream()
         t0 = time.perf_counter()
@@ -144,15 +175,16 @@ def _check_vad_smoke() -> dict:
             sample_rate=16000, num_threads=2, provider="cpu")
         vad = sherpa_onnx.VadModel.create(cfg)
         win = vad.window_size()
-        sr = 16000
-        t = np.arange(int(1.0 * sr), dtype=np.float32) / sr
-        tone = 0.3 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+        samples = _load_smoke_wav(max_sec=3.0)
+        if samples is None:
+            samples = _synthetic_tone()
         speech_windows = sum(
-            1 for i in range(0, len(tone) - win + 1, win) if vad.is_speech(tone[i:i + win]))
+            1 for i in range(0, len(samples) - win + 1, win)
+            if vad.is_speech(samples[i:i + win]))
         vad.reset()
         if speech_windows == 0:
             return {"check": "VAD 冒烟", "status": "warn",
-                    "detail": f"模型加载通过, 但合成音未触发语音检测 ({speech_windows} 语音窗)",
+                    "detail": f"模型加载通过, 但输入音频未触发语音检测 ({speech_windows} 语音窗)",
                     "suggestion": "阈值过高或模型异常, 可调低 threshold 再试"}
         return {"check": "VAD 冒烟", "status": "ok",
                 "detail": f"模型加载通过, 触发 {speech_windows} 个语音窗口",
@@ -173,11 +205,15 @@ def _check_tts_smoke() -> dict:
     try:
         import sherpa_onnx
 
-        model = next(sorted(tts_dir.glob("**/model.onnx")), None)
-        if model is None:
+        models = sorted(tts_dir.glob("**/model.onnx"))
+        if not models:
+            archives = sorted(tts_dir.glob("**/*.tar.bz2")) + sorted(tts_dir.glob("**/*.tar.gz"))
+            hint = (f"; 检测到 {len(archives)} 个未解压的模型包 "
+                    f"(如 {archives[0].name}), 需先解压出 model.onnx") if archives else ""
             return {"check": "TTS 冒烟", "status": "warn",
-                    "detail": "models/tts 下未找到 model.onnx",
+                    "detail": f"models/tts 下未找到 model.onnx{hint}",
                     "suggestion": "确认 tts 模型包结构 (model.onnx + tokens.txt)"}
+        model = models[0]
         tokens = model.parent / "tokens.txt"
         cfg = sherpa_onnx.OfflineTtsConfig(
             model=sherpa_onnx.OfflineTtsModelConfig(
