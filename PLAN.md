@@ -27,6 +27,8 @@
 - M7 UI：PySide6 + PySide6-Fluent-Widgets 1.11.3，**Soft Premium 风格**（见 DESIGN.md「UI 设计规范」）：主窗/托盘/字幕浮窗/设置页/诊断页，三档主题
 - M8 诊断：设备枚举计分 / 自检中心 / 模型下载器自愈
 - M9 发布：exe 安装包 + 模型分发 + RELEASE_NOTES
+  - **代码签名**（2026-08-17 规划）：内测=自签名+SHA256 引导；正式版=个体户+OV 证书（¥2000+/年，审核 2-5 天，提前办）+ signtool SHA256 时间戳签名；长期=Microsoft Store 上架（$19/年，微软代签）
+  - 发布物=安装包 + SHA256 + VirusTotal 留档
 
 ## 风险清单（Top 3 + 应对）
 
