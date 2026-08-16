@@ -28,25 +28,35 @@ if (-not $SkipTests) {
 # 注意(2026-08-17 实测): 项目在 OneDrive 同步盘, PyInstaller `--clean` 删 build 目录
 # 会撞同步文件锁(PermissionError: build\VoxSub\localpycs)。解决: workpath 移到
 # %TEMP% (非 OneDrive), 彻底绕开锁; icon/specpath/dist 用绝对路径抗一步。
+# 追加: 用绝对路径构造, 避免调用方 cwd 差异导致 $Root/$Dist 解析失败(实测:
+# 从其他目录 -File 调用时相对 scripts/ 解析会飘, 加 Start-Location 保险)。
+Set-Location $Root                      # 回到项目根, 消除调用方 cwd 影响
+Write-Host "[build] root = $Root" -ForegroundColor Cyan
 $Dist = Join-Path $Root "dist\VoxSub"
+Write-Host "[build] dist = $Dist" -ForegroundColor Cyan
 if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
 $Work = Join-Path $env:TEMP "VoxSub_pybuild"
+If (Test-Path $Work) { Remove-Item $Work -Recurse -Force }   # 清旧 workpath 防污染
 $Icon = Join-Path $Root "assets\icon.ico"
 $SpecDir = Join-Path $Root "build"
 Run-Checked "pyinstaller" {
-    & ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --windowed `
-        --name VoxSub `
-        --icon $Icon `
-        --distpath $Dist `
-        --workpath $Work `
-        --specpath $SpecDir `
-        --collect-all sherpa_onnx `
-        --collect-all soundcard `
-        --collect-all onnxruntime `
-        --collect-all qfluentwidgets `
-        --hidden-import voxsub.pipeline `
-        --hidden-import voxsub.translate.factory `
-        run_app.py
+    $Py = Join-Path $Root ".venv\Scripts\python.exe"     # 绝对 python, 避开 cwd
+    $Args = @(
+        "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
+        "--name", "VoxSub",
+        "--icon", $Icon,
+        "--distpath", $Dist,
+        "--workpath", $Work,
+        "--specpath", $SpecDir,
+        "--collect-all", "sherpa_onnx",
+        "--collect-all", "soundcard",
+        "--collect-all", "onnxruntime",
+        "--collect-all", "qfluentwidgets",
+        "--hidden-import", "voxsub.pipeline",
+        "--hidden-import", "voxsub.translate.factory",
+        "run_app.py"
+    )
+    & $Py $Args
 }
 
 # 3) self-sign the exe via osslsigncode (PowerShell Set-AuthenticodeSignature
