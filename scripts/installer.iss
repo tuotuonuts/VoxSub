@@ -21,7 +21,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\VoxSub
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-PrivilegesRequired=lowest          ; 普通用户可装(无需管理员)
+PrivilegesRequired=admin
 OutputDir=..\dist
 OutputBaseFilename=VoxSub-Setup
 Compression=lzma2
@@ -35,7 +35,6 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
-Name: "english"; MessagesFile: "compiler:Languages\English.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"

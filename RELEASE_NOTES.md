@@ -35,6 +35,12 @@
 > 安装包/主程序 SHA256 由 build 后 `sign.ps1 verify` / Get-FileHash 生成，
 > 随正式发布物附上，用户可用 `certutil -hashfile <file> SHA256` 自校验。
 
+**内测版安装包 (dist\VoxSub-Setup.exe, v0.1.0-beta, 92.8MB)：**
+```
+SHA256: 4EF7914448394C54AFFA11E55F0D3721AEC980B60266D65FE563BE7875DEAC6B
+签名  : VoxSub Dev (self-signed) + DigiCert RFC3161 时间戳 (2026-08-17)
+```
+
 **内测版主程序 (dist\VoxSub\VoxSub.exe, v0.1.0-beta, 290MB onedir)：**
 ```
 SHA256: BB21B365F319A551FE6D77A46155ACB195ADE37CDA7AFCF8AA4AF334C0D8279D
