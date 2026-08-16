@@ -22,15 +22,19 @@
 ## 当前进度（里程碑视角）
 
 - [x] 阶段0-2：REQUIREMENTS / PLAN / DESIGN 完成（commit `4421e64`）
-- [x] M1 骨架 + spike 全绿：录音枚举 / Dml+CPU providers / sherpa ASR+VAD 冒烟（DirectML 生效）
-- [x] M2 audio 完成（子代理 + 主代理验收）：voxsub/audio.py；**loopback 闭环真机打通**（正弦播放→捕获 power≈0.097）；12 测试全绿
-- [x] M3 asr 完成：voxsub/asr.py（StreamingASR/WindowVAD/UtteranceSegmenter）；真实中文语音识别 + 自动分句；9 测试全绿
-- [x] 集成验收：**全量 pytest 53 passed / 0 failed**（M2/M3/M5/M6/M8 + 真机 integration）
-- [x] M5 TTS 完成（子代理）：voxsub/tts.py，10 测试绿（模型采样率归一坑已处理）
-- [x] M6 Pipeline 完成（主代理）：三模式编排 + C 模式 srt 导出 + 翻译容错延迟注入；sign.ps1 自签工具已建
-- [x] M8 路由诊断完成（子代理）：router/diagnostics/models + 15 测试绿
-- [~] M4 翻译 / M7 UI：子代理收尾中（M7 代码已落盘）
-- [ ] M6↔UI 连线验证 → 自审门禁 → M9 发布（打包/签名/撞名）
+- [x] M1 骨架 + spike 全绿：录音枚举 / Dml+CPU providers / sherpa ASR+VAD 冒烟
+- [x] M2 audio：voxsub/audio.py；loopback 真机闭环打通；12 测试绿
+- [x] M3 asr：StreamingASR/WindowVAD/UtteranceSegmenter；真实中文识别 + 自动分句；9 测试绿
+- [x] M4 翻译：opus 快档(Zh↔en 573/570ms) + qwen 质量档(llama-server HTTP, 0.69s/句) + cloud(白名单) + cache/prefetch/factory + 14 测试绿
+- [x] M5 TTS：sherpa piper 中文模型 31.6MB + 英文 31.7MB，16k 归一；10 测试绿
+- [x] M6 Pipeline：三模式编排 + C 模式 srt 导出 + 翻译容错延迟注入；7 测试绿
+- [x] M7 UI：PySide6 + QFluentWidgets Soft Premium；主窗/字幕浮窗/托盘/设置/诊断；32 测试绿，桌面启动正常，自动接真实 Pipeline
+- [x] M8 路由诊断：router/diagnostics/models(下载锁/断点续传)；15 测试绿；六项自检全 ok
+- [x] **集成：全量 pytest 99 passed / 0 failed**
+- [x] **端到端实盘**：A 模式实时字幕全链 1.01s + C 模式 srt 导出（真实模型全链路）
+- [x] 首个可运行 exe（515MB onedir，自签+DigiCert 时间戳，GUI 冒烟通过）
+- [~] 自审门禁：静态扫描干净，99 测试绿，独立审查代理运行中
+- [ ] M9 发布：InnoSetup 安装器 + 撞名决策 + RELEASE_NOTES
 
 ## 环境事实（接手必知）
 

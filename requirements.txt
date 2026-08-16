@@ -1,20 +1,25 @@
 # 语幕 VoxSub - 依赖
+#
 # 坑(2026-08 spike 实测):
-#  1) 勿装 argostranslate —— 它依赖标准 onnxruntime, 与 onnxruntime-directml 同名冲突(装了两个, 后装覆盖),
-#     且拖入 torch/spacy/stanza 数 GB 重型依赖。翻译快档(OPUS-MT) M4 改用 ctranslate2 直载 HF 模型。
+#  1) 勿装 argostranslate —— 依赖标准 onnxruntime, 与 onnxruntime-directml 同名冲突,
+#     且拖入 torch/spacy/stanza 数 GB 重型依赖。翻译快档用 Xenova OPUS-MT onnx int8。
 #  2) PYTHONPATH 污染: 本机 Hermes 向终端注入 PYTHONPATH 指向 hermes-agent venv,
 #     所有 python 命令必须前缀 `unset PYTHONPATH PYTHONHOME` 再调 .venv/Scripts/python.exe。
 #  3) 目录在 OneDrive 同步盘, 卸载/删除偶发"拒绝访问(os error 5)"锁, 失败后等 1-2s 重试。
 
+# 核心 GPU/统一推理栈 (DirectML 同时提供 CPU EP 兜底)
 onnxruntime-directml
 sherpa-onnx
 soundcard
 pytest
 
-# --- 后置里程碑 (届时追加) ---
-# onnxruntime-genai (M4 质量档翻译)
-# ctranslate2 (M4 快档翻译 OPUS-MT)
-
 # --- M7 UI (2026-08-17 已安装至 .venv, 锁版本) ---
 PySide6==6.11.1
 PySide6-Fluent-Widgets==1.11.3
+
+# --- 运行时可选 (M4/M8 已验证) ---
+# 质量档 Qwen: 不在此安装 —— 用 llama.cpp 官方预编译 llama-server.exe
+#   (解压到 %LOCALAPPDATA%\VoxSub\tools\llama\ 附带分发, 见 build.ps1)
+# 诊断内存读数: psutil (M8 已装)
+# 打包: pyinstaller + pillow (scripts/build.ps1 使用)
+# 众源推理: Xenova OPUS-MT onnx int8 直接经 onnxruntime 运行, 无须额外依赖
