@@ -12,6 +12,9 @@ soundcard
 pytest
 
 # --- 后置里程碑 (届时追加) ---
-# PySide6 (M7)
 # onnxruntime-genai (M4 质量档翻译)
 # ctranslate2 (M4 快档翻译 OPUS-MT)
+
+# --- M7 UI (2026-08-17 已安装至 .venv, 锁版本) ---
+PySide6==6.11.1
+PySide6-Fluent-Widgets==1.11.3

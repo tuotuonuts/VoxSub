@@ -65,3 +65,21 @@
 [!] 坑2: silero VAD 对纯正弦音 0 触发 (非人声), 冒烟素材必须用真实语音 test_wavs (本机 54 窗)
 [!] 坑3: numpy 数组 truthiness (array or x) 抛 ValueError —— 冒烟素材选取用 `if x is None` 判断
 [!] 环境注: M8 期间并行会话持续登记/解压模型 (tts 等), manifest 38->40->406 条, verify_all 全程全绿
+
+=== 2026-08-17 (M7 UI 壳层完成 · 子代理) ===
+[x] M7: voxsub/ui/ 壳层实现 —— theme(Soft Premium 令牌表+QFW 桥接) /
+    config_store / pipeline_client(鸭子类型 stub 兜底) / main_window(左右分栏+
+    模式三卡片+状态灯+字幕流+胶囊CTA) / subtitle_overlay(Double-Bezel 双层壳+
+    右键菜单+历史滚动) / tray / settings_window(翻译/语音/外观/关于) /
+    diagnostics_window(已自动接入 M8 真实 voxsub.diagnostics!) / app 入口
+[x] M7: 依赖装入 .venv —— PySide6 6.11.1 / PySide6-Fluent-Widgets 1.11.3
+    (darkdetect 0.8.0 / pysidesix-frameless-window 0.8.2 / pywin32 312)
+[x] M7: tests/test_ui.py 32 用例全绿 (offscreen); 全套件 85 passed
+[x] M7: python -m voxsub.ui.app 启动 26s 无崩溃 (QFluentWidgets Pro tips 为良性打印)
+[x] M7: 三窗 offscreen 截图目检 —— 主窗(卡片高亮/双语字幕/胶囊CTA)/
+    浮窗(双层壳+半透明)/设置(Tab+圆点单选) 渲染正常
+[!] 说明: 并行进行中的 M6(M6 pipeline.py) / M8(diagnostics.py+models.py) 已落地,
+    UI 的 pipeline_client 自动探测到真实 Pipeline, 诊断页自动渲染真实自检卡
+[!] 偏差: QFW 1.11.3 无 FluentIcon.STOP / 无 FramelessWindow → CTA 圆箭头小岛
+    QPainter 自绘(等价播放语义), 浮窗用 Qt.FramelessWindowHint+WA_TranslucentBackground;
+    托盘开机自启仅占位接口(留 M9); 浮窗拖动=单击拖拽+双击锁定(见代码注释)

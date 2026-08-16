@@ -41,16 +41,58 @@ Run-Checked "pyinstaller" {
         run_app.py
 }
 
-# 3) self-sign the exe (formal OV cert replaces this in release pipeline)
+# 3) self-sign the exe via osslsigncode (PowerShell Set-AuthenticodeSignature
+#    fails with UnknownError for self-signed certs on this machine; osslsigncode
+#    is the reliable path. Formal OV cert reuses this pipeline.)
+function Find-DevCert {
+    Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
+        Where-Object { $_.Subject -like "*VoxSub*" } | Select-Object -First 1
+}
+function Find-SignTool {
+    $cands = @($env:OSSLSIGNCODE,
+               (Join-Path $env:LOCALAPPDATA "VoxSub\tools\osslsigncode.exe"))
+    foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
+    return $null
+}
 $Exe = Join-Path $Dist "VoxSub.exe"
-Run-Checked "self-sign" {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "scripts\sign.ps1" sign $Exe
+$SignTool = Find-SignTool
+$Cert = Find-DevCert
+if ($SignTool -and $Cert) {
+    $DevPw = "VoxSubDev2026!"          # dev-only self-signed password
+    $PfxOut = Join-Path $env:TEMP "voxsub_dev.pfx"
+    $TmpOut = Join-Path $env:TEMP "VoxSub_signed.exe"
+    $sec = ConvertTo-SecureString $DevPw -AsPlainText -Force
+    [void](Export-PfxCertificate -Cert $Cert.Cert.PsPath -FilePath $PfxOut -Password $sec)
+    Run-Checked "self-sign (osslsigncode)" {
+        & $SignTool sign -pkcs12 $PfxOut -pass $DevPw -h sha256 `
+            -t http://timestamp.digicert.com -in $Exe -out $TmpOut
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[sign] timestamp failed, retry without timestamp"
+            & $SignTool sign -pkcs12 $PfxOut -pass $DevPw -h sha256 -in $Exe -out $TmpOut
+        }
+        Remove-Item $PfxOut -ErrorAction SilentlyContinue
+    }
+    Move-Item -Force $TmpOut $Exe
+    $r = Get-AuthenticodeSignature -FilePath $Exe
+    if ($r.SignerCertificate) {
+        Write-Host "[sign] done, signer: $($r.SignerCertificate.Subject)" -ForegroundColor Green
+        Write-Host "[sign] status=$($r.Status) (NotTrusted/UnknownError expected for self-signed; OV cert will give Valid)"
+    } else {
+        Write-Host "[sign] WARNING: no signer readable" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[sign] SKIPPED: osslsigncode or dev cert missing" -ForegroundColor Yellow
 }
 
 # 4) summary
 $SizeMB = [math]::Round(((Get-ChildItem $Dist -Recurse | Measure-Object Length -Sum).Sum / 1MB), 1)
 Write-Host "[build] OK -> $Dist ($SizeMB MB)" -ForegroundColor Green
-[void](& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "scripts\sign.ps1" verify $Exe)
+$r = Get-AuthenticodeSignature -FilePath $Exe
+if ($r.SignerCertificate) {
+    Write-Host "[build] signed: $($r.SignerCertificate.Subject)"
+} else {
+    Write-Host "[build] NOT signed (install osslsigncode + create dev cert for self-sign)"
+}
 
 # 5) InnoSetup detection
 if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {

@@ -28,8 +28,13 @@ function Create-Cert {
 function Sign-File([string]$f) {
     $c = Get-Cert
     if (-not $c) { Write-Error "no cert found, run: sign.ps1 create"; exit 1 }
-    $r = Set-AuthenticodeSignature -FilePath $f -Certificate $c `
-        -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
+    # 先带时间戳; 时间戳服务器不可达(受限网络常见, 报 UnknownError)时降级为无时间戳自签
+    $r = Set-AuthenticodeSignature -FilePath $f -Certificate $c -HashAlgorithm SHA256 `
+        -TimestampServer http://timestamp.digicert.com
+    if ($r.Status -ne "Valid") {
+        Write-Output ("timestamped sign failed (" + $r.Status + "), retry without timestamp")
+        $r = Set-AuthenticodeSignature -FilePath $f -Certificate $c -HashAlgorithm SHA256
+    }
     Write-Output ("sign result: " + $r.Status)
 }
 
