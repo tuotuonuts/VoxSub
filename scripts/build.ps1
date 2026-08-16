@@ -25,13 +25,21 @@ if (-not $SkipTests) {
 }
 
 # 2) PyInstaller onedir build (windowed GUI app)
+# 注意(2026-08-17 实测): 项目在 OneDrive 同步盘, PyInstaller `--clean` 删 build 目录
+# 会撞同步文件锁(PermissionError: build\VoxSub\localpycs)。解决: workpath 移到
+# %TEMP% (非 OneDrive), 彻底绕开锁; icon/specpath/dist 用绝对路径抗一步。
 $Dist = Join-Path $Root "dist\VoxSub"
 if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
+$Work = Join-Path $env:TEMP "VoxSub_pybuild"
+$Icon = Join-Path $Root "assets\icon.ico"
+$SpecDir = Join-Path $Root "build"
 Run-Checked "pyinstaller" {
     & ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --windowed `
         --name VoxSub `
-        --icon "assets\icon.ico" `
-        --add-data "assets;assets" `
+        --icon $Icon `
+        --distpath $Dist `
+        --workpath $Work `
+        --specpath $SpecDir `
         --collect-all sherpa_onnx `
         --collect-all soundcard `
         --collect-all onnxruntime `

@@ -14,8 +14,13 @@
 - [x] voxsub/ui/ 8 文件 (app/main_window/subtitle_overlay/settings/diagnostics/pipeline_client/config_store/theme)
 - [x] UI 诊断页"日志"页签: QPlainTextEdit 只读 + QTimer 1s 轮询 drain_events + 刷新/导出按钮 (tail_log_file)
 - [x] setup_logging(log_to_console=False) 在 voxsub/ui/app.py 入口最先执行 (打包版关控制台, 幂等)
-- [~] 回归: 全量 pytest 112 passed (含新增 test_logging_ui) —— 子代理完成汇报待收
-- [ ] headers 统一 + 最终 commit + LOGGING_TODO 收尾
+- [x] 全量回归: pytest 112 passed + 端到端不受影响
+- [x] 日志端到端验证: 文件落盘(46KB) + 内存队列命中 (真机)
+- [x] 撞名复查: GitHub 3同名/2同类, PyPI/NuGet 可用, 中文语幕干净 → 决策保留VoxSub+主打中文(发布前用户确认)
+- [x] RELEASE_NOTES + installer.iss 落盘
+- [x] build.ps1 加固: workpath 移 %TEMP% 绕开 OneDrive 锁 + 绝对路径 icon/spec
+- [x] 最新版 exe 重建+签名+冒烟: GUI 12s 无崩溃, 签名4证书链+时间戳, SHA256 BB21B36...8279D, 290MB
+- [ ] M9 收尾: InnoSetup 编译安装包(装 iscc) + 撞名最终确认 + 正式 OV 证书签名路线
 
 ---
 2026-08-17 翻译层子任务收尾 (voxsub/translate/ 六文件日志接入):
