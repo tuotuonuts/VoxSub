@@ -24,7 +24,7 @@
 - M4 翻译：Translator 接口三实现（opus / qwen / cloud），并发预取 + 结果缓存
 - M5 TTS：piper 集成，朗读开关，失败静默降级
 - M6 编排：A/B/C 三模式完整管道（含 ffmpeg 提轨、srt 导出）
-- M7 UI：PySide6 主窗 + 托盘 + 悬浮字幕窗 + 设置页
+- M7 UI：PySide6 + PySide6-Fluent-Widgets 1.11.3，**Soft Premium 风格**（见 DESIGN.md「UI 设计规范」）：主窗/托盘/字幕浮窗/设置页/诊断页，三档主题
 - M8 诊断：设备枚举计分 / 自检中心 / 模型下载器自愈
 - M9 发布：exe 安装包 + 模型分发 + RELEASE_NOTES
 

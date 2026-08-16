@@ -49,6 +49,7 @@
 5. 四层兼容防线：静态打包 / 装前体检 / 自检诊断中心 / 模型自愈（SHA256 + 断点续传，ModelScope 主源 + HF 备源）
 6. 模型与运行时数据不入 git（`%LOCALAPPDATA%\VoxSub\models`）
 7. 产品名：语幕 VoxSub（中英双名，需 M9 前做撞名查重）
+8. UI 风格（2026-08-17 用户选定）：**柔和高级感 Soft Premium**；三档主题（浅/深/跟随系统）；技术底座 QFluentWidgets 1.11.3（Fluent 设计语言、无边框窗、darkdetect 主题跟随）；详细令牌见 DESIGN.md「UI 设计规范」
 
 ## 下一步（当前唯一任务线）
 

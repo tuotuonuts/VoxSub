@@ -112,6 +112,43 @@ class UtteranceSegmenter:
 
 模型目录约定：`%LOCALAPPDATA%\VoxSub\models\{asr,tokens.txt|*encoder*.onnx|*decoder*.onnx|*joiner*.onnx, vad\silero_vad_v5.onnx}`；多精度并存时优先 int8。
 
+## UI 设计规范（M7，风格=柔和高级感 Soft Premium，已定）
+
+### 三旋钮（全程门控）
+- DESIGN_VARIANCE: 6（有设计感但不失控）· MOTION_INTENSITY: 4（微交互，无复杂编排）· VISUAL_DENSITY: 3（低信息密度，留白多）
+
+### Vibe 映射（三档主题，继承用户既有偏好）
+- 深色档：**暗 OLED 玻璃**（#050505 基底）——字幕工具常在暗环境使用，字幕醒目
+- 浅色档：**柔和结构主义**（银灰 #F7F7F5）——消费健康感，中性不腻
+- 跟随系统档：darkdetect 自动切换（QFluentWidgets 原生支持）
+
+### 设计令牌（禁 Inter/Roboto/Arial；禁紫蓝渐变背景；accent 仅 1 个）
+
+| Token | 深色档 | 浅色档 |
+|---|---|---|
+| bg base | #050505 | #F7F7F5 |
+| surface 分层 | #131313 / #1A1A1A | #FFFFFF / #F2F2F2 |
+| text 主/次 | #F2F2F2 / #9CA3AF | #1A1A1A / #6B7280 |
+| border | 白 8% 透明度 | 黑 8% 透明度 |
+| accent（teal，唯一） | #14B8A6 → 深梯度 #0D9488 | 同左 |
+| 语义色（低饱和） | 成功 #34D399 / 警告 #FBBF24 / 错误 #F87171 | 同左 |
+
+- 字体栈：主 `"Segoe UI Variable","Microsoft YaHei UI"`；数据 mono `"Cascadia Code"`；标题可负字距 -0.02em
+- 圆角分级：胶囊按钮全圆 / 卡片 12-16px / 输入框 10px / 弹窗 20px / **主壳 Double-Bezel 双层**（外壳 32px + ring + 内芯 24px inset 高光）
+- 间距：4px 基准刻度；卡片内 padding 20-28px；节距大（py-24 级）
+- 动效：QEasingCurve.OutCubic，时长 200-280ms（**>500ms 禁用**）；仅 animate opacity/pos
+- 图标：QFluentWidgets FluentIcons（禁 emoji 图标）
+
+### 组件清单（M7 验收依据）
+1. **主窗**：编辑式左右分栏（左=模式三卡片 A/B/C + 语言对 + 状态灯；右=实时字幕流列表）；底部胶囊 CTA「开始/停止」内嵌圆形箭头岛
+2. **字幕浮窗**：无边框置顶半透明；Double-Bezel 双层壳；双语两行（原文+译文）；可拖动；字号/透明度可调；历史滚动；模式切换不中断
+3. **托盘**：模式快捷切换、开机自启开关（QStandardPaths 启动项）、退出
+4. **设置页**（独立窗口）：模型档位（快档/质量档/云 API key）、语言对、TTS 开关、主题三档、设备路由（CPU/GPU/NPU 实测速度展示）
+5. **诊断页**：设备清单 + 自检结果卡（✅/⚠️/❌ + 一句话处置），一键导出一份纯文本报告
+
+### 状态全覆盖（每组件）
+默认 / hover / pressed / disabled / loading（拾音中转圈、推理中脉冲）/ selected；空状态（无字幕时引导文案）；错误态（设备失败提示换源）
+
 ## 数据与存储
 
 - 模型目录：`%LOCALAPPDATA%\VoxSub\models\{asr,vad,nmt,llm,tts}\`（含 manifest.json 记录 SHA256/版本）
