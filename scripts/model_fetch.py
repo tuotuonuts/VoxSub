@@ -48,7 +48,10 @@ def main(argv: list[str] | None = None) -> int:
               f"共 {summary['total_bytes'] / 1e6:.1f} MB, 清单: {mgr.manifest_path}")
         return 0
     if args.cmd == "fetch":
-        return 0 if mgr.fetch(args.name, args.url, args.sha256, args.mirror, args.dest) else 1
+        # ModelManager.fetch(rel, url, sha256, mirror) 无 dest 参数:
+        # 目标路径即 rel, --dest 为兼容旧 CLI 的同义词
+        rel = args.dest or args.name
+        return 0 if mgr.fetch(rel, args.url, args.sha256, args.mirror) else 1
     return 2
 
 
