@@ -11,6 +11,11 @@ from __future__ import annotations
 import json
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlparse
+
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("translate._http_client")
 
 
 class OpenAICompatError(RuntimeError):
@@ -52,6 +57,7 @@ def chat_completion(
 
     req = urlrequest.Request(endpoint, data=json.dumps(payload).encode("utf-8"),
                              headers=headers)
+    host = (urlparse(endpoint).hostname or "").lower() or "<unknown>"
     try:
         with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
             body = json.loads(resp.read().decode("utf-8"))
@@ -61,13 +67,21 @@ def chat_completion(
             detail = exc.read().decode("utf-8")[:300]
         except Exception:
             pass
+        # 只记状态码与域名; header/body 内容一律不落日志 (api_key 在 header 中)
+        logger.error("OpenAI 兼容端点非 2xx 响应: code=%s host=%s", exc.code, host)
         raise OpenAICompatError(f"HTTP {exc.code}: {detail}") from exc
     except urlerror.URLError as exc:
+        logger.exception("OpenAI 兼容端点网络错误: host=%s", host)
         raise OpenAICompatError(f"网络错误: {exc.reason}") from exc
     except (TimeoutError, OSError) as exc:
+        logger.exception("OpenAI 兼容端点超时/IO 错误: host=%s", host)
         raise OpenAICompatError(f"超时/IO: {exc}") from exc
+    except ValueError as exc:  # json.loads/decode 失败: 记日志后原样重抛, 不改变既有异常类型
+        logger.exception("OpenAI 兼容端点响应解析失败: host=%s", host)
+        raise
 
     try:
         return body["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
+        logger.exception("OpenAI 兼容端点响应结构异常: host=%s", host)
         raise OpenAICompatError(f"响应格式异常: {str(body)[:200]}") from exc

@@ -16,8 +16,12 @@ import os
 import threading
 from urllib.parse import urlparse
 
+from voxsub.logging_setup import get_logger
+
 from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
+
+logger = get_logger("translate.cloud")
 
 #: 允许的 OpenAI 兼容端点主机白名单 (安全边界)
 DEFAULT_ALLOWLIST = {
@@ -74,6 +78,9 @@ class CloudTranslator(Translator):
         if host in self._allowlist:
             endpoint = f"{self._base_url}/v1/chat/completions"
             return endpoint
+        # 只记 host/scheme, 不记完整 base_url (防止带 query 的 URL 泄漏)
+        logger.warning("云翻译端点拒绝: host=%s 不在白名单内 (scheme=%s), 不发起调用",
+                       host, parsed.scheme)
         raise TranslationError(
             f"端点基址 {self._base_url!r} 不在白名单 {sorted(self._allowlist)} 内, "
             f"拒绝云翻译。请只使用受信任的 OpenAI 兼容服务。")
@@ -95,6 +102,7 @@ class CloudTranslator(Translator):
         if not text:
             return ""
         if not self._api_key:
+            logger.debug("云翻译未配置 api_key, 按未就绪处理 (正常软降级)")
             raise TranslationError("云翻译未配置 DEEPSEEK_API_KEY")
         # 调用方未显式传超时时, 用构造时的实例超时(self._timeout)
         effective_timeout = timeout_ms if timeout_ms != 15000 else self._timeout
@@ -116,6 +124,10 @@ class CloudTranslator(Translator):
                     model=self._model, temperature=0.2,
                     timeout_sec=max(int(effective_timeout), 1) / 1000.0)
         except OpenAICompatError as exc:
+            # 只记 host 与 model; api_key 只在 Authorization header 中出现, 绝不落日志
+            logger.exception("云翻译 API 调用失败 (host=%s, model=%s)",
+                             (urlparse(self._base_url).hostname or "").lower(),
+                             self._model)
             raise TranslationError(str(exc)) from exc
         return out
 

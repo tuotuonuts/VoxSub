@@ -18,11 +18,17 @@ from __future__ import annotations
 
 from typing import Callable
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.pipeline_client")
+
 try:  # M6 就绪后可 import；未就绪时走 stub
     from voxsub.pipeline import Pipeline as _RealPipeline  # type: ignore[import-not-found]
     _REAL_PIPELINE_NAME = getattr(_RealPipeline, "__module__", "voxsub.pipeline")
     _HAS_PIPELINE = True
 except Exception:  # ModuleNotFoundError 等 —— M6 未实现
+    # 鸭子类型 stub 是设计内兜底 → debug 记录, 不当作真实失败
+    logger.debug("M6 真实 Pipeline 不可用, 启用鸭子类型 stub (UI 壳层联调)", exc_info=True)
     _RealPipeline = None  # type: ignore[assignment]
     _HAS_PIPELINE = False
 

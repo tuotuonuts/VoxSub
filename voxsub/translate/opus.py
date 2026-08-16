@@ -22,8 +22,12 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
+from voxsub.logging_setup import get_logger
+
 from .base import TranslationError, Translator
 from .tokenizer import UnigramTokenizer
+
+logger = get_logger("translate.opus")
 
 
 def _default_models_dir() -> Path:
@@ -105,6 +109,7 @@ class OpusFastTranslator(Translator):
         except TranslationError:
             raise
         except Exception as exc:  # ORT/形状/IO 异常一律包装为翻译失败
+            logger.exception("快档翻译推理异常, 包装为 TranslationError (pair=%s)", pair)
             raise TranslationError(f"opus 推理失败: {exc}") from exc
 
     def close(self) -> None:
@@ -125,19 +130,24 @@ class _OpusModel:
     def __init__(self, model_dir: Path, max_length: int = 128, threads: int = 2):
         self.dir = Path(model_dir)
         self._max_length = max_length
-        self._tok = UnigramTokenizer.from_file(self.dir / "tokenizer.json")
-        cfg = json.loads((self.dir / "config.json").read_text(encoding="utf-8"))
-        self._eos = cfg.get("eos_token_id", 0)
-        self._pad = cfg.get("pad_token_id", 65000)
-        self._decoder_start = cfg.get("decoder_start_token_id", 65000)
-        self._max_position = cfg.get("max_position_embeddings", 512)
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = threads
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self._enc = ort.InferenceSession(str(self.dir / "encoder_model_int8.onnx"),
-                                         sess_options=so, providers=["CPUExecutionProvider"])
-        self._dec = ort.InferenceSession(str(self.dir / "decoder_model_int8.onnx"),
-                                         sess_options=so, providers=["CPUExecutionProvider"])
+        try:
+            self._tok = UnigramTokenizer.from_file(self.dir / "tokenizer.json")
+            cfg = json.loads((self.dir / "config.json").read_text(encoding="utf-8"))
+            self._eos = cfg.get("eos_token_id", 0)
+            self._pad = cfg.get("pad_token_id", 65000)
+            self._decoder_start = cfg.get("decoder_start_token_id", 65000)
+            self._max_position = cfg.get("max_position_embeddings", 512)
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = threads
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self._enc = ort.InferenceSession(str(self.dir / "encoder_model_int8.onnx"),
+                                             sess_options=so, providers=["CPUExecutionProvider"])
+            self._dec = ort.InferenceSession(str(self.dir / "decoder_model_int8.onnx"),
+                                             sess_options=so, providers=["CPUExecutionProvider"])
+        except Exception:
+            # 模型加载失败: 记录根因后原样抛出, 由上层包装为 TranslationError
+            logger.exception("快档模型加载失败 (model_dir=%s)", self.dir)
+            raise
 
     # ------------------------------------------------------------------
     def translate_str(self, text: str, timeout_ms: int = 15000) -> str:

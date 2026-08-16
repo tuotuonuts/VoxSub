@@ -25,6 +25,10 @@ from typing import Callable
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import Theme, qconfig, setTheme, setThemeColor
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.theme")
+
 _SYSTEM_HOOK_CONNECTED = False  # qconfig.themeChanged 只连接一次（避免重复连接告警）
 
 # ---------------------------------------------------------------------------
@@ -304,6 +308,7 @@ def resolve_theme_name(theme: AppTheme, detector: Callable[[], str | None] | Non
 
             detector = darkdetect.theme
         except Exception:  # pragma: no cover - 依赖缺失兜底
+            logger.debug("darkdetect 不可用, 回落浅色", exc_info=True)
             detector = lambda: "Light"
     current = detector()
     if isinstance(current, str) and current.lower().startswith("dark"):

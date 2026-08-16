@@ -31,6 +31,9 @@ from PySide6.QtWidgets import (
 
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.theme import DESIGN_TOKENS
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.subtitle_overlay")
 
 # 历史上限（内存滚动，不落盘 —— DESIGN.md：字幕历史不做自动落盘）
 _HISTORY_MAX = 200

@@ -15,6 +15,10 @@ import threading
 import time
 from typing import Callable, Optional
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("translate.prefetch")
+
 
 class PrefetchEngine:
     """按句子碎片累积 + 防抖触发翻译预热的协调器。
@@ -93,6 +97,9 @@ class PrefetchEngine:
         try:
             translation = self._translate(text, src, dst)
         except Exception:
+            # 软降级: 字幕不中断, 原文+标记兜底; 属正常降级路径故用 debug 级别
+            logger.debug("终稿翻译失败, 降级为 '原文+[翻译失败]' (src=%s dst=%s)",
+                         src, dst, exc_info=True)
             translation = text + " [翻译失败]"
         with self._lock:
             self._last_final_at = time.monotonic()
@@ -102,7 +109,11 @@ class PrefetchEngine:
 
     def translate_now(self, text: str, src: str = "zh", dst: str = "en") -> str:
         """绕过防抖立即翻译 (C 模式批量 / flush)。"""
-        return self._translate(text, src, dst)
+        try:
+            return self._translate(text, src, dst)
+        except Exception:
+            logger.exception("translate_now 立即翻译失败 (src=%s dst=%s)", src, dst)
+            raise
 
     def reset(self) -> None:
         """整段会话结束复位去重状态 (新句子流)。"""

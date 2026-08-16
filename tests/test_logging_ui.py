@@ -1,0 +1,172 @@
+"""语幕 VoxSub —— 统一日志基建 + 诊断页「日志」页签 测试（可观测性改造 P0）。
+
+覆盖：
+- logging_setup：setup_logging 幂等（不重复挂 handler） / drain_events 能取到
+  刚 logger.info 的事件（字段 ts/level/name/message 齐备） / tail_log_file 行为
+- diagnostics_window「日志」页签 offscreen 冒烟：QPlainTextEdit 存在、只读、
+  可填充文本不崩；轮询增量追加（指纹去重）；刷新 / 导出按钮存在；timer 配置正确
+
+运行: cd VoxSub && unset PYTHONPATH PYTHONHOME && .venv/Scripts/python.exe -m pytest tests/test_logging_ui.py -v
+
+注意：本文件不触碰真实 %LOCALAPPDATA% 日志文件的写入（tail 相关用例通过
+monkeypatch logging_setup._log_dir 指向 tmp 目录）；日志基建的全局初始化由
+其它模块 import 时自然发生（幂等，与用例顺序无关）。
+"""
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+# 无头运行：必须在任何 Qt 构造前设置（QApplication 读取该变量）
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import pytest  # noqa: E402
+
+import voxsub.logging_setup as logging_setup  # noqa: E402
+from voxsub.logging_setup import drain_events, get_logger, setup_logging, tail_log_file  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# 共享 QApplication（模块级单例，offscreen）
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+# ===========================================================================
+# 1. logging_setup 单测
+# ===========================================================================
+class TestSetupLogging:
+    def test_setup_logging_is_idempotent(self):
+        """重复 setup_logging 不重复挂 handler（幂等）。"""
+        before = list(logging.getLogger("voxsub").handlers)
+        setup_logging()  # 已初始化则应直接返回
+        setup_logging("DEBUG", log_to_console=True)
+        after = list(logging.getLogger("voxsub").handlers)
+        assert logging_setup._HANDLERS_INITIALIZED  # noqa: SLF001
+        assert len(after) == len(before)
+        assert after == before  # 同一批 handler 对象, 无重复挂载
+
+    def test_drain_events_contains_just_logged_info(self):
+        """drain_events 能取到刚 logger.info 的事件, 字段齐备。"""
+        lg = get_logger("test.drain")
+        lg.info("drain 冒烟标记 %s", "msg-42")
+        evs = drain_events(200)
+        hit = [e for e in evs if e["name"] == "voxsub.test.drain" and "msg-42" in e["message"]]
+        assert hit, "刚 logger.info 的事件应能从 drain_events 取到"
+        last = hit[-1]
+        assert last["level"] == "INFO"
+        assert last["ts"]
+        assert last["message"] == "drain 冒烟标记 msg-42"
+
+    def test_drain_events_respects_limit(self):
+        """drain_events(limit) 至多返回 limit 条。"""
+        lg = get_logger("test.drain")
+        for i in range(5):
+            lg.warning("drain 限流测试 %d", i)
+        evs = drain_events(3)
+        assert len(evs) <= 3
+        assert evs[-1]["message"].endswith("4")  # 最新一条在最末
+
+    def test_get_logger_scoped_under_voxsub(self):
+        assert get_logger("ui.xyz").name == "voxsub.ui.xyz"
+
+
+class TestTailLogFile:
+    def test_missing_file_returns_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(logging_setup, "_log_dir", lambda: tmp_path / "no_such_dir")
+        assert tail_log_file(10) == ""
+
+    def test_reads_tail_lines(self, monkeypatch, tmp_path):
+        (tmp_path / "voxsub.log").write_text(
+            "line1\nline2\nline3\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(logging_setup, "_log_dir", lambda: tmp_path)
+        assert tail_log_file(2) == "line2\nline3\n"
+        assert tail_log_file(99) == "line1\nline2\nline3\n"
+
+    def test_unreadable_file_returns_message(self, monkeypatch, tmp_path):
+        # 用目录替代文件 → open 抛 OSError → 返回提示文案而非抛异常
+        monkeypatch.setattr(logging_setup, "_log_dir", lambda: tmp_path)
+        (tmp_path / "voxsub.log").mkdir()
+        assert tail_log_file(5).startswith("<读取日志失败")
+
+
+# ===========================================================================
+# 2. 诊断页「日志」页签 offscreen 冒烟
+# ===========================================================================
+class TestDiagnosticsLogTab:
+    def test_log_tab_widgets_and_fill(self, qapp):
+        from PySide6.QtWidgets import QPlainTextEdit, QPushButton
+
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        dw = DiagnosticsWindow(diagnostics_module=None)  # 跳过真实自检, 聚焦日志页签
+        try:
+            assert dw.tabs.count() == 2
+            assert dw.tabs.tabText(0) == "自检"
+            assert dw.tabs.tabText(1) == "日志"
+            edits = dw.findChildren(QPlainTextEdit)
+            assert len(edits) == 1
+            view = edits[0]
+            assert view.isReadOnly()
+            view.setPlainText("塞一段测试文本")  # 可填充, 不崩
+            assert view.toPlainText() == "塞一段测试文本"
+            btns = {b.text() for b in dw.findChildren(QPushButton)}
+            assert {"刷新", "导出日志", "导出报告 (txt)"} <= btns
+            # 1s 轮询 timer 已启动
+            assert dw.log_timer.isActive()
+            assert dw.log_timer.interval() == 1000
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_poll_appends_new_events(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            get_logger("test.diag").info("实时日志标记-1")
+            dw._poll_events()  # noqa: SLF001
+            assert "实时日志标记-1" in dw.log_view.toPlainText()
+            assert dw._last_seen is not None  # noqa: SLF001
+
+            get_logger("test.diag").info("实时日志标记-2")
+            dw._poll_events()  # noqa: SLF001
+            assert "实时日志标记-2" in dw.log_view.toPlainText()
+            assert "实时日志标记-1" in dw.log_view.toPlainText()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_refresh_reloads_and_keeps_placeholders(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            get_logger("test.diag").info("刷新前标记")
+            dw._refresh_logs()  # noqa: SLF001 —— 重读文件尾部, 不崩
+            assert isinstance(dw._last_seen, str) or dw._last_seen is None  # noqa: SLF001
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_format_helper_line_shape(self):
+        """行格式: "HH:MM:SS LEVEL [name] message"。"""
+        from voxsub.ui.diagnostics_window import _fmt_log_line, _strip_file_ts
+
+        line = _fmt_log_line({"ts": "2026-08-17 10:23:45", "level": "INFO", "name": "voxsub.a", "message": "hi"})
+        assert line.startswith("10:23:45 INFO")
+        assert "[voxsub.a]" in line and line.endswith("hi")
+        assert _strip_file_ts("2026-08-17 10:23:45 INFO     [voxsub.a] hi").startswith("10:23:45")
+        assert _strip_file_ts("普通无前缀行") == "普通无前缀行"

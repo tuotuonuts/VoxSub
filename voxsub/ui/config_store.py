@@ -11,6 +11,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.config_store")
+
 
 def _default_config_path() -> Path:
     local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -45,9 +49,10 @@ class ConfigStore:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     data.update({k: v for k, v in raw.items() if k in self.DEFAULTS})
-            except (json.JSONDecodeError, OSError):
-                # 损坏配置：保留默认值即可（不覆盖原文件，等用户下次保存）
-                pass
+            except (json.JSONDecodeError, OSError) as exc:
+                # 损坏配置：保留默认值即可（不覆盖原文件，等用户下次保存）；
+                # 设计内行为 → debug 记录, 不打断读取
+                logger.debug("配置读取失败(%s), 回落默认值", exc)
         return data
 
     def get(self, key: str, default: Any = None) -> Any:

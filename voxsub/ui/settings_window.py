@@ -25,6 +25,9 @@ from PySide6.QtWidgets import (
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.theme import AppTheme, DESIGN_TOKENS, load_theme
 from voxsub import __version__ as _PKG_VERSION
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.settings_window")
 
 
 class SettingsWindow(QWidget):

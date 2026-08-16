@@ -7,6 +7,12 @@
 
 职责：创建 QApplication → 读取配置 → 应用主题 → 主窗 + 字幕浮窗 + 托盘 → 事件循环。
 组件间以信号 / 回调松耦合（见各模块 docstring）。
+
+可观测性（P0）: 日志基建必须在导入任何其它 voxsub 模块之前初始化 —— 其它模块
+模块级的 get_logger() 会在首次调用时兜底 setup_logging()（默认开控制台），而本
+入口承担「打包版关闭控制台日志」职责，故 setup_logging(log_to_console=False)
+放在其它 voxsub 导入之前执行（setup_logging 幂等，先到先得；main() 内再幂等
+重设一次作保险丝）。
 """
 from __future__ import annotations
 
@@ -14,24 +20,43 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from voxsub.ui.config_store import ConfigStore
-from voxsub.ui.diagnostics_window import DiagnosticsWindow
-from voxsub.ui.icons import make_app_icon
-from voxsub.ui.main_window import MainWindow
-from voxsub.ui.settings_window import SettingsWindow
-from voxsub.ui.subtitle_overlay import SubtitleOverlay
-from voxsub.ui.theme import AppTheme, load_theme
-from voxsub.ui.tray import TrayIcon
+from voxsub import __version__ as _CORE_VERSION
+from voxsub.logging_setup import get_logger, setup_logging
+
+# ---------------------------------------------------------------------------
+# 可观测性初始化：必须在其它 voxsub 模块导入前（见模块 docstring）
+# 打包版关闭控制台日志, 只落文件 + 内存环形队列（诊断页"日志"页签的数据源）
+# ---------------------------------------------------------------------------
+setup_logging(log_to_console=False)
+
+# 模块级 logger：记录应用启动 / 退出等关键事件
+logger = get_logger("ui.app")
+
+from voxsub.ui import __version__ as _UI_VERSION  # noqa: E402
+from voxsub.ui.config_store import ConfigStore  # noqa: E402
+from voxsub.ui.diagnostics_window import DiagnosticsWindow  # noqa: E402
+from voxsub.ui.icons import make_app_icon  # noqa: E402
+from voxsub.ui.main_window import MainWindow  # noqa: E402
+from voxsub.ui.settings_window import SettingsWindow  # noqa: E402
+from voxsub.ui.subtitle_overlay import SubtitleOverlay  # noqa: E402
+from voxsub.ui.theme import AppTheme, load_theme  # noqa: E402
+from voxsub.ui.tray import TrayIcon  # noqa: E402
 
 
 def parse_theme(value: str) -> AppTheme:
     try:
         return AppTheme(value)
     except ValueError:
+        logger.debug("未知主题名 %r, 回落 SYSTEM", value)
         return AppTheme.SYSTEM
 
 
 def main(argv: list[str] | None = None) -> int:
+    # main() 最开头（建 QApplication 前）：幂等重设打包日志配置
+    # （正常情况下模块级已完成初始化，此处仅作直接调用 main() 时的保险丝）
+    setup_logging(log_to_console=False)
+    logger.info("应用启动: ui=%s core=%s argv=%r", _UI_VERSION, _CORE_VERSION, argv)
+
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("VoxSub")
     app.setApplicationDisplayName("语幕 VoxSub")
@@ -41,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     app._voxsub_quitting = False  # type: ignore[attr-defined]
 
     store = ConfigStore()
-    load_theme(app, parse_theme(store.get("theme", "system")))
+    theme = parse_theme(store.get("theme", "system"))
+    load_theme(app, theme)
+    logger.info("配置已加载, 主题=%s", theme.value)
 
     # -- 组件实例化（主窗 / 浮窗 / 设置 / 诊断 / 托盘）--
     win = MainWindow(store=store)
@@ -50,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings_win = SettingsWindow(store=store)
     diagnostics_win = DiagnosticsWindow()
+    logger.info("窗口组件已创建: 主窗 / 字幕浮窗 / 设置 / 诊断")
 
     tray = TrayIcon.create(make_app_icon(), win)
 
@@ -103,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     win.cta.clicked.connect(_sync_tray_state)
 
     win.show()
+    # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
+    app.aboutToQuit.connect(lambda: logger.info("应用退出"))
+    logger.info("事件循环开始")
     return app.exec()
 
 

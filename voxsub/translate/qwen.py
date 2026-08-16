@@ -23,8 +23,12 @@ import threading
 import time
 from pathlib import Path
 
+from voxsub.logging_setup import get_logger
+
 from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
+
+logger = get_logger("translate.qwen")
 
 
 def _default_models_dir() -> Path:
@@ -78,13 +82,19 @@ class QwenQualityTranslator(Translator):
                     return port
                 except OSError:
                     continue
+        logger.warning("端口 %s-%s 全被占用, 无法启动新 llama-server",
+                       self._start_port, self._start_port + 9)
         raise TranslationError(f"端口 {self._start_port}-{self._start_port + 9} 全被占用")
 
     def _spawn(self) -> None:
         if self._model_path is None or not self._model_path.exists():
+            logger.warning("质量档模型缺失, 拒绝 spawn: %s (请用 scripts/model_fetch.py 下载)",
+                           self._model_path)
             raise TranslationError(
                 f"质量档模型缺失: {self._model_path} (请用 scripts/model_fetch.py 下载)")
         if not self._server_exe.exists():
+            logger.warning("llama-server 缺失, 拒绝 spawn: %s (应含配套 DLL)",
+                           self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
         port = self._pick_free_port()
@@ -108,9 +118,11 @@ class QwenQualityTranslator(Translator):
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=flags)
         except OSError as exc:
+            logger.exception("llama-server 进程启动失败 (exe=%s)", self._server_exe)
             raise TranslationError(f"llama-server 启动失败: {exc}") from exc
         self._port = port
         self._endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+        logger.info("llama-server 已启动 (port=%s, pid=%s)", port, self._proc.pid)
         self._wait_ready(port)
 
     def _wait_ready(self, port: int, timeout: float = 60.0) -> None:
@@ -119,6 +131,8 @@ class QwenQualityTranslator(Translator):
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
+                logger.error("llama-server 进程提前退出 (port=%s, 退出码=%s)",
+                             port, self._proc.returncode)
                 raise TranslationError(
                     f"llama-server 进程提前退出, 退出码={self._proc.returncode}")
             try:
@@ -129,6 +143,7 @@ class QwenQualityTranslator(Translator):
             except Exception:
                 pass
             time.sleep(0.3)
+        logger.error("llama-server %.0fs 内未就绪 (port=%s)", timeout, port)
         raise TranslationError(f"llama-server 60s 内未就绪 (port {port})")
 
     def _ensure(self) -> str:
@@ -145,6 +160,8 @@ class QwenQualityTranslator(Translator):
                 if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
                     self.close()
                     self._spawn()
+                else:
+                    logger.debug("_ensure 竞态收敛: 并发线程已先行完成 spawn, 复用 endpoint")
         # 若 _spawn 抛错, 此处不会到达; endpoint 由 _spawn 赋值
         endpoint = self._endpoint
         assert endpoint is not None
@@ -176,18 +193,22 @@ class QwenQualityTranslator(Translator):
     def close(self) -> None:
         with self._lock:
             proc, self._proc = self._proc, None
+            port = self._port
             self._endpoint = None
             self._port = None
         if proc is not None:
+            logger.info("关闭质量档 llama-server (pid=%s, port=%s)", proc.pid, port)
             try:
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
+                    logger.warning("llama-server 5s 内未正常退出, 强制 kill (pid=%s)",
+                                   proc.pid)
                     proc.kill()
                     proc.wait(timeout=5)
             except Exception:
-                pass
+                logger.exception("关闭 llama-server 时异常 (pid=%s)", proc.pid)
 
     def health(self) -> str:
         if not self._model_path.exists():

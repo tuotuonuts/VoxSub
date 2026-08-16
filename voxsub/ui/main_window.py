@@ -36,6 +36,9 @@ from PySide6.QtWidgets import (
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.pipeline_client import get_pipeline
 from voxsub.ui.theme import DESIGN_TOKENS
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("ui.main_window")
 
 # ---------------------------------------------------------------------------
 # 模式元信息 + 纯函数（可单测）
@@ -520,7 +523,8 @@ class MainWindow(QWidget):
             self.pipeline.on_utterance(self._on_utterance)
             self.pipeline.on_status(self._on_status)
         except AttributeError:
-            pass  # 极端兜底：对象缺方法也不崩壳
+            # 鸭子类型兜底：对象缺方法也不崩壳（设计内行为 → debug）
+            logger.debug("Pipeline 缺少 on_utterance/on_status, 跳过订阅 (stub 联调期正常)")
 
     # -- 状态切换 -----------------------------------------------------------
     def set_mode(self, mode: str) -> None:
@@ -531,7 +535,7 @@ class MainWindow(QWidget):
         try:
             self.pipeline.set_mode(norm)
         except AttributeError:
-            pass
+            logger.debug("Pipeline 缺少 set_mode, 跳过 (stub 联调期正常)")
         self._store.set("mode", norm)
 
     def current_mode(self) -> str:
@@ -573,7 +577,7 @@ class MainWindow(QWidget):
                 self.pipeline.start()
                 self.cta.set_running(True)
         except AttributeError:
-            pass
+            logger.debug("Pipeline 缺少 start/stop/is_running, 跳过 (stub 联调期正常)")
 
     def _on_utterance(self, src: str, dst: str) -> None:
         """(原文, 译文) → 字幕流 + 悬浮窗（若注入）。"""
@@ -582,7 +586,7 @@ class MainWindow(QWidget):
             try:
                 self._overlay.set_subtitles(src, dst)
             except AttributeError:
-                pass
+                logger.debug("字幕浮窗缺少 set_subtitles, 跳过")
 
     def _on_status(self, text: str) -> None:
         self.status_light.set_status(text, self._current_theme_name())
@@ -596,6 +600,7 @@ class MainWindow(QWidget):
             theme = AppTheme(raw) if raw in ("light", "dark", "system") else AppTheme.SYSTEM
             return resolve_theme_name(theme)
         except Exception:
+            logger.debug("主题名解析失败, 回落 dark")
             return "dark"
 
     # -- 外部注入（app.py）--------------------------------------------------
@@ -614,3 +619,4 @@ class MainWindow(QWidget):
         ev.ignore()
         self.hide()
         self.status_light.text.setText("已最小化到托盘")
+        logger.debug("主窗关闭 → 隐藏至托盘 (未退出应用)")

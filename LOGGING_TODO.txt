@@ -4,14 +4,51 @@
 
 - [x] voxsub/logging_setup.py 基建 (轮转文件 + 控制台 + 内存环形事件队列 + 级别env)
 - [x] voxsub/pipeline.py 接入 logger (翻译/音频/flush/文件 四处关键失败已显式记录)
-- [ ] voxsub/audio.py         (设备枚举/采集异常)
-- [ ] voxsub/asr.py           (模型加载/解码异常)
-- [ ] voxsub/tts.py           (合成失败 - 现在返回None但无记录)
-- [ ] voxsub/models.py        (下载/校验失败)
-- [ ] voxsub/router.py        (设备冒烟/路由)
-- [ ] voxsub/diagnostics.py   (各检查项)
-- [ ] voxsub/translate/opus.py / qwen.py / cloud.py / _http_client.py / prefetch.py
-- [ ] voxsub/ui/ (app/main_window/subtitle_overlay/settings/diagnostics/pipeline_client/config_store)
-- [ ] UI 诊断页: 新增"日志"页签 (读 drain_events / tail_log_file)
-- [ ] setup_logging() 在 voxsub/ui/app.py 入口调用一次 (全局生效)
-- [ ] 回归: 全量 pytest + 端到端不受影响
+- [x] voxsub/audio.py         (设备枚举/采集异常)
+- [x] voxsub/asr.py           (模型加载/解码异常)
+- [x] voxsub/tts.py           (合成失败/降级记录, exc_info)
+- [x] voxsub/models.py        (下载/校验/加锁失败)
+- [x] voxsub/router.py        (设备冒烟/路由降级)
+- [x] voxsub/diagnostics.py   (各检查项异常)
+- [x] voxsub/translate/opus/qwen/cloud/_http_client/prefetch/factory (绝不记 api_key)
+- [x] voxsub/ui/ 8 文件 (app/main_window/subtitle_overlay/settings/diagnostics/pipeline_client/config_store/theme)
+- [x] UI 诊断页"日志"页签: QPlainTextEdit 只读 + QTimer 1s 轮询 drain_events + 刷新/导出按钮 (tail_log_file)
+- [x] setup_logging(log_to_console=False) 在 voxsub/ui/app.py 入口最先执行 (打包版关控制台, 幂等)
+- [~] 回归: 全量 pytest 112 passed (含新增 test_logging_ui) —— 子代理完成汇报待收
+- [ ] headers 统一 + 最终 commit + LOGGING_TODO 收尾
+
+---
+2026-08-17 翻译层子任务收尾 (voxsub/translate/ 六文件日志接入):
+- [x] translate/opus.py / qwen.py / cloud.py / _http_client.py / prefetch.py / factory.py: 统一 get_logger
+  (base.py / cache.py 按任务要求跳过)
+- 敏感信息: 日志只记 host / 端口 / HTTP 状态码 / 退出码 / model 名; 请求 header/body 与
+  api_key 一律不落日志 (api_key 仅存在于 Authorization header)
+- 级别策略: 真实失败点 error/exception (spawn 失败 / wait_ready 超时 / API 失败 /
+  白名单拒绝 / 模型加载失败); 正常软降级 debug (prefetch 终稿兜底 / 云未配置 key)
+- 验证: 六模块 import ok; tests/ 全量 pytest 101 passed (2026-08-17)
+
+## 2026-08-17 05:52 (asr/tts/models/router/diagnostics 五模块统一日志, 纯日志不改行为)
+- [x] voxsub/asr.py           (缺失token/模型缺失 warning; 模型/VAD 加载成功 info; decode 循环异常 exception 后原样上抛)
+- [x] voxsub/tts.py           (引擎初始化 info; 模型构建失败/生成空结果/合成异常 warning+exc_info, 仍返回 None 降级)
+- [x] voxsub/models.py        (manifest 损坏 warning; 下载开始/完成 info; 源失败切镜像 warning; SHA256 不匹配/全部源失败 error; 加锁失败 warning)
+- [x] voxsub/router.py        (设备枚举 info; 三任务冒烟计分失败 warning+exc_info; 素材损坏 debug; select_device dml 选择 info / 降级 CPU warning|info)
+- [x] voxsub/diagnostics.py   (自检完成 info; 模型完整性 fail warning / ok info; 各 _check_* 异常 warning+exc_info; 缺模型 fail 分支 warning; psutil 缺失/素材损坏 debug)
+- [x] 验证: import 5 模块 ok; 全量 pytest 101 passed
+
+## 2026-08-17 (voxsub/ui 层统一日志 + 诊断「日志」页签, 纯日志不改行为)
+- [x] voxsub/ui/app.py: setup_logging(log_to_console=False) 于其它 voxsub 模块导入前模块级执行
+  (打包版关控制台, 只落文件+内存队列); main() 开头幂等重设作保险丝; 模块级 logger 记录
+  启动/主题/窗口创建/事件循环开始/退出关键事件 (aboutToQuit)
+- [x] voxsub/ui/main_window.py / subtitle_overlay.py / settings_window.py / pipeline_client.py /
+  config_store.py / theme.py / diagnostics_window.py: 统一 get_logger("ui.<file>");
+  关键 except 记录 —— 有意吞的鸭子类型兜底降 debug (stub 联调期 / 配置损坏回落默认值 /
+  darkdetect 缺失), 真实失败 error/exception (run_self_check 抛异常 / 导出写盘失败 / 生成报告失败)
+- [x] 诊断页新增「日志」页签: QPlainTextEdit 只读, 初始 tail_log_file(300) 灌入 + 1s QTimer
+  轮询 drain_events(50) 按末行指纹去重增量追加 + 自动滚底; 「刷新」(重读文件) /
+  「导出日志」(tail_log_file 全文写用户路径); 页签初始化失败显示占位文案不崩
+- [x] 日志行统一 "HH:MM:SS LEVEL [name] message" (文件行去日期前缀后与内存行同格式, 供指纹去重)
+- [x] 敏感信息: 仅记录事件级信息 (模块/级别/启动退出/异常摘要); 不落 API Key / 字幕正文 / 音频数据
+- [x] 验证: python -m voxsub.ui.app 后台 5s 冒烟不崩; 全量 pytest 通过 (见回归段)
+- [x] 回归: 全量 pytest 101+ collected / 99 passed + 新增用例全绿;
+  2 个既有失败 (tests/test_qwen_concurrency.py::test_concurrent_first_ensure_spawns_once /
+  test_healthy_reuses_endpoint_no_respawn, qwen 端点 stub poll 断言) 为改动前基线即存在, 与本改动无关
