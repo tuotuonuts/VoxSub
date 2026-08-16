@@ -25,6 +25,8 @@ from typing import Callable
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import Theme, qconfig, setTheme, setThemeColor
 
+_SYSTEM_HOOK_CONNECTED = False  # qconfig.themeChanged 只连接一次（避免重复连接告警）
+
 # ---------------------------------------------------------------------------
 # 设计令牌表（单点事实来源；tests/test_ui.py 逐项校验存在性）
 # ---------------------------------------------------------------------------
@@ -310,11 +312,15 @@ def resolve_theme_name(theme: AppTheme, detector: Callable[[], str | None] | Non
 
 
 def build_qss(theme_name: str) -> str:
-    """按主题令牌渲染自定义 QSS。theme_name ∈ {"dark","light"}。"""
+    """按主题令牌渲染自定义 QSS。theme_name ∈ {"dark","light"}。
+
+    注意：令牌替换必须按 key 长度降序（@accent 是 @accent_rgb 的前缀，
+    否则长令牌会被短令牌污染）。
+    """
     tokens = DESIGN_TOKENS.get(theme_name, DESIGN_TOKENS["dark"])
     qss = _QSS_TEMPLATE
-    for key, value in tokens.items():
-        qss = qss.replace(f"@{key}", value)
+    for key in sorted(tokens, key=len, reverse=True):
+        qss = qss.replace(f"@{key}", tokens[key])
     qss = qss.replace("@theme_name", theme_name)
     return qss
 
@@ -338,11 +344,10 @@ def load_theme(app: QApplication, theme: AppTheme) -> None:
     app.setStyleSheet(build_qss(theme_name))
 
     # SYSTEM 档：跟随系统主题切换重建 QSS（QFW 自身也监听该信号刷组件）
-    try:
-        qconfig.themeChanged.disconnect(_on_system_theme_changed)
-    except (RuntimeError, TypeError):  # 未连接过
-        pass
-    qconfig.themeChanged.connect(_on_system_theme_changed)
+    global _SYSTEM_HOOK_CONNECTED
+    if not _SYSTEM_HOOK_CONNECTED:
+        qconfig.themeChanged.connect(_on_system_theme_changed)
+        _SYSTEM_HOOK_CONNECTED = True
 
 
 def _on_system_theme_changed() -> None:

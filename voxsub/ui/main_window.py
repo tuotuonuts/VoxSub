@@ -47,7 +47,10 @@ MODE_INFO: dict[str, dict[str, str]] = {
 }
 MODE_ORDER = ("a", "b", "c")
 
+# 语言对（value, 显示标签）—— QFW ComboBox 用文本定位，不依赖 itemData
 LANG_PAIRS = [("zh-en", "中 → 英"), ("en-zh", "英 → 中")]
+_LANG_LABEL_TO_VALUE = {label: value for value, label in LANG_PAIRS}
+_LANG_VALUE_TO_LABEL = {value: label for value, label in LANG_PAIRS}
 
 STATUS_STYLES: dict[str, dict[str, str]] = {
     # 状态 → (灯色 token, 文本)
@@ -484,7 +487,7 @@ class MainWindow(QWidget):
         self.lang_combo.setObjectName("langCombo")
         self.lang_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         for value, label in LANG_PAIRS:
-            self.lang_combo.addItem(label, value)
+            self.lang_combo.addItem(label)
         self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
         lay.addWidget(self.lang_combo)
 
@@ -541,9 +544,10 @@ class MainWindow(QWidget):
         return nxt
 
     def set_lang_pair(self, value: str) -> None:
-        if value not in dict(LANG_PAIRS):
+        if value not in _LANG_VALUE_TO_LABEL:
             value = "zh-en"
-        idx = self.lang_combo.findData(value)
+        label = _LANG_VALUE_TO_LABEL[value]
+        idx = self.lang_combo.findText(label)
         if idx >= 0 and self.lang_combo.currentIndex() != idx:
             self.lang_combo.blockSignals(True)
             self.lang_combo.setCurrentIndex(idx)
@@ -551,8 +555,13 @@ class MainWindow(QWidget):
         self._lang_pair = value
         self._store.set("lang_pair", value)
 
+    def current_lang_pair(self) -> str:
+        """当前语言对 value（供托盘 / 测试 / M6 集成读取）。"""
+        label = self.lang_combo.currentText()
+        return _LANG_LABEL_TO_VALUE.get(label, "zh-en")
+
     def _on_lang_changed(self, index: int) -> None:
-        self.set_lang_pair(self.lang_combo.itemData(index))
+        self.set_lang_pair(self.current_lang_pair())
 
     # -- 启停 ---------------------------------------------------------------
     def _toggle_run(self) -> None:

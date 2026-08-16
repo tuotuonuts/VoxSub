@@ -23,18 +23,27 @@ from PySide6.QtWidgets import (
 _STATUS_CHAR = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
 _STATUS_COLOR = {"ok": "#34D399", "warn": "#FBBF24", "fail": "#F87171"}
 
+#: 构造函数哨兵：默认自动探测 voxsub.diagnostics
+_AUTO = object()
+
 
 class DiagnosticsWindow(QWidget):
     """诊断页：设备清单 + 自检结果卡 + 导出报告。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        diagnostics_module: object = _AUTO,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("diagnosticsWindow")
         self.setWindowTitle("诊断 — 语幕 VoxSub")
         self.resize(680, 560)
-        self._module = None
         self._results: list[dict] = []
-        self._load_module()
+        if diagnostics_module is _AUTO:
+            self._load_module()
+        else:
+            self._module = diagnostics_module  # None → 占位分支（测试注入用）
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 16)
