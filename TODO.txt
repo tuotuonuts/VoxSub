@@ -27,6 +27,14 @@
 [x] sign.ps1 自签证书工具 + 证书已建(thumbprint 6D986D8D, CurrentUser 3年)
 [x] 全量 pytest 53 passed / 0 failed（含 M5/M8/M6）
 
+=== 2026-08-17 (模型资产全齐 + 质量档验证) ===
+[x] Qwen GGUF 完整下载: 1117.3MB SHA256 校验通过（6a1a2eb6...9407e）→ 模型库 413 文件 2441.8MB verify 全绿
+[x] llama-server 端到端翻译验证通过: Qwen2.5-1.5B-Q4 + tools/llama/llama-server.exe
+    - 中文→英文: "Today the weather is nice, so we go for a walk in the park."
+    - 性能: 0.69s/句 (prompt 304ms + 生成 379ms, 42 tok/s, CPU threads=4) —— 远超 2-5s 目标
+[x] 坑: git-bash 命令行中文被 GBK 转码 → llama-server 拒收 ill-formed UTF-8; 请求体必须走 UTF-8 文件 (--data @file)
+[~] M4 翻译层: 模块 7/9 完成, 测试阶段（GGUF 到位, qwen 可实测）
+
 === 2026-08-17 (并行开发中) ===
 [~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）—— 运行中
 [~] M7 UI 壳层子代理: voxsub/ui/（代码已落盘, 测试待收）—— 运行中
