@@ -112,6 +112,49 @@ class UtteranceSegmenter:
 
 模型目录约定：`%LOCALAPPDATA%\VoxSub\models\{asr,tokens.txt|*encoder*.onnx|*decoder*.onnx|*joiner*.onnx, vad\silero_vad_v5.onnx}`；多精度并存时优先 int8。
 
+## 翻译层契约（M4，细化版）
+
+### Translator 抽象（voxsub/translate/base.py）
+
+```python
+class Translator(ABC):
+    name: str                        # "opus-fast" | "qwen-quality" | "cloud"
+    langs: tuple[str, ...]           # 支持的语言代码
+    local: bool                      # True=离线可用
+
+    @abstractmethod
+    def translate(self, text: str, src_lang: str, dst_lang: str, *,
+                  timeout_ms: int = 15000) -> str: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+    def health(self) -> str: ...     # "ok" 或缺陷描述（用于诊断页展示）
+
+class OpusFastTranslator(Translator):        # 快档: OPUS-MT zh-en/en-zh, 目标 <0.5s/句
+class QwenQualityTranslator(Translator):     # 质量档: Qwen2.5-1.5B-Instruct ONNX(onnxruntime-genai), 目标 2-5s/句
+class CloudTranslator(Translator):           # 云: OpenAI 兼容端点(DEEPSEEK_API_KEY/BASE_URL 用户配置), 白名单 base_url
+
+class TranslatorFactory:
+    @staticmethod
+    def create(kind: str, config) -> Translator: ...
+    @staticmethod
+    def list_available() -> dict[str, bool]: ...   # 档位 → 模型/凭据就绪?
+```
+
+### 实时性机制（与 ASR 拼接的关键）
+
+- **PrefetchEngine**：ASR 部分文本到达即预热翻译（按句子碎片双路发送），整句结束后合并/修正；防抖 800ms；同一句只出一次终稿
+- **TranslationCache**：LRU，key=(norm_text, src, dst)，上限 2000 条；重复出现的字幕/短句零延迟
+- **失败降级**：单句失败重试 1 次 → 保留原文 + 字幕标记 `[翻译失败]`；连续 3 句失败 → 弹提示（网络/模型问题），不崩管道
+
+### 模型清单（下载 URL 由 M4 spike 确认后补全）
+
+| 档位 | 模型 | 目标位置 | 大小 | 下载源 |
+|---|---|---|---|---|
+| 快档 | OPUS-MT zh-en / en-zh（ctranslate2 或 oonnx） | models/nmt/ | ~100MB×2 | HF + ModelScope 镜像 |
+| 质量档 | Qwen2.5-1.5B-Instruct（Q4 ONNX） | models/llm/ | ~1GB | HF(Qwen 官方) + ModelScope |
+| 云 | 用户 OpenAI 兼容端点 | — | — | 用户配置 |
+
 ## UI 设计规范（M7，风格=柔和高级感 Soft Premium，已定）
 
 ### 三旋钮（全程门控）

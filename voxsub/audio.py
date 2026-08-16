@@ -120,24 +120,60 @@ class _SoundcardSource(AudioSource):
     record() 至多阻塞一块时长 (~几十 ms), 其它线程调 stop() 至多等这么久。
     """
 
-    def __init__(self, device: object, chunk_frames: int = CHUNK_FRAMES) -> None:
+    def __init__(self, device: object | None, chunk_frames: int = CHUNK_FRAMES,
+                 allow_failover: bool = False) -> None:
         self._device = device
         self._chunk_frames = int(chunk_frames)
+        self._allow_failover = allow_failover   # 默认设备打不开时自动换可用设备
         self._recorder = None            # soundcard _Recorder | None
         self._lock = threading.Lock()
+
+    def _make_recorder_for(self, device: object):
+        """为指定设备创建并启动 Recorder (16k 单声道; WASAPI 自动重采样)。"""
+        rec = device.recorder(
+            samplerate=self.sample_rate,
+            channels=1,
+            blocksize=self._chunk_frames,
+        )
+        rec.__enter__()  # Start capture (Recorder 是上下文管理器)
+        return rec
 
     # -- AudioSource 实现 --
     def start(self) -> None:
         with self._lock:
             if self._recorder is not None:
                 return  # 已启动, 幂等
-            rec = self._device.recorder(
-                samplerate=self.sample_rate,
-                channels=1,
-                blocksize=self._chunk_frames,
-            )
-            rec.__enter__()  # Start capture (Recorder 是上下文管理器)
-            self._recorder = rec
+            last_err: Exception | None = None
+            for dev in self._device_iter():
+                try:
+                    self._recorder = self._make_recorder_for(dev)
+                    self._device = dev
+                    return
+                except Exception as exc:  # 该设备不可用 (如 WAVEFORMATEX 旧格式)
+                    last_err = exc
+                    continue
+            raise RuntimeError(
+                f"无法打开任何音频输入设备 (共尝试 {self._candidate_count()} 个): {last_err}"
+            ) from last_err
+
+    def _device_iter(self):
+        """候选设备: 首选默认设备; 允许 failover 时依次尝试其它可用设备。"""
+        if self._device is not None:
+            yield self._device
+        if self._allow_failover:
+            for info in self._failover_candidates():
+                if info.device is not self._device:
+                    yield info.device
+
+    # 子类覆写: failover 候选列表 (list[AudioDeviceInfo])
+    def _failover_candidates(self) -> list:
+        return []
+
+    def _candidate_count(self) -> int:
+        n = 1 if self._device is not None else 0
+        if self._allow_failover:
+            n += len(self._failover_candidates())
+        return n
 
     def read_chunk(self) -> Optional[np.ndarray]:
         with self._lock:
@@ -182,25 +218,34 @@ class MicSource(_SoundcardSource):
     """默认麦克风采集源 (对话场景)。
 
     device 可传 AudioDeviceInfo.device 或 soundcard 麦克风对象;
-    缺省使用系统默认麦克风。
+    缺省使用系统默认麦克风。注意本机有 WAVEFORMATEX 旧格式麦克风
+    (soundcard 0.4.6 会断言拒绝), 若默认麦克风恰好打不开, 无参构造时
+    会自动回退到第一个可用的真实麦克风; 显式传 device 则失败即报错。
     """
 
     def __init__(self, device: object | None = None,
                  chunk_frames: int = CHUNK_FRAMES) -> None:
-        super().__init__(
-            device if device is not None else sc.default_microphone(), chunk_frames
-        )
+        if device is None:
+            device = sc.default_microphone()
+        super().__init__(device, chunk_frames, allow_failover=True)
+
+    def _failover_candidates(self) -> list:
+        return list_microphones()
 
 
 class LoopbackSource(_SoundcardSource):
     """系统声音采集源 (WASAPI loopback, 会议/网课"对方声音"场景)。
 
     device 可传 AudioDeviceInfo.device 或 soundcard 麦克风对象;
-    缺省时自动选择与系统默认扬声器对应的 loopback 端点。
+    缺省时自动选择与系统默认扬声器对应的 loopback 端点; 打不开时
+    回退到第一个可用的 loopback。显式传 device 则失败即报错。
     """
 
     def __init__(self, device: object | None = None,
                  chunk_frames: int = CHUNK_FRAMES) -> None:
-        super().__init__(
-            device if device is not None else _default_loopback_device(), chunk_frames
-        )
+        if device is None:
+            device = _default_loopback_device()
+        super().__init__(device, chunk_frames, allow_failover=True)
+
+    def _failover_candidates(self) -> list:
+        return list_loopbacks()

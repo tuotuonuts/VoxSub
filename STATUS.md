@@ -62,6 +62,7 @@
 
 ## 风险悬挂
 
-- loopback 兼容性（本机虚拟声卡多，spike 即验证）
-- onnxruntime-directml 与 sherpa-onnx 的版本兼容性（spike 验证）
+- loopback 兼容性（本机虚拟声卡多，spike 即验证）→ 已获源码级确认（isloopback 属性），M2 实现验证中
+- onnxruntime-directml 与 sherpa-onnx 的版本兼容性（spike 验证）→ 已通过
 - 模型下载源中国大陆可达性（M8 落地，ModelScope 主源）
+- **⚠️ 英文名撞名（2026-08-17 查重）：GitHub 存在两个同名同类项目 `sixiaolong1117/VoxSub`（Whisper 字幕工具）与 `yiifish/VoxSub`（离线字幕工具集）——M9 发布前必须复查并决策：保留 VoxSub 或更换英文名（中文名"语幕"暂未发现明显撞名）**

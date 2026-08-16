@@ -10,3 +10,31 @@
 [ ] M2: audio 模块（子代理）: AudioSource/MicSource/LoopbackSource + 枚举 + pytest
 [ ] M3: asr 模块（子代理）: StreamingASR/WindowVAD/UtteranceSegmenter + pytest（用 models/asr/test_wavs 真实语音验证）
 [ ] M2/M3 完成后: 主代理集成验收 + 自审门禁 + commit
+
+=== 2026-08-17 (M2 audio 子代理完成) ===
+[x] M2: voxsub/audio.py 完成 —— AudioDeviceInfo / list_microphones / list_loopbacks /
+    AudioSource(ABC) / MicSource / LoopbackSource / resample_16k 兜底
+[x] M2 pytest 12/12 全绿 (含 integration, 真机声卡): tests/test_audio.py
+[x] M2 loopback 闭环实测打通: 默认扬声器播 2s 440Hz 正弦 → 匹配端点 loopback
+    采到信号 (power≈0.097) → 停止播放后恢复静音 (<1e-3)
+[x] M2 解开 M1 BLOCKED 的 loopback 枚举问题 (soundcard 0.4.6 实测):
+    - loopback 名字=扬声器名, 本机 6 个全不含 "loopback" 字样 → 判定必须用
+      getattr(d, 'isloopback', False), 不能按名字过滤 (DESIGN.md 该条过时, 已在本
+      模块 docstring 注明)
+    - loopback 虚拟麦克风 id 与对应扬声器同 GUID ({0.0.0.00000000}.{GUID}),
+      真实麦克风为 {0.0.1.00000000}.{GUID}; 闭环匹配靠 id 相等
+[x] M2 其他坑:
+    - 本机真实麦克风 6 个 (12 是 6 真麦 + 6 loopback 的总数)
+    - 2 个 Comica 无线麦是 WAVEFORMATEX 旧格式, soundcard 0.4.6 断言拒绝;
+      默认麦克风恰好是其一 → MicSource 无参构造自动 failover 到首个可用麦
+    - pytest: 未知 marker 警告已通过 pytest.ini 注册 integration 解决;
+      loopback 偶发 "data discontinuity" 警告为 WASAPI 正常现象, 可忽略
+[ ] M3: asr 模块 (并行子代理进行中) — 完成后主代理集成验收
+=== 2026-08-17 (M3 完成 · asr 子代理) ===
+[x] M3: voxsub/asr.py 实现 StreamingASR / WindowVAD / UtteranceSegmenter (sherpa-onnx 1.13.5 新 API: from_transducer / VadModel.create / accept_waveform(sr,wav) / 模型路径一律 str)
+[x] M3: tests/test_asr.py 9 用例全绿, 全部真实模型 + test_wavs 真实中文语音: pytest tests/test_asr.py → 9 passed in 1.64s (TDD 先红: ModuleNotFoundError → 实现后绿)
+[x] M3: 整段识别样例 0.wav(10.05s)→"昨天是 MONDAY TODAYS TOMORROW是星期"; 1.wav→"这是第一种第二种叫呃"; 3.wav→"第一句是加了一般现在时"; 46.wav→"你好石刀多下"
+[x] M3: Segmenter 分句回调样例(480 样本块喂入): 1.wav→1 次"第二种叫呃"; 3.wav→1 次"就是加了一般现在时"; 0.wav(两句夹停顿)→自动切 2 次回调; 纯静音 0 回调; flush 强制回调 OK
+[!] 坑1: silero VAD 本机实际窗口 576 (非文档常见 512, 1.13.5 对齐所致) —— 切窗一律读 vad.window_size 属性, 绝不硬编码
+[!] 坑2: 流式 Segmenter 从首个语音窗口才开始建流, 句首 ≤1 窗 (36ms) 输入被丢弃, 分句文本比整段解码略短/略偏 (可接受, 句子级节奏)
+[!] 相邻(非 M3 域, 未触碰): tests/test_audio.py::test_mic_source_smoke 失败 — soundcard GetMixFormat wFormatTag==0xFFFE 断言 (M2 audio 域, 待 audio 子代理/主代理处理)
