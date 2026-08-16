@@ -477,7 +477,10 @@ class MainWindow(QWidget):
         pair_label = QLabel("语言对", panel)
         pair_label.setObjectName("sectionTitle")
         lay.addWidget(pair_label)
-        self.lang_combo = QComboBox(panel)
+        # QFluentWidgets ComboBox（随 QFW 主题自动着色，见 DESIGN 组件清单 #1）
+        from qfluentwidgets import ComboBox as FComboBox
+
+        self.lang_combo: QComboBox = FComboBox(panel)
         self.lang_combo.setObjectName("langCombo")
         self.lang_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         for value, label in LANG_PAIRS:
@@ -593,17 +596,12 @@ class MainWindow(QWidget):
 
     def closeEvent(self, ev) -> None:  # noqa: N802
         # 关窗默认隐藏到托盘（退出经由托盘菜单）；应用级退出由 app.py 置 flag
-        app = self.window().windowHandle()
-        _ = app
-        try:
-            from PySide6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
 
-            inst = QApplication.instance()
-            if inst is not None and getattr(inst, "_voxsub_quitting", False):
-                ev.accept()
-                return
-        except Exception:
-            pass
+        inst = QApplication.instance()
+        if inst is not None and getattr(inst, "_voxsub_quitting", False):
+            ev.accept()
+            return
         ev.ignore()
         self.hide()
         self.status_light.text.setText("已最小化到托盘")

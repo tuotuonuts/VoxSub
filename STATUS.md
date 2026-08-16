@@ -25,9 +25,12 @@
 - [x] M1 骨架 + spike 全绿：录音枚举 / Dml+CPU providers / sherpa ASR+VAD 冒烟（DirectML 生效）
 - [x] M2 audio 完成（子代理 + 主代理验收）：voxsub/audio.py；**loopback 闭环真机打通**（正弦播放→捕获 power≈0.097）；12 测试全绿
 - [x] M3 asr 完成：voxsub/asr.py（StreamingASR/WindowVAD/UtteranceSegmenter）；真实中文语音识别 + 自动分句；9 测试全绿
-- [x] 集成验收：**全量 pytest 21 passed / 0 failed**（含真机 integration）
-- [~] M4 翻译 / M5 TTS / M7 UI / M8 诊断：四子代理并行开发中（deleg_29f7cf30）
-- [ ] M6 Pipeline 编排（待 M2-M5 落地）→ 自审门禁 → M9 发布
+- [x] 集成验收：**全量 pytest 53 passed / 0 failed**（M2/M3/M5/M6/M8 + 真机 integration）
+- [x] M5 TTS 完成（子代理）：voxsub/tts.py，10 测试绿（模型采样率归一坑已处理）
+- [x] M6 Pipeline 完成（主代理）：三模式编排 + C 模式 srt 导出 + 翻译容错延迟注入；sign.ps1 自签工具已建
+- [x] M8 路由诊断完成（子代理）：router/diagnostics/models + 15 测试绿
+- [~] M4 翻译 / M7 UI：子代理收尾中（M7 代码已落盘）
+- [ ] M6↔UI 连线验证 → 自审门禁 → M9 发布（打包/签名/撞名）
 
 ## 环境事实（接手必知）
 

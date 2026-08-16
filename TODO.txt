@@ -19,14 +19,20 @@
 [x] 主代理集成验收: 全量 pytest 21 passed / 0 failed（含 integration; mic smoke 曾 1 次间歇失败, 真机波动非代码问题）
 [x] commit: 集成 M2/M3 代码 + 文书（64804d9 前 4 commit 已含代码; 本次验收后状态归位）
 
+=== 2026-08-17 (M5/M8 落盘+M6 主代理完成) ===
+[x] M5 TTS 模块: voxsub/tts.py(TTSEngine) + tests/test_tts.py（10 用例绿）
+    - 坑: 模型采样率随包而异(zh-aishell3=8k, en-ljspeech=22.05k)→统一重采样到 16k; samples 为 float64
+[x] M8 路由诊断: voxsub/router.py(枚举/冒烟计分/降级链) + diagnostics.py(六项自检) + models.py(模型管理) + 15 用例绿
+[x] M6 Pipeline 编排(主代理): voxsub/pipeline.py —— 实时线程模型(A/B) + C 模式离线识别 srt/vtt/txt 导出 + 翻译容错占位(延迟注入 M4) —— 7 用例绿
+[x] sign.ps1 自签证书工具 + 证书已建(thumbprint 6D986D8D, CurrentUser 3年)
+[x] 全量 pytest 53 passed / 0 failed（含 M5/M8/M6）
+
 === 2026-08-17 (并行开发中) ===
-[~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）
-[~] M5 TTS 子代理: voxsub/tts.py（sherpa-onnx OfflineTts + piper 模型）
-[~] M7 UI 壳层子代理: voxsub/ui/（PySide6 + QFluentWidgets Soft Premium）
-[~] M8 路由诊断子代理: voxsub/router.py + diagnostics.py + 模型管理模块化
-[ ] M6: Pipeline 三模式编排（等 M2-M5 全部落地后由主代理实现或派单）
-[ ] 自审门禁: requesting-code-review（M6 集成后统一跑）
-- [ ] M9: 打包分发（PyInstaller+InnoSetup + **代码签名规划: 内测自签名→正式OV证书→商店** + 撞名复查决策 + RELEASE_NOTES）
+[~] M4 翻译层子代理: voxsub/translate/（opus 快档 / qwen GGUF 质量档 / cloud / cache / prefetch / factory）—— 运行中
+[~] M7 UI 壳层子代理: voxsub/ui/（代码已落盘, 测试待收）—— 运行中
+[ ] M4/M7 完成后: 主代理全量验收 + M6↔UI 连线验证
+[ ] 自审门禁: requesting-code-review（全量集成后统一跑）
+[ ] M9: 打包分发（PyInstaller+InnoSetup + 撞名复查决策 + RELEASE_NOTES）
 === 2026-08-17 (M5 TTS 完成 · 子代理) ===
 [x] M5 TTS 模块: voxsub/tts.py + tests/test_tts.py（10 用例, 全量 pytest 46 passed / 0 failed）
     - 模型: vits-icefall-zh-aishell3.tar.bz2（k2-fsa/sherpa-onnx releases tts-models, 31.6MB, 原生 8kHz）

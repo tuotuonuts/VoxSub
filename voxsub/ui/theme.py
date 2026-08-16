@@ -224,6 +224,43 @@ QFrame#settingsCard {
 }
 QLabel#fieldLabel { font-size: 13px; color: @text_secondary; }
 
+/* ---- 单选按钮（Soft Premium 圆点）---- */
+QRadioButton {
+    color: @text_primary;
+    spacing: 10px;
+    padding: 2px 0;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 1px solid @text_secondary;
+    background: transparent;
+}
+QRadioButton::indicator:hover { border: 1px solid @accent; }
+QRadioButton::indicator:checked {
+    border: 4px solid rgba(@accent_rgb, 0.22);
+    background-color: @accent;
+}
+
+/* ---- Tab 页（设置/诊断）---- */
+QTabWidget::pane {
+    border: 1px solid @border;
+    border-radius: @radius_card;
+    background-color: @surface_1;
+    top: -1px;
+}
+QTabBar::tab {
+    padding: 9px 20px;
+    color: @text_secondary;
+    font-size: 13px;
+    border-top-left-radius: @radius_input;
+    border-top-right-radius: @radius_input;
+    background: transparent;
+}
+QTabBar::tab:selected { color: @accent; font-weight: 600; border-bottom: 2px solid @accent; }
+QTabBar::tab:hover:!selected { color: @text_primary; }
+
 /* ---- 弹窗 / 菜单 ---- */
 QMenu {
     background-color: @surface_2;
