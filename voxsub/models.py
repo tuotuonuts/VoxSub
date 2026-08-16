@@ -194,27 +194,56 @@ class ModelManager:
 
         Returns:
             True = 下载+登记成功 (manifest 条目 status="ready")。
+
+        并发安全: 获取 models/.fetch.lock 互斥锁后再下载。2026-08-17 实测踩坑:
+        两个进程并发 append 同一 .part 导致文件大小超限损坏 —— 多实例(大众用户
+        开两个窗口)必触发, 故锁为硬要求。非 Windows 平台降级为无锁。
         """
         self.models_dir.mkdir(parents=True, exist_ok=True)
         rel = rel.replace("\\", "/")
         dest = self.models_dir / rel
-        manifest = self.load_manifest()
-        files = manifest.setdefault("files", {})
 
-        ok = fetch_file(url, dest, expected_sha=sha256, mirror=mirror)
-        if not ok:
-            files[rel] = {"size": dest.stat().st_size if dest.exists() else 0,
-                          "sha256": sha256 or "", "mtime": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                          "url": url, "mirror": mirror, "status": "partial"}
+        try:
+            import msvcrt
+        except ImportError:  # pragma: no cover - 非 Windows
+            msvcrt = None  # type: ignore[assignment]
+
+        lock_fh = open(self.models_dir / ".fetch.lock", "w")
+        locked = False
+        if msvcrt is not None:
+            try:
+                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError:
+                lock_fh.close()
+                raise RuntimeError("另一个模型下载正在进行中，请稍后重试") from None
+
+        try:
+            manifest = self.load_manifest()
+            files = manifest.setdefault("files", {})
+
+            ok = fetch_file(url, dest, expected_sha=sha256, mirror=mirror)
+            if not ok:
+                files[rel] = {"size": dest.stat().st_size if dest.exists() else 0,
+                              "sha256": sha256 or "",
+                              "mtime": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                              "url": url, "mirror": mirror, "status": "partial"}
+                self.save_manifest(manifest)
+                return False
+
+            files[rel] = {"size": dest.stat().st_size, "sha256": sha256_of(dest),
+                          "mtime": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                          "url": url, "mirror": mirror, "status": "ready"}
             self.save_manifest(manifest)
-            return False
-
-        files[rel] = {"size": dest.stat().st_size, "sha256": sha256_of(dest),
-                      "mtime": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                      "url": url, "mirror": mirror, "status": "ready"}
-        self.save_manifest(manifest)
-        print(f"登记完成: {rel} -> {dest}")
-        return True
+            print(f"登记完成: {rel} -> {dest}")
+            return True
+        finally:
+            if locked:
+                try:
+                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[union-attr]
+                except OSError:
+                    pass
+            lock_fh.close()
 
     # -- verify --------------------------------------------------------------
 
