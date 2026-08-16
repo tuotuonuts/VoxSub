@@ -54,6 +54,64 @@ def select_device(task: str) -> DeviceInfo: ...   # task ∈ {asr, tts, translat
 def on_utterance(text: str, lang: str, is_final: bool) -> None: ...
 ```
 
+## audio / asr 模块契约（M2/M3，子代理实现基准）
+
+### audio（voxsub/audio.py）
+
+```python
+class AudioDeviceInfo(NamedTuple):
+    name: str
+    kind: str          # "mic" | "loopback"
+    device: object     # soundcard 设备对象
+
+def list_microphones(include_loopback: bool = True) -> list[AudioDeviceInfo]: ...
+def list_loopbacks() -> list[AudioDeviceInfo]: ...   # 从 include_loopback=True 的 mic 中按名字过滤
+
+class AudioSource(ABC):
+    sample_rate: int = 16000          # 统一 16k 输出
+    def start(self) -> None: ...
+    def read_chunk(self) -> np.ndarray | None   # float32 mono 16k 块, 停止后返回 None
+    def stop(self) -> None: ...
+    def close(self) -> None: ...
+
+class MicSource(AudioSource): ...        # 默认麦克风
+class LoopbackSource(AudioSource): ...   # 系统声音 (WASAPI loopback)
+```
+
+注意（soundcard 0.4.6 实测）：`all_speakers()` 无 `include_loopback` 参数；loopback 一律从 `all_microphones(include_loopback=True)` 获取，按设备名含 "loopback"（不区分大小写）识别；`Recorder(samplerate=16000)` 自动重采样。
+
+### asr（voxsub/asr.py）——已适配 sherpa-onnx 1.13.5（M1-spike 实测）
+
+```python
+class StreamingASR:
+    """包装 OnlineRecognizer.from_transducer; 模型路径一律 str"""
+    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 1): ...
+    def create_stream(self) -> object: ...
+    def feed(self, stream, samples: np.ndarray) -> None   # 内部 accept_waveform(16000, wav) —— 参数顺序 (sr, wav)!
+    def decode(self, stream) -> str                       # is_ready/decode_stream 循环, 返回当前结果
+    def get_result(self, stream) -> str: ...
+    def is_endpoint(self, stream) -> bool: ...
+    def reset(self, stream) -> None: ...
+
+class WindowVAD:
+    """包装 VadModel.create(VadModelConfig); 逐窗口喂入判断"""
+    def __init__(self, model_path: str, threshold: float = 0.5,
+                 min_silence: float = 0.5, min_speech: float = 0.25): ...
+    @property
+    def window_size(self) -> int: ...
+    def is_speech(self, chunk: np.ndarray) -> bool: ...
+    def reset(self) -> None: ...
+
+class UtteranceSegmenter:
+    """VAD+ASR 组装: 语音开始建流, 静音超阈值触发 on_utterance(final_text) 并重置流"""
+    def __init__(self, asr: StreamingASR, vad: WindowVAD,
+                 on_utterance: Callable[[str], None], min_silence_ms: int = 500): ...
+    def feed(self, samples: np.ndarray) -> None   # 任意长度 float32 mono 16k 块
+    def flush(self) -> None: ...                  # 强制结束当前语音段
+```
+
+模型目录约定：`%LOCALAPPDATA%\VoxSub\models\{asr,tokens.txt|*encoder*.onnx|*decoder*.onnx|*joiner*.onnx, vad\silero_vad_v5.onnx}`；多精度并存时优先 int8。
+
 ## 数据与存储
 
 - 模型目录：`%LOCALAPPDATA%\VoxSub\models\{asr,vad,nmt,llm,tts}\`（含 manifest.json 记录 SHA256/版本）

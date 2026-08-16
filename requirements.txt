@@ -1,9 +1,17 @@
-# 语幕 VoxSub - M1 核心依赖
-# 说明: onnxruntime-directml 同时提供 CPU EP 兜底, 不要与标准 onnxruntime 同装(包名冲突)
-# 后置里程碑: PySide6 (M7) / onnxruntime-genai (M4) 届时追加
+# 语幕 VoxSub - 依赖
+# 坑(2026-08 spike 实测):
+#  1) 勿装 argostranslate —— 它依赖标准 onnxruntime, 与 onnxruntime-directml 同名冲突(装了两个, 后装覆盖),
+#     且拖入 torch/spacy/stanza 数 GB 重型依赖。翻译快档(OPUS-MT) M4 改用 ctranslate2 直载 HF 模型。
+#  2) PYTHONPATH 污染: 本机 Hermes 向终端注入 PYTHONPATH 指向 hermes-agent venv,
+#     所有 python 命令必须前缀 `unset PYTHONPATH PYTHONHOME` 再调 .venv/Scripts/python.exe。
+#  3) 目录在 OneDrive 同步盘, 卸载/删除偶发"拒绝访问(os error 5)"锁, 失败后等 1-2s 重试。
 
 onnxruntime-directml
 sherpa-onnx
 soundcard
-argostranslate
 pytest
+
+# --- 后置里程碑 (届时追加) ---
+# PySide6 (M7)
+# onnxruntime-genai (M4 质量档翻译)
+# ctranslate2 (M4 快档翻译 OPUS-MT)

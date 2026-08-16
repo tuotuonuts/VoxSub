@@ -23,18 +23,22 @@
 
 - [x] 阶段0-2：REQUIREMENTS / PLAN / DESIGN 完成（commit `4421e64`）
 - [x] M1 骨架：git init(main) + venv(CPython 3.11.15) + requirements.txt
-- [~] M1 依赖安装：后台 `uv pip install` 进行中
-- [ ] M1-spike：录音设备枚举 / onnxruntime providers / sherpa 模型冒烟
-- [ ] M2 录音 → M3 ASR → M4 翻译 → M5 TTS → M6 编排 → M7 UI → M8 诊断 → M9 发布
+- [x] M1 spike 全绿：
+  - [x] 录音设备枚举 OK（12 输入设备：Comica 无线麦 ×2、网易虚拟、Dubbing AI、Steam Streaming、e2eSoft iVCam、Realtek、NVIDIA HD）
+  - [x] onnxruntime providers = **DmlExecutionProvider + CPUExecutionProvider**（DirectML 生效）
+  - [x] sherpa-onnx ASR+VAD 加载、create_stream / accept_waveform / decode 循环跑通
+  - [!] **BLOCKED: soundcard loopback 枚举不到**（include_loopback=True 无结果）→ M2 audio 子代理处理
+- [~] M2 audio 模块 + M3 asr 模块：**子代理并行开发中**
+- [ ] M4 翻译 → M5 TTS → M6 编排 → M7 UI → M8 诊断 → M9 发布
 
 ## 环境事实（接手必知）
 
-- 项目根：`D:\OneDrive\app_dve\VoxSub`（OneDrive 同步盘，git 正常工作）
-- venv：`.venv`（uv 创建）。装依赖：`uv pip install --python .venv/Scripts/python.exe -r requirements.txt`；激活：`.venv\Scripts\activate`
+- 项目根：`D:\OneDrive\app_dve\VoxSub`（OneDrive 同步盘——**偶发文件锁，报 os error 5 时等 1-2s 重试**）
+- venv：`.venv`（uv 创建，2026-08-17 因 argostranslate 冲突重建过一次）。装依赖：`uv pip install --python .venv/Scripts/python.exe <pkg>`
+- **关键坑：本机 Hermes 向终端注入 PYTHONPATH 指向 hermes-agent venv——所有 python 命令必须前缀 `unset PYTHONPATH PYTHONHOME` 再调 `.venv/Scripts/python.exe`，否则 import 会错位加载 hermes 的包**
 - git：main 分支；身份 `DeepFirstLoaf <rzha0212@student.monash.edu>`；未添加远端
-- 开发机：Win11 专业版 / i5-13600KF（无核显）/ RTX 4060 8GB / 32GB RAM —— **仅开发验证用，产品按大众 CPU 基准**（勿以 4060 为基准调参）
-- 本机**无 NPU**（曾探测到 gvinput/OrayIddDriver 等，均为远程控制软件虚拟设备）
-- 本机存在多个虚拟声卡（远程控制类）——loopback spike 的重点验证对象
+- 开发机：Win11 专业版 / i5-13600KF（无核显）/ RTX 4060 8GB / 32GB RAM —— **仅开发验证用，产品按大众 CPU 基准**
+- 本机无 NPU；存在大量虚拟声卡（远程控制/变声软件），loopback 兼容性是重点验证对象
 
 ## 关键决策记录（ADR 简版）
 

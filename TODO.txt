@@ -1,10 +1,12 @@
 === 2026-08-17 (立项) ===
 [x] REQUIREMENTS / PLAN / DESIGN / README / .gitignore 落盘
 [x] git init (main) + 初始 commit 4421e64
-[x] REQUIREMENTS.txt = M1 核心依赖清单
 [x] STATUS.md 项目状态书（交接单；里程碑后必更新，勿滞后）
-[ ] M1: uv venv + 依赖安装（后台 uv pip install 进行中，等 notify）
-[ ] M1-spike: 录音设备枚举（mic + loopback）
-[ ] M1-spike: onnxruntime providers 枚举（CPU/DirectML）
-[ ] M1-spike: sherpa ASR+VAD 模型加载 + 一次识别冒烟
-[ ] M2: audio 模块（双源采集 + 环形缓冲 + 16k 重采样）
+[x] M1: venv 重建 + 最小依赖集（sherpa-onnx 1.13.5 / onnxruntime-directml 1.24.4 / soundcard 0.4.6 / pytest）
+[x] M1-spike: 录音设备枚举 OK（12 输入设备；虚拟声卡多：网易/Dubbing/Steam/iVCam/Comica）
+[x] M1-spike: onnxruntime providers = [DmlExecutionProvider, CPUExecutionProvider]（DirectML 生效）
+[x] M1-spike: sherpa ASR+VAD 加载、create_stream/accept_waveform/decode 循环 OK
+[!] BLOCKED: soundcard 0.4.6 本机 include_loopback=True 枚举不到 loopback → M2 由 audio 子代理处理（读源码找法 / 换 pyaudiowpatch）
+[ ] M2: audio 模块（子代理）: AudioSource/MicSource/LoopbackSource + 枚举 + pytest
+[ ] M3: asr 模块（子代理）: StreamingASR/WindowVAD/UtteranceSegmenter + pytest（用 models/asr/test_wavs 真实语音验证）
+[ ] M2/M3 完成后: 主代理集成验收 + 自审门禁 + commit
