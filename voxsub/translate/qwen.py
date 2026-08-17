@@ -155,10 +155,12 @@ class QwenQualityTranslator(Translator):
         (每孤儿 ~1.5GB 模型驻留, 且耗尽 8080-8089 端口范围)。
         """
         if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
+            # close() 内部也拿 self._lock (threading.Lock 非可重入),
+            # 故必须在锁外调用, 否则首次冷启动死锁 (2026-08-17 冒烟实测卡死)
+            self.close()
             with self._lock:
                 # 锁内二次检查: 并发发起方可能已在等待时完成 spawn
                 if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
-                    self.close()
                     self._spawn()
                 else:
                     logger.debug("_ensure 竞态收敛: 并发线程已先行完成 spawn, 复用 endpoint")

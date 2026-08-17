@@ -105,3 +105,28 @@ def test_healthy_reuses_endpoint_no_respawn(tmp_path: Path, monkeypatch) -> None
     for _ in range(5):
         assert q._ensure() == q._endpoint
     assert n["val"] == 0  # 就绪时绝不重 spawn
+
+
+def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> None:
+    """回归: 首次冷启动 _ensure 不死锁 (2026-08-17 冒烟抓到)。
+
+    曾把 close() 放在 with self._lock 内调用, 而 close() 内部也拿同一把
+    非可重入锁 -> 死锁卡死。修复: close() 移到锁外。
+    """
+    q = _make_qwen(tmp_path)
+    # close() 需能容忍 _FakeProc (无真进程), 走快速路径
+    monkeypatch.setattr(QwenQualityTranslator, "close", lambda self: None)
+
+    spawned = {"n": 0}
+
+    def fake_spawn(self) -> None:
+        spawned["n"] += 1
+        self._proc = _FakeProc(1)
+        self._port = 9999
+        self._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+
+    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
+    # 冷启动(未就绪) -> _ensure 必须在超时内返回, 不死锁
+    endpoint = q._ensure()
+    assert endpoint == "http://127.0.0.1:9999/v1/chat/completions"
+    assert spawned["n"] == 1

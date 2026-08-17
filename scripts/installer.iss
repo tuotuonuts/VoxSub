@@ -22,7 +22,8 @@ DefaultDirName={autopf}\VoxSub
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
-OutputDir=..\..\Release          ; 正式版发布物统一输出到 D:\OneDrive\app_dve\Release (用户约定)
+; 正式版发布物统一输出到 D:\OneDrive\app_dve\Release (用户约定 2026-08-17)
+OutputDir=..\..\Release
 OutputBaseFilename=VoxSub-Setup
 Compression=lzma2
 SolidCompression=yes
