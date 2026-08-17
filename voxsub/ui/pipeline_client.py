@@ -45,26 +45,83 @@ class _PipelineStub:
         self._running = False
         self._utterance_cb: Callable[[str, str], None] | None = None
         self._status_cb: Callable[[str], None] | None = None
+        self._partial_cb: Callable[[str], None] | None = None
+        self.langs = ("zh", "en")
+        self.input_file = ""
+        self.tts_enabled = False
+        self.audio_devices = ("", "")
+        self.capture_process = (0, "")
+        self.translator = ("opus-fast", None)
+        self.asr_model_id = "asr-zipformer-bilingual-fast"
+        self.asr_tuning = {"profile": "auto"}
+        self.recording_enabled = False
+        self._paused = False
+        self.last_recording_path = None
 
     # -- 契约实现 ----------------------------------------------------------
     def start(self) -> None:
         if not self._running:
             self._running = True
+            self._paused = False
             self._emit_status("拾音中")
 
     def stop(self) -> None:
         if self._running:
             self._running = False
+            self._paused = False
             self._emit_status("待机")
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode if mode in ("a", "b", "c") else "a"
+
+    def set_langs(self, src: str, dst: str) -> None:
+        self.langs = (src, dst)
+
+    def set_input_file(self, path: str) -> None:
+        self.input_file = str(path)
+
+    def set_tts(self, enabled: bool) -> None:
+        self.tts_enabled = bool(enabled)
+
+    def set_audio_devices(self, mic_device_id: str = "", loopback_device_id: str = "") -> None:
+        self.audio_devices = (mic_device_id, loopback_device_id)
+
+    def set_capture_process(self, process_id: int = 0, window_title: str = "") -> None:
+        self.capture_process = (int(process_id), window_title)
+
+    def set_translator(self, kind: str, config=None) -> None:
+        self.translator = (kind, config)
+
+    def set_asr_model(self, model_id: str) -> None:
+        self.asr_model_id = str(model_id)
+
+    def set_asr_tuning(self, tuning: dict | None = None) -> None:
+        self.asr_tuning = dict(tuning or {})
+
+    def set_recording(self, enabled: bool, directory=None) -> None:
+        self.recording_enabled = bool(enabled)
+
+    def pause(self) -> None:
+        if self._running:
+            self._paused = True
+            self._emit_status("已暂停 · 点击继续恢复录音与翻译")
+
+    def resume(self) -> None:
+        if self._running:
+            self._paused = False
+            self._emit_status("拾音中")
+
+    def is_paused(self) -> bool:
+        return self._paused
 
     def on_utterance(self, cb: Callable[[str, str], None]) -> None:
         self._utterance_cb = cb
 
     def on_status(self, cb: Callable[[str], None]) -> None:
         self._status_cb = cb
+
+    def on_partial(self, cb: Callable[[str], None]) -> None:
+        self._partial_cb = cb
 
     def is_running(self) -> bool:
         return self._running

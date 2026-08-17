@@ -19,6 +19,9 @@ downloads/
 *.env
 config.local.json
 
+# 个人本地辅助脚本（可能包含通知账号配置，不公开）
+scripts/qq_notify.py
+
 # IDE / OS
 .idea/
 .vscode/

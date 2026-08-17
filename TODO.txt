@@ -54,6 +54,16 @@
 [ ] M4/M7 完成后: 主代理全量验收 + M6↔UI 连线验证
 [ ] 自审门禁: requesting-code-review（全量集成后统一跑）
 [ ] M9: 打包分发（PyInstaller+InnoSetup + 撞名复查决策 + RELEASE_NOTES）
+
+=== 2026-08-17 (v0.2 用户测试修复) ===
+[x] 修复采集源 start 异常静默退出；状态、traceback 与音频心跳进入应用内日志
+[x] B 模式默认匹配系统默认输出，不再误取列表第一个静音/虚拟端点
+[x] Pipeline 工作线程回调经 Qt Signal 桥接，字幕浮窗收到首句后自动显示
+[x] C 模式加入音视频选择器，ffmpeg 自动提取 16k mono PCM 并导出 SRT
+[x] 设置页加入麦克风、系统输出、指定应用/窗口选择并持久化
+[x] 按应用 WASAPI process loopback 真机双向验证：目标有声可捕获、其它进程有声被排除
+[x] 内置 DEBUG 开关 + 实时日志；外部文件锁不再阻止 App 启动/记录内存事件
+[x] 按 Hermes Soft Premium 6/4/3 重构主窗与设置卡片；实际 1120×720 截图修复 C 模式挤压
 === 2026-08-17 (M5 TTS 完成 · 子代理) ===
 [x] M5 TTS 模块: voxsub/tts.py + tests/test_tts.py（10 用例, 全量 pytest 46 passed / 0 failed）
     - 模型: vits-icefall-zh-aishell3.tar.bz2（k2-fsa/sherpa-onnx releases tts-models, 31.6MB, 原生 8kHz）
@@ -104,3 +114,50 @@
 [!] 偏差: QFW 1.11.3 无 FluentIcon.STOP / 无 FramelessWindow → CTA 圆箭头小岛
     QPainter 自绘(等价播放语义), 浮窗用 Qt.FramelessWindowHint+WA_TranslucentBackground;
     托盘开机自启仅占位接口(留 M9); 浮窗拖动=单击拖拽+双击锁定(见代码注释)
+
+=== 2026-08-18 (v0.3 用户实测修复 + 模型广场) ===
+[x] ASR/翻译拆为独立队列；停止/flush 单线程所有权，修复 sherpa 并发原生崩溃路径
+[x] Zipformer 混合精度 beam search、4.5s 硬切、360ms 局部字幕；50.21s 素材 RTF 0.028
+[x] 翻译输出污染校验+重试，拒绝 “Here's the translation” 和解释段落进入字幕
+[x] 模型广场：Fun-ASR-Nano 2512 / Qwen3-ASR 0.6B / Hy-MT2 1.8B+7B；质量排序与四级推荐
+[x] GitHub/Hugging Face + ModelScope 双源；自动测速、手选、断点、SHA256、安全解压、卸载保护
+[x] 硬件与运行时优先级统一为 独显 GPU → NPU → 核显 → CPU；不支持时可解释降级
+[x] 构建固定 llama.cpp b10470 CPU/Vulkan/OpenVINO 三后端及官方 SHA256
+[x] 修复 NPU 检测假阳性：`gvinput Device` 不再因包含字母 npu 被误判
+[x] 全量 pytest 140 passed / 3 skipped；开发版主窗与模型广场 Soft Premium 目检通过
+[ ] 发布前：真实下载并实测 Fun/Qwen3/Hy-MT2；在无独显 NPU 轻薄本验证后端；构建签名安装包
+
+=== 2026-08-18 (v0.3.1 Qwen 断句 / 录音 / 会话 / 浮窗) ===
+[x] 生成式 ASR 改为 VAD 自然分句；音频分段、识别、翻译三段解耦
+[x] 常规队列积压改为显式缓冲，取消静默丢块；10 分钟极端积压才安全停止并告警
+[x] 新增自动/响应/均衡/准确/自定义识别调优，7 个调优项全部附带非 AI 用户可读的 `i` 说明
+[x] 麦克风同传可选同时录制 WAV；开始 → 暂停/继续 → 结束并保存
+[x] 当前会话可保存 TXT/SRT/VTT 或清空；实时字幕文字可选中复制
+[x] 模型下载进度条隐藏内嵌百分比，保留下方详情数值
+[x] 修复浮窗字号失效；新增悬停字号、锁定穿透、主窗解锁与文字复制
+[x] 实际 Qwen3-ASR 0.6B INT8 素材验证：分段 12.02s + 5.04s，模型加载与两段识别无崩溃
+[x] 全量 pytest 148 passed / 3 skipped；开发版调优页与 `i` 说明弹窗实机目检通过
+[ ] 稍后单独讨论：云端 STT / 翻译配置拆分与端到端多模态实时翻译档
+[x] v0.3.1-beta 已构建、自签名并生成 SHA256；安装包已写入 `Release`
+[x] 发布流程新硬性规则：每次版本迭代都要同步打包、签名、校验并更新发布说明
+
+=== 2026-08-18 (v0.3.2 浮窗交互 / 调优事务 / 启停卡顿) ===
+[x] 锁定浮窗使用独立顶层悬停控制岛，主体保持鼠标穿透，原地可调字号/解锁
+[x] 重建浮窗字号工具条尺寸与持久化，增加无裁切回归
+[x] 断句停顿开放 50–5000ms，其余 VAD/单句/候选/token 参数同步扩宽
+[x] 识别调优改为显式保存/放弃；关窗放弃未保存草稿
+[x] 调优 `i` 改为鼠标悬停 tooltip，移除阻塞式系统弹窗
+[x] Pipeline 启动/停止/尾句冲刷改为后台操作；结束期间禁止保存和破坏性 UI 操作
+[x] 全量 pytest 153 passed / 3 skipped；compileall 与 diff-check 通过
+[x] 打包前真实 UI 点击验收：主窗/浮窗字号无裁切且生效，锁定后原地解锁，调优 50ms、保存/关窗放弃均通过
+[x] v0.3.2-beta 构建与打包后隔离配置 GUI 冒烟通过；安装包/主程序均自签名
+[x] Release 安装包 203.37 MiB；SHA256 1F480C61DEC75D0B7C5676961054F5EEC09C10198CBF84504D01E470D75B1F25
+
+=== 2026-08-18 (v0.3.3 浮窗真实字号 / 解锁穿透位) ===
+[x] 复现字号计数变化但字体度量不变：应用级 14px QSS 覆盖标签 setFont
+[x] 字幕标签改用局部字号 QSS；Windows 实测译文字体高度随 20→30 从 34px 增至 51px
+[x] 复现解锁后 WS_EX_TRANSPARENT 残留；调整清除顺序后 Qt/Win32 两层穿透位均恢复
+[x] 回归测试新增真实字体度量和解锁后窗口标志/鼠标属性断言
+[x] 全量回归 153 passed / 3 skipped；真实 Windows 鼠标解锁、点击字号与拖动验收通过
+[x] v0.3.3-beta 已打包并完成隔离配置成品 GUI 验收；安装包/主程序均自签名
+[x] Release 安装包 203.41 MiB；SHA256 A4C527FCF71D2A916E05F61DC32A5F763ED91328CEF110C0885EDCB5BC14309B

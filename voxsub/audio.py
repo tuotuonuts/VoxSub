@@ -27,6 +27,10 @@ import numpy as np
 
 import soundcard as sc
 
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("audio")
+
 #: 流水线统一采样率 (Hz)
 SAMPLE_RATE: int = 16000
 #: 单块帧数 (480 = 30ms @16k)。VAD 窗口 512 样本, 30ms 块粒度适中。
@@ -39,6 +43,11 @@ class AudioDeviceInfo(NamedTuple):
     name: str
     kind: str            # "mic" | "loopback"
     device: object       # soundcard _Microphone 设备对象
+
+    @property
+    def id(self) -> str:
+        """WASAPI 稳定端点 ID，供配置持久化；假设备回落为空串。"""
+        return str(getattr(self.device, "id", ""))
 
 
 def _enum_mics(include_loopback: bool) -> list:
@@ -126,6 +135,7 @@ class _SoundcardSource(AudioSource):
         self._chunk_frames = int(chunk_frames)
         self._allow_failover = allow_failover   # 默认设备打不开时自动换可用设备
         self._recorder = None            # soundcard _Recorder | None
+        self._fallback = None            # _PyAudioFallback | None
         self._lock = threading.Lock()
 
     def _make_recorder_for(self, device: object):
@@ -141,20 +151,49 @@ class _SoundcardSource(AudioSource):
     # -- AudioSource 实现 --
     def start(self) -> None:
         with self._lock:
-            if self._recorder is not None:
+            if self._recorder is not None or self._fallback is not None:
                 return  # 已启动, 幂等
             last_err: Exception | None = None
             for dev in self._device_iter():
                 try:
                     self._recorder = self._make_recorder_for(dev)
                     self._device = dev
+                    logger.info("音频设备已打开: backend=soundcard kind=%s name=%s id=%s rate=%d",
+                                self._kind(), getattr(dev, "name", "未知"),
+                                getattr(dev, "id", ""), self.sample_rate)
                     return
                 except Exception as exc:  # 该设备不可用 (如 WAVEFORMATEX 旧格式)
+                    logger.debug("soundcard 打开失败: kind=%s name=%s error=%s",
+                                 self._kind(), getattr(dev, "name", "未知"), exc,
+                                 exc_info=True)
                     last_err = exc
                     continue
+            # soundcard 对部分 WAVEFORMATEX/虚拟端点会断言或返回 E_INVALIDARG。
+            # PyAudioWPatch 使用 PortAudio 的 WASAPI 实现作第二后端，避免整条管线
+            # 因单一库的格式协商缺陷失效。
+            try:
+                fallback = _PyAudioFallback(
+                    target_name=getattr(self._device, "name", "") if self._device else "",
+                    loopback=self._kind() == "loopback",
+                    chunk_frames=self._chunk_frames,
+                    allow_other=self._allow_failover,
+                )
+                fallback.start()
+                self._fallback = fallback
+                logger.info("音频设备已打开: backend=pyaudiowpatch kind=%s name=%s rate=%d",
+                            self._kind(), fallback.device_name, fallback.native_rate)
+                return
+            except Exception as exc:
+                logger.debug("pyaudiowpatch 回退打开失败: kind=%s error=%s",
+                             self._kind(), exc, exc_info=True)
+                fallback_err = exc
             raise RuntimeError(
-                f"无法打开任何音频输入设备 (共尝试 {self._candidate_count()} 个): {last_err}"
-            ) from last_err
+                f"无法打开任何音频输入设备 (共尝试 {self._candidate_count()} 个): "
+                f"soundcard={last_err}; PyAudio WASAPI={fallback_err}"
+            ) from fallback_err
+
+    def _kind(self) -> str:
+        return "audio"
 
     def _device_iter(self):
         """候选设备: 首选默认设备; 允许 failover 时依次尝试其它可用设备。"""
@@ -177,6 +216,8 @@ class _SoundcardSource(AudioSource):
 
     def read_chunk(self) -> Optional[np.ndarray]:
         with self._lock:
+            if self._fallback is not None:
+                return self._fallback.read_chunk()
             if self._recorder is None:
                 return None  # 未启动或已停止
             data = self._recorder.record(self._chunk_frames)
@@ -185,6 +226,9 @@ class _SoundcardSource(AudioSource):
 
     def stop(self) -> None:
         with self._lock:
+            fallback, self._fallback = self._fallback, None
+            if fallback is not None:
+                fallback.stop()
             rec, self._recorder = self._recorder, None
             if rec is None:
                 return
@@ -196,6 +240,122 @@ class _SoundcardSource(AudioSource):
 
     def close(self) -> None:
         self.stop()
+
+    @property
+    def device_name(self) -> str:
+        if self._fallback is not None:
+            return self._fallback.device_name
+        return str(getattr(self._device, "name", "未知设备"))
+
+
+class _PyAudioFallback:
+    """PortAudio/WASAPI 备用采集后端。
+
+    原生采样率读取后在内存中转成 16k mono；这比强迫每个驱动接受 16k
+    单声道更兼容，尤其适用于 USB 麦克风和虚拟声卡。
+    """
+
+    def __init__(self, target_name: str, loopback: bool,
+                 chunk_frames: int = CHUNK_FRAMES, allow_other: bool = False) -> None:
+        self._target_name = target_name
+        self._loopback = loopback
+        self._chunk_frames = chunk_frames
+        self._allow_other = allow_other
+        self._pa = None
+        self._stream = None
+        self._channels = 1
+        self.native_rate = SAMPLE_RATE
+        self.device_name = target_name or "系统默认"
+
+    @staticmethod
+    def _norm_name(value: str) -> str:
+        return value.replace(" [Loopback]", "").strip().casefold()
+
+    @classmethod
+    def _name_matches(cls, candidate: str, wanted: str) -> bool:
+        """容忍 PortAudio 与 MMDevice 对同一端点使用略有不同的显示名。"""
+        candidate = cls._norm_name(candidate)
+        wanted = cls._norm_name(wanted)
+        return candidate == wanted or candidate in wanted or wanted in candidate
+
+    def start(self) -> None:
+        import pyaudiowpatch as pyaudio
+
+        pa = pyaudio.PyAudio()
+        self._pa = pa
+        host = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        host_index = host["index"]
+        candidates: list[dict] = []
+        for info in pa.get_device_info_generator():
+            if info.get("hostApi") != host_index or info.get("maxInputChannels", 0) <= 0:
+                continue
+            if bool(info.get("isLoopbackDevice")) != self._loopback:
+                continue
+            candidates.append(info)
+
+        wanted = self._norm_name(self._target_name)
+        if wanted:
+            candidates.sort(key=lambda d: not self._name_matches(str(d.get("name", "")), wanted))
+        else:
+            default_idx = (pa.get_default_wasapi_loopback()["index"] if self._loopback
+                           else host.get("defaultInputDevice", -1))
+            candidates.sort(key=lambda d: d.get("index") != default_idx)
+
+        last_err: Exception | None = None
+        for info in candidates:
+            # 显式选择设备时不悄悄换到名称不同的端点。
+            if wanted and not self._allow_other and not self._name_matches(
+                    str(info.get("name", "")), wanted):
+                continue
+            try:
+                rate = int(info.get("defaultSampleRate") or 48000)
+                channels = max(1, min(2, int(info.get("maxInputChannels") or 1)))
+                native_frames = max(1, int(round(self._chunk_frames * rate / SAMPLE_RATE)))
+                stream = pa.open(
+                    format=pyaudio.paFloat32,
+                    channels=channels,
+                    rate=rate,
+                    input=True,
+                    input_device_index=int(info["index"]),
+                    frames_per_buffer=native_frames,
+                )
+                self._stream = stream
+                self._channels = channels
+                self.native_rate = rate
+                self.device_name = str(info.get("name", "未知设备"))
+                return
+            except Exception as exc:
+                last_err = exc
+        self.stop()
+        raise RuntimeError(f"PyAudio WASAPI 无法打开目标设备: {last_err}") from last_err
+
+    def read_chunk(self) -> Optional[np.ndarray]:
+        if self._stream is None:
+            return None
+        native_frames = max(1, int(round(self._chunk_frames * self.native_rate / SAMPLE_RATE)))
+        raw = self._stream.read(native_frames, exception_on_overflow=False)
+        data = np.frombuffer(raw, dtype=np.float32)
+        if self._channels > 1:
+            data = data.reshape(-1, self._channels).mean(axis=1)
+        return resample_16k(data, self.native_rate)
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        pa, self._pa = self._pa, None
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                pass
 
 
 def _default_loopback_device() -> object:
@@ -225,12 +385,16 @@ class MicSource(_SoundcardSource):
 
     def __init__(self, device: object | None = None,
                  chunk_frames: int = CHUNK_FRAMES) -> None:
+        explicit = device is not None
         if device is None:
             device = sc.default_microphone()
-        super().__init__(device, chunk_frames, allow_failover=True)
+        super().__init__(device, chunk_frames, allow_failover=not explicit)
 
     def _failover_candidates(self) -> list:
         return list_microphones()
+
+    def _kind(self) -> str:
+        return "mic"
 
 
 class LoopbackSource(_SoundcardSource):
@@ -243,9 +407,13 @@ class LoopbackSource(_SoundcardSource):
 
     def __init__(self, device: object | None = None,
                  chunk_frames: int = CHUNK_FRAMES) -> None:
+        explicit = device is not None
         if device is None:
             device = _default_loopback_device()
-        super().__init__(device, chunk_frames, allow_failover=True)
+        super().__init__(device, chunk_frames, allow_failover=not explicit)
 
     def _failover_candidates(self) -> list:
         return list_loopbacks()
+
+    def _kind(self) -> str:
+        return "loopback"

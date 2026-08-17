@@ -11,10 +11,14 @@ Pipeline 依赖面仅限 DESIGN.md『Pipeline 契约（M6）』，经 pipeline_c
 """
 from __future__ import annotations
 
+import time
+import threading
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QObject,
     QPropertyAnimation,
     Qt,
     QTimer,
@@ -23,10 +27,13 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
+    QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -44,9 +51,9 @@ logger = get_logger("ui.main_window")
 # 模式元信息 + 纯函数（可单测）
 # ---------------------------------------------------------------------------
 MODE_INFO: dict[str, dict[str, str]] = {
-    "a": {"badge": "A", "title": "麦克风同传", "desc": "说一句翻一句，实时双语文幕"},
-    "b": {"badge": "B", "title": "系统声音字幕", "desc": "为系统播放的声音生成字幕"},
-    "c": {"badge": "C", "title": "文件字幕", "desc": "导入音视频，导出双语字幕"},
+    "a": {"badge": "A", "title": "麦克风同传", "desc": "选择麦克风，说完一句即生成双语字幕"},
+    "b": {"badge": "B", "title": "应用 / 系统声音", "desc": "隔离指定应用，或监听所选输出设备"},
+    "c": {"badge": "C", "title": "音视频字幕", "desc": "导入音频或视频，自动提音并导出 SRT"},
 }
 MODE_ORDER = ("a", "b", "c")
 
@@ -56,11 +63,25 @@ _LANG_LABEL_TO_VALUE = {label: value for value, label in LANG_PAIRS}
 _LANG_VALUE_TO_LABEL = {value: label for value, label in LANG_PAIRS}
 
 STATUS_STYLES: dict[str, dict[str, str]] = {
-    # 状态 → (灯色 token, 文本)
-    "待机": {"color": "neutral"},
-    "拾音中": {"color": "accent"},
-    "推理中": {"color": "warning"},
+    "idle": {"color": "neutral"},
+    "listening": {"color": "accent"},
+    "working": {"color": "warning"},
+    "success": {"color": "success"},
+    "error": {"color": "error"},
 }
+
+
+def _status_kind(status: str) -> str:
+    """把带设备名/进度详情的运行状态归一为少量视觉语义。"""
+    if status.startswith(("启动失败", "音频设备错误", "识别处理错误", "文件处理失败", "文件不存在")):
+        return "error"
+    if status.startswith(("完成", "已停止")):
+        return "success"
+    if status.startswith("拾音中"):
+        return "listening"
+    if status.startswith(("启动", "正在", "处理中", "翻译中", "推理中")):
+        return "working"
+    return "idle"
 
 
 def cycle_mode(current: str) -> str:
@@ -85,12 +106,13 @@ class ModeCard(QFrame):
         self.setObjectName("modeCard")
         self.setProperty("active", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(92)
+        self.setMinimumHeight(78)
+        self.setMaximumHeight(82)
 
         info = MODE_INFO[mode]
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(6)
+        lay.setContentsMargins(16, 10, 16, 10)
+        lay.setSpacing(4)
         top = QHBoxLayout()
         top.setSpacing(8)
         badge = QLabel(info["badge"], self)
@@ -129,7 +151,7 @@ class StatusLight(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(48)
+        self.setMinimumHeight(42)
         self._light_color = DESIGN_TOKENS["dark"]["neutral"]
         self._pulsing = False
         self._pulse_anim: QPropertyAnimation | None = None
@@ -146,20 +168,23 @@ class StatusLight(QWidget):
         self.dot.setFixedWidth(24)
         self.text = QLabel("待机", self)
         self.text.setObjectName("statusText")
+        self.text.setWordWrap(True)
         lay.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addWidget(self.text, 1, Qt.AlignmentFlag.AlignVCenter)
 
     def set_status(self, status: str, theme_name: str = "dark") -> None:
         """status ∈ {待机, 拾音中, 推理中}；推理中进入脉冲。"""
         self.text.setText(status)
-        mapping = STATUS_STYLES.get(status, STATUS_STYLES["待机"])
+        self.text.setToolTip(status)
+        kind = _status_kind(status)
+        mapping = STATUS_STYLES[kind]
         color_key = mapping["color"]
         color = DESIGN_TOKENS[theme_name].get(
             color_key, DESIGN_TOKENS["dark"][color_key]
         )
         self._light_color = color
         self.dot.setStyleSheet(f"color: {color}; font-size: 18px;")
-        self.set_pulsing(status == "推理中")
+        self.set_pulsing(kind == "working")
 
     def set_pulsing(self, pulsing: bool) -> None:
         if pulsing == self._pulsing:
@@ -217,6 +242,8 @@ class SubtitleList(QScrollArea):
         self.setWidget(self._container)
 
         self._rows: list[QFrame] = []
+        self._partial_row: QFrame | None = None
+        self._partial_src: QLabel | None = None
         self._empty_hint = QLabel("字幕将显示在这里 —— 选择模式后点击「开始」", self._container)
         self._empty_hint.setObjectName("emptyHint")
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -225,6 +252,7 @@ class SubtitleList(QScrollArea):
 
     def add_subtitle(self, src: str, dst: str) -> None:
         """追加一条双语字幕并自动滚底；超出 200 条丢弃最旧（内存滚动）。"""
+        self.clear_partial()
         self._empty_hint.hide()
         row = QFrame(self._container)
         row.setObjectName("subRow")
@@ -235,9 +263,19 @@ class SubtitleList(QScrollArea):
         src_label = QLabel(src, row)
         src_label.setObjectName("srcText")
         src_label.setWordWrap(True)
+        src_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        src_label.setCursor(Qt.CursorShape.IBeamCursor)
         dst_label = QLabel(dst, row)
         dst_label.setObjectName("dstText")
         dst_label.setWordWrap(True)
+        dst_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        dst_label.setCursor(Qt.CursorShape.IBeamCursor)
         box.addWidget(src_label)
         box.addWidget(dst_label)
         self._vbox.insertWidget(self._vbox.count() - 1, row)  # stretch 前插入
@@ -259,10 +297,54 @@ class SubtitleList(QScrollArea):
         # 自动滚底
         QTimer.singleShot(0, self._scroll_to_bottom)
 
+    def set_partial(self, src: str) -> None:
+        """显示/更新一条不进入历史记录的临时识别结果。"""
+        src = src.strip()
+        if not src:
+            self.clear_partial()
+            return
+        self._empty_hint.hide()
+        if self._partial_row is None:
+            row = QFrame(self._container)
+            row.setObjectName("subRow")
+            row.setProperty("partial", True)
+            box = QVBoxLayout(row)
+            box.setContentsMargins(14, 10, 14, 10)
+            box.setSpacing(4)
+            src_label = QLabel(src, row)
+            src_label.setObjectName("srcText")
+            src_label.setWordWrap(True)
+            src_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            src_label.setCursor(Qt.CursorShape.IBeamCursor)
+            hint = QLabel("识别中…", row)
+            hint.setObjectName("secondaryLabel")
+            box.addWidget(src_label)
+            box.addWidget(hint)
+            self._vbox.insertWidget(self._vbox.count() - 1, row)
+            self._partial_row = row
+            self._partial_src = src_label
+        elif self._partial_src is not None:
+            self._partial_src.setText(src)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def clear_partial(self) -> None:
+        row, self._partial_row = self._partial_row, None
+        self._partial_src = None
+        if row is not None:
+            row.setParent(None)
+            row.deleteLater()
+
     def count(self) -> int:
         return len(self._rows)
 
+    def set_empty_hint(self, text: str) -> None:
+        self._empty_hint.setText(text)
+
     def clear(self) -> None:
+        self.clear_partial()
         for row in self._rows:
             row.setParent(None)
             row.deleteLater()
@@ -291,16 +373,30 @@ class CapsuleCTA(QWidget):
         self.setObjectName("ctaButton")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(168, 46)
-        self._running = False
+        self._state = "idle"  # idle | starting | running | recording | paused | stopping
+        self._record_mode = False
         self._hovered = False
         self._pressed = False
 
     def set_running(self, running: bool) -> None:
-        self._running = bool(running)
+        self._state = "running" if running else "idle"
         self.update()
 
     def is_running(self) -> bool:
-        return self._running
+        return self._state != "idle"
+
+    def set_state(self, state: str) -> None:
+        self._state = state if state in {
+            "idle", "starting", "running", "recording", "paused", "stopping"
+        } else "idle"
+        self.update()
+
+    def state(self) -> str:
+        return self._state
+
+    def set_record_mode(self, enabled: bool) -> None:
+        self._record_mode = bool(enabled)
+        self.update()
 
     # -- 事件 ---------------------------------------------------------------
     def enterEvent(self, ev) -> None:  # noqa: N802
@@ -339,7 +435,8 @@ class CapsuleCTA(QWidget):
         # 胶囊底（暂停态用深色底 + accent 描边；运行态用 accent 实底）
         pill = QPainterPath()
         pill.addRoundedRect(1, 1, w - 2, h - 2, h / 2, h / 2)
-        if self._running:
+        active = self._state != "idle"
+        if active:
             base = accent_deep if self._pressed else accent
         else:
             base = QColor(
@@ -348,7 +445,7 @@ class CapsuleCTA(QWidget):
                 *self._parse_rgb(DESIGN_TOKENS["dark"]["surface_1"]), 235
             )
         p.fillPath(pill, base)
-        border = QColor("#14B8A6") if not self._running else QColor("#0D9488").lighter(120)
+        border = QColor("#14B8A6") if not active else QColor("#0D9488").lighter(120)
         p.setPen(QPen(border if self._hovered else QColor("#14B8A6"), 1.5))
         p.drawPath(pill)
 
@@ -360,12 +457,15 @@ class CapsuleCTA(QWidget):
         p.drawEllipse(int(cx - r), int(cy - r), int(r * 2), int(r * 2))
         # 岛内箭头：开始=右向三角 / 停止=圆角方块
         p.setBrush(QColor("#0D9488"))
-        if self._running:  # 停止
+        if self._state == "running":  # 停止
             s = 10
             path = QPainterPath()
             path.addRoundedRect(cx - s / 2, cy - s / 2, s, s, 2, 2)
             p.drawPath(path)
-        else:  # 播放三角（略右偏视觉居中）
+        elif self._state == "recording":  # 暂停
+            p.drawRoundedRect(int(cx - 6), int(cy - 8), 4, 16, 1, 1)
+            p.drawRoundedRect(int(cx + 2), int(cy - 8), 4, 16, 1, 1)
+        else:  # 开始 / 继续：播放三角（略右偏视觉居中）
             tri = QPainterPath()
             tri.moveTo(cx - 5, cy - 8)
             tri.lineTo(cx - 5, cy + 8)
@@ -374,10 +474,17 @@ class CapsuleCTA(QWidget):
             p.drawPath(tri)
 
         # 文字
-        p.setPen(Qt.GlobalColor.white if self._running else QColor("#E6FFFFFF"))
+        p.setPen(Qt.GlobalColor.white if active else QColor("#E6FFFFFF"))
         f = QFont("Microsoft YaHei UI", 13, QFont.Weight.DemiBold)
         p.setFont(f)
-        text = "停止" if self._running else "开始"
+        text = {
+            "starting": "正在启动…",
+            "running": "停止",
+            "recording": "暂停",
+            "paused": "继续",
+            "stopping": "正在结束…",
+            "idle": "开始录音" if self._record_mode else "开始",
+        }[self._state]
         p.drawText(
             int(cx + r + 14), 0, int(w - (cx + r + 14) - 12), int(h),
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text,
@@ -394,11 +501,25 @@ class CapsuleCTA(QWidget):
         return [int(h[i : i + 2], 16) for i in (0, 2, 4)]
 
 
+class _PipelineBridge(QObject):
+    """把 Pipeline 工作线程回调安全地转发到 Qt 主线程。"""
+
+    utterance = Signal(str, str)
+    partial = Signal(str)
+    status = Signal(str)
+    operation_done = Signal(str, bool, str, bool)
+
+
 # ---------------------------------------------------------------------------
 # 主窗
 # ---------------------------------------------------------------------------
 class MainWindow(QWidget):
     """语幕 VoxSub 主窗（软高级感左右分栏编辑式布局）。"""
+
+    settings_requested = Signal()
+    diagnostics_requested = Signal()
+    model_hub_requested = Signal()
+    running_state_changed = Signal(bool)
 
     def __init__(
         self,
@@ -409,7 +530,8 @@ class MainWindow(QWidget):
         super().__init__(parent)
         self.setObjectName("rootShell")
         self.setWindowTitle("语幕 VoxSub")
-        self.resize(980, 640)
+        self.resize(1120, 720)
+        self.setMinimumSize(920, 620)
         self._store = store or ConfigStore()
         # Pipeline 依赖面（M6 或 stub）
         self.pipeline = pipeline if pipeline is not None else get_pipeline()
@@ -418,6 +540,12 @@ class MainWindow(QWidget):
         self._mode = self._store.get("mode", "a")
         self._lang_pair = self._store.get("lang_pair", "zh-en")
         self._overlay = None  # 由 app.py 注入（避免硬依赖，保持可单测）
+        self._conversation: list[tuple[str, str, int]] = []
+        self._session_started_at: float | None = None
+        self._bridge = _PipelineBridge(self)
+        self._pipeline_busy = False
+        self._pipeline_worker: threading.Thread | None = None
+        self._pending_record_flow = False
 
         self._build_ui()
         self._wire_pipeline()
@@ -425,28 +553,54 @@ class MainWindow(QWidget):
         # 初始化状态
         self.set_mode(self._mode)
         self.set_lang_pair(self._lang_pair)
+        last_file = str(self._store.get("last_input_file", "") or "")
+        if last_file:
+            self.file_name_label.setText(Path(last_file).name)
+            self.file_name_label.setToolTip(last_file)
 
     # -- 界面构建 -----------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 24, 28, 20)
-        root.setSpacing(16)
+        root.setContentsMargins(32, 28, 32, 24)
+        root.setSpacing(24)
 
         # 标题行
         title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        eyebrow = QLabel("VOXSUB  /  LIVE TRANSLATION", self)
+        eyebrow.setObjectName("eyebrowLabel")
         title = QLabel("语幕", self)
         title.setObjectName("sectionTitle")
-        title.setStyleSheet("font-size: 22px; font-weight: 700;")
-        subtitle = QLabel("实时翻译字幕 VoxSub", self)
+        title.setStyleSheet("font-size: 32px; font-weight: 650;")
+        brand.addWidget(eyebrow)
+        brand.addWidget(title)
+        subtitle = QLabel("让对话、会议和视频，落成清晰的双语文幕。", self)
         subtitle.setObjectName("secondaryLabel")
-        title_row.addWidget(title)
-        title_row.addWidget(subtitle)
+        brand.addWidget(subtitle)
+        title_row.addLayout(brand)
         title_row.addStretch(1)
+        self.model_hub_btn = QPushButton("模型广场", self)
+        self.model_hub_btn.setObjectName("secondaryButton")
+        self.model_hub_btn.setMinimumHeight(44)
+        self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
+        self.settings_btn = QPushButton("设置", self)
+        self.settings_btn.setObjectName("ghostButton")
+        self.settings_btn.setMinimumHeight(44)
+        self.settings_btn.clicked.connect(self.settings_requested.emit)
+        self.diagnostics_btn = QPushButton("诊断与日志", self)
+        self.diagnostics_btn.setObjectName("ghostButton")
+        self.diagnostics_btn.setMinimumHeight(44)
+        self.diagnostics_btn.clicked.connect(self.diagnostics_requested.emit)
+        title_row.addWidget(self.model_hub_btn)
+        title_row.addWidget(self.settings_btn)
+        title_row.addWidget(self.diagnostics_btn)
         root.addLayout(title_row)
 
         # 左右分栏
         body = QHBoxLayout()
-        body.setSpacing(20)
+        body.setSpacing(24)
         body.addWidget(self._build_left_panel(), 0)
         body.addWidget(self._build_right_panel(), 1)
         root.addLayout(body, 1)
@@ -457,16 +611,23 @@ class MainWindow(QWidget):
         self.cta = CapsuleCTA(self)
         self.cta.clicked.connect(self._toggle_run)
         cta_row.addWidget(self.cta)
+        self.finish_record_btn = QPushButton("结束并保存", self)
+        self.finish_record_btn.setObjectName("secondaryButton")
+        self.finish_record_btn.setMinimumHeight(44)
+        self.finish_record_btn.clicked.connect(self._finish_recording)
+        self.finish_record_btn.hide()
+        cta_row.addSpacing(8)
+        cta_row.addWidget(self.finish_record_btn)
         cta_row.addStretch(1)
         root.addLayout(cta_row)
 
     def _build_left_panel(self) -> QFrame:
         panel = QFrame(self)
         panel.setObjectName("sidePanel")
-        panel.setFixedWidth(300)
+        panel.setFixedWidth(344)
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(20, 20, 20, 20)
-        lay.setSpacing(14)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(12)
 
         mode_title = QLabel("模式", panel)
         mode_title.setObjectName("sectionTitle")
@@ -494,9 +655,13 @@ class MainWindow(QWidget):
         self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
         lay.addWidget(self.lang_combo)
 
-        lay.addSpacing(8)
+        lay.addSpacing(4)
         self.status_light = StatusLight(panel)
         lay.addWidget(self.status_light)
+        self.source_hint = QLabel("设备可在「设置」中选择", panel)
+        self.source_hint.setObjectName("secondaryLabel")
+        self.source_hint.setWordWrap(True)
+        lay.addWidget(self.source_hint)
         lay.addStretch(1)
         return panel
 
@@ -504,14 +669,100 @@ class MainWindow(QWidget):
         panel = QFrame(self)
         panel.setObjectName("subtitlePanel")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(8, 4, 8, 4)
-        lay.setSpacing(10)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(12)
         head = QHBoxLayout()
-        t = QLabel("实时字幕", panel)
-        t.setObjectName("sectionTitle")
-        head.addWidget(t)
+        self.workspace_title = QLabel("实时字幕", panel)
+        self.workspace_title.setObjectName("sectionTitle")
+        head.addWidget(self.workspace_title)
+        self.workspace_context = QLabel("原文与译文只保留在本次会话内", panel)
+        self.workspace_context.setObjectName("secondaryLabel")
+        head.addWidget(self.workspace_context)
         head.addStretch(1)
+        self.overlay_font_down_btn = QPushButton("A  −", panel)
+        self.overlay_font_down_btn.setObjectName("compactGhostButton")
+        self.overlay_font_down_btn.setToolTip("减小字幕浮窗字号")
+        self.overlay_font_down_btn.setFixedWidth(80)
+        self.overlay_font_down_btn.clicked.connect(lambda: self._change_overlay_font(-2))
+        self.overlay_font_up_btn = QPushButton("A  +", panel)
+        self.overlay_font_up_btn.setObjectName("compactGhostButton")
+        self.overlay_font_up_btn.setToolTip("增大字幕浮窗字号")
+        self.overlay_font_up_btn.setFixedWidth(80)
+        self.overlay_font_up_btn.clicked.connect(lambda: self._change_overlay_font(+2))
+        self.overlay_lock_btn = QPushButton("锁定浮窗", panel)
+        self.overlay_lock_btn.setObjectName("ghostButton")
+        self.overlay_lock_btn.setToolTip("锁定后鼠标点击会穿过浮窗，作用到下面的软件")
+        self.overlay_lock_btn.clicked.connect(self._toggle_overlay_lock)
+        self.save_conversation_btn = QPushButton("保存", panel)
+        self.save_conversation_btn.setObjectName("ghostButton")
+        self.save_conversation_btn.clicked.connect(lambda: self.save_conversation())
+        self.clear_conversation_btn = QPushButton("清空", panel)
+        self.clear_conversation_btn.setObjectName("ghostButton")
+        self.clear_conversation_btn.clicked.connect(self.clear_conversation)
+        for button in (self.overlay_font_down_btn, self.overlay_font_up_btn,
+                       self.overlay_lock_btn, self.save_conversation_btn,
+                       self.clear_conversation_btn):
+            button.setMinimumHeight(36)
         lay.addLayout(head)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        overlay_actions_label = QLabel("浮窗", panel)
+        overlay_actions_label.setObjectName("secondaryLabel")
+        action_row.addWidget(overlay_actions_label)
+        action_row.addWidget(self.overlay_font_down_btn)
+        action_row.addWidget(self.overlay_font_up_btn)
+        action_row.addWidget(self.overlay_lock_btn)
+        action_row.addStretch(1)
+        action_row.addWidget(self.save_conversation_btn)
+        action_row.addWidget(self.clear_conversation_btn)
+        lay.addLayout(action_row)
+
+        # C 模式的文件入口属于主要工作区，放在右侧可避免挤压模式导航，
+        # 也让“导入 → 处理 → 字幕结果”的层级更自然。
+        self.file_panel = QFrame(panel)
+        self.file_panel.setObjectName("filePickerCard")
+        file_box = QHBoxLayout(self.file_panel)
+        file_box.setContentsMargins(20, 16, 16, 16)
+        file_box.setSpacing(16)
+        file_copy = QVBoxLayout()
+        file_copy.setSpacing(4)
+        file_head = QLabel("导入音频或视频", self.file_panel)
+        file_head.setObjectName("sectionTitle")
+        self.file_name_label = QLabel("尚未选择文件 · 将自动提取音频并导出同名 SRT", self.file_panel)
+        self.file_name_label.setObjectName("secondaryLabel")
+        self.file_name_label.setWordWrap(True)
+        file_copy.addWidget(file_head)
+        file_copy.addWidget(self.file_name_label)
+        self.file_pick_btn = QPushButton("选择文件", self.file_panel)
+        self.file_pick_btn.setObjectName("secondaryButton")
+        self.file_pick_btn.setMinimumWidth(112)
+        self.file_pick_btn.setMinimumHeight(44)
+        self.file_pick_btn.clicked.connect(self.select_input_file)
+        file_box.addLayout(file_copy, 1)
+        file_box.addWidget(self.file_pick_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.file_panel)
+
+        self.record_panel = QFrame(panel)
+        self.record_panel.setObjectName("filePickerCard")
+        record_box = QHBoxLayout(self.record_panel)
+        record_box.setContentsMargins(16, 12, 16, 12)
+        record_box.setSpacing(12)
+        self.record_switch = QCheckBox("同时录音", self.record_panel)
+        self.record_switch.setChecked(bool(self._store.get("record_with_translation", False)))
+        self.record_switch.setToolTip("翻译麦克风声音的同时保存本地 WAV；暂停期间不会写入录音")
+        self.record_switch.toggled.connect(self._on_recording_toggled)
+        self.record_status = QLabel(
+            ("像手机录音：开始 → 暂停 / 继续 → 结束并保存"
+             if self.record_switch.isChecked() else
+             "仅生成字幕，不保存麦克风音频"),
+            self.record_panel,
+        )
+        self.record_status.setObjectName("secondaryLabel")
+        self.record_status.setWordWrap(True)
+        record_box.addWidget(self.record_switch, 0)
+        record_box.addWidget(self.record_status, 1)
+        lay.addWidget(self.record_panel)
+
         self.subtitle_list = SubtitleList(panel)
         lay.addWidget(self.subtitle_list, 1)
         return panel
@@ -520,8 +771,14 @@ class MainWindow(QWidget):
     def _wire_pipeline(self) -> None:
         """订阅 utterance / status 回调（契约见 DESIGN.md M6）。"""
         try:
-            self.pipeline.on_utterance(self._on_utterance)
-            self.pipeline.on_status(self._on_status)
+            # 同线程 emit 直接调用，工作线程 emit 自动排队到 Qt 主线程。
+            self._bridge.utterance.connect(self._on_utterance)
+            self._bridge.partial.connect(self._on_partial)
+            self._bridge.status.connect(self._on_status)
+            self._bridge.operation_done.connect(self._on_pipeline_operation_done)
+            self.pipeline.on_utterance(self._bridge.utterance.emit)
+            self.pipeline.on_partial(self._bridge.partial.emit)
+            self.pipeline.on_status(self._bridge.status.emit)
         except AttributeError:
             # 鸭子类型兜底：对象缺方法也不崩壳（设计内行为 → debug）
             logger.debug("Pipeline 缺少 on_utterance/on_status, 跳过订阅 (stub 联调期正常)")
@@ -529,6 +786,15 @@ class MainWindow(QWidget):
     # -- 状态切换 -----------------------------------------------------------
     def set_mode(self, mode: str) -> None:
         norm = mode if mode in MODE_ORDER else "a"
+        if self._pipeline_busy and norm != self._mode:
+            self._on_status("正在启动或结束任务，请稍候")
+            return
+        try:
+            if self.pipeline.is_running() and norm != self._mode:
+                self._on_status("请先停止当前任务，再切换模式")
+                return
+        except AttributeError:
+            pass
         self._mode = norm
         for key, card in self.mode_cards.items():
             card.set_active(key == norm)
@@ -537,6 +803,24 @@ class MainWindow(QWidget):
         except AttributeError:
             logger.debug("Pipeline 缺少 set_mode, 跳过 (stub 联调期正常)")
         self._store.set("mode", norm)
+        self.file_panel.setVisible(norm == "c")
+        self.record_panel.setVisible(norm == "a")
+        self.cta.set_record_mode(norm == "a" and self.record_switch.isChecked())
+        if norm == "a":
+            self.source_hint.setText("输入：设置中选择的麦克风")
+            self.workspace_title.setText("实时字幕")
+            self.workspace_context.setText("原文与译文只保留在本次会话内")
+            self.subtitle_list.set_empty_hint("字幕将显示在这里 —— 说完一句后自动生成")
+        elif norm == "b":
+            self.source_hint.setText("输入：指定应用，或所选系统输出设备")
+            self.workspace_title.setText("实时字幕")
+            self.workspace_context.setText("其它应用声音可通过进程隔离排除")
+            self.subtitle_list.set_empty_hint("字幕将显示在这里 —— 播放目标应用中的内容")
+        else:
+            self.source_hint.setText("支持 MP4 / MKV / MOV / MP3 / WAV 等常见格式")
+            self.workspace_title.setText("文件字幕")
+            self.workspace_context.setText("自动提取音频 · 识别翻译 · 导出 SRT")
+            self.subtitle_list.set_empty_hint("选择文件后，处理结果与导出位置将显示在这里")
 
     def current_mode(self) -> str:
         return self._mode
@@ -558,6 +842,11 @@ class MainWindow(QWidget):
             self.lang_combo.blockSignals(False)
         self._lang_pair = value
         self._store.set("lang_pair", value)
+        src, dst = value.split("-", 1)
+        try:
+            self.pipeline.set_langs(src, dst)
+        except AttributeError:
+            logger.debug("Pipeline 缺少 set_langs")
 
     def current_lang_pair(self) -> str:
         """当前语言对 value（供托盘 / 测试 / M6 集成读取）。"""
@@ -567,29 +856,321 @@ class MainWindow(QWidget):
     def _on_lang_changed(self, index: int) -> None:
         self.set_lang_pair(self.current_lang_pair())
 
-    # -- 启停 ---------------------------------------------------------------
-    def _toggle_run(self) -> None:
+    def select_input_file(self) -> bool:
+        """打开音视频选择器并把路径交给 C 模式 Pipeline。"""
+        initial = self._store.get("last_input_file", "")
+        initial_dir = str(Path(initial).parent) if initial else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要生成字幕的音频或视频",
+            initial_dir,
+            "音频和视频 (*.wav *.mp3 *.m4a *.aac *.flac *.ogg *.mp4 *.mkv *.mov *.avi *.webm);;所有文件 (*)",
+        )
+        if not path:
+            return False
+        self._store.set("last_input_file", path)
+        self.file_name_label.setText(Path(path).name)
+        self.file_name_label.setToolTip(path)
         try:
-            if self.pipeline.is_running():
-                self.pipeline.stop()
-                self.cta.set_running(False)
-            else:
-                self.pipeline.start()
-                self.cta.set_running(True)
+            self.pipeline.set_input_file(path)
         except AttributeError:
-            logger.debug("Pipeline 缺少 start/stop/is_running, 跳过 (stub 联调期正常)")
+            logger.debug("Pipeline 缺少 set_input_file")
+        return True
+
+    def save_conversation(self, path: str | Path | None = None) -> bool:
+        """Save the current in-memory conversation as TXT, SRT or WebVTT."""
+        if self._pipeline_busy:
+            self._on_status("正在结束并整理剩余字幕，完成后再保存")
+            return False
+        if not self._conversation:
+            self._on_status("当前没有可保存的字幕")
+            return False
+        if path is None:
+            suggested = f"VoxSub-conversation-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+            selected, chosen_filter = QFileDialog.getSaveFileName(
+                self,
+                "保存当前对话",
+                suggested,
+                "纯文本 (*.txt);;SRT 字幕 (*.srt);;WebVTT 字幕 (*.vtt)",
+            )
+            if not selected:
+                return False
+            path = selected
+            if not Path(path).suffix:
+                path += ".srt" if "SRT" in chosen_filter else (
+                    ".vtt" if "WebVTT" in chosen_filter else ".txt")
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        from voxsub.pipeline import Pipeline, SubtitleLine
+
+        lines = [SubtitleLine(text=src, translation=dst, ts_ms=ts)
+                 for src, dst, ts in self._conversation]
+        suffix = out.suffix.lower()
+        if suffix == ".srt":
+            Pipeline.write_srt(lines, out)
+        elif suffix == ".vtt":
+            Pipeline.write_vtt(lines, out)
+        else:
+            if suffix != ".txt":
+                out = out.with_suffix(".txt")
+            out.write_text(
+                "\n\n".join(f"{line.text}\n{line.translation}" for line in lines),
+                encoding="utf-8",
+            )
+        self._on_status(f"对话已保存 → {out}")
+        return True
+
+    def clear_conversation(self) -> None:
+        self._conversation.clear()
+        self._session_started_at = None
+        self.subtitle_list.clear()
+        if self._overlay is not None:
+            try:
+                self._overlay.clear_history()
+            except AttributeError:
+                pass
+        self._on_status("当前对话已清空")
+
+    def _change_overlay_font(self, delta: int) -> None:
+        if self._overlay is None:
+            return
+        try:
+            self._overlay.change_font_size(delta)
+            self._overlay.show()
+            self._overlay.raise_()
+        except AttributeError:
+            logger.debug("字幕浮窗缺少字号接口")
+
+    def _toggle_overlay_lock(self) -> None:
+        if self._overlay is None:
+            return
+        try:
+            self._overlay.set_click_through(not self._overlay.is_click_through())
+        except AttributeError:
+            logger.debug("字幕浮窗缺少锁定接口")
+
+    def _on_overlay_lock_changed(self, locked: bool) -> None:
+        self.overlay_lock_btn.setText("解锁浮窗" if locked else "锁定浮窗")
+        self.overlay_lock_btn.setToolTip(
+            "点击解锁，恢复拖动、选中文字和浮窗工具栏"
+            if locked else "锁定后鼠标点击会穿过浮窗，作用到下面的软件"
+        )
+
+    def _apply_pipeline_config(self) -> None:
+        """每次启动前从设置读取完整配置，避免设置窗口与 Pipeline 脱节。"""
+        cfg = self._store.load()
+        pair = str(cfg.get("lang_pair", "zh-en"))
+        src, dst = pair.split("-", 1) if "-" in pair else ("zh", "en")
+        tier_map = {"fast": "opus-fast", "quality": "qwen-quality", "cloud": "cloud"}
+        try:
+            self.pipeline.set_langs(src, dst)
+            self.pipeline.set_tts(bool(cfg.get("tts_enabled", False)))
+            self.pipeline.set_audio_devices(
+                str(cfg.get("mic_device_id", "")),
+                str(cfg.get("loopback_device_id", "")),
+            )
+            self.pipeline.set_capture_process(
+                int(cfg.get("capture_process_id", 0) or 0),
+                str(cfg.get("capture_window_title", "")),
+            )
+            self.pipeline.set_asr_model(str(cfg.get(
+                "asr_model_id", "asr-zipformer-bilingual-fast")))
+            self.pipeline.set_asr_tuning({
+                "profile": str(cfg.get("asr_tuning_profile", "auto")),
+                "vad_threshold": float(cfg.get("asr_vad_threshold", 0.35)),
+                "silence_ms": int(cfg.get("asr_silence_ms", 650)),
+                "max_utterance_ms": int(cfg.get("asr_max_utterance_ms", 12000)),
+                "beam_paths": int(cfg.get("asr_beam_paths", 4)),
+                "max_new_tokens": int(cfg.get("asr_max_new_tokens", 512)),
+                "hotwords": str(cfg.get("asr_hotwords", "")),
+            })
+            self.pipeline.set_recording(
+                self._mode == "a" and bool(cfg.get("record_with_translation", False)))
+            self.pipeline.set_translator(
+                tier_map.get(str(cfg.get("translate_tier", "fast")), "opus-fast"), cfg)
+            input_file = str(cfg.get("last_input_file", ""))
+            if input_file:
+                self.pipeline.set_input_file(input_file)
+        except AttributeError:
+            logger.debug("Pipeline 为旧契约，部分配置未接入", exc_info=True)
+
+    # -- 启停 ---------------------------------------------------------------
+    def _on_recording_toggled(self, checked: bool) -> None:
+        self._store.set("record_with_translation", bool(checked))
+        self.cta.set_record_mode(self._mode == "a" and bool(checked))
+        self.record_status.setText(
+            "像手机录音：开始 → 暂停 / 继续 → 结束并保存"
+            if checked else "仅生成字幕，不保存麦克风音频"
+        )
+
+    def _set_pipeline_busy(self, busy: bool) -> None:
+        self._pipeline_busy = bool(busy)
+        self.cta.setEnabled(not busy)
+        self.finish_record_btn.setEnabled(not busy)
+        self.save_conversation_btn.setEnabled(not busy)
+        self.clear_conversation_btn.setEnabled(not busy)
+        self.lang_combo.setEnabled(not busy)
+        for card in self.mode_cards.values():
+            card.setEnabled(not busy)
+
+    def _begin_pipeline_start(self, record_flow: bool) -> None:
+        if self._pipeline_busy:
+            return
+        self._pending_record_flow = bool(record_flow)
+        self._set_pipeline_busy(True)
+        self.cta.set_state("starting")
+        self.record_switch.setEnabled(False)
+        self._on_status("启动中…正在加载识别与翻译模型")
+
+        def _worker() -> None:
+            try:
+                self._apply_pipeline_config()
+                self.pipeline.start()
+                success = bool(self.pipeline.is_running())
+                error = "" if success else "Pipeline 未进入运行状态"
+            except Exception as exc:
+                logger.exception("后台启动 Pipeline 失败")
+                success, error = False, str(exc)
+            self._bridge.operation_done.emit("start", success, error, record_flow)
+
+        self._pipeline_worker = threading.Thread(
+            target=_worker, name="ui-pipeline-start", daemon=True)
+        self._pipeline_worker.start()
+
+    def _begin_pipeline_stop(self, *, finish_recording: bool = False) -> None:
+        if self._pipeline_busy:
+            return
+        self._set_pipeline_busy(True)
+        self.cta.set_state("stopping")
+        self.finish_record_btn.setEnabled(False)
+        self._on_status("正在结束…正在整理剩余音频与字幕")
+
+        def _worker() -> None:
+            try:
+                self.pipeline.stop()
+                success = not bool(self.pipeline.is_running())
+                error = "" if success else "Pipeline 未完全停止"
+            except Exception as exc:
+                logger.exception("后台停止 Pipeline 失败")
+                success, error = False, str(exc)
+            self._bridge.operation_done.emit(
+                "finish" if finish_recording else "stop",
+                success,
+                error,
+                self._pending_record_flow,
+            )
+
+        self._pipeline_worker = threading.Thread(
+            target=_worker, name="ui-pipeline-stop", daemon=True)
+        self._pipeline_worker.start()
+
+    def _on_pipeline_operation_done(
+        self, action: str, success: bool, error: str, record_flow: bool
+    ) -> None:
+        self._pipeline_worker = None
+        self._set_pipeline_busy(False)
+        if action == "start" and success:
+            self.cta.set_state("recording" if record_flow else "running")
+            self.record_switch.setEnabled(False)
+            self.finish_record_btn.setVisible(record_flow)
+            if record_flow:
+                self.record_status.setText("正在录音并翻译 · 点击“暂停”可暂时停下")
+            self.running_state_changed.emit(True)
+            return
+
+        self.cta.set_state("idle")
+        self.finish_record_btn.hide()
+        self.finish_record_btn.setEnabled(True)
+        self.record_switch.setEnabled(True)
+        self.running_state_changed.emit(False)
+        if not success:
+            label = "启动" if action == "start" else "结束"
+            self._on_status(f"{label}失败: {error}")
+            return
+        path = getattr(self.pipeline, "last_recording_path", None)
+        if path and action == "finish":
+            self.record_status.setText(f"录音已保存：{Path(path).name}")
+            self.record_status.setToolTip(str(path))
+
+    def _toggle_run(self) -> None:
+        if self._pipeline_busy:
+            return
+        try:
+            record_flow = self._mode == "a" and self.record_switch.isChecked()
+            if self.pipeline.is_running():
+                if record_flow:
+                    if self.pipeline.is_paused():
+                        self.pipeline.resume()
+                        self.cta.set_state("recording")
+                        self.record_status.setText("正在录音并翻译 · 点击“暂停”可暂时停下")
+                    else:
+                        self.pipeline.pause()
+                        self.cta.set_state("paused")
+                        self.record_status.setText("已暂停 · 点击“继续”恢复，或结束并保存")
+                else:
+                    self._begin_pipeline_stop()
+            else:
+                if self._mode == "c" and not self._store.get("last_input_file", ""):
+                    if not self.select_input_file():
+                        self._on_status("已取消选择文件")
+                        return
+                self._begin_pipeline_start(record_flow)
+        except Exception as exc:
+            logger.exception("主窗启动/停止 Pipeline 失败")
+            self.cta.set_running(False)
+            self.finish_record_btn.hide()
+            self.record_switch.setEnabled(True)
+            self._on_status(f"启动失败: {exc}")
+
+    def _finish_recording(self) -> None:
+        """Phone-recorder style terminal action: stop, flush and close the WAV."""
+        if self._pipeline_busy:
+            return
+        if self.pipeline.is_running():
+            self._begin_pipeline_stop(finish_recording=True)
 
     def _on_utterance(self, src: str, dst: str) -> None:
         """(原文, 译文) → 字幕流 + 悬浮窗（若注入）。"""
+        now = time.monotonic()
+        if self._session_started_at is None:
+            self._session_started_at = now
+        self._conversation.append((src, dst, int((now - self._session_started_at) * 1000)))
         self.subtitle_list.add_subtitle(src, dst)
         if self._overlay is not None:
             try:
                 self._overlay.set_subtitles(src, dst)
+                if self._mode in ("a", "b") and not self._overlay.isVisible():
+                    self._overlay.show()
             except AttributeError:
                 logger.debug("字幕浮窗缺少 set_subtitles, 跳过")
 
+    def _on_partial(self, src: str) -> None:
+        """流式临时原文直接更新浮窗，不等待切句和翻译完成。"""
+        self.subtitle_list.set_partial(src)
+        if self._overlay is not None:
+            try:
+                if hasattr(self._overlay, "set_partial"):
+                    self._overlay.set_partial(src, "识别中…")
+                else:
+                    self._overlay.set_subtitles(src, "识别中…")
+                if self._mode in ("a", "b") and not self._overlay.isVisible():
+                    self._overlay.show()
+            except AttributeError:
+                logger.debug("字幕浮窗缺少临时字幕接口")
+
     def _on_status(self, text: str) -> None:
         self.status_light.set_status(text, self._current_theme_name())
+        terminal = ("已停止", "完成", "启动失败", "音频设备错误", "识别处理错误",
+                    "文件处理失败", "文件不存在")
+        if text.startswith(terminal) and not self._pipeline_busy:
+            self.cta.set_state("idle")
+            self.finish_record_btn.hide()
+            self.record_switch.setEnabled(True)
+            self.running_state_changed.emit(False)
+            path = getattr(self.pipeline, "last_recording_path", None)
+            if path and self._mode == "a" and self.record_switch.isChecked():
+                self.record_status.setText(f"录音已保存：{Path(path).name}")
+                self.record_status.setToolTip(str(path))
 
     def _current_theme_name(self) -> str:
         # 尽量用真实配置主题着色状态灯；取不到回落 dark（QSS 主视觉一致）
@@ -607,6 +1188,11 @@ class MainWindow(QWidget):
     def attach_overlay(self, overlay: object) -> None:
         """注入字幕浮窗实例（解耦，保持主窗可独立单测）。"""
         self._overlay = overlay
+        try:
+            overlay.lock_changed.connect(self._on_overlay_lock_changed)
+            self._on_overlay_lock_changed(bool(overlay.is_click_through()))
+        except AttributeError:
+            logger.debug("字幕浮窗为旧接口，锁定状态无法同步")
 
     def closeEvent(self, ev) -> None:  # noqa: N802
         # 关窗默认隐藏到托盘（退出经由托盘菜单）；应用级退出由 app.py 置 flag

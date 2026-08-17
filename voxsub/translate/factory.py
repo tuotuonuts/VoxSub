@@ -30,8 +30,29 @@ class TranslatorFactory:
         kind = (kind or "").strip().lower()
         logger.info("创建翻译器: kind=%s", kind)
         if kind == "opus-fast":
-            return OpusFastTranslator()
+            from voxsub.router import preferred_onnx_providers
+
+            return OpusFastTranslator(providers=preferred_onnx_providers("translate"))
         if kind == "qwen-quality":
+            if isinstance(config, dict):
+                model_id = str(config.get("translate_model_id", "") or "")
+                if model_id == "mt-opus-fast-builtin":
+                    logger.info("质量档未选择新模型，按模型广场选择使用 OPUS 极速兼容")
+                    from voxsub.router import preferred_onnx_providers
+
+                    return OpusFastTranslator(providers=preferred_onnx_providers("translate"))
+                if model_id.startswith("mt-hy-mt2-"):
+                    from voxsub.model_catalog import ModelMarketplace, get_model
+
+                    model = get_model(model_id)
+                    if model is not None:
+                        marketplace = ModelMarketplace()
+                        return QwenQualityTranslator(
+                            model_path=marketplace.model_file(model),
+                            prompt_style="hy-mt2",
+                            model_name=model.name,
+                            n_threads=min(8, max(2, __import__("os").cpu_count() or 2)),
+                        )
             return QwenQualityTranslator()
         if kind == "cloud":
             return CloudTranslator(config)

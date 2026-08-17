@@ -67,12 +67,18 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
 
         log_path = _log_dir() / "voxsub.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"))
-        root.addHandler(file_handler)
+        file_error: OSError | None = None
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            file_handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S"))
+            root.addHandler(file_handler)
+        except OSError as exc:
+            # 日志文件被旧实例/外部工具锁住时，仍保留内存实时日志，不能让
+            # import 阶段或整个 GUI 因“记录日志失败”而启动失败。
+            file_error = exc
 
         if log_to_console:
             console = logging.StreamHandler()
@@ -86,12 +92,35 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
 
         _HANDLERS_INITIALIZED = True
         root.info("日志系统初始化: 级别=%s 文件=%s", chosen, log_path)
+        if file_error is not None:
+            root.warning("日志文件暂不可写，已切换为应用内实时日志: %s", file_error)
 
 
 def get_logger(name: str) -> logging.Logger:
     """获取语幕 logger (在使用前 setup_logging 一次; 未见则兜底初始化)。"""
     setup_logging()
     return logging.getLogger(f"voxsub.{name}")
+
+
+def set_debug_mode(enabled: bool) -> None:
+    """运行时切换应用日志级别，供内置调试控制台使用。
+
+    ``setup_logging`` 只负责一次性安装 handlers；调试模式必须允许用户在应用
+    已运行时开关，因此这里直接调整 ``voxsub`` 根 logger 的级别。内存事件流和
+    文件日志共用该级别，关闭后恢复 INFO。
+    """
+    setup_logging()
+    root = logging.getLogger("voxsub")
+    level = logging.DEBUG if enabled else logging.INFO
+    root.setLevel(level)
+    root.log(logging.INFO, "内置调试模式%s，日志级别=%s",
+             "已开启" if enabled else "已关闭", logging.getLevelName(level))
+
+
+def is_debug_mode() -> bool:
+    """返回当前是否处于 DEBUG 日志级别。"""
+    setup_logging()
+    return logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
 
 
 def drain_events(limit: int = 200) -> list[dict]:
@@ -103,9 +132,10 @@ def drain_events(limit: int = 200) -> list[dict]:
     with _QUEUE_LOCK:
         items = list(_EVENT_QUEUE.queue)
     for r in items[-limit:]:
+        ts = (r.asctime if hasattr(r, "asctime")
+              else logging.Formatter().formatTime(r, "%H:%M:%S"))
         out.append({
-            "ts": r.asctime if hasattr(r, "asctime") else logging.Formatter(
-                "%H:%M:%S").formatTime(r),
+            "ts": ts,
             "level": r.levelname,
             "name": r.name,
             "message": r.getMessage(),

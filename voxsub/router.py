@@ -10,7 +10,8 @@
     def enumerate_devices() -> list[DeviceInfo]   # onnxruntime providers 枚举
     def select_device(task) -> DeviceInfo         # task ∈ {asr, tts, translate}
 
-降级链: 有 DmlExecutionProvider 且任务模型就绪 -> dml, 否则 cpu。
+优先级: 独立 GPU -> NPU -> 核显 -> CPU。物理设备存在但当前模型运行时
+不支持时会跳过并记录原因，不把 CPU 冒充成硬件加速。
 score_ms 用实际推理冒烟计时填充:
 - asr       : sherpa-onnx 流式识别器对真实短音频 (test_wavs/1.wav, 缺则合成音)
               做一次 feed+decode, 计时;
@@ -28,6 +29,7 @@ from typing import NamedTuple
 import numpy as np
 
 from voxsub.logging_setup import get_logger
+from voxsub.hardware import detect_hardware
 
 logger = get_logger("router")
 
@@ -39,6 +41,9 @@ _PROVIDER_NAMES = {
     "TensorrtExecutionProvider": "TensorRT",
     "CoreMLExecutionProvider": "CoreML",
     "NPUExecutionProvider": "NPU",
+    "QNNExecutionProvider": "Qualcomm QNN",
+    "VitisAIExecutionProvider": "AMD VitisAI",
+    "OpenVINOExecutionProvider": "Intel OpenVINO",
 }
 
 TASKS = ("asr", "tts", "translate")
@@ -48,6 +53,8 @@ class DeviceInfo(NamedTuple):
     provider: str          # "cpu" | "dml" | "cuda" | "npu"
     name: str
     score_ms: float | None  # 实测延迟; None=未测
+    kind: str = ""         # gpu | npu | igpu | cpu
+    raw_provider: str = ""
 
 
 def models_dir() -> Path:
@@ -64,6 +71,9 @@ def _norm_provider(raw: str) -> str:
         "TensorrtExecutionProvider": "cuda",
         "CoreMLExecutionProvider": "coreml",
         "NPUExecutionProvider": "npu",
+        "QNNExecutionProvider": "npu",
+        "VitisAIExecutionProvider": "npu",
+        "OpenVINOExecutionProvider": "openvino",
     }
     return table.get(raw, raw.lower().replace("executionprovider", ""))
 
@@ -73,17 +83,112 @@ def _display_name(raw: str) -> str:
 
 
 def enumerate_devices() -> list[DeviceInfo]:
-    """枚举可用的 onnxruntime 执行提供器为 DeviceInfo 列表。
-
-    score_ms 初始为 None (选择时才会实测填充); 顺序与
-    ort.get_available_providers() 一致 (DirectML 在前即 GPU 优先信号)。
-    """
+    """Enumerate registered ORT EP devices and classify their hardware."""
     import onnxruntime as ort
 
     providers = ort.get_available_providers()
     logger.info("枚举 ORT 执行提供器: %s", ", ".join(providers) if providers else "(无)")
-    return [DeviceInfo(provider=_norm_provider(p), name=_display_name(p), score_ms=None)
-            for p in providers]
+    profile = detect_hardware()
+    devices: list[DeviceInfo] = []
+    seen: set[tuple[str, str]] = set()
+    get_ep_devices = getattr(ort, "get_ep_devices", None)
+    if get_ep_devices:
+        try:
+            for item in get_ep_devices():
+                raw = str(item.ep_name)
+                hw_type = str(item.device.type).rsplit(".", 1)[-1].lower()
+                if hw_type == "gpu":
+                    kind = "gpu" if profile.has_discrete_gpu else "igpu"
+                elif hw_type == "npu":
+                    kind = "npu"
+                else:
+                    kind = "cpu"
+                key = (raw, kind)
+                if key in seen:
+                    continue
+                seen.add(key)
+                vendor = str(getattr(item.device, "vendor", "") or "").strip()
+                short = "npu" if kind == "npu" else _norm_provider(raw)
+                label = f"{vendor + ' ' if vendor else ''}{_display_name(raw)}"
+                devices.append(DeviceInfo(short, label, None, kind, raw))
+        except Exception:
+            logger.debug("ORT EP 设备明细读取失败，改用 provider 列表", exc_info=True)
+    for raw in providers:
+        if any(device.raw_provider == raw for device in devices):
+            continue
+        if raw in {"CUDAExecutionProvider", "TensorrtExecutionProvider"}:
+            kind = "gpu"
+        elif raw in {"QNNExecutionProvider", "VitisAIExecutionProvider",
+                     "NPUExecutionProvider"}:
+            kind = "npu"
+        elif raw == "OpenVINOExecutionProvider":
+            kind = "npu" if profile.has_npu else (
+                "igpu" if profile.has_integrated_gpu else "cpu")
+        elif raw == "DmlExecutionProvider":
+            kind = "gpu" if profile.has_discrete_gpu else "igpu"
+        else:
+            kind = "cpu"
+        short = "npu" if kind == "npu" else _norm_provider(raw)
+        devices.append(DeviceInfo(short, _display_name(raw), None, kind, raw))
+    return sorted(devices, key=_device_priority)
+
+
+def _device_priority(device: DeviceInfo) -> tuple[int, str]:
+    kind = device.kind or ({"cuda": "gpu", "dml": "gpu", "npu": "npu",
+                            "cpu": "cpu"}.get(device.provider, "igpu"))
+    return ({"gpu": 0, "npu": 1, "igpu": 2, "cpu": 3}.get(kind, 4), device.name)
+
+
+def _raw_provider(device: DeviceInfo) -> str:
+    if device.raw_provider:
+        return device.raw_provider
+    return {
+        "cuda": "CUDAExecutionProvider", "dml": "DmlExecutionProvider",
+        "npu": "NPUExecutionProvider", "openvino": "OpenVINOExecutionProvider",
+        "cpu": "CPUExecutionProvider",
+    }.get(device.provider, device.provider)
+
+
+def _provider_spec(device: DeviceInfo):
+    raw = _raw_provider(device)
+    kind = device.kind or ("npu" if device.provider == "npu" else "")
+    if raw == "QNNExecutionProvider" and kind == "npu":
+        return (raw, {"backend_type": "htp"})
+    if raw == "OpenVINOExecutionProvider":
+        target = "NPU" if kind == "npu" else "GPU" if kind in {"gpu", "igpu"} else "CPU"
+        return (raw, {"device_type": target})
+    return raw
+
+
+def _supports_device(task: str, device: DeviceInfo) -> bool:
+    raw = _raw_provider(device)
+    if task in {"asr", "tts"}:
+        # Current sherpa-onnx Python runtime supports CUDA/CoreML/CPU, not
+        # DirectML/QNN/Vitis/OpenVINO. Never report those paths as accelerated.
+        return raw in {"CUDAExecutionProvider", "CPUExecutionProvider",
+                       "CoreMLExecutionProvider"}
+    return raw in {
+        "CUDAExecutionProvider", "DmlExecutionProvider", "QNNExecutionProvider",
+        "VitisAIExecutionProvider", "OpenVINOExecutionProvider",
+        "NPUExecutionProvider", "CPUExecutionProvider",
+    }
+
+
+def preferred_onnx_providers(task: str = "translate") -> list:
+    """Return usable ORT providers in GPU -> NPU -> iGPU -> CPU order."""
+    providers: list = []
+    seen: set[str] = set()
+    for device in enumerate_devices():
+        if not _supports_device(task, device):
+            continue
+        raw = _raw_provider(device)
+        if raw in seen:
+            continue
+        seen.add(raw)
+        providers.append(_provider_spec(device))
+    if "CPUExecutionProvider" not in seen:
+        providers.append("CPUExecutionProvider")
+    return providers
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +274,7 @@ def _load_smoke_wav() -> np.ndarray:
     return np.concatenate([silence, tone, np.zeros(int(0.4 * sr), dtype=np.float32)])
 
 
-def _smoke_score_translate(provider: str) -> float | None:
+def _smoke_score_translate(provider) -> float | None:
     """ORT 加载 OPUS-MT encoder + dummy forward 计时 (毫秒)。
 
     只验证"模型可加载、可推理"这条链路 (完整 seq2seq 解码在 M4 translate 模块,
@@ -235,7 +340,7 @@ _SMOKE_FNS = {
 }
 
 
-def _smoke_score(task: str, provider: str) -> float | None:
+def _smoke_score(task: str, provider) -> float | None:
     fn = _SMOKE_FNS.get(task)
     return fn(provider) if fn else None
 
@@ -244,32 +349,42 @@ def _smoke_score(task: str, provider: str) -> float | None:
 # 选择
 # ---------------------------------------------------------------------------
 
-def select_device(task: str) -> DeviceInfo:
-    """按任务选择执行设备: 降级链 dml -> cpu。
+def select_device(task: str, *, benchmark: bool = True) -> DeviceInfo:
+    """Select a genuinely supported device in GPU -> NPU -> iGPU -> CPU order.
 
-    规则:
-    1. 枚举当前 providers; 若有 DmlExecutionProvider 且任务模型就绪 -> dml;
-    2. 否则回退 cpu (onnxruntime 必含 CPUExecutionProvider);
-    3. score_ms 用所选设备上的实际推理冒烟填充 (失败/缺模型 -> None)。
+    Accelerators are accepted only when the task's runtime supports their EP.
+    With ``benchmark=True`` a failed smoke inference falls through to the next
+    candidate instead of pretending that the failed accelerator was selected.
 
     Raises:
         ValueError: task 不在 {asr, tts, translate} 内。
     """
     if task not in TASKS:
         raise ValueError(f"未知任务 {task!r}, 可选: {TASKS}")
-    devices = enumerate_devices()
-    by_provider = {d.provider: d for d in devices}
+    devices = sorted(enumerate_devices(), key=_device_priority)
+    model_ready = _task_model_ready(task)
+    for device in devices:
+        kind = device.kind or ("cpu" if device.provider == "cpu" else "gpu")
+        if not _supports_device(task, device):
+            logger.info("设备路由跳过: task=%s device=%s 当前运行时不支持",
+                        task, device.name)
+            continue
+        if kind != "cpu" and not model_ready:
+            logger.info("设备路由跳过: task=%s device=%s 模型未就绪",
+                        task, device.name)
+            continue
+        score = _smoke_score(task, _provider_spec(device)) if benchmark else None
+        if benchmark and kind != "cpu" and score is None:
+            logger.warning("设备路由实测失败: task=%s device=%s，尝试下一设备",
+                           task, device.name)
+            continue
+        selected = DeviceInfo(device.provider, device.name, score, kind,
+                              _raw_provider(device))
+        logger.info("设备路由: task=%s 选择 %s kind=%s score_ms=%s",
+                    task, selected.name, kind, score)
+        return selected
 
-    # 1) DirectML 优先: 存在且任务模型就绪
-    if "dml" in by_provider and _task_model_ready(task):
-        logger.info("设备路由: task=%s 选择 DirectML (模型就绪)", task)
-        score = _smoke_score(task, "DmlExecutionProvider")
-        return DeviceInfo(provider="dml", name="DirectML", score_ms=score)
-
-    # 2) CPU 兜底 (记录降级原因, 便于排查 GPU 缺席)
-    if "dml" in by_provider:
-        logger.warning("设备路由: task=%s 有 DirectML 但模型未就绪, 降级 CPU", task)
-    else:
-        logger.info("设备路由: task=%s 无 DirectML, 使用 CPU", task)
-    score = _smoke_score(task, "CPUExecutionProvider")
-    return DeviceInfo(provider="cpu", name="CPU", score_ms=score)
+    # ORT normally always exposes CPU, but keep a deterministic last defense.
+    score = _smoke_score(task, "CPUExecutionProvider") if benchmark else None
+    logger.warning("设备路由没有可用加速器，task=%s 强制 CPU", task)
+    return DeviceInfo("cpu", "CPU", score, "cpu", "CPUExecutionProvider")

@@ -2,7 +2,7 @@
 
 覆盖:
 - run_self_check 返回结构合法 (status 只含 ok/warn/fail)
-- 模型完整性检查能发现人为制造的缺失 (删真机模型文件 -> fail -> 恢复)
+- 模型完整性检查能在隔离目录中发现人为制造的缺失
 - ModelManager.verify_all: 真实 38+ 条登记全部 ready
 - fetch 断点续传: 本地 HTTP 服务伪造 206 (续传) / 200 (忽略 Range 全量重写) 两种响应
 - fetch 主源失败自动切镜像
@@ -59,35 +59,28 @@ def test_export_report_plain_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 模型完整性 (真实模型目录; 缺失时 skip)
+# 模型完整性
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _has_real_models(), reason="本机无真实模型目录")
-def test_model_integrity_detects_missing_file() -> None:
-    """人为删除 manifest 某条目指向的文件 -> 模型完整性 fail; 恢复后 ok。
+def test_model_integrity_detects_missing_file(tmp_path: Path, monkeypatch) -> None:
+    """在隔离模型目录删除登记文件后报 fail，恢复后重新为 ok。"""
+    import voxsub.diagnostics as diagnostics
 
-    选 manifest 中 size 最小的文件 (不参与推理的零碎文件, 如 readme.md),
-    删除 -> 断言 fail -> finally 恢复原字节。
-    """
-    mgr = ModelManager(MODELS_DIR)
-    files = mgr.load_manifest().get("files", {})
-    assert files, "manifest 为空"
-    rel = min(files, key=lambda r: files[r].get("size", 0))
-    path = MODELS_DIR / rel
-    assert path.exists(), f"待删除文件不存在: {path}"
-    original = path.read_bytes()
-    try:
-        path.unlink()
-        items = run_self_check()
-        entry = next(i for i in items if i["check"] == "模型完整性")
-        assert entry["status"] == "fail", f"删除 {rel} 后应报 fail, 实际 {entry}"
-        assert rel in entry["detail"]
-    finally:
-        path.write_bytes(original)  # 恢复原字节 (含 mtime 差异无碍, 仅比大小)
-    # 恢复后再跑一次 -> ok (verify_all 只比存在+大小)
-    items = run_self_check()
-    entry = next(i for i in items if i["check"] == "模型完整性")
-    assert entry["status"] == "ok", f"恢复 {rel} 后应报 ok, 实际 {entry}"
+    model_file = tmp_path / "asr" / "tokens.txt"
+    model_file.parent.mkdir(parents=True)
+    original = b"test-model-asset"
+    model_file.write_bytes(original)
+    ModelManager(tmp_path).scan()
+    monkeypatch.setattr(diagnostics, "models_dir", lambda: tmp_path)
+
+    model_file.unlink()
+    entry = diagnostics._check_model_integrity()  # noqa: SLF001
+    assert entry["status"] == "fail"
+    assert "asr/tokens.txt" in entry["detail"]
+
+    model_file.write_bytes(original)
+    entry = diagnostics._check_model_integrity()  # noqa: SLF001
+    assert entry["status"] == "ok"
 
 
 @pytest.mark.skipif(not _has_real_models(), reason="本机无真实模型目录")

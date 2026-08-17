@@ -4,13 +4,13 @@
 
 ```
                         ┌─ 环形缓冲 ─ 16kHz PCM ─┐
-[audio 采集] 麦克风 ────┤                        ├─▶ [vad 切句] ─▶ [asr 流式识别]
+[audio 采集] 麦克风 ────┤                        ├─▶ [vad 切句] ─▶ [asr 可选识别器]
              loopback ──┘   (soundcard/WASAPI)   │      (sherpa-vad)   (sherpa zipformer)
              ffmpeg 提轨 ────────────────────────┘                        │
                                                                     on_utterance(text)
                                                                           ▼
-[router 设备路由] ── CPU/GPU/NPU 枚举+实测计分 ──▶ [translate] ◀── 并发预取+缓存
-                                                     │ opus 快档 / qwen 质量档 / cloud
+[model_catalog] ── 硬件检测/推荐/双源下载 ────────▶ [translate] ◀── 独立队列+缓存
+                                                     │ opus 兜底 / Hy-MT2 / cloud
                                                      ▼
                                    [tts piper] ──▶ UI 悬浮字幕窗 (双语滚动/历史)
                                                      │
@@ -24,12 +24,13 @@
 voxsub/
   audio/      采集（mic / loopback / 文件提轨），环形缓冲
   vad/        silero 风格 VAD 封装（sherpa 内置模型）
-  asr/        sherpa-onnx 流式识别封装，句子回调
-  translate/  Translator 基类 + opus / qwen / cloud 三实现
+  asr/        sherpa-onnx Zipformer / Fun-ASR-Nano / Qwen3-ASR 适配，句子回调
+  translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
   tts/        piper 合成封装
   router/     设备枚举（CPU/GPU/NPU）+ 按任务实测计分 + 降级链
   diagnostics/ 自检中心、模型完整性、冒烟测试
-  models/     模型下载器（双源/断点/SHA256）、本地缓存管理
+  models/     通用下载器（镜像/断点/SHA256）、本地缓存管理
+  model_catalog/ 精选模型目录、硬件推荐、双源安装/切换/卸载
   config/     config.json 读写（语言对/档位/设备/UI 偏好）
   ui/         PySide6：主窗、托盘、悬浮字幕窗、设置页
   pipeline/   三模式编排（A/B/C）
@@ -65,7 +66,7 @@ class AudioDeviceInfo(NamedTuple):
     device: object     # soundcard 设备对象
 
 def list_microphones(include_loopback: bool = True) -> list[AudioDeviceInfo]: ...
-def list_loopbacks() -> list[AudioDeviceInfo]: ...   # 从 include_loopback=True 的 mic 中按名字过滤
+def list_loopbacks() -> list[AudioDeviceInfo]: ...   # 从 include_loopback=True 的 mic 中按 isloopback 过滤
 
 class AudioSource(ABC):
     sample_rate: int = 16000          # 统一 16k 输出
@@ -78,7 +79,9 @@ class MicSource(AudioSource): ...        # 默认麦克风
 class LoopbackSource(AudioSource): ...   # 系统声音 (WASAPI loopback)
 ```
 
-注意（soundcard 0.4.6 实测）：`all_speakers()` 无 `include_loopback` 参数；loopback 一律从 `all_microphones(include_loopback=True)` 获取，按设备名含 "loopback"（不区分大小写）识别；`Recorder(samplerate=16000)` 自动重采样。
+注意（soundcard 0.4.6 实测）：`all_speakers()` 无 `include_loopback` 参数；loopback 一律从 `all_microphones(include_loopback=True)` 获取，并按 `isloopback` 属性识别（设备名通常不含 loopback）。默认 B 模式必须匹配系统默认扬声器的端点 ID，不能取枚举列表第一项。驱动格式协商失败时回退 PyAudioWPatch WASAPI，并在 UI 状态与实时日志中显示完整错误。
+
+按应用捕获使用 Windows `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`（Windows 10 2004+），目标 PID 的子进程树一并捕获；其它进程声音不会进入流。UI 通过可见顶层窗口枚举 PID，实际隔离边界是进程树而不是单一 HWND。
 
 ### asr（voxsub/asr.py）——已适配 sherpa-onnx 1.13.5（M1-spike 实测）
 
@@ -131,7 +134,7 @@ class Translator(ABC):
     def health(self) -> str: ...     # "ok" 或缺陷描述（用于诊断页展示）
 
 class OpusFastTranslator(Translator):        # 快档: OPUS-MT zh-en/en-zh(Xenova onnx int8 + ORT 手写 seq2seq 循环), 目标 <0.5s/句
-class QwenQualityTranslator(Translator):     # 质量档: Qwen2.5-1.5B-Instruct Q4_K_M GGUF via llama-cpp-python, 目标 2-5s/句
+class QwenQualityTranslator(Translator):     # 兼容类名；质量档实际加载模型广场所选 Hy-MT2 GGUF
 class CloudTranslator(Translator):           # 云: OpenAI 兼容端点(DEEPSEEK_API_KEY/BASE_URL 用户配置), 白名单 base_url
 
 class TranslatorFactory:
@@ -153,10 +156,13 @@ class TranslatorFactory:
 |---|---|---|---|---|
 | 快档 | OPUS-MT zh-en int8（onnx/encoder_model_int8.onnx + decoder_model_int8.onnx + config） | models/nmt/opus_zh_en/ | ~90MB | huggingface.co/Xenova/opus-mt-zh-en |
 | 快档 | OPUS-MT en-zh int8（同构） | models/nmt/opus_en_zh/ | ~90MB | huggingface.co/Xenova/opus-mt-en-zh |
-| 质量档 | Qwen2.5-1.5B-Instruct Q4_K_M GGUF | models/llm/qwen2.5-1.5b-instruct-q4_k_m.gguf | ~1GB | huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF / modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF |
+| 识别高质 | Fun-ASR-Nano 2512 INT8 | models/marketplace/asr-funasr-nano-2512-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope |
+| 识别多语 | Qwen3-ASR 0.6B INT8 | models/marketplace/asr-qwen3-0.6b-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope 分文件镜像 |
+| 翻译均衡 | Hy-MT2 1.8B Q4_K_M GGUF | models/marketplace/mt-hy-mt2-1.8b-q4/ | ~1.13GB | Hugging Face / ModelScope |
+| 翻译高质 | Hy-MT2 7B Q4_K_M GGUF | models/marketplace/mt-hy-mt2-7b-q4/ | ~4.62GB | Hugging Face / ModelScope |
 | 云 | 用户 OpenAI 兼容端点 | — | — | 用户配置 |
 
-注：Qwen2.5 的 ONNX 权重在 HF 全部 gated(401)，故质量档弃 onnxruntime-genai 改走 **llama-cpp-python + GGUF**（官方仓储非 gated，ModelScope 有镜像，免转换运营）。
+注：目录按任务内质量分排序，不追求“列得多”。旧模型只有在显著更低资源/延迟下仍不可替代时才作为内置兜底保留。下载源支持自动测速故障切换和手动选择；安装过程使用断点续传、SHA256 与安全解压。
 
 ## TTS 契约（M5）
 
@@ -184,6 +190,8 @@ class Pipeline:
     def on_status(self, cb: Callable[[str], None]) -> None: ...          # 状态文本
     def is_running(self) -> bool: ...
 ```
+
+扩展配置入口：`set_langs`、`set_input_file`、`set_audio_devices`、`set_capture_process`、`set_translator`。所有工作线程回调必须经 Qt Signal 桥接到主线程；音频源 `start()` 失败也必须回收运行态并发出可读状态，禁止静默线程退出。
 
 ## Pipeline 编排设计（M6）
 
@@ -214,7 +222,7 @@ class Pipeline:
 
 ### 设备路由接入
 
-Pipeline 构造时调用 `router.select_device("asr"|"tts"|"translate")` 决定各模块 provider 参数（M8 模块）；未实现时默认 "cpu"（向后兼容）。
+Pipeline 与翻译工厂通过 `router` 选择可真实调用的后端。全局优先级为 **独显 GPU → NPU → 核显 → CPU**；某模型运行时不支持前级设备时跳过并写日志，不能把 CPU 回退显示成硬件加速。
 
 ## 设备路由与诊断契约（M8）
 
@@ -223,9 +231,12 @@ class DeviceInfo(NamedTuple):
     provider: str            # "cpu" | "dml" | "cuda" | "npu"
     name: str
     score_ms: float | None   # 实测延迟; None=未测
+    kind: str                # "gpu" | "npu" | "igpu" | "cpu"
+    raw_provider: str        # ORT provider 原名
 
-def enumerate_devices() -> list[DeviceInfo]: ...   # onnxruntime providers + DirectML 设备
-def select_device(task: str) -> DeviceInfo: ...    # task ∈ {asr, tts, translate}; 实测分排序, 降级链 dml→cpu
+def enumerate_devices() -> list[DeviceInfo]: ...   # ORT EP device + Windows 物理硬件画像
+def select_device(task: str) -> DeviceInfo: ...    # GPU→NPU→iGPU→CPU；兼容性过滤+实测失败续降级
+def preferred_onnx_providers(task: str) -> list: ...  # OPUS 等 ONNX 模型的实际 provider 链
 
 def run_self_check() -> list[dict]: ...   # 每项 {check, status: ok|warn|fail, detail}
     # 项: 模型完整性(manifest 比对) / ORT providers / ASR 冒烟 / VAD 冒烟 / TTS 冒烟 / 磁盘内存余量
@@ -260,11 +271,11 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 - 图标：QFluentWidgets FluentIcons（禁 emoji 图标）
 
 ### 组件清单（M7 验收依据）
-1. **主窗**：编辑式左右分栏（左=模式三卡片 A/B/C + 语言对 + 状态灯；右=实时字幕流列表）；底部胶囊 CTA「开始/停止」内嵌圆形箭头岛
-2. **字幕浮窗**：无边框置顶半透明；Double-Bezel 双层壳；双语两行（原文+译文）；可拖动；字号/透明度可调；历史滚动；模式切换不中断
+1. **主窗**：编辑式左右分栏（左=模式三卡片 A/B/C + 语言对 + 状态灯；右=实时字幕流列表）；底部胶囊 CTA 在普通同传为“开始/停止”，录音同传为“开始/暂停/继续”，另提供“结束并保存”
+2. **字幕浮窗**：无边框置顶半透明；Double-Bezel 双层壳；双语两行（原文+译文）可选中复制；可拖动；悬停字号 -/+/锁定/关闭；锁定后鼠标穿透、主窗解锁；透明度可调；历史滚动
 3. **托盘**：模式快捷切换、开机自启开关（QStandardPaths 启动项）、退出
-4. **设置页**（独立窗口）：模型档位（快档/质量档/云 API key）、语言对、TTS 开关、主题三档、设备路由（CPU/GPU/NPU 实测速度展示）
-5. **诊断页**：设备清单 + 自检结果卡（✅/⚠️/❌ + 一句话处置），一键导出一份纯文本报告
+4. **设置页**（独立窗口）：翻译档位（快档/质量档/云 API key）、识别调优预设与自定义参数、TTS 开关、麦克风/系统输出端点、应用进程隔离目标、主题三档。每个识别调优项必须附带鼠标悬停即显示的 `i` 通俗说明；调优参数使用保存/放弃事务，关窗不得隐式保存
+5. **诊断页**：自检结果卡（✅/⚠️/❌ + 一句话处置）、应用内实时日志、运行时 DEBUG 开关、报告/日志导出
 
 ### 状态全覆盖（每组件）
 默认 / hover / pressed / disabled / loading（拾音中转圈、推理中脉冲）/ selected；空状态（无字幕时引导文案）；错误态（设备失败提示换源）
@@ -274,6 +285,7 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 - 模型目录：`%LOCALAPPDATA%\VoxSub\models\{asr,vad,nmt,llm,tts}\`（含 manifest.json 记录 SHA256/版本）
 - 配置：`%LOCALAPPDATA%\VoxSub\config.json`
 - 字幕历史：内存滚动 + 用户手动导出（不做自动落盘，避免隐私残留争议）
+- 录音：仅在用户显式打开“同时录音”后写入 `%LOCALAPPDATA%\VoxSub\recordings\` 的 16kHz mono PCM WAV；暂停段不写入
 - 下载缓存：`%LOCALAPPDATA%\VoxSub\downloads\`（未完成分片，续传用）
 
 ## 关键决策
@@ -281,4 +293,4 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 - 推理全部经 onnxruntime，CPU 为兜底执行提供器；DirectML 为加速层（自动枚举 GPU/NPU）
 - "说一句翻一句"句子级节奏，非逐词；翻译预取使感知延迟 ≈ 识别延迟 + 400ms
 - 云翻译仅允许用户显式配置的 OpenAI 兼容端点，key 存本地 config
-- 音频仅存在于内存流水线，不落盘录音（隐私优先；C 模式仅处理用户主动导入的文件）
+- 默认音频仅存在于内存流水线；只有用户明确打开同传录音时才本地落盘（C 模式仅处理用户主动导入的文件）

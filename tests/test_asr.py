@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from voxsub.asr import StreamingASR, UtteranceSegmenter, WindowVAD
+from voxsub.asr import _find_onnx
 
 MODELS_DIR = Path(os.environ.get("LOCALAPPDATA", ".")) / "VoxSub" / "models"
 ASR_DIR = MODELS_DIR / "asr"
@@ -122,6 +123,54 @@ def test_streaming_asr_partial_result_nonempty_after_feed(asr: StreamingASR) -> 
         asr.feed(stream, prefix[i:i + SAMPLE_RATE // 2])
     partial = asr.get_result(stream)
     assert partial.strip() != "", "feed 3s 真实语音后应已有部分识别结果"
+
+
+def test_find_onnx_uses_fp32_decoder_when_requested(tmp_path: Path) -> None:
+    int8 = tmp_path / "decoder.int8.onnx"
+    fp32 = tmp_path / "decoder.onnx"
+    int8.write_bytes(b"int8")
+    fp32.write_bytes(b"fp32")
+    assert _find_onnx(tmp_path, "*decoder*.onnx", prefer_int8=True) == int8
+    assert _find_onnx(tmp_path, "*decoder*.onnx", prefer_int8=False) == fp32
+
+
+def test_segmenter_hard_cuts_continuous_speech_and_emits_partials() -> None:
+    class _AlwaysSpeechVad:
+        window_size = 160
+
+        def is_speech(self, _chunk):
+            return True
+
+        def reset(self):
+            pass
+
+    class _CountingAsr:
+        def create_stream(self):
+            return {"windows": 0}
+
+        def feed(self, stream, _chunk):
+            stream["windows"] += 1
+
+        def get_result(self, stream):
+            return f"片段{stream['windows']}"
+
+        def decode(self, stream):
+            return self.get_result(stream)
+
+        def reset(self, stream):
+            stream["windows"] = 0
+
+    finals: list[str] = []
+    partials: list[str] = []
+    seg = UtteranceSegmenter(
+        _CountingAsr(), _AlwaysSpeechVad(), finals.append,
+        max_utterance_ms=1000, on_partial=partials.append,
+        partial_interval_ms=250,
+    )
+    seg.feed(np.ones(SAMPLE_RATE * 2, dtype=np.float32))
+    seg.flush()
+    assert len(finals) == 2
+    assert partials
 
 
 # ---------------------------------------------------------------------------

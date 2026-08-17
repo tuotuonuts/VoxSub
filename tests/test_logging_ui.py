@@ -170,3 +170,19 @@ class TestDiagnosticsLogTab:
         assert "[voxsub.a]" in line and line.endswith("hi")
         assert _strip_file_ts("2026-08-17 10:23:45 INFO     [voxsub.a] hi").startswith("10:23:45")
         assert _strip_file_ts("普通无前缀行") == "普通无前缀行"
+
+    def test_debug_switch_changes_runtime_level(self, qapp, tmp_path):
+        from voxsub.ui.config_store import ConfigStore
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        dw = DiagnosticsWindow(diagnostics_module=None, store=store)
+        try:
+            dw.debug_switch.setChecked(True)
+            assert store.get("debug_mode") is True
+            assert logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
+            dw.debug_switch.setChecked(False)
+            assert not logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
+        finally:
+            dw.close()
+            dw.deleteLater()

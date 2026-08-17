@@ -30,11 +30,29 @@ class ConfigStore:
         "mode": "a",                 # a 麦克风同传 | b 系统声音字幕 | c 文件字幕
         "lang_pair": "zh-en",        # 语言对
         "translate_tier": "fast",    # fast 快档 | quality 质量档 | cloud 云 API
+        "asr_model_id": "asr-zipformer-bilingual-fast",
+        "asr_tuning_profile": "auto", # auto | responsive | balanced | accuracy | custom
+        "asr_vad_threshold": 0.35,     # 自定义：语音触发灵敏度
+        "asr_silence_ms": 650,         # 自定义：尾部停顿多久切句
+        "asr_max_utterance_ms": 12000, # 自定义：单段最长时长
+        "asr_beam_paths": 4,           # 自定义：Zipformer 候选路径
+        "asr_max_new_tokens": 512,     # 生成式 ASR 单段最大输出
+        "asr_hotwords": "",           # 逗号分隔领域词
+        "translate_model_id": "mt-opus-fast-builtin",
+        "download_source": "auto",  # auto | global | china
         "api_key": "",               # 云 API Key（仅 cloud 档使用）
         "base_url": "https://api.deepseek.com/v1",  # OpenAI 兼容端点（白名单由 M6 落）
         "tts_enabled": True,         # 语音朗读开关
+        "mic_device_id": "",        # A 模式麦克风；空=系统默认
+        "loopback_device_id": "",   # B 模式输出端点；空=系统默认
+        "capture_process_id": 0,     # B 模式目标进程；0=全部系统声音
+        "capture_window_title": "", # 仅作 UI 恢复/进程失效提示
+        "last_input_file": "",      # C 模式最近选择的音视频
+        "debug_mode": False,         # 内置实时调试日志
         "overlay_font_size": 20,     # 字幕浮窗字号
         "overlay_opacity": 0.92,     # 字幕浮窗透明度
+        "overlay_click_through": False, # 锁定浮窗并把鼠标点击穿透到底层窗口
+        "record_with_translation": False, # A 模式同时保存麦克风 WAV
     }
 
     def __init__(self, path: Path | str | None = None) -> None:

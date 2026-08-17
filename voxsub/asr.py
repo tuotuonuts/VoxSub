@@ -20,6 +20,7 @@ asr 目录内多精度 (int8/fp32) 并存时优先选 *int8*.onnx。
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
@@ -59,6 +60,10 @@ def _find_onnx(model_dir: Path, pattern: str, prefer_int8: bool = True) -> Path:
         for hit in hits:
             if "int8" in hit.name:
                 return hit
+    else:
+        for hit in hits:
+            if "int8" not in hit.name:
+                return hit
     return hits[0]
 
 
@@ -77,7 +82,9 @@ class StreamingASR:
     (例如与 UtteranceSegmenter 配对逐句解码)。
     """
 
-    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 1):
+    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 4,
+                 decoding_method: str = "modified_beam_search",
+                 max_active_paths: int = 4, source_lang: str = "auto"):
         self._model_dir = Path(model_dir)
         tokens = self._model_dir / "tokens.txt"
         if not tokens.exists():
@@ -87,14 +94,23 @@ class StreamingASR:
         self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
             tokens=str(tokens),
             encoder=str(_find_onnx(self._model_dir, "*encoder*.onnx")),
-            decoder=str(_find_onnx(self._model_dir, "*decoder*.onnx")),
+            # sherpa 官方示例明确建议 transducer decoder 保留 FP32；encoder / joiner
+            # 使用 int8 可保留大部分速度与内存收益。旧版三件套全选 int8 会明显
+            # 放大这个 small bilingual 模型的解码损失。
+            decoder=str(_find_onnx(self._model_dir, "*decoder*.onnx", prefer_int8=False)),
             joiner=str(_find_onnx(self._model_dir, "*joiner*.onnx")),
-            decoding_method="greedy_search",
+            decoding_method=decoding_method,
+            max_active_paths=max_active_paths,
             provider=provider,
             num_threads=num_threads,
         )
-        logger.info("ASR 模型加载成功 (provider=%s, num_threads=%d, 目录=%s)",
-                    provider, num_threads, self._model_dir.name)
+        self.source_lang = source_lang
+        logger.info(
+            "ASR 模型加载成功 (provider=%s, threads=%d, decoding=%s, paths=%d, "
+            "source_lang=%s, precision=int8/fp32/int8, 目录=%s)",
+            provider, num_threads, decoding_method, max_active_paths,
+            source_lang, self._model_dir.name,
+        )
 
     def create_stream(self) -> object:
         """新建一条独立解码流。"""
@@ -135,6 +151,152 @@ class StreamingASR:
         self._recognizer.reset(stream)
 
 
+class _OfflineBuffer:
+    """Small adapter object matching the stream methods used by the segmenter."""
+
+    def __init__(self) -> None:
+        self.chunks: list[np.ndarray] = []
+        self.result = ""
+
+
+class OfflineGenerativeASR:
+    """Sentence-level adapter for Qwen3-ASR and Fun-ASR-Nano sherpa models.
+
+    These models are non-streaming recognizers.  The existing VAD segmenter still
+    provides live sentence boundaries and feeds audio into this buffer; inference
+    happens once at the boundary so the expensive decoder is never rerun every
+    few hundred milliseconds for a partial result.
+    """
+
+    def __init__(self, model_dir: Path, runtime: str, provider: str = "cpu",
+                 num_threads: int = 4, source_lang: str = "auto",
+                 max_new_tokens: int = 512, hotwords: str = "") -> None:
+        self._model_dir = Path(model_dir)
+        self.runtime = runtime
+        threads = max(1, int(num_threads))
+        if runtime == "sherpa-qwen3-asr":
+            tokenizer = self._model_dir / "tokenizer"
+            required = {
+                "conv_frontend": self._model_dir / "conv_frontend.onnx",
+                "encoder": self._model_dir / "encoder.int8.onnx",
+                "decoder": self._model_dir / "decoder.int8.onnx",
+                "tokenizer": tokenizer,
+            }
+            self._require(required.values())
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_qwen3_asr(
+                conv_frontend=str(required["conv_frontend"]),
+                encoder=str(required["encoder"]),
+                decoder=str(required["decoder"]),
+                tokenizer=str(required["tokenizer"]),
+                num_threads=threads,
+                provider=provider,
+                max_total_len=512,
+                max_new_tokens=max(64, min(512, int(max_new_tokens))),
+                temperature=1e-6,
+                top_p=0.8,
+                hotwords=str(hotwords or ""),
+            )
+        elif runtime == "sherpa-funasr-nano":
+            tokenizer = self._model_dir / "Qwen3-0.6B"
+            required = {
+                "encoder_adaptor": self._model_dir / "encoder_adaptor.int8.onnx",
+                "llm": self._model_dir / "llm.int8.onnx",
+                "embedding": self._model_dir / "embedding.int8.onnx",
+                "tokenizer": tokenizer,
+            }
+            self._require(required.values())
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_funasr_nano(
+                encoder_adaptor=str(required["encoder_adaptor"]),
+                llm=str(required["llm"]),
+                embedding=str(required["embedding"]),
+                tokenizer=str(required["tokenizer"]),
+                num_threads=threads,
+                provider=provider,
+                system_prompt="You are a precise speech transcription engine.",
+                user_prompt="语音转写：",
+                max_new_tokens=max(64, min(512, int(max_new_tokens))),
+                temperature=1e-6,
+                top_p=0.8,
+                language="",
+                itn=True,
+                hotwords=str(hotwords or ""),
+            )
+        else:
+            raise ValueError(f"不支持的离线 ASR runtime: {runtime}")
+        self.source_lang = source_lang
+        logger.info("生成式 ASR 加载成功 (runtime=%s provider=%s threads=%d 目录=%s)",
+                    runtime, provider, threads, self._model_dir.name)
+
+    @staticmethod
+    def _require(paths) -> None:
+        missing = [str(path) for path in paths if not Path(path).exists()]
+        if missing:
+            raise FileNotFoundError("生成式 ASR 模型不完整: " + ", ".join(missing))
+
+    def create_stream(self) -> _OfflineBuffer:
+        return _OfflineBuffer()
+
+    def feed(self, stream: _OfflineBuffer, samples: np.ndarray) -> None:
+        wav = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if wav.size:
+            stream.chunks.append(wav.copy())
+
+    def decode(self, stream: _OfflineBuffer) -> str:
+        if stream.result:
+            return stream.result
+        if not stream.chunks:
+            return ""
+        wav = np.concatenate(stream.chunks)
+        native = self._recognizer.create_stream()
+        native.accept_waveform(SAMPLE_RATE, wav)
+        self._recognizer.decode_stream(native)
+        result = native.result
+        text = getattr(result, "text", result)
+        stream.result = str(text or "").strip()
+        return stream.result
+
+    def get_result(self, stream: _OfflineBuffer) -> str:
+        # Do not repeatedly run a full generative decode for UI partials.
+        return stream.result
+
+    @staticmethod
+    def is_endpoint(stream: _OfflineBuffer) -> bool:
+        return False
+
+    @staticmethod
+    def reset(stream: _OfflineBuffer) -> None:
+        stream.chunks.clear()
+        stream.result = ""
+
+
+def create_asr(model_id: str, models_root: Path, provider: str = "cpu",
+               num_threads: int = 4, source_lang: str = "auto",
+               tuning: dict | None = None):
+    """Create the runtime adapter for a selected catalog model."""
+    from voxsub.model_catalog import get_model
+
+    model = get_model(model_id)
+    if model is None or model.task != "asr":
+        logger.warning("未知 ASR 模型 %r，回落内置 Zipformer", model_id)
+        model = get_model("asr-zipformer-bilingual-fast")
+    assert model is not None
+    tuning = tuning or {}
+    model_dir = Path(models_root) / model.install_rel
+    if model.runtime == "sherpa-streaming-transducer":
+        return StreamingASR(
+            model_dir, provider=provider, num_threads=num_threads,
+            decoding_method="modified_beam_search",
+            max_active_paths=max(1, min(8, int(tuning.get("beam_paths", 4)))),
+            source_lang=source_lang,
+        )
+    return OfflineGenerativeASR(
+        model_dir, runtime=model.runtime, provider=provider,
+        num_threads=num_threads, source_lang=source_lang,
+        max_new_tokens=int(tuning.get("max_new_tokens", 512)),
+        hotwords=str(tuning.get("hotwords", "")),
+    )
+
+
 class WindowVAD:
     """silero VAD 封装 (sherpa VadModel) —— 逐窗口语音检测。
 
@@ -153,7 +315,9 @@ class WindowVAD:
                 min_silence_duration=min_silence,
                 min_speech_duration=min_speech,
                 window_size=_VAD_WINDOW_SIZE,
-                max_speech_duration=10,
+                # Sentence limits are owned by our segmenters.  Keep sherpa's
+                # internal guard comfortably above the UI's 30 s maximum.
+                max_speech_duration=60,
             ),
             sample_rate=SAMPLE_RATE,
             num_threads=2,
@@ -190,6 +354,106 @@ class WindowVAD:
         self._vad.reset()
 
 
+class AudioUtteranceSegmenter:
+    """Only segment audio with VAD; decode happens on a different worker.
+
+    Generative recognizers such as Qwen3-ASR are sentence-level models.  Running
+    their decoder inside the capture/VAD worker stalls segmentation and lets the
+    raw-audio queue grow.  This class keeps that path cheap: it emits a complete
+    waveform at a natural pause, and a dedicated recognition worker decodes it.
+
+    A short pre-roll keeps consonants that begin just before VAD becomes certain.
+    The hard duration limit is only a safety valve for continuous background
+    audio; normal sentence boundaries are controlled by ``min_silence_ms``.
+    """
+
+    def __init__(self, vad: WindowVAD, on_audio: Callable[[np.ndarray], None], *,
+                 min_silence_ms: int = 700, max_utterance_ms: int = 12000,
+                 min_speech_ms: int = 250, pre_roll_ms: int = 240) -> None:
+        self._vad = vad
+        self._on_audio = on_audio
+        self._min_silence_samples = int(SAMPLE_RATE * min_silence_ms / 1000.0)
+        self._max_utterance_samples = int(SAMPLE_RATE * max_utterance_ms / 1000.0)
+        self._min_speech_samples = int(SAMPLE_RATE * min_speech_ms / 1000.0)
+        pre_roll_windows = max(
+            1, int(np.ceil(SAMPLE_RATE * pre_roll_ms / 1000.0 / vad.window_size))
+        )
+        self._pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_windows)
+        self._chunks: list[np.ndarray] = []
+        self._buffer = np.zeros(0, dtype=np.float32)
+        self._silence_samples = 0
+        self._speech_samples = 0
+        self._utterance_samples = 0
+
+    def feed(self, samples: np.ndarray) -> None:
+        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return
+        data = np.concatenate([self._buffer, samples]) if self._buffer.size else samples
+        self._buffer = np.zeros(0, dtype=np.float32)
+        win = self._vad.window_size
+        n_full = (data.size // win) * win
+        for i in range(0, n_full, win):
+            self._process_window(data[i:i + win])
+        if data.size > n_full:
+            self._buffer = data[n_full:].copy()
+
+    def _process_window(self, chunk: np.ndarray) -> None:
+        speech = self._vad.is_speech(chunk)
+        if not self._chunks:
+            self._pre_roll.append(chunk.copy())
+            if not speech:
+                return
+            self._chunks = [part.copy() for part in self._pre_roll]
+            self._pre_roll.clear()
+            self._speech_samples = len(chunk)
+            self._utterance_samples = sum(len(part) for part in self._chunks)
+            self._silence_samples = 0
+            return
+
+        self._chunks.append(chunk.copy())
+        self._utterance_samples += len(chunk)
+        if speech:
+            self._speech_samples += len(chunk)
+            self._silence_samples = 0
+        else:
+            self._silence_samples += len(chunk)
+
+        if self._silence_samples >= self._min_silence_samples:
+            self._end_utterance("pause")
+        elif self._utterance_samples >= self._max_utterance_samples:
+            logger.debug("生成式 ASR 连续语音达到安全上限: %.2fs",
+                         self._utterance_samples / SAMPLE_RATE)
+            self._end_utterance("limit")
+
+    def _end_utterance(self, reason: str) -> None:
+        if not self._chunks:
+            return
+        chunks, self._chunks = self._chunks, []
+        speech_samples = self._speech_samples
+        self._silence_samples = 0
+        self._speech_samples = 0
+        self._utterance_samples = 0
+        self._pre_roll.clear()
+        self._vad.reset()
+        if speech_samples < self._min_speech_samples:
+            logger.debug("忽略过短语音片段: %.0fms",
+                         speech_samples * 1000.0 / SAMPLE_RATE)
+            return
+        audio = np.concatenate(chunks).astype(np.float32, copy=False)
+        logger.debug("生成式 ASR 自然分段: reason=%s duration=%.2fs",
+                     reason, audio.size / SAMPLE_RATE)
+        self._on_audio(audio)
+
+    def flush(self) -> None:
+        if self._buffer.size:
+            win = self._vad.window_size
+            pad = np.zeros(win - self._buffer.size, dtype=np.float32)
+            self._process_window(np.concatenate([self._buffer, pad]))
+            self._buffer = np.zeros(0, dtype=np.float32)
+        self._end_utterance("flush")
+
+
 class UtteranceSegmenter:
     """VAD + ASR 组装: 把任意长度 16k mono float32 音频流切分为"句子"。
 
@@ -208,14 +472,23 @@ class UtteranceSegmenter:
     """
 
     def __init__(self, asr: StreamingASR, vad: WindowVAD,
-                 on_utterance: Callable[[str], None], min_silence_ms: int = 500):
+                 on_utterance: Callable[[str], None], min_silence_ms: int = 350,
+                 max_utterance_ms: int = 4500,
+                 on_partial: Callable[[str], None] | None = None,
+                 partial_interval_ms: int = 360):
         self._asr = asr
         self._vad = vad
         self._on_utterance = on_utterance
+        self._on_partial = on_partial
         self._min_silence_samples = int(SAMPLE_RATE * min_silence_ms / 1000.0)
+        self._max_utterance_samples = int(SAMPLE_RATE * max_utterance_ms / 1000.0)
+        self._partial_interval_samples = int(SAMPLE_RATE * partial_interval_ms / 1000.0)
         self._stream = None                       # 当前活跃解码流; None = 静音态
         self._buffer = np.zeros(0, dtype=np.float32)  # 不足一窗的剩余样本
         self._silence_samples = 0                 # 当前段尾部累计静音样本数
+        self._utterance_samples = 0
+        self._since_partial_samples = 0
+        self._last_partial = ""
 
     def feed(self, samples: np.ndarray) -> None:
         """送入任意长度音频块 (float32 mono 16k)。"""
@@ -247,6 +520,28 @@ class UtteranceSegmenter:
             if self._silence_samples >= self._min_silence_samples:
                 self._end_utterance()
 
+        if self._stream is not None:
+            self._utterance_samples += len(chunk)
+            self._since_partial_samples += len(chunk)
+            self._emit_partial_if_due()
+            # 视频/直播常有背景声，VAD 可能几十秒都遇不到纯静音。硬上限确保
+            # 字幕持续产出，而不是等停止按钮触发 flush 才出现一大段文字。
+            if self._utterance_samples >= self._max_utterance_samples:
+                logger.debug("ASR 连续语音达到硬切上限: %.2fs",
+                             self._utterance_samples / SAMPLE_RATE)
+                self._end_utterance()
+
+    def _emit_partial_if_due(self) -> None:
+        if self._on_partial is None or self._stream is None:
+            return
+        if self._since_partial_samples < self._partial_interval_samples:
+            return
+        self._since_partial_samples = 0
+        text = self._asr.get_result(self._stream).strip()
+        if text and text != self._last_partial:
+            self._last_partial = text
+            self._on_partial(text)
+
     def _end_utterance(self) -> None:
         """结束当前段: 取最终文本回调, 复位 ASR 流与 VAD。"""
         if self._stream is None:
@@ -257,6 +552,9 @@ class UtteranceSegmenter:
         self._asr.reset(self._stream)
         self._stream = None
         self._silence_samples = 0
+        self._utterance_samples = 0
+        self._since_partial_samples = 0
+        self._last_partial = ""
         self._vad.reset()  # 清 VAD 状态, 避免上句尾部状态压低下句起检灵敏度
 
     def flush(self) -> None:

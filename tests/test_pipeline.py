@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -81,7 +84,6 @@ def test_mode_validation() -> None:
 
 def test_start_stop_with_fake_source(monkeypatch) -> None:
     """A 模式伪源启停: 线程不崩, 回调能收到(静音无识别结果, 仅验证生命周期)。"""
-    import time
     p = Pipeline()
     msgs: list[str] = []
     p.on_status(msgs.append)
@@ -92,6 +94,148 @@ def test_start_stop_with_fake_source(monkeypatch) -> None:
     p.stop()
     assert not p.is_running()
     assert any("启动" in m or "运行" in m or "停止" in m for m in msgs)
+
+
+def test_loopback_default_does_not_pick_first_enumerated_device(monkeypatch) -> None:
+    """B 模式无显式选择时交给 LoopbackSource 匹配系统默认扬声器。"""
+    import voxsub.pipeline as pl
+
+    sentinel = object()
+    called: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(pl, "LoopbackSource",
+                        lambda *args, **kwargs: called.append((args, kwargs)) or sentinel)
+    p = Pipeline()
+    p.set_mode("b")
+    assert p._make_source() is sentinel  # noqa: SLF001
+    assert called == [((), {})]
+
+
+def test_selected_loopback_device_is_respected(monkeypatch) -> None:
+    import voxsub.pipeline as pl
+    from voxsub.audio import AudioDeviceInfo
+
+    class _Device:
+        id = "speaker-2"
+        name = "会议耳机"
+
+    selected = _Device()
+    monkeypatch.setattr(pl, "list_loopbacks",
+                        lambda: [AudioDeviceInfo(selected.name, "loopback", selected)])
+    monkeypatch.setattr(pl, "LoopbackSource", lambda device=None: device)
+    p = Pipeline()
+    p.set_mode("b")
+    p.set_audio_devices(loopback_device_id="speaker-2")
+    assert p._make_source() is selected  # noqa: SLF001
+
+
+def test_capture_start_failure_is_visible_and_stops_pipeline(monkeypatch) -> None:
+    """设备 start 异常不能再静默杀死采集线程。"""
+    class _BrokenSource(FakeSource):
+        def start(self) -> None:
+            raise RuntimeError("设备被占用")
+
+    p = Pipeline()
+    statuses: list[str] = []
+    p.on_status(statuses.append)
+    monkeypatch.setattr(p, "_build_real_time", lambda: None)
+    monkeypatch.setattr(p, "_make_source", _BrokenSource)
+    p.start()
+    deadline = time.monotonic() + 2.0
+    while p.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not p.is_running()
+    assert any("音频设备错误" in msg and "设备被占用" in msg for msg in statuses)
+
+
+def test_segmenter_flush_has_single_owner() -> None:
+    """处理线程负责唯一一次 flush；stop/UI 线程不得再次触碰 sherpa 流。"""
+    class _Seg:
+        def __init__(self):
+            self.flushes = 0
+
+        def flush(self):
+            self.flushes += 1
+
+    p = Pipeline()
+    seg = _Seg()
+    p._seg = seg  # noqa: SLF001
+    p._stop_evt.set()  # noqa: SLF001
+    p._process_loop()  # noqa: SLF001
+    p.stop()
+    assert seg.flushes == 1
+
+
+def test_translation_is_queued_outside_asr_thread() -> None:
+    p = Pipeline()
+    calls: list[str] = []
+
+    class _Translator:
+        def translate(self, text, *_args):
+            calls.append(text)
+            return "translated"
+
+    p._translator = _Translator()  # noqa: SLF001
+    p._on_sentence("原文")  # noqa: SLF001
+    assert calls == []
+    p._translation_input_done.set()  # noqa: SLF001
+    p._translation_loop()  # noqa: SLF001
+    assert calls == ["原文"]
+
+
+def test_generative_recognition_is_decoupled_from_vad_worker() -> None:
+    p = Pipeline()
+
+    class _ASR:
+        @staticmethod
+        def create_stream():
+            return {"audio": None}
+
+        @staticmethod
+        def feed(stream, audio):
+            stream["audio"] = audio.copy()
+
+        @staticmethod
+        def decode(stream):
+            assert stream["audio"].size == 320
+            return "完整的一句话"
+
+        @staticmethod
+        def reset(stream):
+            stream.clear()
+
+    p._asr = _ASR()  # noqa: SLF001
+    p._recognition_queue.put(np.ones(320, dtype=np.float32))  # noqa: SLF001
+    p._recognition_input_done.set()  # noqa: SLF001
+    p._recognition_loop()  # noqa: SLF001
+    assert p._translation_queue.get_nowait() == "完整的一句话"  # noqa: SLF001
+    assert p._translation_input_done.is_set()  # noqa: SLF001
+
+
+def test_asr_tuning_presets_keep_generative_context_longer() -> None:
+    p = Pipeline()
+    auto_qwen = p._effective_asr_tuning(generative=True)  # noqa: SLF001
+    auto_zip = p._effective_asr_tuning(generative=False)  # noqa: SLF001
+    assert auto_qwen["max_utterance_ms"] == 12_000
+    assert auto_qwen["silence_ms"] == 700
+    assert auto_zip["max_utterance_ms"] == 4_500
+    p.set_asr_tuning({"profile": "custom", "vad_threshold": 0.2,
+                      "silence_ms": 850, "max_utterance_ms": 18_000,
+                      "beam_paths": 8, "max_new_tokens": 256,
+                      "hotwords": "VoxSub"})
+    custom = p._effective_asr_tuning(generative=True)  # noqa: SLF001
+    assert custom["silence_ms"] == 850
+    assert custom["max_utterance_ms"] == 18_000
+    assert custom["hotwords"] == "VoxSub"
+
+    p.set_asr_tuning({"profile": "custom", "vad_threshold": 0.02,
+                      "silence_ms": 50, "max_utterance_ms": 120_000,
+                      "beam_paths": 16, "max_new_tokens": 4096})
+    wide = p._effective_asr_tuning(generative=True)  # noqa: SLF001
+    assert wide["vad_threshold"] == 0.02
+    assert wide["silence_ms"] == 50
+    assert wide["max_utterance_ms"] == 120_000
+    assert wide["beam_paths"] == 16
+    assert wide["max_new_tokens"] == 4096
 
 
 # ---------- C 模式 (真实模型) ----------
@@ -148,3 +292,42 @@ def test_pipeline_has_loopback_symbol() -> None:
     except Exception as exc:
         # 若 audio 初始化整体失败也接受被上层捕获, 但绝不能是 NameError
         assert not isinstance(exc, NameError), f"B 模式缺 import: {exc}"
+
+
+@pytest.mark.integration
+def test_video_audio_extraction_with_ffmpeg(tmp_path: Path, monkeypatch) -> None:
+    """常见视频容器能自动提取为 16k 单声道 WAV，再进入识别阶段。"""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("PATH 中没有 ffmpeg")
+    video = tmp_path / "sample.mp4"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    made = subprocess.run(
+        [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+         "-f", "lavfi", "-i", "color=c=black:s=160x90:d=0.5",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=0.5",
+         "-shortest", "-c:v", "mpeg4", "-c:a", "aac", str(video)],
+        check=False, capture_output=True, creationflags=flags,
+    )
+    if made.returncode != 0:
+        pytest.skip(f"本机 ffmpeg 无法生成测试 MP4: {made.stderr[-200:]!r}")
+
+    captured: dict[str, object] = {}
+    p = Pipeline()
+
+    def _recognize(pcm: np.ndarray):
+        captured["pcm"] = pcm
+        return []
+
+    monkeypatch.setattr(p, "_recognize_streaming", _recognize)
+    lines, extracted = p._transcribe_file(video)  # noqa: SLF001
+    try:
+        assert lines == []
+        assert extracted is not None and extracted.exists()
+        pcm = captured["pcm"]
+        assert isinstance(pcm, np.ndarray)
+        assert pcm.dtype == np.float32 and pcm.ndim == 1
+        assert pcm.size >= 7000
+    finally:
+        if extracted is not None:
+            extracted.unlink(missing_ok=True)

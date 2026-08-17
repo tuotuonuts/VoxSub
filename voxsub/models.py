@@ -23,7 +23,7 @@ import hashlib
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
@@ -33,6 +33,16 @@ logger = get_logger("models")
 
 MANIFEST_NAME = "manifest.json"
 CHUNK = 1 << 20  # 1MB 分块读写
+
+
+class DownloadCancelled(RuntimeError):
+    """Raised when a marketplace download is cancelled by the user."""
+
+
+def _is_internal_artifact(rel: str) -> bool:
+    """返回是否为模型管理器自己的锁/临时文件，而非模型资产。"""
+    name = Path(rel).name
+    return name in {MANIFEST_NAME, ".fetch.lock", f"{MANIFEST_NAME}.tmp"} or name.endswith(".part")
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +58,15 @@ def load_manifest(models_dir: Path | str) -> dict:
     p = _manifest_path(Path(models_dir))
     if p.exists():
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
+            manifest = json.loads(p.read_text(encoding="utf-8"))
+            files = manifest.get("files")
+            if isinstance(files, dict):
+                # 旧版 scan 曾把正在使用的 .fetch.lock 登记成模型文件。读取时
+                # 过滤内部产物，避免诊断误报，也避免测试/修复流程触碰锁文件。
+                for rel in list(files):
+                    if _is_internal_artifact(rel):
+                        files.pop(rel, None)
+            return manifest
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("manifest 读取/解析失败 (%s), 回退空清单: %s", p.name, exc)
             return {"version": 1, "files": {}}
@@ -77,7 +95,10 @@ def sha256_of(path: Path | str) -> str:
 
 
 def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
-               mirror: str | None = None) -> bool:
+               mirror: str | None = None, *,
+               mirrors: Iterable[str] | None = None,
+               progress: Callable[[int, int, str], None] | None = None,
+               cancelled: Callable[[], bool] | None = None) -> bool:
     """下载单个文件(断点续传), sha256 校验; 主 URL 失败自动切镜像。
 
     续传细节:
@@ -89,21 +110,51 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
-    sources = [u for u in (url, mirror) if u]
+    sources = [url]
+    if mirror:
+        sources.append(mirror)
+    if mirrors:
+        sources.extend(u for u in mirrors if u)
+    # 保留顺序去重，自动测速可能把同一源作为回退重复传入。
+    sources = list(dict.fromkeys(sources))
     logger.info("开始下载 %s (候选源 %d 个)", dest.name, len(sources))
 
     for src in sources:
         try:
+            if cancelled and cancelled():
+                raise DownloadCancelled("下载已取消")
             existing = part.stat().st_size if part.exists() else 0
             headers = {"Range": f"bytes={existing}-"} if existing else {}
+            headers["User-Agent"] = "VoxSub/0.3"
             req = urlrequest.Request(src, headers=headers)
             with urlrequest.urlopen(req, timeout=60) as resp, \
                     part.open("ab" if resp.status == 206 else "wb") as out:
+                resumed = existing if resp.status == 206 else 0
+                total = 0
+                content_range = resp.headers.get("Content-Range", "")
+                if "/" in content_range:
+                    try:
+                        total = int(content_range.rsplit("/", 1)[1])
+                    except ValueError:
+                        total = 0
+                if not total:
+                    try:
+                        total = resumed + int(resp.headers.get("Content-Length", "0"))
+                    except ValueError:
+                        total = 0
+                written = resumed
+                if progress:
+                    progress(written, total, src)
                 while True:
+                    if cancelled and cancelled():
+                        raise DownloadCancelled("下载已取消")
                     block = resp.read(CHUNK)
                     if not block:
                         break
                     out.write(block)
+                    written += len(block)
+                    if progress:
+                        progress(written, total, src)
             part.replace(dest)
             size_mb = dest.stat().st_size / 1e6
             print(f"  下载完成: {dest.name} ({size_mb:.1f} MB)")
@@ -117,6 +168,9 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
                     return False
                 print("  SHA256 校验通过")
             return True
+        except DownloadCancelled:
+            logger.info("下载已取消，保留断点文件: %s", part)
+            raise
         except (urlerror.URLError, OSError, TimeoutError) as exc:
             print(f"  源 {src} 失败: {exc}")
             logger.warning("下载源失败: 目标=%s 源=%s 错误=%s", dest.name, src, exc)
@@ -165,9 +219,11 @@ class ModelManager:
         total_bytes = 0
 
         for p in sorted(self.models_dir.rglob("*")):
-            if not p.is_file() or p.name == MANIFEST_NAME or p.suffix == ".part":
+            if not p.is_file():
                 continue
             rel = p.relative_to(self.models_dir).as_posix()
+            if _is_internal_artifact(rel):
+                continue
             size = p.stat().st_size
             total_bytes += size
             entry = files.get(rel, {})

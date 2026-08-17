@@ -30,6 +30,7 @@ class TrayIcon(QSystemTrayIcon):
     toggle_run_requested = Signal()
     show_main_requested = Signal()
     settings_requested = Signal()
+    diagnostics_requested = Signal()
     quit_requested = Signal()
 
     def __init__(self, icon: QIcon, parent=None) -> None:
@@ -64,6 +65,10 @@ class TrayIcon(QSystemTrayIcon):
         settings_action = QAction("设置", menu)
         settings_action.triggered.connect(self.settings_requested.emit)
         menu.addAction(settings_action)
+
+        diagnostics_action = QAction("诊断与实时日志", menu)
+        diagnostics_action.triggered.connect(self.diagnostics_requested.emit)
+        menu.addAction(diagnostics_action)
 
         menu.addSeparator()
         quit_action = QAction("退出", menu)

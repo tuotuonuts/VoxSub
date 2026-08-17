@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
+from voxsub.translate.qwen import _invalid_translation  # noqa: E402
 
 
 class _FakeProc:
@@ -130,3 +131,34 @@ def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> Non
     endpoint = q._ensure()
     assert endpoint == "http://127.0.0.1:9999/v1/chat/completions"
     assert spawned["n"] == 1
+
+
+def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    captured: dict = {}
+
+    def fake_chat(_endpoint, *, messages, **_kwargs):
+        captured["messages"] = messages
+        return "Hello, world."
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+    out = q.translate("你好，世界。", "zh", "en")
+    assert out == "Hello, world."
+    assert captured["messages"][0]["role"] == "system"
+    assert "only the translated text" in captured["messages"][0]["content"]
+
+
+def test_quality_translation_rejects_explanatory_answer(tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    answers = iter([
+        "Here's the English translation:\nHello.\n\nThis translation attempts to explain it.",
+        "Hello.",
+    ])
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion",
+                        lambda *_args, **_kwargs: next(answers))
+    assert q.translate("你好。", "zh", "en") == "Hello."
+    assert _invalid_translation("你好。", "Here's the translation and a note", "zh", "en")

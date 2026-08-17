@@ -47,10 +47,12 @@ class OpusFastTranslator(Translator):
 
     def __init__(self, model_dir: Path | None = None,
                  opus_map: dict[tuple[str, str], str] | None = None,
-                 max_length: int = 128, threads: int = 2):
+                 max_length: int = 128, threads: int = 2,
+                 providers: list | None = None):
         self._base = Path(model_dir) if model_dir else _default_models_dir() / "nmt"
         self._max_length = max_length
         self._threads = threads
+        self._providers = providers or ["CPUExecutionProvider"]
         # 语言对 → 模型子目录名
         self._opus_map = opus_map or {
             ("zh", "en"): "opus_zh_en",
@@ -91,7 +93,8 @@ class OpusFastTranslator(Translator):
                 d = self._locate(pair)
                 if d is None:
                     raise TranslationError(f"快档模型未就绪: {pair} -> {d}")
-                m = _OpusModel(d, max_length=self._max_length, threads=self._threads)
+                m = _OpusModel(d, max_length=self._max_length, threads=self._threads,
+                               providers=self._providers)
                 self._states[pair] = m
             return m
 
@@ -127,7 +130,8 @@ class OpusFastTranslator(Translator):
 class _OpusModel:
     """单个 OPUS-MT 方向的会话封装 (ORT session + tokenizer 一次性就绪)。"""
 
-    def __init__(self, model_dir: Path, max_length: int = 128, threads: int = 2):
+    def __init__(self, model_dir: Path, max_length: int = 128, threads: int = 2,
+                 providers: list | None = None):
         self.dir = Path(model_dir)
         self._max_length = max_length
         try:
@@ -137,13 +141,37 @@ class _OpusModel:
             self._pad = cfg.get("pad_token_id", 65000)
             self._decoder_start = cfg.get("decoder_start_token_id", 65000)
             self._max_position = cfg.get("max_position_embeddings", 512)
-            so = ort.SessionOptions()
-            so.intra_op_num_threads = threads
-            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            self._enc = ort.InferenceSession(str(self.dir / "encoder_model_int8.onnx"),
-                                             sess_options=so, providers=["CPUExecutionProvider"])
-            self._dec = ort.InferenceSession(str(self.dir / "decoder_model_int8.onnx"),
-                                             sess_options=so, providers=["CPUExecutionProvider"])
+            selected = providers or ["CPUExecutionProvider"]
+            raw_names = [item[0] if isinstance(item, tuple) else item for item in selected]
+
+            def create_sessions(chosen: list):
+                so = ort.SessionOptions()
+                so.intra_op_num_threads = threads
+                so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                chosen_names = [item[0] if isinstance(item, tuple) else item
+                                for item in chosen]
+                if "DmlExecutionProvider" in chosen_names:
+                    so.enable_mem_pattern = False
+                    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                encoder = ort.InferenceSession(
+                    str(self.dir / "encoder_model_int8.onnx"),
+                    sess_options=so, providers=chosen)
+                decoder = ort.InferenceSession(
+                    str(self.dir / "decoder_model_int8.onnx"),
+                    sess_options=so, providers=chosen)
+                return encoder, decoder
+
+            try:
+                self._enc, self._dec = create_sessions(selected)
+            except Exception:
+                if raw_names == ["CPUExecutionProvider"]:
+                    raise
+                logger.warning("OPUS 加速后端加载失败，回退 CPU: providers=%s",
+                               raw_names, exc_info=True)
+                selected = ["CPUExecutionProvider"]
+                raw_names = selected
+                self._enc, self._dec = create_sessions(selected)
+            logger.info("OPUS 模型加载: dir=%s providers=%s", self.dir, raw_names)
         except Exception:
             # 模型加载失败: 记录根因后原样抛出, 由上层包装为 TranslationError
             logger.exception("快档模型加载失败 (model_dir=%s)", self.dir)

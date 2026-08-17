@@ -5,10 +5,12 @@
 
 
 
-param([switch]$SkipTests)
+param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
+$Version = "0.3.3-beta"
+$LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 
 function Run-Checked([string]$Label, [scriptblock]$Block) {
@@ -38,78 +40,136 @@ Write-Host "[build] dist = $Dist" -ForegroundColor Cyan
 $ReleaseDir = Join-Path $Root "..\Release"
 Write-Host "[build] release = $ReleaseDir" -ForegroundColor Cyan
 if (-not (Test-Path $ReleaseDir)) { New-Item -ItemType Directory -Path $ReleaseDir | Out-Null }
-if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
 $Work = Join-Path $env:TEMP "VoxSub_pybuild"
-If (Test-Path $Work) { Remove-Item $Work -Recurse -Force }
 $Icon = Join-Path $Root "assets\icon.ico"
 $SpecDir = Join-Path $Root "build"
-Run-Checked "pyinstaller" {
-    $Py = Join-Path "D:\OneDrive\app_dve\VoxSub" ".venv\Scripts\python.exe"
+if (-not $SkipPyInstaller) {
+    if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
+    if (Test-Path $Work) { Remove-Item $Work -Recurse -Force }
+    Run-Checked "pyinstaller" {
+        $Py = Join-Path "D:\OneDrive\app_dve\VoxSub" ".venv\Scripts\python.exe"
 
-    & $Py @(
-        "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
-        "--name", "VoxSub",
-        "--icon", "D:/OneDrive/app_dve/VoxSub/assets/icon.ico",
-        "--distpath", "D:/OneDrive/app_dve/VoxSub/dist",
-        "--workpath", "$env:TEMP\VoxSub_pybuild",
-        "--specpath", "D:/OneDrive/app_dve/VoxSub/build",
-        "--collect-all", "sherpa_onnx",
-        "--collect-all", "soundcard",
-        "--collect-all", "onnxruntime",
-        "--collect-all", "qfluentwidgets",
-        "--hidden-import", "voxsub.pipeline",
-        "--hidden-import", "voxsub.translate.factory",
-        "run_app.py"
-    )
+        & $Py @(
+            "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
+            "--name", "VoxSub",
+            "--icon", "D:/OneDrive/app_dve/VoxSub/assets/icon.ico",
+            "--distpath", "D:/OneDrive/app_dve/VoxSub/dist",
+            "--workpath", "$env:TEMP\VoxSub_pybuild",
+            "--specpath", "D:/OneDrive/app_dve/VoxSub/build",
+            "--collect-all", "sherpa_onnx",
+            "--collect-all", "soundcard",
+            "--collect-all", "pyaudiowpatch",
+            "--collect-all", "recap",
+            "--collect-all", "comtypes",
+            "--collect-all", "psutil",
+            "--collect-all", "onnxruntime",
+            "--collect-all", "qfluentwidgets",
+            "--hidden-import", "voxsub.pipeline",
+            "--hidden-import", "voxsub.process_audio",
+            "--hidden-import", "voxsub.model_catalog",
+            "--hidden-import", "voxsub.translate.factory",
+            "--hidden-import", "voxsub.ui.model_hub_window",
+            "run_app.py"
+        )
+    }
+} elseif (-not (Test-Path (Join-Path $Dist "VoxSub.exe"))) {
+    throw "-SkipPyInstaller requested but existing dist output is missing"
 }
+
+# GGUF runtime matrix.  End users receive all three small backends so runtime
+# selection can follow discrete GPU -> Intel NPU -> integrated GPU -> CPU
+# without downloading executables after installation.
+$LlamaAssets = @(
+    @{
+        Name = "cpu";
+        File = "llama-$LlamaVersion-bin-win-cpu-x64.zip";
+        Sha256 = "A31F1F317813AE7E044BE183E0A20B90E78A80C0E97EE11A8B32A014ECCD5043"
+    },
+    @{
+        Name = "vulkan";
+        File = "llama-$LlamaVersion-bin-win-vulkan-x64.zip";
+        Sha256 = "2E89637B30E0E2F90D4ED486118E8642F60625B1DBEBB9BA3A30BC4100306FC9"
+    },
+    @{
+        Name = "openvino";
+        File = "llama-$LlamaVersion-bin-win-openvino-2026.2.1-x64.zip";
+        Sha256 = "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD"
+    }
+)
+$LlamaCache = Join-Path $env:TEMP "VoxSub_llama_$LlamaVersion"
+$LlamaDest = Join-Path $Dist "tools\llama"
+New-Item -ItemType Directory -Path $LlamaCache -Force | Out-Null
+New-Item -ItemType Directory -Path $LlamaDest -Force | Out-Null
+foreach ($Asset in $LlamaAssets) {
+    $Zip = Join-Path $LlamaCache $Asset.File
+    $Url = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaVersion/$($Asset.File)"
+    if ((-not (Test-Path $Zip)) -or
+        ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash -ne $Asset.Sha256)) {
+        Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
+    }
+    if ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash -ne $Asset.Sha256) {
+        throw "llama.cpp runtime SHA256 mismatch: $($Asset.File)"
+    }
+    $Extract = Join-Path $LlamaCache $Asset.Name
+    if (Test-Path $Extract) { Remove-Item -LiteralPath $Extract -Recurse -Force }
+    Expand-Archive -LiteralPath $Zip -DestinationPath $Extract -Force
+    $BackendDest = Join-Path $LlamaDest $Asset.Name
+    if (Test-Path $BackendDest) { Remove-Item -LiteralPath $BackendDest -Recurse -Force }
+    New-Item -ItemType Directory -Path $BackendDest -Force | Out-Null
+    Copy-Item -Path (Join-Path $Extract "*") -Destination $BackendDest -Recurse -Force
+}
+Write-Host "[build] bundled llama.cpp $LlamaVersion CPU/Vulkan/OpenVINO -> $LlamaDest" -ForegroundColor Green
+
+# C 模式必须开箱即用：将 ffmpeg 作为独立工具随 onedir 分发，并附许可证。
+$FfmpegPath = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if (-not $FfmpegPath) {
+    $FfmpegCandidates = @(
+        "C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+        (Join-Path $env:LOCALAPPDATA "VoxSub\tools\ffmpeg.exe")
+    )
+    $FfmpegPath = $FfmpegCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $FfmpegPath) { throw "ffmpeg not found; cannot build video import support" }
+$ToolsDir = Join-Path $Dist "tools"
+New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
+Copy-Item -LiteralPath $FfmpegPath -Destination (Join-Path $ToolsDir "ffmpeg.exe") -Force
+$FfmpegRoot = Split-Path -Parent (Split-Path -Parent $FfmpegPath)
+$FfmpegLicense = Join-Path $FfmpegRoot "LICENSE"
+if (Test-Path $FfmpegLicense) {
+    Copy-Item -LiteralPath $FfmpegLicense -Destination (Join-Path $ToolsDir "FFMPEG_LICENSE.txt") -Force
+}
+Write-Host "[build] bundled ffmpeg -> $ToolsDir" -ForegroundColor Green
 
 
 
 
 function Find-DevCert {
     Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
-        Where-Object { $_.Subject -like "*VoxSub*" } | Select-Object -First 1
+        Where-Object { $_.Subject -like "*VoxSub*" -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date) } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
 }
-function Find-SignTool {
-    $cands = @($env:OSSLSIGNCODE,
-               (Join-Path $env:LOCALAPPDATA "VoxSub\tools\osslsigncode.exe"))
-    foreach ($c in $cands) { if ($c -and (Test-Path $c)) { return $c } }
-    return $null
+function Sign-Artifact([string]$Path, $Certificate) {
+    if (-not $Certificate) {
+        Write-Host "[sign] SKIPPED: VoxSub code-signing certificate not found" -ForegroundColor Yellow
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Path)) { throw "要签名的文件不存在: $Path" }
+
+    Write-Host "[sign] signing $(Split-Path -Leaf $Path) from CurrentUser certificate store ..." -ForegroundColor Cyan
+    $Signature = Set-AuthenticodeSignature `
+        -FilePath $Path `
+        -Certificate $Certificate `
+        -HashAlgorithm SHA256 `
+        -TimestampServer "http://timestamp.digicert.com"
+    if (-not $Signature.SignerCertificate) { throw "签名失败: $Path ($($Signature.StatusMessage))" }
+
+    Write-Host "[sign] signer=$($Signature.SignerCertificate.Subject)" -ForegroundColor Green
+    Write-Host "[sign] status=$($Signature.Status) (self-signed certificate may report NotTrusted/UnknownError)"
 }
 $Exe = Join-Path $Dist "VoxSub.exe"
-$SignTool = Find-SignTool
 $Cert = Find-DevCert
-if ($SignTool -and $Cert) {
-    $DevPw = "VoxSubDev2026!"
-    $PfxOut = Join-Path $env:TEMP "voxsub_dev.pfx"
-    $TmpOut = Join-Path $env:TEMP "VoxSub_signed.exe"
-    $sec = ConvertTo-SecureString $DevPw -AsPlainText -Force
-
-
-    [void](Export-PfxCertificate -Cert $Cert.PsPath -FilePath $PfxOut -Password $sec)
-
-    if (Test-Path $TmpOut) { Remove-Item $TmpOut -Force }
-    if (-not (Test-Path $Exe)) { throw "要签名的 exe 不存在: $Exe" }
-    Write-Host "[build] self-sign (osslsigncode) ..." -ForegroundColor Cyan
-
-
-    # 签名统一委托给 bash scripts/sign.sh (signtool):
-    # - osslsigncode 2.14-mingw 对 PyInstaller 6.22 PE 间歇失败 (实测)
-    # - PowerShell 5.1 对原生 exe ANSI 传参失败 (实测)
-    # - bash + signtool 100% 可靠
-    & bash -lc "cd 'D:/OneDrive/app_dve/VoxSub' && bash scripts/sign.sh '$Exe'"
-    if ($LASTEXITCODE -ne 0) { throw "self-sign failed (exit $LASTEXITCODE)" }
-    Remove-Item $PfxOut -ErrorAction SilentlyContinue
-    $r = Get-AuthenticodeSignature -FilePath $Exe
-    if ($r.SignerCertificate) {
-        Write-Host "[sign] done, signer: $($r.SignerCertificate.Subject)" -ForegroundColor Green
-        Write-Host "[sign] status=$($r.Status) (NotTrusted/UnknownError expected for self-signed; OV cert will give Valid)"
-    } else {
-        Write-Host "[sign] WARNING: no signer readable" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "[sign] SKIPPED: osslsigncode or dev cert missing" -ForegroundColor Yellow
-}
+Sign-Artifact -Path $Exe -Certificate $Cert
 
 
 $SizeMB = [math]::Round(((Get-ChildItem $Dist -Recurse | Measure-Object Length -Sum).Sum / 1MB), 1)
@@ -118,13 +178,31 @@ $r = Get-AuthenticodeSignature -FilePath $Exe
 if ($r.SignerCertificate) {
     Write-Host "[build] signed: $($r.SignerCertificate.Subject)"
 } else {
-    Write-Host "[build] NOT signed (install osslsigncode + create dev cert for self-sign)"
+    Write-Host "[build] NOT signed (create/import a CurrentUser code-signing certificate)"
 }
 
 
-if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+$Iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+if (-not $Iscc) {
+    $IsccCandidates = @(
+        "C:\Program Files\Inno Setup 7\ISCC.exe",
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+    )
+    $Iscc = $IsccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $Iscc) {
     Write-Host "[build] InnoSetup not found: installer .exe skipped."
     Write-Host "         Install: https://jrsoftware.org/isdl.php (then rerun with installer step)"
 } else {
-    Write-Host "[build] InnoSetup available; add installer step in M9."
+    Run-Checked "Inno Setup installer" {
+        & $Iscc (Join-Path $Root "scripts\installer.iss")
+    }
+    $Setup = Join-Path $ReleaseDir "VoxSub-Setup-$Version.exe"
+    if (-not (Test-Path $Setup)) { throw "installer output missing: $Setup" }
+    Sign-Artifact -Path $Setup -Certificate $Cert
+    $SetupHash = (Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash
+    $HashPath = "$Setup.sha256"
+    Set-Content -LiteralPath $HashPath -Value "$SetupHash  $(Split-Path -Leaf $Setup)" -Encoding ASCII
+    Write-Host "[build] installer -> $Setup" -ForegroundColor Green
+    Write-Host "[build] sha256   -> $HashPath" -ForegroundColor Green
 }

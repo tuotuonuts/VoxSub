@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # 无头运行：必须在任何 Qt 构造前设置（QApplication 读取该变量）
@@ -49,6 +50,17 @@ def qapp():
     app = QApplication.instance() or QApplication([])
     load_theme(app, AppTheme.DARK)
     yield app
+
+
+def _wait_until(qapp, predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if predicate():
+            return
+        time.sleep(0.005)
+    qapp.processEvents()
+    assert predicate(), "timed out waiting for asynchronous UI operation"
 
 
 # ===========================================================================
@@ -201,6 +213,10 @@ class TestConfigStore:
         assert data["theme"] == "system"
         assert data["translate_tier"] == "fast"
         assert data["tts_enabled"] is True
+        assert data["mic_device_id"] == ""
+        assert data["loopback_device_id"] == ""
+        assert data["capture_process_id"] == 0
+        assert data["debug_mode"] is False
         assert not store.path.exists()  # 只读不落盘
 
     def test_set_get_roundtrip_and_persist(self, tmp_path):
@@ -327,6 +343,7 @@ class TestMainWindow:
         win = self._make_win(tmp_path)
         try:
             win._toggle_run()  # noqa: SLF001
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
             assert win.pipeline.is_running() is True
             assert win.cta.is_running() is True
             assert win.status_light.text.text() == "拾音中"
@@ -336,6 +353,7 @@ class TestMainWindow:
             assert win.subtitle_list.count() == 2
             # 停止
             win._toggle_run()  # noqa: SLF001
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
             assert win.pipeline.is_running() is False
             assert win.cta.is_running() is False
             assert win.status_light.text.text() == "待机"
@@ -359,12 +377,215 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    def test_file_mode_uses_right_workspace_import_card(self, qapp, tmp_path):
+        win = self._make_win(tmp_path)
+        try:
+            assert win.file_panel.parent().objectName() == "subtitlePanel"
+            assert win.file_panel.isHidden()
+            win.set_mode("c")
+            assert not win.file_panel.isHidden()
+            assert win.workspace_title.text() == "文件字幕"
+            assert "选择文件后" in win.subtitle_list._empty_hint.text()  # noqa: SLF001
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_main_overlay_font_buttons_have_real_text_room(self, qapp, tmp_path):
+        win = self._make_win(tmp_path)
+        try:
+            for button in (win.overlay_font_down_btn, win.overlay_font_up_btn):
+                # Regression: ghostButton used 32px horizontal padding inside
+                # a 46px fixed width, leaving only 14px and visibly clipping A−/A+.
+                assert button.objectName() == "compactGhostButton"
+                assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 16
+                assert button.sizeHint().width() <= button.width()
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_main_and_locked_overlay_controls_stay_in_sync(self, qapp, tmp_path):
+        from PySide6.QtCore import Qt
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        store = ConfigStore(tmp_path / "config.json")
+        win = MainWindow(store=store, pipeline=_PipelineStub())
+        overlay = SubtitleOverlay(store=store)
+        win.attach_overlay(overlay)
+        try:
+            win.overlay_font_up_btn.click()
+            assert overlay.font_size() == 22
+            assert store.get("overlay_font_size") == 22
+            win.overlay_lock_btn.click()
+            assert overlay.is_click_through()
+            assert win.overlay_lock_btn.text() == "解锁浮窗"
+            overlay._poll_locked_hover(overlay.frameGeometry().center())  # noqa: SLF001
+            assert overlay._locked_panel.isVisible()  # noqa: SLF001
+            assert overlay._locked_panel.parent() is None  # noqa: SLF001
+            assert not (overlay._locked_panel.windowFlags()  # noqa: SLF001
+                        & Qt.WindowType.WindowTransparentForInput)
+            overlay._locked_panel.unlock.click()  # noqa: SLF001
+            assert not overlay.is_click_through()
+            assert win.overlay_lock_btn.text() == "锁定浮窗"
+        finally:
+            overlay.close()
+            overlay.deleteLater()
+            win.close()
+            win.deleteLater()
+
+    def test_file_picker_persists_and_updates_pipeline(self, qapp, tmp_path, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        video = tmp_path / "meeting.mp4"
+        video.write_bytes(b"placeholder")
+        win = self._make_win(tmp_path)
+        monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                            lambda *a, **k: (str(video), ""))
+        try:
+            assert win.select_input_file()
+            assert win._store.get("last_input_file") == str(video)  # noqa: SLF001
+            assert win.pipeline.input_file == str(video)
+            assert win.file_name_label.text() == "meeting.mp4"
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_conversation_is_selectable_saveable_and_clearable(self, qapp, tmp_path):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QLabel
+
+        win = self._make_win(tmp_path)
+        out = tmp_path / "conversation.txt"
+        try:
+            win._on_utterance("你好", "Hello")  # noqa: SLF001
+            labels = win.subtitle_list.findChildren(QLabel, "srcText")
+            assert labels
+            assert labels[0].textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+            assert win.save_conversation(out)
+            assert out.read_text(encoding="utf-8") == "你好\nHello"
+            win.clear_conversation()
+            assert win.subtitle_list.count() == 0
+            assert win._conversation == []  # noqa: SLF001
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_microphone_recording_controls_pause_resume_finish(self, qapp, tmp_path):
+        win = self._make_win(tmp_path)
+        try:
+            win.record_switch.setChecked(True)
+            win._toggle_run()  # start recording flow  # noqa: SLF001
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            assert win.pipeline.is_running()
+            assert win.cta.state() == "recording"
+            assert not win.finish_record_btn.isHidden()
+            win._toggle_run()  # pause  # noqa: SLF001
+            assert win.pipeline.is_paused()
+            assert win.cta.state() == "paused"
+            win._toggle_run()  # resume  # noqa: SLF001
+            assert not win.pipeline.is_paused()
+            assert win.cta.state() == "recording"
+            win._finish_recording()  # noqa: SLF001
+            assert win._pipeline_busy  # noqa: SLF001
+            assert not win.save_conversation_btn.isEnabled()
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            assert not win.pipeline.is_running()
+            assert win.cta.state() == "idle"
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_slow_stop_never_blocks_ui_and_save_waits_for_final_subtitles(
+        self, qapp, tmp_path
+    ):
+        class _SlowPipeline(_PipelineStub):
+            def stop(self) -> None:
+                time.sleep(0.15)
+                super().stop()
+
+        win = MainWindow(
+            store=ConfigStore(tmp_path / "config.json"),
+            pipeline=_SlowPipeline(),
+        )
+        out = tmp_path / "after-stop.txt"
+        try:
+            win._toggle_run()  # noqa: SLF001
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            win._on_utterance("完整一句", "A complete sentence")  # noqa: SLF001
+            started = time.monotonic()
+            win._toggle_run()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert win._pipeline_busy  # noqa: SLF001
+            assert not win.save_conversation(out)
+            assert not out.exists()
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            assert win.save_conversation(out)
+            assert out.exists()
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_slow_start_never_blocks_qt_event_loop(self, qapp, tmp_path):
+        class _SlowStartPipeline(_PipelineStub):
+            def start(self) -> None:
+                time.sleep(0.15)
+                super().start()
+
+        win = MainWindow(
+            store=ConfigStore(tmp_path / "config.json"),
+            pipeline=_SlowStartPipeline(),
+        )
+        try:
+            started = time.monotonic()
+            win._toggle_run()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert win._pipeline_busy  # noqa: SLF001
+            assert win.cta.state() == "starting"
+            assert not win.cta.isEnabled()
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            assert win.pipeline.is_running()
+        finally:
+            win.pipeline.stop()
+            win.close()
+            win.deleteLater()
+
+    def test_finish_recording_then_save_is_serialized_without_freeze(
+        self, qapp, tmp_path
+    ):
+        class _SlowFinishPipeline(_PipelineStub):
+            def stop(self) -> None:
+                time.sleep(0.15)
+                super().stop()
+
+        win = MainWindow(
+            store=ConfigStore(tmp_path / "config.json"),
+            pipeline=_SlowFinishPipeline(),
+        )
+        output = tmp_path / "recording-session.txt"
+        try:
+            win.record_switch.setChecked(True)
+            win._toggle_run()  # noqa: SLF001
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            win._on_utterance("尾句", "Final sentence")  # noqa: SLF001
+            started = time.monotonic()
+            win._finish_recording()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert win._pipeline_busy  # noqa: SLF001
+            assert not win.save_conversation(output)
+            assert not output.exists()
+            _wait_until(qapp, lambda: not win._pipeline_busy)  # noqa: SLF001
+            assert win.save_conversation(output)
+            assert output.read_text(encoding="utf-8") == "尾句\nFinal sentence"
+        finally:
+            win.close()
+            win.deleteLater()
+
 
 # ===========================================================================
 # 8. 字幕浮窗冒烟（offscreen）
 # ===========================================================================
 class TestSubtitleOverlay:
     def test_construct_and_subtitles(self, qapp, tmp_path):
+        from PySide6.QtCore import Qt
         from voxsub.ui.subtitle_overlay import SubtitleOverlay
 
         ov = SubtitleOverlay(store=ConfigStore(tmp_path / "config.json"))
@@ -377,13 +598,47 @@ class TestSubtitleOverlay:
             ov.set_subtitles("再见", "Goodbye")
             assert len(ov._history) == 2  # noqa: SLF001
             # 字号 / 透明度调节
+            ov.show()
+            qapp.processEvents()
+            before_src_height = ov.src_label.fontMetrics().height()
+            before_dst_height = ov.dst_label.fontMetrics().height()
             ov.change_font_size(+2)
+            qapp.processEvents()
             assert ov._font_size == 22  # noqa: SLF001
+            assert ov._font_value_label.text() == "22"  # noqa: SLF001
+            assert ov.src_label.fontMetrics().height() > before_src_height
+            assert ov.dst_label.fontMetrics().height() > before_dst_height
+            assert "font-size: 18pt" in ov.src_label.styleSheet()
+            assert "font-size: 22pt" in ov.dst_label.styleSheet()
             ov.change_font_size(-99)  # 下限 14
             assert ov._font_size == 14  # noqa: SLF001
             ov.set_overlay_opacity(0.5)
             # setWindowOpacity 内部量化到 8bit（127/255≈0.498），容差放宽
             assert ov.windowOpacity() == pytest.approx(0.5, abs=0.01)
+            assert ov._store.get("overlay_font_size") == 14  # noqa: SLF001
+            for button in (ov._font_down_btn, ov._font_up_btn):  # noqa: SLF001
+                assert button.sizeHint().width() <= button.width()
+            ov._font_up_btn.click()  # noqa: SLF001
+            assert ov.font_size() == 16
+            ov._font_down_btn.click()  # noqa: SLF001
+            assert ov.font_size() == 14
+            # The body remains native click-through, while a separate hover
+            # control island provides in-place font and unlock actions.
+            ov.set_click_through(True)
+            assert ov.is_click_through()
+            assert ov.windowFlags() & Qt.WindowType.WindowTransparentForInput
+            ov._poll_locked_hover(ov.frameGeometry().center())  # noqa: SLF001
+            assert ov._locked_panel.isVisible()  # noqa: SLF001
+            assert ov._locked_panel.layout().sizeHint().width() <= ov._locked_panel.width()  # noqa: SLF001
+            for button in (ov._locked_panel.font_down, ov._locked_panel.font_up,  # noqa: SLF001
+                           ov._locked_panel.unlock):  # noqa: SLF001
+                assert button.sizeHint().width() <= button.width()
+            ov._locked_panel.font_up.click()  # noqa: SLF001
+            assert ov._font_size == 16  # noqa: SLF001
+            ov._locked_panel.unlock.click()  # noqa: SLF001
+            assert not ov.is_click_through()
+            assert not (ov.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+            assert not ov.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         finally:
             ov.close()
             ov.deleteLater()
@@ -400,7 +655,9 @@ class TestSettingsWindow:
         store = ConfigStore(path)
         sw = SettingsWindow(store=store)
         try:
-            assert sw.tabs.count() == 4
+            assert sw.tabs.count() == 6
+            assert sw.tabs.tabText(1) == "识别调优"
+            assert sw.tabs.tabText(3) == "设备"
             # 切换云档 → 输入框可用 + 落盘
             sw.tier_cloud.setChecked(True)
             assert store.get("translate_tier") == "cloud"
@@ -439,6 +696,59 @@ class TestSettingsWindow:
             sw.close()
             sw.deleteLater()
 
+    def test_asr_tuning_has_hover_info_transaction_and_wide_ranges(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QEnterEvent
+        from PySide6.QtWidgets import QToolButton
+        import voxsub.ui.settings_window as settings_module
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        sw = SettingsWindow(store=store)
+        try:
+            info = [b for b in sw.findChildren(QToolButton) if b.text() == "i"]
+            assert len(info) == 7
+            assert all(len(button.toolTip()) >= 20 for button in info)
+            shown: list[tuple] = []
+
+            class _TipSpy:
+                @staticmethod
+                def showText(*args):  # noqa: N802
+                    shown.append(args)
+
+                @staticmethod
+                def hideText():  # noqa: N802
+                    pass
+
+            monkeypatch.setattr(settings_module, "QToolTip", _TipSpy)
+            point = QPointF(1, 1)
+            info[0].enterEvent(QEnterEvent(point, point, point))
+            assert shown and "自动" in str(shown[0][1])
+            # Clicking i no longer opens a blocking QMessageBox.
+            info[0].click()
+            assert sw.silence_spin.minimum() == 50
+            assert sw.silence_spin.maximum() == 5000
+            assert sw.max_segment_spin.maximum() == 120.0
+            sw.asr_profile_combo.setCurrentIndex(sw.asr_profile_combo.findData("custom"))
+            sw.silence_spin.setValue(80)
+            sw.hotwords_edit.setText("VoxSub,肿瘤免疫")
+            assert sw._tuning_dirty  # noqa: SLF001
+            # Draft does not touch disk until explicit save.
+            assert store.get("asr_tuning_profile") == "auto"
+            assert store.get("asr_silence_ms") == 650
+            sw.tuning_save_btn.click()
+            assert store.get("asr_tuning_profile") == "custom"
+            assert store.get("asr_silence_ms") == 80
+            assert store.get("asr_hotwords") == "VoxSub,肿瘤免疫"
+            sw.silence_spin.setValue(1230)
+            sw.close()
+            assert store.get("asr_silence_ms") == 80
+            assert sw.silence_spin.value() == 80
+        finally:
+            sw.close()
+            sw.deleteLater()
     def test_tts_switch(self, qapp, tmp_path):
         from voxsub.ui.settings_window import SettingsWindow
 
@@ -449,10 +759,74 @@ class TestSettingsWindow:
         finally:
             sw.close()
             sw.deleteLater()
+    def test_device_and_process_selection_persist(self, qapp, tmp_path, monkeypatch):
+        import voxsub.audio as audio
+        import voxsub.process_audio as process_audio
+        from voxsub.audio import AudioDeviceInfo
+        from voxsub.process_audio import CaptureTarget
+        from voxsub.ui.settings_window import SettingsWindow
+
+        class _Device:
+            def __init__(self, device_id: str, name: str):
+                self.id, self.name = device_id, name
+
+        mic = _Device("mic-1", "USB 麦克风")
+        output = _Device("out-1", "会议耳机")
+        monkeypatch.setattr(audio, "list_microphones",
+                            lambda: [AudioDeviceInfo(mic.name, "mic", mic)])
+        monkeypatch.setattr(audio, "list_loopbacks",
+                            lambda: [AudioDeviceInfo(output.name, "loopback", output)])
+        monkeypatch.setattr(process_audio, "list_capture_targets",
+                            lambda: [CaptureTarget(4242, "Meeting.exe", "周会")])
+
+        store = ConfigStore(tmp_path / "config.json")
+        sw = SettingsWindow(store=store)
+        try:
+            sw.mic_combo.setCurrentIndex(1)
+            sw.output_combo.setCurrentIndex(1)
+            sw.process_combo.setCurrentIndex(1)
+            assert store.get("mic_device_id") == "mic-1"
+            assert store.get("loopback_device_id") == "out-1"
+            assert store.get("capture_process_id") == 4242
+            assert "Meeting.exe" in store.get("capture_window_title")
+        finally:
+            sw.close()
+            sw.deleteLater()
 
 
 # ===========================================================================
-# 10. 诊断页骨架（真实 voxsub.diagnostics 已由 M8 实现 → 渲染结果卡；
+# 10. 模型广场（硬件推荐 / 性能排序 / 下载源）
+# ===========================================================================
+class TestModelHubWindow:
+    def test_construct_sorted_cards_and_four_level_legend(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QLabel
+
+        from voxsub.model_catalog import HardwareProfile, ModelMarketplace
+        from voxsub.ui.model_hub_window import ModelHubWindow
+
+        profile = HardwareProfile("test cpu", 8, 16, 32.0, "RTX 4060", 8.0, "CUDA")
+        hub = ModelHubWindow(
+            store=ConfigStore(tmp_path / "config.json"),
+            marketplace=ModelMarketplace(tmp_path / "models"),
+            profile=profile,
+        )
+        try:
+            assert hub.windowTitle().startswith("模型广场")
+            assert len(hub._cards) == 6  # noqa: SLF001
+            scores = [card.model.quality_score for card in hub._cards.values()]  # noqa: SLF001
+            assert scores == sorted(scores, reverse=True)
+            texts = [label.text() for label in hub.findChildren(QLabel)]
+            for level in ("不推荐", "较为推荐", "推荐", "满载"):
+                assert level in texts
+            assert hub.source_combo.count() == 3
+            assert all(not card.progress.isTextVisible() for card in hub._cards.values())  # noqa: SLF001
+        finally:
+            hub.close()
+            hub.deleteLater()
+
+
+# ===========================================================================
+# 11. 诊断页骨架（真实 voxsub.diagnostics 已由 M8 实现 → 渲染结果卡；
 #     模块缺失分支 → 占位文案）
 # ===========================================================================
 class TestDiagnosticsWindow:

@@ -11,6 +11,9 @@
 onnxruntime-directml
 sherpa-onnx
 soundcard
+PyAudioWPatch==0.2.12.8
+recap-capture==0.6.3
+psutil
 pytest
 
 # --- M7 UI (2026-08-17 已安装至 .venv, 锁版本) ---
@@ -18,7 +21,7 @@ PySide6==6.11.1
 PySide6-Fluent-Widgets==1.11.3
 
 # --- 运行时可选 (M4/M8 已验证) ---
-# 质量档 Qwen: 不在此安装 —— 用 llama.cpp 官方预编译 llama-server.exe
+# 模型广场 Hy-MT2 质量档: 不在此安装 —— 用 llama.cpp 官方预编译 llama-server.exe
 #   (解压到 %LOCALAPPDATA%\VoxSub\tools\llama\ 附带分发, 见 build.ps1)
 # 诊断内存读数: psutil (M8 已装)
 # 打包: pyinstaller + pillow (scripts/build.ps1 使用)

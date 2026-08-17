@@ -50,6 +50,7 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "accent": "#14B8A6",
         "accent_deep": "#0D9488",
         "accent_rgb": "20,184,166",
+        "on_accent": "#FFFFFF",
         # 语义色（低饱和）
         "success": "#34D399",
         "warning": "#FBBF24",
@@ -61,10 +62,12 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "radius_dialog": "20px",
         "radius_shell": "32px",
         "radius_inner": "24px",
+        "radius_card_compact": "12px",
         # 间距 / 内边距（4px 基准刻度）
         "spacing": "4px",
         "card_padding": "20px",
         "card_padding_lg": "28px",
+        "control_height": "44px",
         # 字体栈
         "font_family": '"Segoe UI Variable","Microsoft YaHei UI","Microsoft YaHei"',
         "font_mono": '"Cascadia Code","Consolas"',
@@ -86,6 +89,7 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "accent": "#14B8A6",
         "accent_deep": "#0D9488",
         "accent_rgb": "20,184,166",
+        "on_accent": "#FFFFFF",
         # 语义色（低饱和，两档同值）
         "success": "#34D399",
         "warning": "#FBBF24",
@@ -97,10 +101,12 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "radius_dialog": "20px",
         "radius_shell": "32px",
         "radius_inner": "24px",
+        "radius_card_compact": "12px",
         # 间距 / 内边距
         "spacing": "4px",
         "card_padding": "20px",
         "card_padding_lg": "28px",
+        "control_height": "44px",
         # 字体栈
         "font_family": '"Segoe UI Variable","Microsoft YaHei UI","Microsoft YaHei"',
         "font_mono": '"Cascadia Code","Consolas"',
@@ -136,30 +142,111 @@ QMainWindow, QDialog {
 QWidget#rootShell {
     background-color: @bg_base;
 }
+QWidget#settingsWindow, QWidget#diagnosticsWindow {
+    background-color: @bg_base;
+}
+QWidget#modelHubWindow { background-color: @bg_base; }
 QLabel {
     background: transparent;
     color: @text_primary;
 }
-QLabel#secondaryLabel { color: @text_secondary; font-size: 13px; }
+QLabel#secondaryLabel { color: @text_secondary; font-size: 14px; }
 QLabel#accentLabel    { color: @accent; }
-QLabel#sectionTitle   { font-size: 15px; font-weight: 600; }
-QLabel#emptyHint      { color: @text_secondary; font-size: 13px; }
-QLabel#statusText     { color: @text_secondary; font-size: 13px; }
+QLabel#sectionTitle   { font-size: 16px; font-weight: 600; }
+QLabel#eyebrowLabel   { color: @accent; font-size: 12px; font-weight: 600; }
+QLabel#emptyHint      { color: @text_secondary; font-size: 14px; }
+QLabel#statusText     { color: @text_secondary; font-size: 14px; }
 QLabel#trayTipLabel   { color: @text_secondary; font-size: 12px; }
+
+/* ---- 模型广场：Soft Premium，低密度大卡片 ---- */
+QLabel#hubTitle { font-size: 30px; font-weight: 650; }
+QFrame#hardwareHero {
+    background-color: rgba(@accent_rgb, 0.08);
+    border: 1px solid rgba(@accent_rgb, 0.24);
+    border-radius: @radius_card;
+}
+QScrollArea#modelScroll { background: transparent; border: none; }
+QScrollArea#modelScroll > QWidget > QWidget { background: transparent; }
+QFrame#modelCard {
+    background-color: @surface_1;
+    border: 1px solid @border;
+    border-radius: @radius_card;
+}
+QFrame#modelCard:hover { border: 1px solid @border_strong; }
+QFrame#modelCard[topRank="true"] { border-left: 3px solid rgba(@accent_rgb, 0.62); }
+QFrame#modelCard[selected="true"] {
+    background-color: rgba(@accent_rgb, 0.07);
+    border: 1px solid @accent;
+}
+QLabel#modelName { font-size: 19px; font-weight: 650; }
+QLabel#modelFacts { color: @text_secondary; font-size: 13px; }
+QLabel#modelTag {
+    color: @text_secondary;
+    background-color: @surface_2;
+    border: 1px solid @border;
+    border-radius: 9px;
+    padding: 3px 8px;
+    font-size: 12px;
+}
+QPushButton#filterPill {
+    min-height: 34px;
+    padding: 0 15px;
+    border-radius: 17px;
+    color: @text_secondary;
+    background-color: transparent;
+    border: 1px solid @border;
+}
+QPushButton#filterPill:hover { color: @text_primary; border: 1px solid @border_strong; }
+QPushButton#filterPill:checked {
+    color: @accent;
+    background-color: rgba(@accent_rgb, 0.12);
+    border: 1px solid rgba(@accent_rgb, 0.46);
+    font-weight: 600;
+}
+QPushButton#modelActionButton {
+    min-height: @control_height;
+    min-width: 104px;
+    padding: 0 18px;
+    border-radius: @radius_input;
+    color: @on_accent;
+    background-color: @accent_deep;
+    border: 1px solid @accent;
+    font-weight: 600;
+}
+QPushButton#modelActionButton:hover { background-color: @accent; }
+QPushButton#modelActionButton:pressed { background-color: @accent_deep; }
+QPushButton#modelActionButton:disabled {
+    color: @text_secondary;
+    background-color: @surface_2;
+    border: 1px solid @border;
+}
+QProgressBar#modelProgress {
+    min-height: 7px;
+    max-height: 7px;
+    border: none;
+    border-radius: 3px;
+    background-color: @surface_2;
+    text-align: center;
+}
+QProgressBar#modelProgress::chunk { background-color: @accent; border-radius: 3px; }
 
 /* ---- 左侧栏 ---- */
 QFrame#sidePanel {
     background-color: @surface_1;
     border: 1px solid @border;
-    border-radius: @radius_card;
+    border-radius: @radius_inner;
+}
+QFrame#subtitlePanel {
+    background-color: @surface_1;
+    border: 1px solid @border;
+    border-radius: @radius_inner;
 }
 
 /* ---- 模式三卡片 ---- */
 QFrame#modeCard {
     background-color: @surface_2;
     border: 1px solid @border;
-    border-radius: @radius_card;
-    padding: @card_padding;
+    border-radius: @radius_card_compact;
 }
 QFrame#modeCard:hover {
     border: 1px solid rgba(@accent_rgb, 0.35);
@@ -178,10 +265,10 @@ QLabel#modeBadge {
 }
 QFrame#modeCard[active="true"] QLabel#modeBadge { color: @accent; }
 QLabel#modeTitle {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
 }
-QLabel#modeDesc { color: @text_secondary; font-size: 13px; }
+QLabel#modeDesc { color: @text_secondary; font-size: 14px; }
 QFrame#modeCard[active="true"] QLabel#modeTitle { color: @accent; }
 
 /* ---- 实时字幕流 ---- */
@@ -190,7 +277,7 @@ QScrollArea#subtitleScroll > QWidget > QWidget { background: transparent; }
 QFrame#subRow {
     background: transparent;
     border-radius: @radius_input;
-    padding: @spacing;
+    padding: 8px;
 }
 QFrame#subRow[newest="true"] {
     background-color: rgba(@accent_rgb, 0.10);
@@ -198,12 +285,11 @@ QFrame#subRow[newest="true"] {
 }
 QLabel#srcText {
     color: @text_secondary;
-    font-family: @font_mono;
-    font-size: 13px;
+    font-size: 14px;
 }
 QLabel#dstText {
     color: @text_primary;
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 500;
 }
 
@@ -219,6 +305,51 @@ QLineEdit#inputBox {
 }
 QLineEdit#inputBox:focus { border: 1px solid @accent; }
 QLineEdit#inputBox:disabled { color: @text_secondary; }
+QComboBox#inputBox {
+    background-color: @surface_2;
+    border: 1px solid @border;
+    border-radius: @radius_input;
+    padding: 8px 12px;
+    color: @text_primary;
+}
+QComboBox#inputBox:hover { border: 1px solid @border_strong; }
+QComboBox#inputBox:focus { border: 1px solid @accent; }
+QComboBox#inputBox:disabled { color: @text_secondary; }
+
+QFrame#filePickerCard {
+    background-color: rgba(@accent_rgb, 0.06);
+    border: 1px solid rgba(@accent_rgb, 0.20);
+    border-radius: @radius_card_compact;
+}
+
+QPushButton#ghostButton, QPushButton#compactGhostButton,
+QPushButton#secondaryButton, QPushButton#inputBox {
+    min-height: @control_height;
+    padding: 0 16px;
+    border-radius: @radius_input;
+    color: @text_primary;
+    background-color: transparent;
+    border: 1px solid @border;
+}
+QPushButton#compactGhostButton { padding: 0 8px; }
+QPushButton#ghostButton:hover, QPushButton#compactGhostButton:hover,
+QPushButton#secondaryButton:hover, QPushButton#inputBox:hover {
+    background-color: @surface_2;
+    border: 1px solid @border_strong;
+}
+QPushButton#ghostButton:pressed, QPushButton#compactGhostButton:pressed,
+QPushButton#secondaryButton:pressed, QPushButton#inputBox:pressed {
+    background-color: rgba(@accent_rgb, 0.10);
+    border: 1px solid rgba(@accent_rgb, 0.45);
+}
+QPushButton#ghostButton:focus, QPushButton#compactGhostButton:focus,
+QPushButton#secondaryButton:focus, QPushButton#inputBox:focus {
+    border: 1px solid @accent;
+}
+QPushButton:disabled {
+    color: @text_secondary;
+    background-color: @surface_2;
+}
 
 /* ---- 设置页 ---- */
 QWidget#settingsTabs > QWidget { background: transparent; }
@@ -226,9 +357,8 @@ QFrame#settingsCard {
     background-color: @surface_1;
     border: 1px solid @border;
     border-radius: @radius_card;
-    padding: @card_padding;
 }
-QLabel#fieldLabel { font-size: 13px; color: @text_secondary; }
+QLabel#fieldLabel { font-size: 14px; color: @text_secondary; }
 
 /* ---- 单选按钮（Soft Premium 圆点）---- */
 QRadioButton {
@@ -248,6 +378,23 @@ QRadioButton::indicator:checked {
     border: 4px solid rgba(@accent_rgb, 0.22);
     background-color: @accent;
 }
+QCheckBox {
+    color: @text_primary;
+    spacing: 10px;
+    padding: 4px 0;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1px solid @text_secondary;
+    background: transparent;
+}
+QCheckBox::indicator:hover { border: 1px solid @accent; }
+QCheckBox::indicator:checked {
+    border: 1px solid @accent_deep;
+    background-color: @accent;
+}
 
 /* ---- Tab 页（设置/诊断）---- */
 QTabWidget::pane {
@@ -257,7 +404,8 @@ QTabWidget::pane {
     top: -1px;
 }
 QTabBar::tab {
-    padding: 9px 20px;
+    min-height: 28px;
+    padding: 8px 16px;
     color: @text_secondary;
     font-size: 13px;
     border-top-left-radius: @radius_input;
@@ -266,6 +414,16 @@ QTabBar::tab {
 }
 QTabBar::tab:selected { color: @accent; font-weight: 600; border-bottom: 2px solid @accent; }
 QTabBar::tab:hover:!selected { color: @text_primary; }
+
+QPlainTextEdit#logView {
+    background-color: @surface_1;
+    color: @text_primary;
+    border: 1px solid @border;
+    border-radius: @radius_input;
+    padding: 8px;
+    font-family: @font_mono;
+    font-size: 12px;
+}
 
 /* ---- 弹窗 / 菜单 ---- */
 QMenu {

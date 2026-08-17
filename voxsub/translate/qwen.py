@@ -1,10 +1,9 @@
-"""voxsub.translate.qwen —— 质量档翻译器: llama.cpp llama-server (GGUF)。
+"""VoxSub GGUF quality translator (compatibility module name: qwen).
 
-技术路线 (DESIGN.md 决策 #9 + 2026-08-17 路线调整):
-- Qwen2.5 ONNX 权重在 HF 全 gated(401) → 走 llama.cpp GGUF。
-- llama-cpp-python 在 Windows 无 MSVC 编译环境装不了 (CMake/nmake 失败) →
-  改用 llama.cpp **官方预编译 llama-server.exe** (纯 CPU, 本机已就位:
-  %LOCALAPPDATA%\\VoxSub\\tools\\llama\\llama-server.exe, 配套 DLL 同目录)。
+技术路线:
+- 使用 llama.cpp 官方预编译 llama-server；模型广场当前质量档为 Hy-MT2。
+- 后端严格按独显 GPU -> Intel NPU -> 核显 -> CPU 选择；只有对应
+  Vulkan/CUDA/HIP/OpenVINO/SYCL 运行时实际存在时才启用。
 - 本类是 HTTP 客户端: lazy spawn llama-server 子进程, 调用其
   OpenAI 兼容 /v1/chat/completions 端点, 解析 choices[0].message.content。
 
@@ -24,6 +23,7 @@ import time
 from pathlib import Path
 
 from voxsub.logging_setup import get_logger
+from voxsub.hardware import LlamaRuntime, detect_hardware, select_llama_runtime
 
 from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
@@ -39,15 +39,22 @@ def _default_tools_dir() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "tools" / "llama"
 
 
-#: (src,dst) → 翻译指令 (llama-server 以 completion 方式续写, 简洁指令即可)
-_PROMPTS = {
-    ("zh", "en"): "Translate to English: {text}",
-    ("en", "zh"): "Translate to Chinese: {text}",
+#: 语言对 → 人类可读名称。质量档必须使用 chat system role 约束输出；旧版只有
+#: ``Translate to ...`` 一句用户提示，1.5B 模型很容易追加说明和自我评价。
+_LANG_NAMES = {
+    ("zh", "en"): ("Chinese", "English"),
+    ("en", "zh"): ("English", "Chinese"),
 }
+
+_SYSTEM_PROMPT = (
+    "You are a professional machine-translation engine. Translate faithfully and "
+    "concisely. Return only the translated text: no labels, no quotation marks, no "
+    "explanation, no notes, and no discussion of the source. Preserve names and numbers."
+)
 
 
 class QwenQualityTranslator(Translator):
-    """质量档: 通过 llama-server 子进程跑 Qwen GGUF, 中英互翻。"""
+    """质量档: 通过 llama-server 子进程运行所选 GGUF 翻译模型。"""
 
     name = "qwen-quality"
     langs = ("zh", "en")
@@ -57,15 +64,22 @@ class QwenQualityTranslator(Translator):
                  server_exe: Path | str | None = None,
                  n_ctx: int = 2048, n_threads: int = 4,
                  max_tokens: int = 128, fast_mode: bool = True,
-                 port: int = 8080):
+                 port: int = 8080, prompt_style: str = "qwen",
+                 model_name: str = "本地 GGUF 翻译模型",
+                 n_gpu_layers: int | None = None):
         self._model_path = Path(model_path) if model_path else (
             _default_models_dir() / "llm" / "qwen2.5-1.5b-instruct-q4_k_m.gguf")
-        self._server_exe = Path(server_exe) if server_exe else (
-            _default_tools_dir() / "llama-server.exe")
+        self._explicit_server_exe = Path(server_exe) if server_exe else None
+        self._server_exe = (self._explicit_server_exe or
+                            (_default_tools_dir() / "llama-server.exe"))
+        self._runtime: LlamaRuntime | None = None
         self._n_ctx = n_ctx
         self._n_threads = n_threads
         self._max_tokens = max_tokens
         self._fast_mode = fast_mode
+        self._prompt_style = prompt_style
+        self._model_name = model_name
+        self._n_gpu_layers = n_gpu_layers
         self._start_port = port
         self._proc: subprocess.Popen | None = None
         self._port: int | None = None
@@ -92,18 +106,28 @@ class QwenQualityTranslator(Translator):
                            self._model_path)
             raise TranslationError(
                 f"质量档模型缺失: {self._model_path} (请用 scripts/model_fetch.py 下载)")
+        profile = detect_hardware()
+        required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
+        runtime = select_llama_runtime(
+            profile, self._explicit_server_exe, required_gb=required_gb)
+        if runtime is not None:
+            self._runtime = runtime
+            self._server_exe = runtime.server_exe
         if not self._server_exe.exists():
             logger.warning("llama-server 缺失, 拒绝 spawn: %s (应含配套 DLL)",
                            self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
         port = self._pick_free_port()
+        gpu_layers = self._n_gpu_layers
+        if gpu_layers is None:
+            gpu_layers = self._auto_gpu_layers(profile, runtime)
         cmd = [str(self._server_exe),
                "--model", str(self._model_path),
                "--host", "127.0.0.1",
                "--port", str(port),
                "--ctx-size", str(self._n_ctx),
-               "--n-gpu-layers", "0",
+               "--n-gpu-layers", str(gpu_layers),
                "--threads", str(self._n_threads),
                ]
         # 隐藏子进程控制台窗口, 避免抢占用户
@@ -114,16 +138,40 @@ class QwenQualityTranslator(Translator):
         except Exception:
             pass
         try:
+            child_env = os.environ.copy()
+            if runtime is not None and runtime.backend == "openvino":
+                child_env["GGML_OPENVINO_DEVICE"] = runtime.target or "CPU"
+                if runtime.target == "GPU":
+                    child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "1"
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=flags)
+                creationflags=flags, env=child_env)
         except OSError as exc:
             logger.exception("llama-server 进程启动失败 (exe=%s)", self._server_exe)
             raise TranslationError(f"llama-server 启动失败: {exc}") from exc
         self._port = port
         self._endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
-        logger.info("llama-server 已启动 (port=%s, pid=%s)", port, self._proc.pid)
+        logger.info("llama-server 已启动 (model=%s backend=%s target=%s port=%s "
+                    "pid=%s gpu_layers=%s)", self._model_name,
+                    runtime.backend if runtime else "cpu",
+                    runtime.target if runtime else "CPU", port, self._proc.pid, gpu_layers)
         self._wait_ready(port)
+
+    def _auto_gpu_layers(self, profile, runtime: LlamaRuntime | None) -> int:
+        """Offload only when a matching backend exists and memory is sufficient."""
+        if runtime is None or runtime.backend == "cpu":
+            return 0
+        if runtime.backend == "openvino" and runtime.target == "NPU":
+            return 999
+        try:
+            required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
+            if runtime.target == "GPU" and not profile.has_discrete_gpu:
+                return 999 if profile.ram_gb >= required_gb + 4.0 else 0
+            if profile.has_discrete_gpu and profile.vram_gb >= required_gb:
+                return 999
+        except Exception:
+            logger.debug("加速器内存评估失败，回落 CPU layers", exc_info=True)
+        return 0
 
     def _wait_ready(self, port: int, timeout: float = 60.0) -> None:
         """轮询健康端点直到可用; 进程提前退出则报错。"""
@@ -175,22 +223,57 @@ class QwenQualityTranslator(Translator):
         text = (text or "").strip()
         if not text:
             return ""
-        prompt = _PROMPTS.get((src_lang, dst_lang))
-        if prompt is None:
+        names = _LANG_NAMES.get((src_lang, dst_lang))
+        if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
         endpoint = self._ensure()
         try:
             with self._lock:
-                out = chat_completion(
-                    endpoint,
-                    messages=[{"role": "user", "content": prompt.format(text=text)}],
-                    temperature=0.0,
-                    max_tokens=self._max_tokens,
-                    timeout_sec=timeout_ms / 1000.0,
-                )
+                out = self._request_translation(endpoint, text, names, timeout_ms)
+                cleaned = _clean(out)
+                if _invalid_translation(text, cleaned, src_lang, dst_lang):
+                    logger.warning("质量档输出越界，使用更严格提示重试: src_chars=%d out_chars=%d",
+                                   len(text), len(cleaned))
+                    out = self._request_translation(
+                        endpoint, text, names, timeout_ms, retry=True)
+                    cleaned = _clean(out)
         except OpenAICompatError as exc:
-            raise TranslationError(f"qwen(server) 调用失败: {exc}") from exc
-        return _clean(out)
+            raise TranslationError(f"本地翻译引擎调用失败: {exc}") from exc
+        if _invalid_translation(text, cleaned, src_lang, dst_lang):
+            raise TranslationError("质量档返回了说明性或异常长度内容，已拒绝显示")
+        return cleaned
+
+    def _request_translation(self, endpoint: str, text: str,
+                             names: tuple[str, str], timeout_ms: int,
+                             retry: bool = False) -> str:
+        src_name, dst_name = names
+        if self._prompt_style == "hy-mt2":
+            instruction = (
+                f"Translate the following text into {dst_name}. Only output the translated "
+                f"result and do not add explanations:\n{text}"
+            )
+            messages = [{"role": "user", "content": instruction}]
+        else:
+            instruction = (
+                f"Translate the text between <source> tags from {src_name} to {dst_name}. "
+                "Output the translation only.\n<source>\n"
+                f"{text}\n</source>"
+            )
+            messages = [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": instruction},
+            ]
+        if retry:
+            instruction += ("\nIMPORTANT: Your entire response must be only the translated "
+                            "sentence. Do not say 'translation' or explain anything.")
+            messages[-1]["content"] = instruction
+        return chat_completion(
+            endpoint,
+            messages=messages,
+            temperature=0.2 if self._prompt_style == "hy-mt2" else 0.0,
+            max_tokens=min(self._max_tokens, max(32, len(text) * 2)),
+            timeout_sec=timeout_ms / 1000.0,
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -215,6 +298,12 @@ class QwenQualityTranslator(Translator):
     def health(self) -> str:
         if not self._model_path.exists():
             return f"质量档模型缺失: {self._model_path}"
+        required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
+        runtime = select_llama_runtime(
+            detect_hardware(), self._explicit_server_exe, required_gb=required_gb)
+        if runtime is not None:
+            self._runtime = runtime
+            self._server_exe = runtime.server_exe
         if not self._server_exe.exists():
             return f"llama-server 缺失: {self._server_exe}"
         return "ok"
@@ -228,11 +317,42 @@ class QwenQualityTranslator(Translator):
 
 def _clean(text: str) -> str:
     text = text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text[3:-3].strip()
+        if text.lower().startswith(("text\n", "translation\n")):
+            text = text.split("\n", 1)[1].strip()
     for q in ('"', "'"):
         if len(text) > 1 and text.startswith(q) and text.endswith(q):
             text = text[1:-1].strip()
             break
-    for pref in ("English:", "Chinese:", "Translation:", "译文:", "翻译:"):
+    for pref in ("Here's the English translation:", "Here's the Chinese translation:",
+                 "English translation:", "Chinese translation:", "English:", "Chinese:",
+                 "Translation:", "译文:", "翻译:"):
         if text.lower().startswith(pref.lower()) and len(text) > len(pref):
             text = text[len(pref):].strip()
     return text
+
+
+def _invalid_translation(source: str, output: str,
+                         src_lang: str, dst_lang: str) -> bool:
+    """拦截解释型回答、空结果和明显失控的长度，避免污染字幕。"""
+    if not output:
+        return True
+    lower = output.casefold()
+    forbidden = (
+        "here's the", "here is the", "this translation", "the original text",
+        "appears to be", "translation attempts", "note:", "译文如下", "翻译如下",
+    )
+    if any(marker in lower for marker in forbidden):
+        return True
+    if "\n\n" in output:
+        return True
+    # 中译英字符通常会膨胀，但超过 5.5 倍基本已是解释/续写；英译中应更短。
+    limit = max(64, int(len(source) * (5.5 if dst_lang == "en" else 2.2)))
+    if len(output) > limit:
+        return True
+    if dst_lang == "en" and len(source) >= 4:
+        cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in output)
+        if cjk / max(1, len(output)) > 0.25:
+            return True
+    return False

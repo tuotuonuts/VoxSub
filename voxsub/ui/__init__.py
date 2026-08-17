@@ -7,9 +7,9 @@
 - main_window.py      主窗：左右分栏 + 模式三卡片 + 实时字幕流 + 胶囊 CTA
 - subtitle_overlay.py 无边框置顶半透明字幕浮窗 (Double-Bezel 双层壳)
 - tray.py             系统托盘（模式快捷切换 / 显示主窗 / 退出）
-- settings_window.py  设置页（翻译 / 语音 / 外观 / 关于）
-- diagnostics_window.py 诊断页骨架（M8 接入点）
+- settings_window.py  设置页（翻译 / 语音 / 设备 / 外观 / 关于）
+- diagnostics_window.py 诊断与应用内实时日志
 - app.py              入口：python -m voxsub.ui.app
 """
 
-__version__ = "0.1.0-m7"
+__version__ = "0.3.3-beta"

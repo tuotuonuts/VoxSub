@@ -41,18 +41,45 @@ def test_select_device_unknown_task_raises() -> None:
         select_device("bogus-task")
 
 
-def test_select_device_dml_preferred_when_available(monkeypatch) -> None:
-    """有 DML 且任务模型就绪 -> 必须选 dml (降级链第一级)。"""
+def test_select_device_dml_preferred_for_onnx_translation(monkeypatch) -> None:
+    """DML 可运行 ONNX 翻译时优先于 CPU。"""
     monkeypatch.setattr(router, "enumerate_devices", lambda: [
         DeviceInfo("dml", "DirectML", None),
         DeviceInfo("cpu", "CPU", None),
     ])
     monkeypatch.setattr(router, "_task_model_ready", lambda task: True)
     monkeypatch.setattr(router, "_smoke_score", lambda task, provider: 12.3)
-    dev = select_device("asr")
+    dev = select_device("translate")
     assert dev.provider == "dml"
     assert dev.name == "DirectML"
     assert dev.score_ms == 12.3
+
+
+def test_select_device_asr_does_not_misreport_directml(monkeypatch) -> None:
+    """sherpa 不支持 DML 时必须诚实回退 CPU，而不是把 CPU 伪报成 GPU。"""
+    monkeypatch.setattr(router, "enumerate_devices", lambda: [
+        DeviceInfo("dml", "DirectML", None, "gpu", "DmlExecutionProvider"),
+        DeviceInfo("cpu", "CPU", None, "cpu", "CPUExecutionProvider"),
+    ])
+    monkeypatch.setattr(router, "_task_model_ready", lambda task: True)
+    monkeypatch.setattr(router, "_smoke_score", lambda task, provider: 23.0)
+    assert select_device("asr").provider == "cpu"
+
+
+def test_priority_is_gpu_then_npu_then_igpu_then_cpu(monkeypatch) -> None:
+    devices = [
+        DeviceInfo("cpu", "CPU", None, "cpu", "CPUExecutionProvider"),
+        DeviceInfo("dml", "Intel iGPU", None, "igpu", "DmlExecutionProvider"),
+        DeviceInfo("npu", "Intel NPU", None, "npu", "OpenVINOExecutionProvider"),
+        DeviceInfo("cuda", "NVIDIA GPU", None, "gpu", "CUDAExecutionProvider"),
+    ]
+    monkeypatch.setattr(router, "enumerate_devices", lambda: devices)
+    monkeypatch.setattr(router, "_task_model_ready", lambda task: True)
+    monkeypatch.setattr(router, "_smoke_score", lambda task, provider: 5.0)
+    assert select_device("translate").provider == "cuda"
+
+    monkeypatch.setattr(router, "enumerate_devices", lambda: devices[:3])
+    assert select_device("translate").provider == "npu"
 
 
 def test_select_device_falls_back_to_cpu_when_model_missing(monkeypatch, tmp_path) -> None:

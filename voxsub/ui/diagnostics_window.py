@@ -20,6 +20,7 @@ import importlib
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -32,8 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from voxsub.logging_setup import drain_events, get_logger, tail_log_file
-from voxsub.ui.theme import DESIGN_TOKENS
+from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
+from voxsub.ui.config_store import ConfigStore
 
 logger = get_logger("ui.diagnostics_window")
 
@@ -70,12 +71,14 @@ class DiagnosticsWindow(QWidget):
         self,
         parent: QWidget | None = None,
         diagnostics_module: object = _AUTO,
+        store: ConfigStore | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("diagnosticsWindow")
         self.setWindowTitle("诊断 — 语幕 VoxSub")
         self.resize(680, 560)
         self._results: list[dict] = []
+        self._store = store or ConfigStore()
         if diagnostics_module is _AUTO:
             self._load_module()
         else:
@@ -150,20 +153,23 @@ class DiagnosticsWindow(QWidget):
             self.export_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.export_log_btn.clicked.connect(self._export_logs)
             btn_row.addWidget(self.export_log_btn)
+            self.clear_log_btn = QPushButton("清空视图", page)
+            self.clear_log_btn.setObjectName("ghostButton")
+            self.clear_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.clear_log_btn.clicked.connect(lambda: self.log_view.clear())
+            btn_row.addWidget(self.clear_log_btn)
             btn_row.addStretch(1)
+            self.debug_switch = QCheckBox("调试模式", page)
+            self.debug_switch.setToolTip("显示音频电平、队列、设备打开与分句等详细事件")
+            self.debug_switch.setChecked(bool(self._store.get("debug_mode", False)))
+            self.debug_switch.toggled.connect(self._toggle_debug)
+            btn_row.addWidget(self.debug_switch)
             lay.addLayout(btn_row)
 
-            t = DESIGN_TOKENS["dark"]
             self.log_view = QPlainTextEdit(page)
             self.log_view.setObjectName("logView")
             self.log_view.setReadOnly(True)
             self.log_view.setPlaceholderText("暂无日志")
-            self.log_view.setStyleSheet(
-                f"QPlainTextEdit {{ background-color: {t['surface_1']};"
-                f" color: {t['text_primary']}; border: 1px solid {t['border']};"
-                f" border-radius: 10px; padding: 8px;"
-                f" font-family: {t['font_mono']}; font-size: 12px; }}"
-            )
             lay.addWidget(self.log_view, 1)
 
             # 初始灌入文件末尾（末行作指纹基准，避免轮询重复追加）
@@ -181,6 +187,11 @@ class DiagnosticsWindow(QWidget):
             place.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay.addWidget(place)
         return page
+
+    def _toggle_debug(self, enabled: bool) -> None:
+        self._store.set("debug_mode", bool(enabled))
+        set_debug_mode(bool(enabled))
+        self._poll_events()
 
     def _poll_events(self) -> None:
         """drain 内存队列最新事件, 按末行指纹增量追加, 自动滚底。"""
