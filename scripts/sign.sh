@@ -18,6 +18,9 @@ TOOL="$LAPPDATA_WIN/VoxSub/tools/signtool.exe"
 PFX="$LAPPDATA_WIN/Temp/voxsub_dev.pfx"
 PASS="VoxSubDev2026!"
 
+# 幂等: 每次签名前从证书存储重新导出 pfx (build.ps1 会清理旧 pfx)
+powershell.exe -NoProfile -Command "\$pw = ConvertTo-SecureString '$PASS' -AsPlainText -Force; Export-PfxCertificate -Cert 'Cert:\CurrentUser\My\0188053EE1D61C3CC9F3D9CCCDC3B113EB2884D9' -FilePath '$PFX' -Password \$pw | Out-Null"
+
 "$TOOL" sign /f "$PFX" /p "$PASS" /fd SHA256 \
   /tr http://timestamp.digicert.com /td SHA256 "$EXE_WIN" || {
   echo "[sign] timestamp failed, retry without timestamp" >&2
