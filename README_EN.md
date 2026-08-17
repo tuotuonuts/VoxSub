@@ -1,6 +1,6 @@
 <div align="center">
 
-[![Back to Home](https://img.shields.io/badge/HOME-Back_to_Home-22A699?style=for-the-badge)](README.md)
+[![Back to Home](https://img.shields.io/badge/HOME-Back_to_Home-22A699?style=for-the-badge)](https://github.com/tuotuonuts/VoxSub)
 
 </div>
 
