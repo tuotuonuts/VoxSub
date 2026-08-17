@@ -1,3 +1,10 @@
+<div align="center">
+
+[![简体中文](https://img.shields.io/badge/LANG-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-EA4C4C?style=for-the-badge)](README.md)
+[![English](https://img.shields.io/badge/LANG-English-22A699?style=for-the-badge)](README_EN.md)
+
+</div>
+
 # 语幕 VoxSub
 
 > [!WARNING]
@@ -39,8 +46,8 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 ## 开发环境
 
 ```bash
-uv venv                 # 创建虚拟环境 (.venv)
-uv pip install -r requirements.txt
+uv venv --python 3.11
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
 Python 3.11+。源码启动：
@@ -55,7 +62,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包输出到 `D:\OneDrive\app_dve\Release`。模型仍放在 `%LOCALAPPDATA%\VoxSub\models`，不随安装包重复分发。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。模型仍放在 `%LOCALAPPDATA%\VoxSub\models`，不随安装包重复分发。
 
 ## 目录结构
 
