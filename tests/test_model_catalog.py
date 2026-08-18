@@ -28,7 +28,48 @@ def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
     ids = {model.id for model in CATALOG}
     assert "mt-hy-mt2-1.8b-q4" in ids
     assert "mt-hy-mt2-7b-q4" in ids
+    assert "asr-sensevoice-small-int8" in ids
+    assert {"mt-hy-mt2-1.8b-q5", "mt-hy-mt2-1.8b-q8",
+            "mt-hy-mt2-7b-q5", "mt-hy-mt2-7b-q8"}.issubset(ids)
+    assert len(ids) >= 11
     assert not any("qwen2.5" in model.id for model in CATALOG)
+
+
+def test_sensevoice_catalog_entry_has_downloadable_runtime_contract() -> None:
+    model = get_model("asr-sensevoice-small-int8")
+    assert model is not None
+    assert model.runtime == "sherpa-sense-voice"
+    assert model.required_paths == ("model.int8.onnx", "tokens.txt")
+    assert model.archive
+    assert {source.id for source in model.sources} == {"global", "china"}
+
+
+def test_sensevoice_runtime_uses_catalog_file_layout(tmp_path: Path, monkeypatch) -> None:
+    import voxsub.asr as asr
+
+    model_dir = tmp_path / "sensevoice"
+    model_dir.mkdir()
+    (model_dir / "model.int8.onnx").write_bytes(b"model")
+    (model_dir / "tokens.txt").write_text("<blk> 0\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class _FakeOfflineRecognizer:
+        @staticmethod
+        def from_sense_voice(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+    monkeypatch.setattr(asr.sherpa_onnx, "OfflineRecognizer", _FakeOfflineRecognizer)
+    recognizer = asr.OfflineGenerativeASR(
+        model_dir, "sherpa-sense-voice", provider="cpu", num_threads=3,
+        source_lang="zh",
+    )
+
+    assert recognizer.runtime == "sherpa-sense-voice"
+    assert captured["model"] == str(model_dir / "model.int8.onnx")
+    assert captured["tokens"] == str(model_dir / "tokens.txt")
+    assert captured["language"] == "zh"
+    assert captured["use_itn"] is True
 
 
 def test_recommendation_levels_cover_requested_semantics() -> None:
@@ -107,6 +148,34 @@ def test_uninstall_refuses_builtin_and_selected(tmp_path: Path) -> None:
         market.uninstall(builtin)
     with pytest.raises(RuntimeError, match="正在使用"):
         market.uninstall(regular, in_use=True)
+
+
+def test_builtin_repair_downloads_only_missing_files(tmp_path: Path, monkeypatch) -> None:
+    model = get_model("mt-opus-fast-builtin")
+    assert model is not None
+    market = ModelMarketplace(tmp_path / "models")
+    target = market.model_dir(model)
+    existing = target / "opus_zh_en" / "config.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    def fake_fetch(url, dest, **kwargs):
+        calls.append(str(dest))
+        destination = Path(dest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"model asset")
+        return True
+
+    import voxsub.model_catalog as catalog
+
+    monkeypatch.setattr(catalog, "fetch_file", fake_fetch)
+    market.install(model, "global")
+
+    assert market.is_installed(model)
+    assert len(calls) == len(model.required_paths) - 1
+    assert existing.read_text(encoding="utf-8") == "{}"
+    assert market.missing_paths(model) == ()
 
 
 def test_install_multi_file_source_and_remove_partial_staging(

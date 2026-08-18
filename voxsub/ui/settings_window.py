@@ -1,8 +1,7 @@
-"""设置页（M7 组件清单 #4，独立窗口）。
+"""设置页（M7 组件清单 #4，可嵌入主窗的二级页面）。
 
 六个 Tab：
-- 翻译：档位单选（快档 / 质量档 / 云 API）+ 云 API Key（QLineEdit password）+
-  BaseURL（OpenAI 兼容端点，白名单校验留给 M6）
+- 翻译：STT 来源与翻译来源独立选择，云 STT / 云翻译各自配置模型、Key、BaseURL
 - 语音：朗读开关（TTS）
 - 外观：主题三档（浅色 / 深色 / 跟随系统），改动即时应用（load_theme）
 - 关于：版本 / 技术栈信息
@@ -16,7 +15,6 @@ from html import escape
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -24,8 +22,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QRadioButton,
     QPushButton,
+    QSizePolicy,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QToolButton,
@@ -35,6 +34,16 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.ui.config_store import ConfigStore
+from voxsub.ui.i18n import (
+    LANGUAGE_EN,
+    LANGUAGE_SYSTEM,
+    LANGUAGE_ZH,
+    language_manager,
+    retranslate_widget_tree,
+    tr,
+    translate_existing,
+)
+from voxsub.ui.selection_controls import RoundRadioButton, ToggleSwitch
 from voxsub.ui.theme import AppTheme, DESIGN_TOKENS, load_theme
 from voxsub import __version__ as _PKG_VERSION
 from voxsub.logging_setup import get_logger
@@ -50,22 +59,34 @@ class _InfoButton(QToolButton):
         super().__init__(parent)
         self._title = title
         self._explanation = explanation
+        language_manager.language_changed.connect(self.retranslate_ui)
+        self.setText("i")
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(24, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName("infoButton")
+        self.retranslate_ui()
+
+    def retranslate_ui(self, *_args) -> None:
+        title = translate_existing(self._title)
+        explanation = translate_existing(self._explanation)
+        if language_manager.language == LANGUAGE_EN:
+            explanation = {
+                "调优预设": "Automatic chooses suitable values for Zipformer or Qwen3-ASR. Low latency shows text sooner but may split one sentence; Accuracy waits longer for more context.",
+                "语音灵敏度": "Lower values catch quiet or distant speech more easily but may mistake keyboard or fan noise for speech. Higher values reject more noise but may miss quiet speech.",
+                "停顿多久断句": "After speech has been quiet for this long, the current sentence is sent for recognition. Lower values reduce latency; higher values preserve more context.",
+                "单句最长时长": "If someone speaks without pausing, this limit forces a split so subtitles keep moving. Too short can cut a sentence; too long increases delay and memory use.",
+                "识别候选数": "Mainly affects Zipformer. More candidates can improve accuracy but use more CPU. Qwen3-ASR uses its own generation path, so this setting does not affect it.",
+                "单句最大文字量": "Mainly affects Qwen3-ASR and Fun-ASR. A value that is too small can truncate long speech; a larger value only permits longer output and may slow abnormal segments.",
+                "常用词 / 专有名词": "Separate names, product terms, medical terms, or game terms with commas. The model pays more attention to similar-sounding words; do not paste a whole article.",
+            }.get(self._title, explanation)
         self._tooltip_html = (
             '<div style="width: 320px; white-space: normal;">'
             f"<b>{escape(title)}</b><br>{escape(explanation)}</div>"
         )
-        self.setText("i")
         self.setToolTip(self._tooltip_html)
-        self.setAccessibleName(f"{title}说明")
+        self.setAccessibleName(f"{title}{' explanation' if language_manager.language == LANGUAGE_EN else '说明'}")
         self.setAccessibleDescription(explanation)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setFixedSize(24, 24)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(
-            "QToolButton { border: 1px solid rgba(127,127,127,0.35); border-radius: 12px;"
-            " font-weight: 700; background: transparent; }"
-            "QToolButton:hover { border-color: #14B8A6; color: #14B8A6; }"
-        )
     def enterEvent(self, event) -> None:  # noqa: N802
         # Show immediately beside the small i chip.  A tooltip keeps the
         # explanation lightweight and never interrupts the settings workflow.
@@ -84,27 +105,48 @@ class _InfoButton(QToolButton):
 
 
 class SettingsWindow(QWidget):
-    """语幕设置页（独立窗口，QTabWidget 六页）。"""
+    """语幕设置页（可独立构造，也可嵌入主窗，QTabWidget 六页）。"""
 
     model_hub_requested = Signal()
+    overlay_changed = Signal(dict)
 
     def __init__(
         self,
         store: ConfigStore | None = None,
         parent: QWidget | None = None,
+        overlay: object | None = None,
     ) -> None:
         super().__init__(parent)
         self._store = store or ConfigStore()
+        self._overlay = overlay
         self._loading = True
         self._tuning_snapshot: dict[str, object] = {}
         self._tuning_dirty = False
+        self._embedded = False
         self.setObjectName("settingsWindow")
         self.setWindowTitle("设置 — 语幕 VoxSub")
-        self.resize(680, 560)
+        self.setMinimumSize(640, 520)
+        self.resize(760, 700)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(28, 24, 28, 22)
+        root.setSpacing(16)
+
+        header = QFrame(self)
+        header.setObjectName("windowHeader")
+        header_box = QVBoxLayout(header)
+        header_box.setContentsMargins(2, 0, 2, 0)
+        header_box.setSpacing(3)
+        eyebrow = QLabel("VOXSUB  /  PREFERENCES", header)
+        eyebrow.setObjectName("eyebrowLabel")
+        title = QLabel("设置", header)
+        title.setObjectName("windowTitleLabel")
+        subtitle = QLabel("把识别、设备和字幕显示调整成适合你的工作方式。", header)
+        subtitle.setObjectName("windowSubtitleLabel")
+        header_box.addWidget(eyebrow)
+        header_box.addWidget(title)
+        header_box.addWidget(subtitle)
+        root.addWidget(header)
 
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("settingsTabs")
@@ -118,6 +160,8 @@ class SettingsWindow(QWidget):
 
         self._load_from_store()
         self._loading = False
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
 
     # ------------------------------------------------------------------
     # Tab 构建
@@ -133,49 +177,132 @@ class SettingsWindow(QWidget):
         lay.addWidget(head)
         return card, lay
 
+    @staticmethod
+    def _scroll_page(page: QWidget) -> QScrollArea:
+        """Keep dense settings usable on small screens without clipping fields."""
+        page.setObjectName("settingsPage")
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(page)
+        return scroll
+
     def _build_translate_tab(self) -> QWidget:
         page = QWidget(self)
         lay = QVBoxLayout(page)
         lay.setContentsMargins(4, 12, 4, 4)
         lay.setSpacing(12)
 
-        card, box = self._card("翻译档位")
-        self.tier_fast = QRadioButton("快档（本地 OPUS-MT，<0.5s/句）", card)
-        self.tier_quality = QRadioButton("质量档（使用模型广场中选择的专用翻译模型）", card)
-        self.tier_cloud = QRadioButton("云 API（OpenAI 兼容端点）", card)
+        stt_card, stt_box = self._card("语音识别来源")
+        stt_note = QLabel(
+            "本地 STT 不上传音频；云 STT 会把每个语音片段发送到你填写的音频转写接口。"
+            "两者可以和下面的本地/云翻译自由组合。",
+            stt_card,
+        )
+        stt_note.setObjectName("secondaryLabel")
+        stt_note.setWordWrap(True)
+        stt_box.addWidget(stt_note)
+        self.stt_local_radio = RoundRadioButton("本地 STT（使用模型广场中的识别模型）", stt_card)
+        self.stt_cloud_radio = RoundRadioButton("云 STT（OpenAI 兼容音频转写）", stt_card)
+        for rb in (self.stt_local_radio, self.stt_cloud_radio):
+            rb.setObjectName("tierRadio")
+            stt_box.addWidget(rb)
+        self.stt_local_radio.toggled.connect(
+            lambda on: self._on_stt_provider_changed(on, "local"))
+        self.stt_cloud_radio.toggled.connect(
+            lambda on: self._on_stt_provider_changed(on, "cloud"))
+        self.model_hub_btn = QPushButton("打开本地模型广场", stt_card)
+        self.model_hub_btn.setObjectName("secondaryButton")
+        self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
+        stt_box.addWidget(self.model_hub_btn)
+        lay.addWidget(stt_card)
+
+        card, box = self._card("翻译来源")
+        self.tier_fast = RoundRadioButton("快档（本地 OPUS-MT，<0.5s/句）", card)
+        self.tier_quality = RoundRadioButton("质量档（使用模型广场中选择的专用翻译模型）", card)
+        self.tier_cloud = RoundRadioButton("云翻译（OpenAI 兼容文本模型）", card)
         for rb in (self.tier_fast, self.tier_quality, self.tier_cloud):
             rb.setObjectName("tierRadio")
             box.addWidget(rb)
         self.tier_fast.toggled.connect(lambda on: self._on_tier_changed(on, "fast"))
         self.tier_quality.toggled.connect(lambda on: self._on_tier_changed(on, "quality"))
         self.tier_cloud.toggled.connect(lambda on: self._on_tier_changed(on, "cloud"))
-        self.model_hub_btn = QPushButton("打开模型广场", card)
-        self.model_hub_btn.setObjectName("secondaryButton")
-        self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
-        box.addWidget(self.model_hub_btn)
         lay.addWidget(card)
 
-        cloud_card, cloud_box = self._card("云 API 配置（仅云档生效）")
-        api_label = QLabel("API Key", cloud_card)
-        api_label.setObjectName("fieldLabel")
-        self.api_key_edit = QLineEdit(cloud_card)
-        self.api_key_edit.setObjectName("inputBox")
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText("sk-...")
-        self.api_key_edit.setEnabled(False)
-        url_label = QLabel("BaseURL（OpenAI 兼容）", cloud_card)
-        url_label.setObjectName("fieldLabel")
-        self.base_url_edit = QLineEdit(cloud_card)
-        self.base_url_edit.setObjectName("inputBox")
-        self.base_url_edit.setPlaceholderText("https://api.deepseek.com/v1")
-        self.base_url_edit.setEnabled(False)
-        cloud_box.addWidget(api_label)
-        cloud_box.addWidget(self.api_key_edit)
-        cloud_box.addWidget(url_label)
-        cloud_box.addWidget(self.base_url_edit)
-        lay.addWidget(cloud_card)
+        translate_card, translate_box = self._card("云翻译配置（仅云翻译生效）")
+        translate_form = QFormLayout()
+        translate_form.setHorizontalSpacing(14)
+        translate_form.setVerticalSpacing(9)
+        self.translate_api_key_edit = QLineEdit(translate_card)
+        self.translate_api_key_edit.setObjectName("inputBox")
+        self.translate_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.translate_api_key_edit.setPlaceholderText("翻译服务 API Key")
+        self.translate_base_url_edit = QLineEdit(translate_card)
+        self.translate_base_url_edit.setObjectName("inputBox")
+        self.translate_base_url_edit.setPlaceholderText("https://api.deepseek.com/v1")
+        self.translate_model_edit = QLineEdit(translate_card)
+        self.translate_model_edit.setObjectName("inputBox")
+        self.translate_model_edit.setPlaceholderText("deepseek-chat")
+        translate_form.addRow("API Key", self.translate_api_key_edit)
+        translate_form.addRow("BaseURL", self.translate_base_url_edit)
+        translate_form.addRow("模型名", self.translate_model_edit)
+        translate_box.addLayout(translate_form)
+        translate_hint = QLabel(
+            "只把识别后的文字发送到翻译接口；可与本地 STT 组合。",
+            translate_card,
+        )
+        translate_hint.setObjectName("secondaryLabel")
+        translate_hint.setWordWrap(True)
+        translate_box.addWidget(translate_hint)
+        lay.addWidget(translate_card)
+
+        stt_cloud_card, stt_cloud_box = self._card("云 STT 配置（仅云 STT 生效）")
+        stt_form = QFormLayout()
+        stt_form.setHorizontalSpacing(14)
+        stt_form.setVerticalSpacing(9)
+        self.stt_api_key_edit = QLineEdit(stt_cloud_card)
+        self.stt_api_key_edit.setObjectName("inputBox")
+        self.stt_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.stt_api_key_edit.setPlaceholderText("音频转写服务 API Key")
+        self.stt_base_url_edit = QLineEdit(stt_cloud_card)
+        self.stt_base_url_edit.setObjectName("inputBox")
+        self.stt_base_url_edit.setPlaceholderText("https://api.openai.com/v1")
+        self.stt_model_edit = QLineEdit(stt_cloud_card)
+        self.stt_model_edit.setObjectName("inputBox")
+        self.stt_model_edit.setPlaceholderText("whisper-1")
+        stt_form.addRow("API Key", self.stt_api_key_edit)
+        stt_form.addRow("BaseURL", self.stt_base_url_edit)
+        stt_form.addRow("模型名", self.stt_model_edit)
+        stt_cloud_box.addLayout(stt_form)
+        stt_cloud_hint = QLabel(
+            "当前按 VAD 切出的语音片段调用 /audio/transcriptions，适合实时字幕的句段模式；"
+            "请确认服务商支持音频转写接口。",
+            stt_cloud_card,
+        )
+        stt_cloud_hint.setObjectName("secondaryLabel")
+        stt_cloud_hint.setWordWrap(True)
+        stt_cloud_box.addWidget(stt_cloud_hint)
+        lay.addWidget(stt_cloud_card)
+
+        self.cloud_mode_summary = QLabel("", page)
+        self.cloud_mode_summary.setObjectName("statusPill")
+        self.cloud_mode_summary.setWordWrap(True)
+        lay.addWidget(self.cloud_mode_summary)
+
+        # Compatibility aliases retained for 0.3.x callers and existing user
+        # automation; they now point specifically at the translation fields.
+        self.api_key_edit = self.translate_api_key_edit
+        self.base_url_edit = self.translate_base_url_edit
+        self.translate_api_key_edit.editingFinished.connect(self.save_cloud_credentials)
+        self.translate_base_url_edit.editingFinished.connect(self.save_cloud_credentials)
+        self.translate_model_edit.editingFinished.connect(self.save_cloud_credentials)
+        self.stt_api_key_edit.editingFinished.connect(self.save_cloud_credentials)
+        self.stt_base_url_edit.editingFinished.connect(self.save_cloud_credentials)
+        self.stt_model_edit.editingFinished.connect(self.save_cloud_credentials)
         lay.addStretch(1)
-        return page
+        return self._scroll_page(page)
 
     def _tuning_row(self, form: QFormLayout, label: str, control: QWidget,
                     explanation: str) -> None:
@@ -316,7 +443,7 @@ class SettingsWindow(QWidget):
                      self.max_tokens_spin):
             spin.valueChanged.connect(self._mark_asr_tuning_dirty)
         self.hotwords_edit.textChanged.connect(self._mark_asr_tuning_dirty)
-        return page
+        return self._scroll_page(page)
 
     def _build_voice_tab(self) -> QWidget:
         page = QWidget(self)
@@ -325,13 +452,13 @@ class SettingsWindow(QWidget):
         lay.setSpacing(12)
 
         card, box = self._card("语音朗读")
-        self.tts_switch = QCheckBox("朗读译文（本地 TTS；失败自动降级为仅字幕）", card)
+        self.tts_switch = ToggleSwitch("朗读译文（本地 TTS；失败自动降级为仅字幕）", card)
         self.tts_switch.setMinimumHeight(44)
         box.addWidget(self.tts_switch)
         self.tts_switch.toggled.connect(self._on_tts_toggled)
         lay.addWidget(card)
         lay.addStretch(1)
-        return page
+        return self._scroll_page(page)
 
     def _build_device_tab(self) -> QWidget:
         page = QWidget(self)
@@ -380,7 +507,7 @@ class SettingsWindow(QWidget):
         self.mic_combo.currentIndexChanged.connect(self._on_devices_changed)
         self.output_combo.currentIndexChanged.connect(self._on_devices_changed)
         self.process_combo.currentIndexChanged.connect(self._on_devices_changed)
-        return page
+        return self._scroll_page(page)
 
     def _build_appearance_tab(self) -> QWidget:
         page = QWidget(self)
@@ -389,9 +516,9 @@ class SettingsWindow(QWidget):
         lay.setSpacing(12)
 
         card, box = self._card("主题")
-        self.theme_light = QRadioButton("浅色", card)
-        self.theme_dark = QRadioButton("深色", card)
-        self.theme_system = QRadioButton("跟随系统", card)
+        self.theme_light = RoundRadioButton("浅色", card)
+        self.theme_dark = RoundRadioButton("深色", card)
+        self.theme_system = RoundRadioButton("跟随系统", card)
         for rb in (self.theme_light, self.theme_dark, self.theme_system):
             box.addWidget(rb)
         # 色板预览
@@ -411,12 +538,61 @@ class SettingsWindow(QWidget):
             swatch_row.addSpacing(8)
         swatch_row.addStretch(1)
         box.addLayout(swatch_row)
+        language_row = QHBoxLayout()
+        language_label = QLabel("语言", card)
+        language_label.setObjectName("fieldLabel")
+        self.language_combo = QComboBox(card)
+        self.language_combo.setObjectName("inputBox")
+        self.language_combo.setMinimumHeight(40)
+        self.language_combo.addItem("跟随系统", LANGUAGE_SYSTEM)
+        self.language_combo.addItem("简体中文", LANGUAGE_ZH)
+        self.language_combo.addItem("English", LANGUAGE_EN)
+        self.language_combo.currentIndexChanged.connect(self._on_language_setting_changed)
+        language_row.addWidget(language_label)
+        language_row.addWidget(self.language_combo, 1)
+        box.addLayout(language_row)
         self.theme_light.toggled.connect(lambda on: self._on_theme_changed(on, AppTheme.LIGHT))
         self.theme_dark.toggled.connect(lambda on: self._on_theme_changed(on, AppTheme.DARK))
         self.theme_system.toggled.connect(lambda on: self._on_theme_changed(on, AppTheme.SYSTEM))
         lay.addWidget(card)
+
+        overlay_card, overlay_box = self._card("浮窗显示")
+        overlay_note = QLabel(
+            "浮窗上的工具条也可以直接调整。这里适合设置一个固定的默认外观，"
+            "锁定后仍可在浮窗顶部悬停打开解锁控制。",
+            overlay_card,
+        )
+        overlay_note.setObjectName("cardCaption")
+        overlay_note.setWordWrap(True)
+        overlay_box.addWidget(overlay_note)
+
+        overlay_form = QFormLayout()
+        overlay_form.setHorizontalSpacing(18)
+        overlay_form.setVerticalSpacing(10)
+        self.overlay_font_spin = QSpinBox(overlay_card)
+        self.overlay_font_spin.setObjectName("inputBox")
+        self.overlay_font_spin.setRange(14, 36)
+        self.overlay_font_spin.setSingleStep(2)
+        self.overlay_font_spin.setSuffix(" pt")
+        self.overlay_font_spin.valueChanged.connect(self._on_overlay_font_changed)
+        overlay_form.addRow("译文字号", self.overlay_font_spin)
+
+        self.overlay_opacity_spin = QSpinBox(overlay_card)
+        self.overlay_opacity_spin.setObjectName("inputBox")
+        self.overlay_opacity_spin.setRange(20, 100)
+        self.overlay_opacity_spin.setSingleStep(5)
+        self.overlay_opacity_spin.setSuffix(" %")
+        self.overlay_opacity_spin.valueChanged.connect(self._on_overlay_opacity_changed)
+        overlay_form.addRow("浮窗不透明度", self.overlay_opacity_spin)
+        overlay_box.addLayout(overlay_form)
+
+        self.overlay_lock_switch = ToggleSwitch("启动时保持锁定并允许点击穿透", overlay_card)
+        self.overlay_lock_switch.setMinimumHeight(40)
+        self.overlay_lock_switch.toggled.connect(self._on_overlay_lock_changed)
+        overlay_box.addWidget(self.overlay_lock_switch)
+        lay.addWidget(overlay_card)
         lay.addStretch(1)
-        return page
+        return self._scroll_page(page)
 
     def _build_about_tab(self) -> QWidget:
         page = QWidget(self)
@@ -439,9 +615,22 @@ class SettingsWindow(QWidget):
             row.addWidget(k, 0, Qt.AlignmentFlag.AlignTop)
             row.addWidget(v, 1)
             box.addLayout(row)
+        github_row = QHBoxLayout()
+        github_key = QLabel("GitHub", card)
+        github_key.setObjectName("fieldLabel")
+        github_link = QLabel(
+            '<a href="https://github.com/tuotuonuts/VoxSub">github.com/tuotuonuts/VoxSub</a>',
+            card,
+        )
+        github_link.setOpenExternalLinks(True)
+        github_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        github_link.setToolTip("https://github.com/tuotuonuts/VoxSub")
+        github_row.addWidget(github_key, 0, Qt.AlignmentFlag.AlignTop)
+        github_row.addWidget(github_link, 1)
+        box.addLayout(github_row)
         debug_label = QLabel("开发与排障", card)
         debug_label.setObjectName("fieldLabel")
-        self.debug_switch = QCheckBox("启用内置调试模式（实时显示详细日志）", card)
+        self.debug_switch = ToggleSwitch("启用内置调试模式（实时显示详细日志）", card)
         self.debug_switch.setMinimumHeight(44)
         self.debug_switch.toggled.connect(self._on_debug_toggled)
         box.addSpacing(8)
@@ -449,7 +638,7 @@ class SettingsWindow(QWidget):
         box.addWidget(self.debug_switch)
         lay.addWidget(card)
         lay.addStretch(1)
-        return page
+        return self._scroll_page(page)
 
     # ------------------------------------------------------------------
     # 状态装载 / 变更
@@ -460,11 +649,22 @@ class SettingsWindow(QWidget):
         target = {"fast": self.tier_fast, "quality": self.tier_quality, "cloud": self.tier_cloud}
         rb = target.get(tier, self.tier_fast)
         rb.setChecked(True)
-        self.api_key_edit.setText(cfg.get("api_key", ""))
-        self.base_url_edit.setText(cfg.get("base_url", ""))
-        self.api_key_edit.editingFinished.connect(self.save_cloud_credentials)
-        self.base_url_edit.editingFinished.connect(self.save_cloud_credentials)
-        self._set_cloud_enabled(tier == "cloud")
+        stt_provider = str(cfg.get("stt_provider", "local"))
+        stt_target = self.stt_cloud_radio if stt_provider == "cloud" else self.stt_local_radio
+        stt_target.setChecked(True)
+        self.translate_api_key_edit.setText(str(cfg.get(
+            "translate_api_key", cfg.get("api_key", ""))))
+        self.translate_base_url_edit.setText(str(cfg.get(
+            "translate_base_url", cfg.get("base_url", ""))))
+        self.translate_model_edit.setText(str(cfg.get(
+            "translate_model", cfg.get("model", "deepseek-chat"))))
+        self.stt_api_key_edit.setText(str(cfg.get("stt_api_key", "")))
+        self.stt_base_url_edit.setText(str(cfg.get(
+            "stt_base_url", "https://api.openai.com/v1")))
+        self.stt_model_edit.setText(str(cfg.get("stt_model", "whisper-1")))
+        self._set_translate_cloud_enabled(tier == "cloud")
+        self._set_stt_cloud_enabled(stt_provider == "cloud")
+        self._update_cloud_mode_summary()
 
         tuning = self._tuning_from_config(cfg)
         self._apply_tuning_to_controls(tuning)
@@ -473,29 +673,119 @@ class SettingsWindow(QWidget):
 
         self.tts_switch.setChecked(bool(cfg.get("tts_enabled", True)))
         self.debug_switch.setChecked(bool(cfg.get("debug_mode", False)))
+        self.overlay_font_spin.setValue(int(cfg.get("overlay_font_size", 20)))
+        self.overlay_opacity_spin.setValue(
+            int(round(float(cfg.get("overlay_opacity", 0.92)) * 100)))
+        self.overlay_lock_switch.setChecked(bool(cfg.get("overlay_click_through", False)))
 
         self.refresh_devices()
 
         theme = cfg.get("theme", "system")
+        theme_enum = {
+            "light": AppTheme.LIGHT,
+            "dark": AppTheme.DARK,
+            "system": AppTheme.SYSTEM,
+        }.get(str(theme), AppTheme.SYSTEM)
         theme_target = {
             "light": self.theme_light,
             "dark": self.theme_dark,
             "system": self.theme_system,
         }
         theme_target.get(theme, self.theme_system).setChecked(True)
+        self._select_data(self.language_combo, str(cfg.get("language", LANGUAGE_SYSTEM)))
 
     def _on_tier_changed(self, checked: bool, tier: str) -> None:
         if not checked:
             return
         self._store.set("translate_tier", tier)
-        self._set_cloud_enabled(tier == "cloud")
+        self._set_translate_cloud_enabled(tier == "cloud")
+        self._update_cloud_mode_summary()
+
+    def _on_stt_provider_changed(self, checked: bool, provider: str) -> None:
+        if not checked:
+            return
+        self._store.set("stt_provider", provider)
+        self._set_stt_cloud_enabled(provider == "cloud")
+        self._update_cloud_mode_summary()
+
+    def _set_translate_cloud_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.translate_api_key_edit,
+            self.translate_base_url_edit,
+            self.translate_model_edit,
+        ):
+            control.setEnabled(enabled)
+
+    def _set_stt_cloud_enabled(self, enabled: bool) -> None:
+        for control in (self.stt_api_key_edit, self.stt_base_url_edit,
+                        self.stt_model_edit):
+            control.setEnabled(enabled)
 
     def _set_cloud_enabled(self, enabled: bool) -> None:
-        self.api_key_edit.setEnabled(enabled)
-        self.base_url_edit.setEnabled(enabled)
+        """Backward-compatible alias for the translation cloud controls."""
+        self._set_translate_cloud_enabled(enabled)
+
+    def _update_cloud_mode_summary(self) -> None:
+        if not hasattr(self, "cloud_mode_summary"):
+            return
+        stt_cloud = self.stt_cloud_radio.isChecked()
+        translate_cloud = self.tier_cloud.isChecked()
+        stt_name = "云 STT" if stt_cloud else "本地 STT"
+        translate_name = "云翻译" if translate_cloud else (
+            "本地质量翻译" if self.tier_quality.isChecked() else "本地快档翻译")
+        if stt_cloud != translate_cloud:
+            prefix = "混合模式"
+        elif stt_cloud:
+            prefix = "云端双阶段"
+        else:
+            prefix = "本地模式"
+        self.cloud_mode_summary.setText(
+            f"{tr('当前组合', 'Current pipeline')}：{tr(prefix)} · "
+            f"{tr(stt_name)} + {tr(translate_name)}"
+        )
 
     def _on_tts_toggled(self, checked: bool) -> None:
         self._store.set("tts_enabled", bool(checked))
+
+    def _overlay_call(self, method: str, *args) -> None:
+        if self._overlay is None:
+            return
+        callback = getattr(self._overlay, method, None)
+        if callable(callback):
+            try:
+                callback(*args)
+            except Exception:  # pragma: no cover - optional live window bridge
+                logger.exception("应用浮窗设置失败: %s", method)
+
+    def _emit_overlay_state(self) -> None:
+        self.overlay_changed.emit({
+            "font_size": int(self.overlay_font_spin.value()),
+            "opacity": self.overlay_opacity_spin.value() / 100.0,
+            "click_through": bool(self.overlay_lock_switch.isChecked()),
+        })
+
+    def _on_overlay_font_changed(self, value: int) -> None:
+        if self._loading:
+            return
+        current = getattr(self._overlay, "font_size", lambda: value)()
+        self._overlay_call("change_font_size", int(value) - int(current))
+        self._store.set("overlay_font_size", int(value))
+        self._emit_overlay_state()
+
+    def _on_overlay_opacity_changed(self, value: int) -> None:
+        if self._loading:
+            return
+        opacity = max(0.2, min(1.0, value / 100.0))
+        self._overlay_call("set_overlay_opacity", opacity)
+        self._store.set("overlay_opacity", opacity)
+        self._emit_overlay_state()
+
+    def _on_overlay_lock_changed(self, checked: bool) -> None:
+        if self._loading:
+            return
+        self._overlay_call("set_click_through", bool(checked))
+        self._store.set("overlay_click_through", bool(checked))
+        self._emit_overlay_state()
 
     @staticmethod
     def _asr_preset_values(profile: str) -> dict[str, float | int] | None:
@@ -554,7 +844,7 @@ class SettingsWindow(QWidget):
         if not hasattr(self, "tuning_state_label"):
             return
         self.tuning_state_label.setText(
-            "有未保存的更改" if dirty else "已保存")
+            tr("有未保存的更改") if dirty else tr("已保存"))
         self.tuning_save_btn.setEnabled(dirty)
         self.tuning_discard_btn.setEnabled(dirty)
 
@@ -591,7 +881,7 @@ class SettingsWindow(QWidget):
         self._store.update(values)
         self._tuning_snapshot = dict(values)
         self._set_tuning_dirty(False)
-        self.tuning_state_label.setText("已保存 · 下次开始时生效")
+        self.tuning_state_label.setText(tr("已保存 · 下次开始时生效"))
 
     def _discard_asr_tuning(self) -> None:
         values = self._tuning_from_config(self._store.load())
@@ -667,6 +957,7 @@ class SettingsWindow(QWidget):
             combo.blockSignals(False)
         if not self._loading:
             self._on_devices_changed()
+        retranslate_widget_tree(self)
 
     def _on_devices_changed(self, _index: int = -1) -> None:
         if self._loading:
@@ -689,6 +980,33 @@ class SettingsWindow(QWidget):
         if app is not None:
             load_theme(app, theme)
 
+    def _on_language_setting_changed(self, _index: int) -> None:
+        if self._loading:
+            return
+        value = self.language_combo.currentData() or LANGUAGE_SYSTEM
+        self._store.set("language", value)
+        language_manager.set_language(value)
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        self._update_cloud_mode_summary()
+        self._set_tuning_dirty(self._tuning_dirty)
+
+    def set_embedded(self, embedded: bool = True) -> None:
+        """Switch between the legacy top-level presentation and page embedding."""
+        self._embedded = embedded
+        if embedded:
+            self.setMinimumSize(0, 0)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        else:
+            self.setMinimumSize(640, 520)
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+    def prepare_for_page_leave(self) -> None:
+        """Apply the same discard/save boundary used by closing the old window."""
+        self._discard_asr_tuning()
+        self.save_cloud_credentials()
+
     # 测试 / 程序化访问入口
     def current_tier(self) -> str:
         if self.tier_fast.isChecked():
@@ -699,15 +1017,28 @@ class SettingsWindow(QWidget):
             return "cloud"
         return "fast"
 
+    def current_stt_provider(self) -> str:
+        return "cloud" if self.stt_cloud_radio.isChecked() else "local"
+
     def save_cloud_credentials(self) -> None:
-        """保存云 API Key / BaseURL（QLineEdit 失焦或设置页关闭时由 app.py 调用）。"""
+        """保存 STT 与翻译两套云 API 凭据（失焦或关窗时调用）。"""
         self._store.update(
-            {"api_key": self.api_key_edit.text().strip(), "base_url": self.base_url_edit.text().strip()}
+            {
+                "stt_api_key": self.stt_api_key_edit.text().strip(),
+                "stt_base_url": self.stt_base_url_edit.text().strip(),
+                "stt_model": self.stt_model_edit.text().strip(),
+                "translate_api_key": self.translate_api_key_edit.text().strip(),
+                "translate_base_url": self.translate_base_url_edit.text().strip(),
+                "translate_model": self.translate_model_edit.text().strip(),
+                # Keep old keys synchronized for scripts and 0.3.x tooling.
+                "api_key": self.translate_api_key_edit.text().strip(),
+                "base_url": self.translate_base_url_edit.text().strip(),
+                "model": self.translate_model_edit.text().strip(),
+            }
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802
         # Recognition tuning is transactional: X/Alt+F4 always abandons the
         # draft unless the explicit Save button was used.
-        self._discard_asr_tuning()
-        self.save_cloud_credentials()
+        self.prepare_for_page_leave()
         super().closeEvent(event)

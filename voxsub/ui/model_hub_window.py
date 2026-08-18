@@ -1,4 +1,4 @@
-"""Soft Premium model marketplace window."""
+"""Soft Premium model marketplace page."""
 from __future__ import annotations
 
 import threading
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +31,13 @@ from voxsub.model_catalog import (
 )
 from voxsub.models import DownloadCancelled
 from voxsub.ui.config_store import ConfigStore
+from voxsub.ui.i18n import (
+    language_manager,
+    retranslate_widget_tree,
+    tr,
+    translate_dynamic,
+)
+from voxsub.ui.selection_controls import PillChoiceButton
 
 logger = get_logger("ui.model_hub")
 
@@ -94,6 +102,7 @@ class ModelCard(QFrame):
         self.marketplace = marketplace
         self.setObjectName("modelCard")
         self.setProperty("topRank", model.quality_score >= 98)
+        self.setMinimumHeight(226)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 22, 18)
@@ -102,7 +111,7 @@ class ModelCard(QFrame):
         head = QHBoxLayout()
         copy = QVBoxLayout()
         copy.setSpacing(3)
-        eyebrow = QLabel(f"{model.task_label.upper()}  ·  {model.vendor}", self)
+        eyebrow = QLabel(f"{tr(model.task_label).upper()}  ·  {model.vendor}", self)
         eyebrow.setObjectName("eyebrowLabel")
         name = QLabel(model.name, self)
         name.setObjectName("modelName")
@@ -110,26 +119,26 @@ class ModelCard(QFrame):
         copy.addWidget(name)
         head.addLayout(copy, 1)
         assessment = assess_model(model, profile)
-        self.badge = RecommendationBadge(assessment.level, assessment.color, self)
-        self.badge.setToolTip(assessment.reason)
+        self.badge = RecommendationBadge(tr(assessment.level), assessment.color, self)
+        self.badge.setToolTip(translate_dynamic(assessment.reason))
         head.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(head)
 
-        description = QLabel(model.description, self)
+        description = QLabel(tr(model.description), self)
         description.setObjectName("secondaryLabel")
         description.setWordWrap(True)
         root.addWidget(description)
 
         accelerators = ["CPU"]
         if model.igpu_supported:
-            accelerators.insert(0, "核显")
+            accelerators.insert(0, tr("核显"))
         if model.npu_supported:
             accelerators.insert(0, "Intel NPU" if model.runtime == "llama-hy-mt2" else "NPU")
         if model.gpu_supported:
-            accelerators.insert(0, "独显")
+            accelerators.insert(0, tr("独显"))
         facts = QLabel(
-            f"质量分 {model.quality_score}  ·  {model.languages}  ·  "
-            f"{model.license}  ·  {model.release}  ·  运行设备 {' / '.join(accelerators)}", self)
+            f"{tr('质量分')} {model.quality_score}  ·  {tr(model.languages)}  ·  "
+            f"{model.license}  ·  {model.release}  ·  {tr('运行设备')} {' / '.join(accelerators)}", self)
         facts.setObjectName("modelFacts")
         facts.setWordWrap(True)
         root.addWidget(facts)
@@ -137,7 +146,7 @@ class ModelCard(QFrame):
         tags = QHBoxLayout()
         tags.setSpacing(7)
         for text in model.tags:
-            tag = QLabel(text, self)
+            tag = QLabel(tr(text), self)
             tag.setObjectName("modelTag")
             tags.addWidget(tag)
         tags.addStretch(1)
@@ -145,19 +154,17 @@ class ModelCard(QFrame):
 
         foot = QHBoxLayout()
         foot.setSpacing(10)
-        self.resource = QLabel(
-            f"{assessment.reason}  ·  "
-            f"{'随应用内置' if model.builtin else format_bytes(model.download_bytes)}",
-            self,
-        )
+        self.resource = QLabel(self._resource_text(assessment), self)
         self.resource.setObjectName("secondaryLabel")
         self.resource.setWordWrap(True)
         foot.addWidget(self.resource, 1)
         self.uninstall_btn = QPushButton("卸载", self)
         self.uninstall_btn.setObjectName("ghostButton")
+        self.uninstall_btn.setMinimumWidth(72)
         self.uninstall_btn.clicked.connect(lambda: self.uninstall_requested.emit(model.id))
         self.action_btn = QPushButton("下载", self)
         self.action_btn.setObjectName("modelActionButton")
+        self.action_btn.setMinimumWidth(112)
         self.action_btn.clicked.connect(lambda: self.action_requested.emit(model.id))
         foot.addWidget(self.uninstall_btn)
         foot.addWidget(self.action_btn)
@@ -172,10 +179,20 @@ class ModelCard(QFrame):
         self.progress.hide()
         root.addWidget(self.progress)
         self.source_text = QLabel("", self)
-        self.source_text.setObjectName("secondaryLabel")
+        self.source_text.setObjectName("downloadStatus")
         self.source_text.hide()
         root.addWidget(self.source_text)
         self.refresh()
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
+
+    def _resource_text(self, assessment) -> str:
+        if self.model.builtin:
+            missing = self.marketplace.missing_paths(self.model)
+            if missing:
+                return f"{tr('缺少文件')}: {', '.join(missing)}"
+            return f"{translate_dynamic(assessment.reason)}  ·  {tr('随应用内置')}"
+        return f"{translate_dynamic(assessment.reason)}  ·  {format_bytes(self.model.download_bytes)}"
 
     def refresh(self, active: bool = False, selected: bool = False) -> None:
         installed = self.marketplace.is_installed(self.model)
@@ -185,18 +202,19 @@ class ModelCard(QFrame):
         self.action_btn.setEnabled(not active)
         self.uninstall_btn.setVisible(installed and not self.model.builtin)
         self.uninstall_btn.setEnabled(not active and not selected)
+        self.resource.setText(self._resource_text(assess_model(self.model, self.profile)))
         if active:
-            self.action_btn.setText("取消")
+            self.action_btn.setText(tr("取消"))
             self.action_btn.setEnabled(True)
         elif installed and selected:
-            self.action_btn.setText("使用中")
+            self.action_btn.setText(tr("使用中"))
             self.action_btn.setEnabled(False)
         elif installed:
-            self.action_btn.setText("设为使用")
+            self.action_btn.setText(tr("设为使用"))
         elif self.model.builtin:
-            self.action_btn.setText("修复安装")
+            self.action_btn.setText(tr("修复安装"))
         else:
-            self.action_btn.setText("下载")
+            self.action_btn.setText(tr("下载"))
         if not active:
             self.progress.hide()
             self.source_text.hide()
@@ -213,11 +231,15 @@ class ModelCard(QFrame):
                 f"{source}  ·  {percent:.1f}%  ·  {format_bytes(done)} / {format_bytes(total)}")
         else:
             self.progress.setRange(0, 0)
-            self.source_text.setText(f"{source}  ·  已下载 {format_bytes(done)}")
+            self.source_text.setText(f"{source}  ·  {tr('已下载')} {format_bytes(done)}")
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        self.refresh()
 
 
 class ModelHubWindow(QWidget):
-    """Curated, hardware-aware marketplace sorted by model quality."""
+    """Curated, hardware-aware marketplace used as an embedded tertiary page."""
 
     selection_changed = Signal(str, str)
 
@@ -235,13 +257,16 @@ class ModelHubWindow(QWidget):
         self._filter = "all"
         self._cards: dict[str, ModelCard] = {}
         self._workers: dict[str, ModelDownloadWorker] = {}
+        self._embedded = False
         self._build_ui()
         self.refresh()
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 26, 28, 24)
-        root.setSpacing(18)
+        root.setContentsMargins(32, 28, 32, 26)
+        root.setSpacing(16)
 
         head = QHBoxLayout()
         title_copy = QVBoxLayout()
@@ -249,19 +274,19 @@ class ModelHubWindow(QWidget):
         eyebrow.setObjectName("eyebrowLabel")
         title = QLabel("模型广场", self)
         title.setObjectName("hubTitle")
-        subtitle = QLabel(
-            f"仅展示已接通运行时的非淘汰模型 · 独显→NPU→核显→CPU · "
-            f"按质量排序 · 目录更新于 {CATALOG_UPDATED}", self)
-        subtitle.setObjectName("secondaryLabel")
+        self.catalog_summary = QLabel(self._catalog_summary_text(), self)
+        self.catalog_summary.setObjectName("secondaryLabel")
+        self.catalog_summary.setWordWrap(True)
         title_copy.addWidget(eyebrow)
         title_copy.addWidget(title)
-        title_copy.addWidget(subtitle)
+        title_copy.addWidget(self.catalog_summary)
         head.addLayout(title_copy, 1)
         source_box = QVBoxLayout()
         source_label = QLabel("下载源", self)
         source_label.setObjectName("fieldLabel")
         self.source_combo = QComboBox(self)
         self.source_combo.setObjectName("inputBox")
+        self.source_combo.setMinimumSize(184, 44)
         self.source_combo.addItem("自动测速切换", "auto")
         self.source_combo.addItem("全球源优先", "global")
         self.source_combo.addItem("中国大陆源优先", "china")
@@ -277,35 +302,25 @@ class ModelHubWindow(QWidget):
 
         hero = QFrame(self)
         hero.setObjectName("hardwareHero")
+        hero.setProperty("emphasis", True)
         hero_box = QHBoxLayout(hero)
         hero_box.setContentsMargins(22, 18, 22, 18)
         hero_box.setSpacing(18)
         hardware_copy = QVBoxLayout()
         hardware_title = QLabel("根据这台电脑实时评估", hero)
         hardware_title.setObjectName("sectionTitle")
-        gpu = (f"{self.profile.gpu_name} · {self.profile.vram_gb:.1f} GB 显存"
-               if self.profile.gpu_name else
-               (f"{self.profile.gpu_provider} 可用" if self.profile.gpu_provider else "未检测到独立显卡"))
-        npu = (f"{self.profile.npu_name} · {self.profile.npu_provider or '已检测，等待兼容模型后端'}"
-               if self.profile.npu_name else "未检测到 NPU")
-        igpu = (f"{self.profile.integrated_gpu_name} · "
-                f"{self.profile.integrated_gpu_provider or '已检测'}"
-                if self.profile.integrated_gpu_name else "未检测到核显")
-        hardware_detail = QLabel(
-            f"{self.profile.cpu_name} · {self.profile.physical_cores} 核 / "
-            f"{self.profile.logical_cores} 线程 · {self.profile.ram_gb:.1f} GB 内存\n"
-            f"独显：{gpu}  ·  NPU：{npu}  ·  核显：{igpu}", hero)
-        hardware_detail.setObjectName("secondaryLabel")
-        hardware_detail.setWordWrap(True)
+        self.hardware_detail = QLabel(self._hardware_detail_text(), hero)
+        self.hardware_detail.setObjectName("secondaryLabel")
+        self.hardware_detail.setWordWrap(True)
         hardware_copy.addWidget(hardware_title)
-        hardware_copy.addWidget(hardware_detail)
+        hardware_copy.addWidget(self.hardware_detail)
         hero_box.addLayout(hardware_copy, 1)
         legend = QVBoxLayout()
         legend.setSpacing(5)
         from voxsub.model_catalog import RECOMMENDATION_COLORS
         legend_row = QHBoxLayout()
         for level in ("不推荐", "较为推荐", "推荐", "满载"):
-            legend_row.addWidget(RecommendationBadge(level, RECOMMENDATION_COLORS[level], hero))
+            legend_row.addWidget(RecommendationBadge(tr(level), RECOMMENDATION_COLORS[level], hero))
         legend.addLayout(legend_row)
         legend_note = QLabel("徽章同时考虑内存、计算负载与是否存在更合适的高质量模型", hero)
         legend_note.setObjectName("secondaryLabel")
@@ -318,15 +333,14 @@ class ModelHubWindow(QWidget):
         self.filter_buttons: dict[str, QPushButton] = {}
         for key, text in (("all", "全部"), ("asr", "语音识别"),
                           ("translate", "字幕翻译")):
-            button = QPushButton(text, self)
+            button = PillChoiceButton(text, self)
             button.setObjectName("filterPill")
-            button.setCheckable(True)
             button.clicked.connect(lambda _checked, k=key: self.set_filter(k))
             self.filter_buttons[key] = button
             filters.addWidget(button)
         filters.addStretch(1)
         order = QLabel("排序：模型质量 ↓", self)
-        order.setObjectName("secondaryLabel")
+        order.setObjectName("statusPill")
         filters.addWidget(order)
         root.addLayout(filters)
 
@@ -342,6 +356,40 @@ class ModelHubWindow(QWidget):
         self.scroll.setWidget(self.container)
         root.addWidget(self.scroll, 1)
         self.set_filter("all")
+
+    def _catalog_summary_text(self) -> str:
+        """Build the catalog summary from the active product language."""
+        return (
+            f"{len(models_for_task())} {tr('个可下载或内置模型', 'downloadable or bundled models')} · "
+            f"{tr('仅展示已接通运行时的非淘汰模型', 'only supported, current models are shown')} · "
+            f"{tr('独显→NPU→核显→CPU · 按质量排序 · 目录更新于', 'discrete GPU -> NPU -> integrated GPU -> CPU · sorted by quality · catalog updated')} {CATALOG_UPDATED}"
+        )
+
+    def _hardware_detail_text(self) -> str:
+        """Build hardware facts anew because they contain user-specific values."""
+        gpu = (
+            f"{self.profile.gpu_name} · {self.profile.vram_gb:.1f} GB {tr('显存', 'VRAM')}"
+            if self.profile.gpu_name
+            else (
+                f"{self.profile.gpu_provider} {tr('可用', 'available')}"
+                if self.profile.gpu_provider else tr("未检测到独立显卡")
+            )
+        )
+        npu = (
+            f"{self.profile.npu_name} · {self.profile.npu_provider or tr('已检测，等待兼容模型后端')}"
+            if self.profile.npu_name else tr("未检测到 NPU")
+        )
+        igpu = (
+            f"{self.profile.integrated_gpu_name} · "
+            f"{self.profile.integrated_gpu_provider or tr('已检测')}"
+            if self.profile.integrated_gpu_name else tr("未检测到核显")
+        )
+        return (
+            f"{self.profile.cpu_name} · {self.profile.physical_cores} {tr('核', 'cores')} / "
+            f"{self.profile.logical_cores} {tr('线程', 'threads')} · {self.profile.ram_gb:.1f} GB {tr('内存', 'RAM')}\n"
+            f"{tr('独显', 'Discrete GPU')}：{gpu}  ·  NPU：{npu}  · "
+            f"{tr('核显', 'Integrated GPU')}：{igpu}"
+        )
 
     def set_filter(self, task: str) -> None:
         self._filter = task if task in {"all", "asr", "translate"} else "all"
@@ -381,7 +429,7 @@ class ModelHubWindow(QWidget):
         if worker is not None:
             worker.cancel()
             card.action_btn.setEnabled(False)
-            card.action_btn.setText("正在取消…")
+            card.action_btn.setText(tr("正在取消…"))
             return
         model = card.model
         if self.marketplace.is_installed(model):
@@ -427,7 +475,7 @@ class ModelHubWindow(QWidget):
 
     def _on_failed(self, model_id: str, message: str) -> None:
         if "已取消" not in message:
-            QMessageBox.warning(self, "模型下载未完成", message)
+            QMessageBox.warning(self, tr("模型下载未完成"), message)
         else:
             logger.info("%s: %s", model_id, message)
 
@@ -444,10 +492,12 @@ class ModelHubWindow(QWidget):
         model = card.model
         selected = self._selected_id(model.task) == model.id
         if selected:
-            QMessageBox.information(self, "模型正在使用", "请先切换到同类的其他模型再卸载。")
+            QMessageBox.information(
+                self, tr("模型正在使用"), tr("请先切换到同类的其他模型再卸载。"))
             return
         answer = QMessageBox.question(
-            self, "卸载模型", f"确定卸载 {model.name}？\n模型文件将从本机删除。",
+            self, tr("卸载模型"),
+            f"{tr('确定卸载')} {model.name}?\n{tr('模型文件将从本机删除。')}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -456,13 +506,23 @@ class ModelHubWindow(QWidget):
         try:
             self.marketplace.uninstall(model, in_use=False)
         except Exception as exc:
-            QMessageBox.warning(self, "无法卸载", str(exc))
+            QMessageBox.warning(self, tr("无法卸载"), str(exc))
         self.refresh()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         # Closing the window does not abort a multi-GB download unexpectedly;
         # the worker remains owned by this hidden top-level window.
         event.accept()
+
+    def set_embedded(self, embedded: bool = True) -> None:
+        """Allow the marketplace to live inside MainWindow's page shell."""
+        self._embedded = embedded
+        if embedded:
+            self.setMinimumSize(0, 0)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        else:
+            self.setMinimumSize(840, 620)
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
     def shutdown(self) -> None:
         """Cancel active downloads and wait briefly for clean thread teardown."""
@@ -471,6 +531,12 @@ class ModelHubWindow(QWidget):
             worker.cancel()
         for worker in workers:
             worker.wait(5000)
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        self.catalog_summary.setText(self._catalog_summary_text())
+        self.hardware_detail.setText(self._hardware_detail_text())
+        self._rebuild_cards()
 
 
 __all__ = ["ModelCard", "ModelDownloadWorker", "ModelHubWindow"]

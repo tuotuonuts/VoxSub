@@ -17,11 +17,11 @@ API Key、字幕正文、音频数据等用户内容。
 from __future__ import annotations
 
 import importlib
+import threading
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -33,8 +33,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from voxsub.file_io import write_text_atomically
 from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
 from voxsub.ui.config_store import ConfigStore
+from voxsub.ui.file_dialogs import choose_save_file
+from voxsub.ui.i18n import (
+    language_manager,
+    retranslate_widget_tree,
+    tr,
+    translate_dynamic,
+)
+from voxsub.ui.selection_controls import ToggleSwitch
 
 logger = get_logger("ui.diagnostics_window")
 
@@ -64,6 +73,12 @@ def _strip_file_ts(line: str) -> str:
     return s
 
 
+class _ExportBridge(QObject):
+    """Deliver worker results back to the diagnostics window's Qt thread."""
+
+    done = Signal(str, bool, str)
+
+
 class DiagnosticsWindow(QWidget):
     """诊断页：自检结果卡（Tab 1）+ 实时日志（Tab 2）。"""
 
@@ -76,17 +91,39 @@ class DiagnosticsWindow(QWidget):
         super().__init__(parent)
         self.setObjectName("diagnosticsWindow")
         self.setWindowTitle("诊断 — 语幕 VoxSub")
-        self.resize(680, 560)
+        self.setMinimumSize(640, 520)
+        self.resize(760, 640)
         self._results: list[dict] = []
         self._store = store or ConfigStore()
+        self._export_bridge = _ExportBridge(self)
+        self._export_bridge.done.connect(self._on_export_done)
+        self._export_workers: dict[str, threading.Thread] = {}
+        self._export_buttons: dict[str, QPushButton] = {}
+        self._last_counts = {"ok": 0, "warn": 0, "fail": 0}
         if diagnostics_module is _AUTO:
             self._load_module()
         else:
             self._module = diagnostics_module  # None → 占位分支（测试注入用）
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(28, 24, 28, 22)
+        root.setSpacing(16)
+
+        header = QFrame(self)
+        header.setObjectName("windowHeader")
+        header_box = QVBoxLayout(header)
+        header_box.setContentsMargins(2, 0, 2, 0)
+        header_box.setSpacing(3)
+        eyebrow = QLabel("VOXSUB  /  HEALTH & LOGS", header)
+        eyebrow.setObjectName("eyebrowLabel")
+        title = QLabel("诊断中心", header)
+        title.setObjectName("windowTitleLabel")
+        subtitle = QLabel("查看设备、模型和运行时状态；需要排障时直接打开实时日志。", header)
+        subtitle.setObjectName("windowSubtitleLabel")
+        header_box.addWidget(eyebrow)
+        header_box.addWidget(title)
+        header_box.addWidget(subtitle)
+        root.addWidget(header)
 
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("diagnosticsTabs")
@@ -95,22 +132,36 @@ class DiagnosticsWindow(QWidget):
         root.addWidget(self.tabs, 1)
 
         self._render()
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
 
     # ------------------------------------------------------------------
     # Tab 1：自检（原有骨架内容整体迁入）
     # ------------------------------------------------------------------
     def _build_selfcheck_tab(self) -> QWidget:
         page = QWidget(self)
+        page.setObjectName("diagnosticsPage")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(4, 12, 4, 4)
         lay.setSpacing(12)
 
+        head_row = QHBoxLayout()
         head = QLabel("自检结果", page)
         head.setObjectName("sectionTitle")
-        lay.addWidget(head)
+        head_row.addWidget(head)
+        self.selfcheck_summary = QLabel("正在准备检查…", page)
+        self.selfcheck_summary.setObjectName("statusPill")
+        head_row.addWidget(self.selfcheck_summary)
+        head_row.addStretch(1)
+        self.selfcheck_refresh_btn = QPushButton("重新检查", page)
+        self.selfcheck_refresh_btn.setObjectName("secondaryButton")
+        self.selfcheck_refresh_btn.setMinimumHeight(40)
+        self.selfcheck_refresh_btn.clicked.connect(self.refresh)
+        head_row.addWidget(self.selfcheck_refresh_btn)
+        lay.addLayout(head_row)
 
         self.scroll = QScrollArea(page)
-        self.scroll.setObjectName("subtitleScroll")
+        self.scroll.setObjectName("diagnosticsScroll")
         self.scroll.setWidgetResizable(True)
         self._container = QWidget(self.scroll)
         self._vbox = QVBoxLayout(self._container)
@@ -123,7 +174,7 @@ class DiagnosticsWindow(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self.export_btn = QPushButton("导出报告 (txt)", page)
-        self.export_btn.setObjectName("inputBox")
+        self.export_btn.setObjectName("secondaryButton")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_btn.clicked.connect(self._export_report)
         btn_row.addWidget(self.export_btn)
@@ -135,21 +186,25 @@ class DiagnosticsWindow(QWidget):
     # ------------------------------------------------------------------
     def _build_log_tab(self) -> QWidget:
         page = QWidget(self)
+        page.setObjectName("diagnosticsPage")
         lay = QVBoxLayout(page)
         lay.setContentsMargins(4, 12, 4, 4)
         lay.setSpacing(10)
         self._last_seen: str | None = None  # 末行指纹（去重基准）
         self._log_failed = False
         try:
-            btn_row = QHBoxLayout()
+            toolbar = QFrame(page)
+            toolbar.setObjectName("diagnosticToolbar")
+            btn_row = QHBoxLayout(toolbar)
+            btn_row.setContentsMargins(10, 8, 10, 8)
             btn_row.setSpacing(8)
             self.refresh_log_btn = QPushButton("刷新", page)
-            self.refresh_log_btn.setObjectName("inputBox")
+            self.refresh_log_btn.setObjectName("secondaryButton")
             self.refresh_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.refresh_log_btn.clicked.connect(self._refresh_logs)
             btn_row.addWidget(self.refresh_log_btn)
             self.export_log_btn = QPushButton("导出日志", page)
-            self.export_log_btn.setObjectName("inputBox")
+            self.export_log_btn.setObjectName("secondaryButton")
             self.export_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.export_log_btn.clicked.connect(self._export_logs)
             btn_row.addWidget(self.export_log_btn)
@@ -159,12 +214,15 @@ class DiagnosticsWindow(QWidget):
             self.clear_log_btn.clicked.connect(lambda: self.log_view.clear())
             btn_row.addWidget(self.clear_log_btn)
             btn_row.addStretch(1)
-            self.debug_switch = QCheckBox("调试模式", page)
+            self.log_live_state = QLabel("实时 · 自动跟随", page)
+            self.log_live_state.setObjectName("logLiveState")
+            btn_row.addWidget(self.log_live_state)
+            self.debug_switch = ToggleSwitch("调试模式", page)
             self.debug_switch.setToolTip("显示音频电平、队列、设备打开与分句等详细事件")
             self.debug_switch.setChecked(bool(self._store.get("debug_mode", False)))
             self.debug_switch.toggled.connect(self._toggle_debug)
             btn_row.addWidget(self.debug_switch)
-            lay.addLayout(btn_row)
+            lay.addWidget(toolbar)
 
             self.log_view = QPlainTextEdit(page)
             self.log_view.setObjectName("logView")
@@ -232,23 +290,15 @@ class DiagnosticsWindow(QWidget):
         self._last_seen = lines[-1] if lines else None
 
     def _export_logs(self) -> None:
-        """把日志文件全文导出到用户选择的路径。"""
+        """Export the complete log without reading it on the UI thread."""
         if self._log_failed:
             return
-        try:
-            text = tail_log_file(10**6)  # 取全部
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("读取日志文件失败")
-            text = f"<读取日志失败: {exc}>"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出日志", "voxsub_log.txt", "文本文件 (*.txt)"
+        self._start_text_export(
+            "logs",
+            "导出日志",
+            "voxsub_log.txt",
+            lambda: tail_log_file(10**6),
         )
-        if path:
-            try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(text)
-            except OSError:
-                logger.exception("写日志导出文件失败: %s", path)
 
     # ------------------------------------------------------------------
     def _load_module(self) -> None:
@@ -260,16 +310,12 @@ class DiagnosticsWindow(QWidget):
             self._module = None
 
     def _render(self) -> None:
-        # 清空旧卡
-        while self._vbox.count() > 1:
-            item = self._vbox.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+        self._clear_result_cards()
 
         if self._module is None or not hasattr(self._module, "run_self_check"):
+            self._results = []
             self._add_placeholder()
+            self.selfcheck_summary.setText(tr("未接入检查模块"))
             return
 
         try:
@@ -277,25 +323,48 @@ class DiagnosticsWindow(QWidget):
         except Exception:
             logger.exception("run_self_check 执行失败")
             self._results = [{"check": "自检执行", "status": "fail", "detail": "run_self_check 抛异常"}]
+        self._render_cached_results()
+
+    def _clear_result_cards(self) -> None:
+        """Remove rendered result cards without rerunning an expensive self-check."""
+        while self._vbox.count() > 1:
+            item = self._vbox.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _render_cached_results(self) -> None:
+        """Render the last self-check in the current UI language."""
+        counts = {key: sum(1 for item in self._results if item.get("status") == key)
+                  for key in ("ok", "warn", "fail")}
+        self._last_counts = counts
+        self._set_summary()
         for item in self._results:
             self._add_result_card(item)
 
+    def _set_summary(self) -> None:
+        counts = self._last_counts
+        self.selfcheck_summary.setText(
+            f"{counts['ok']} {tr('正常', 'OK')}  ·  "
+            f"{counts['warn']} {tr('注意', 'Warnings')}  ·  "
+            f"{counts['fail']} {tr('失败', 'Failed')}"
+        )
+
     def _add_placeholder(self) -> None:
         card = QFrame(self._container)
-        card.setObjectName("settingsCard")
-        card.setStyleSheet(
-            "QFrame#settingsCard { background-color: rgba(255,255,255,0.04);"
-            " border: 1px dashed rgba(255,255,255,0.12); border-radius: 16px; }"
-        )
+        card.setObjectName("diagnosticCard")
+        card.setProperty("status", "warn")
         box = QVBoxLayout(card)
         box.setContentsMargins(24, 28, 24, 28)
         box.setSpacing(8)
-        t = QLabel("诊断模块尚未实现", card)
+        t = QLabel(tr("诊断模块尚未实现"), card)
         t.setObjectName("sectionTitle")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         d = QLabel(
-            "M8 里程碑将在此接入 voxsub.diagnostics.run_self_check() 的"
-            "模型完整性 / ORT providers / ASR·VAD·TTS 冒烟 / 磁盘余量检查结果。",
+            tr("M8 里程碑将在此接入 voxsub.diagnostics.run_self_check() 的"
+               "模型完整性 / ORT providers / ASR·VAD·TTS 冒烟 / 磁盘余量检查结果。",
+               "The M8 milestone will connect voxsub.diagnostics.run_self_check() here for model integrity, ORT providers, ASR/VAD/TTS smoke checks, and disk-space results."),
             card,
         )
         d.setObjectName("secondaryLabel")
@@ -306,16 +375,18 @@ class DiagnosticsWindow(QWidget):
         self._vbox.insertWidget(self._vbox.count() - 1, card)
 
     def _add_result_card(self, item: dict) -> None:
-        check = str(item.get("check", "未知检查项"))
+        check = tr(str(item.get("check", "未知检查项")))
         status = str(item.get("status", "warn"))
-        detail = str(item.get("detail", ""))
+        detail = translate_dynamic(str(item.get("detail", "")))
         color = _STATUS_COLOR.get(status, _STATUS_COLOR["warn"])
         card = QFrame(self._container)
-        card.setObjectName("settingsCard")
+        card.setObjectName("diagnosticCard")
+        card.setProperty("status", status if status in _STATUS_COLOR else "warn")
         row = QHBoxLayout(card)
         row.setContentsMargins(20, 14, 20, 14)
         row.setSpacing(12)
         mark = QLabel(_STATUS_CHAR.get(status, "⚠️"), card)
+        mark.setObjectName("diagnosticMark")
         mark.setStyleSheet(f"font-size: 16px; color: {color};")
         row.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
         mid = QVBoxLayout()
@@ -331,31 +402,93 @@ class DiagnosticsWindow(QWidget):
 
     # ------------------------------------------------------------------
     def _export_report(self) -> None:
-        """导出一份纯文本报告（M8 export_report 可用时）。"""
-        try:
-            if self._module is not None and hasattr(self._module, "export_report"):
-                text = self._module.export_report()
-            else:
-                lines = ["语幕 VoxSub 诊断报告（诊断模块未实现，以下为骨架内容）"]
-                for item in self._results:
-                    lines.append(
-                        f"[{item.get('status', 'warn')}] {item.get('check', '')} — {item.get('detail', '')}"
-                    )
-                text = "\n".join(lines)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("生成诊断报告失败")
-            text = f"导出失败: {exc}"
+        """Export a report in a worker; self-check work can be expensive."""
+        module = self._module
+        results = tuple(dict(item) for item in self._results)
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出诊断报告", "voxsub_diagnostics.txt", "文本文件 (*.txt)"
+        def _build_report() -> str:
+            if module is not None and hasattr(module, "export_report"):
+                return str(module.export_report())
+            lines = ["语幕 VoxSub 诊断报告（诊断模块未实现，以下为骨架内容）"]
+            for item in results:
+                lines.append(
+                    f"[{item.get('status', 'warn')}] {item.get('check', '')} — {item.get('detail', '')}"
+                )
+            return "\n".join(lines)
+
+        self._start_text_export(
+            "report",
+            "导出诊断报告",
+            "voxsub_diagnostics.txt",
+            _build_report,
         )
-        if path:
+
+    def _start_text_export(self, kind: str, title: str, suggested_name: str,
+                           build_text) -> None:
+        """Choose a path synchronously, then build and write data in a worker."""
+        if kind in self._export_workers:
+            return
+        path, _ = choose_save_file(
+            self, title, suggested_name, ["文本文件 (*.txt)"], default_suffix="txt"
+        )
+        if not path:
+            return
+        output = Path(path)
+        if not output.suffix:
+            output = output.with_suffix(".txt")
+        button = self.export_log_btn if kind == "logs" else self.export_btn
+        self._export_buttons[kind] = button
+        button.setEnabled(False)
+        button.setText(tr("正在导出…"))
+
+        def _worker() -> None:
             try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(text)
-            except OSError:
-                logger.exception("写诊断报告文件失败: %s", path)
+                text = str(build_text())
+                written = write_text_atomically(output, text, encoding="utf-8")
+                success, detail = True, str(written)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("后台导出失败: kind=%s", kind)
+                success, detail = False, str(exc)
+            self._export_bridge.done.emit(kind, success, detail)
+
+        worker = threading.Thread(target=_worker, name=f"ui-{kind}-export", daemon=True)
+        self._export_workers[kind] = worker
+        worker.start()
+
+    def _on_export_done(self, kind: str, success: bool, detail: str) -> None:
+        self._export_workers.pop(kind, None)
+        button = self._export_buttons.pop(kind, None)
+        if button is not None:
+            button.setEnabled(True)
+            button.setText(tr("导出日志" if kind == "logs" else "导出报告 (txt)"))
+        if success:
+            if kind == "logs":
+                self.log_live_state.setText(f"{tr('日志已导出')} · {Path(detail).name}")
+            else:
+                self.selfcheck_summary.setText(f"{tr('报告已导出')} · {Path(detail).name}")
+        else:
+            if kind == "logs":
+                self.log_live_state.setText(tr("日志导出失败"))
+            else:
+                self.selfcheck_summary.setText(tr("报告导出失败"))
 
     def refresh(self) -> None:
         self._load_module()
         self._render()
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        if not hasattr(self, "selfcheck_summary"):
+            return
+        self._clear_result_cards()
+        if self._module is None or not hasattr(self._module, "run_self_check"):
+            self._add_placeholder()
+            self.selfcheck_summary.setText(tr("未接入检查模块"))
+            return
+        self._render_cached_results()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        timer = getattr(self, "log_timer", None)
+        if timer is not None:
+            timer.stop()
+        super().closeEvent(event)

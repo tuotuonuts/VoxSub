@@ -18,12 +18,14 @@ import tempfile
 import threading
 import time
 import wave
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
 
+from voxsub import __version__
 from voxsub.audio import (
     AudioSource,
     CHUNK_FRAMES,
@@ -41,6 +43,9 @@ from voxsub.asr import (
     models_dir,
     SAMPLE_RATE,
 )
+from voxsub.bootstrap_models import ensure_bundled_vad
+from voxsub.cloud_stt import CloudSTT
+from voxsub.file_io import write_text_atomically
 from voxsub.logging_setup import get_logger
 from voxsub.recording import WaveSessionRecorder
 
@@ -58,6 +63,13 @@ class SubtitleLine:
     translation: str = ""
     ts_ms: int = 0
     is_final: bool = True
+
+
+@dataclass(frozen=True)
+class _QueuedAudio:
+    """A VAD-complete waveform plus its enqueue timestamp for diagnostics."""
+    audio: np.ndarray
+    queued_at: float
 
 
 # ---------- 翻译占位 (M4 就绪后替换) ----------
@@ -111,6 +123,8 @@ class Pipeline:
         self._loopback_device_id = ""
         self._capture_process_id = 0
         self._capture_window_title = ""
+        self._requested_stt_provider = "local"
+        self._stt_config = None
         self._requested_trans_kind = "opus-fast"
         self._requested_asr_model_id = "asr-zipformer-bilingual-fast"
         self._translator_config = None
@@ -118,8 +132,10 @@ class Pipeline:
         # 10 minutes of 30 ms chunks is a hard memory safety cap, not a normal
         # latency policy.  We never silently discard captured speech.
         self._queue: queue.Queue = queue.Queue(maxsize=20_000)
-        self._recognition_queue: queue.Queue[np.ndarray] = queue.Queue()
+        self._recognition_queue: queue.Queue = queue.Queue()
         self._translation_queue: queue.Queue[str] = queue.Queue()
+        self._translation_times: dict[str, deque[float]] = defaultdict(deque)
+        self._metrics_lock = threading.Lock()
         self._recognition_input_done = threading.Event()
         self._translation_input_done = threading.Event()
         self._stop_evt = threading.Event()
@@ -134,6 +150,7 @@ class Pipeline:
 
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
         self._is_generative = False
+        self._is_cloud_stt = False
         self._recording_enabled = False
         self._recordings_dir: Path | None = None
         self._recorder: WaveSessionRecorder | None = None
@@ -141,6 +158,7 @@ class Pipeline:
 
         # 惰性组件 (首次 start 时构建)
         self._asr = None
+        self._cloud_stt = None
         self._vad = None
         self._seg = None
         self._translator = None
@@ -177,6 +195,29 @@ class Pipeline:
         self._capture_process_id = max(0, int(process_id or 0))
         self._capture_window_title = str(window_title or "")
 
+    def set_stt(self, provider: str = "local", config=None) -> None:
+        """Select the speech-to-text side independently from translation."""
+        if self._running:
+            return
+        normalized = "cloud" if str(provider or "").lower() == "cloud" else "local"
+        snapshot = dict(config) if isinstance(config, dict) else config
+        changed = normalized != self._requested_stt_provider or snapshot != self._stt_config
+        self._requested_stt_provider = normalized
+        self._stt_config = snapshot
+        if not changed:
+            return
+        if self._cloud_stt is not None:
+            try:
+                self._cloud_stt.close()
+            except Exception:
+                logger.debug("关闭旧云 STT 失败", exc_info=True)
+        self._cloud_stt = None
+        self._asr = None
+        self._vad = None
+        self._seg = None
+        self._is_cloud_stt = False
+        self._is_generative = False
+
     def set_translator(self, kind: str, config=None) -> None:
         """选择翻译档位；下一次 start 前立即替换旧实例。"""
         if self._running:
@@ -203,6 +244,7 @@ class Pipeline:
         self._requested_asr_model_id = normalized
         # sherpa recognizers own native state; replace only while stopped.
         self._asr = None
+        self._vad = None
         self._seg = None
 
     def set_asr_tuning(self, tuning: dict | None = None) -> None:
@@ -333,56 +375,106 @@ class Pipeline:
 
     def _build_real_time(self) -> None:
         """构建 A/B 模式实时组件 (惰性, 只建一次)。"""
-        if self._asr is not None:
+        cloud_ready = self._requested_stt_provider == "cloud" and self._cloud_stt is not None
+        local_ready = self._requested_stt_provider != "cloud" and self._asr is not None
+        if (self._vad is not None and self._seg is not None and
+                (cloud_ready or local_ready)):
             self._ensure_translator()
             return
+        # A failed model load must not leave a recognizer behind.  Otherwise a
+        # retry skips setup and starts a process thread with ``_seg is None``.
+        old_cloud = self._cloud_stt
+        if old_cloud is not None:
+            try:
+                old_cloud.close()
+            except Exception:
+                logger.debug("重建实时链路前关闭旧云 STT 失败", exc_info=True)
+        self._asr = None
+        self._cloud_stt = None
+        self._vad = None
+        self._seg = None
+        self._is_generative = False
+        self._is_cloud_stt = False
         vad_dir = self._models_dir / "vad"
-        asr_provider = self._provider
-        if asr_provider == "auto":
-            from voxsub.router import select_device
-
-            route = select_device("asr", benchmark=False)
-            asr_provider = route.provider if route.provider in {"cuda", "coreml"} else "cpu"
-            logger.info("ASR 自动路由: device=%s runtime_provider=%s",
-                        route.name, asr_provider)
+        vad_model = ensure_bundled_vad(self._models_dir)
+        if vad_model is None:
+            vad_model = next(vad_dir.glob("*.onnx"), None)
+        if vad_model is None:
+            raise FileNotFoundError(
+                f"缺少基础 VAD 模型。请重新安装 VoxSub {__version__} "
+                "或在模型目录中修复 VAD。"
+            )
         from voxsub.model_catalog import get_model
 
         selected_model = get_model(self._requested_asr_model_id)
-        generative = bool(selected_model and
-                          selected_model.runtime != "sherpa-streaming-transducer")
+        cloud_stt = self._requested_stt_provider == "cloud"
+        generative = cloud_stt or bool(
+            selected_model and selected_model.runtime != "sherpa-streaming-transducer")
         tuning = self._effective_asr_tuning(generative)
-        self._asr = create_asr(
-            self._requested_asr_model_id,
-            self._models_dir,
-            provider=asr_provider,
-            num_threads=min(4, max(1, os.cpu_count() or 1)),
-            source_lang=self._src_lang,
-            tuning=tuning,
-        )
-        vad_model = next(vad_dir.glob("*.onnx"), None)
-        if vad_model is None:
-            raise FileNotFoundError(f"缺少 VAD 模型: {vad_dir}")
-        self._vad = WindowVAD(str(vad_model), threshold=tuning["vad_threshold"])
-        self._is_generative = generative
-        if generative:
-            self._seg = AudioUtteranceSegmenter(
-                self._vad,
+        # Build VAD first: cloud STT and local generative ASR both use it, and
+        # a failed recognizer construction must not leave a half-ready chain.
+        vad = WindowVAD(str(vad_model), threshold=tuning["vad_threshold"])
+        asr = None
+        cloud_client = None
+        if cloud_stt:
+            cloud_client = CloudSTT(self._stt_config)
+            if not cloud_client.ready():
+                raise RuntimeError(
+                    "云 STT 尚未就绪，请填写独立的 STT API Key、BaseURL 和模型名"
+                )
+            seg = AudioUtteranceSegmenter(
+                vad,
                 self._queue_generative_audio,
                 min_silence_ms=tuning["silence_ms"],
                 max_utterance_ms=tuning["max_utterance_ms"],
             )
         else:
-            self._seg = UtteranceSegmenter(
-                self._asr,
-                self._vad,
-                self._on_sentence,
-                min_silence_ms=tuning["silence_ms"],
-                max_utterance_ms=tuning["max_utterance_ms"],
-                on_partial=self._emit_partial,
-                partial_interval_ms=360,
+            asr_provider = self._provider
+            if asr_provider == "auto":
+                from voxsub.router import select_device
+
+                route = select_device("asr", benchmark=False)
+                asr_provider = route.provider if route.provider in {"cuda", "coreml"} else "cpu"
+                logger.info("ASR 自动路由: device=%s runtime_provider=%s",
+                            route.name, asr_provider)
+            asr = create_asr(
+                self._requested_asr_model_id,
+                self._models_dir,
+                provider=asr_provider,
+                num_threads=min(4, max(1, os.cpu_count() or 1)),
+                source_lang=self._src_lang,
+                tuning=tuning,
             )
+            logger.info("本地 STT 执行器: runtime=%s provider=%s threads=%d",
+                        getattr(asr, "runtime", type(asr).__name__),
+                        getattr(asr, "provider", asr_provider),
+                        min(4, max(1, os.cpu_count() or 1)))
+            if generative:
+                seg = AudioUtteranceSegmenter(
+                    vad,
+                    self._queue_generative_audio,
+                    min_silence_ms=tuning["silence_ms"],
+                    max_utterance_ms=tuning["max_utterance_ms"],
+                )
+            else:
+                seg = UtteranceSegmenter(
+                    asr,
+                    vad,
+                    self._on_sentence,
+                    min_silence_ms=tuning["silence_ms"],
+                    max_utterance_ms=tuning["max_utterance_ms"],
+                    on_partial=self._emit_partial,
+                    partial_interval_ms=360,
+                )
+        self._asr = asr
+        self._cloud_stt = cloud_client
+        self._vad = vad
+        self._seg = seg
+        self._is_generative = generative
+        self._is_cloud_stt = cloud_stt
         logger.info(
-            "ASR 调优生效: profile=%s generative=%s vad=%.2f silence=%dms max=%dms beam=%d",
+            "STT 调优生效: provider=%s profile=%s generative=%s vad=%.2f silence=%dms max=%dms beam=%d",
+            "cloud" if cloud_stt else "local",
             self._asr_tuning.get("profile", "auto"), generative,
             tuning["vad_threshold"], tuning["silence_ms"],
             tuning["max_utterance_ms"], tuning["beam_paths"],
@@ -391,21 +483,54 @@ class Pipeline:
 
     def _queue_generative_audio(self, audio: np.ndarray) -> None:
         """VAD callback: retain every utterance for the dedicated decoder."""
-        self._recognition_queue.put(np.asarray(audio, dtype=np.float32))
+        arr = np.asarray(audio, dtype=np.float32)
+        logger.info("VAD 语音段入队: audio_ms=%.1f queue=%d",
+                    arr.size * 1000.0 / SAMPLE_RATE,
+                    self._recognition_queue.qsize() + 1)
+        self._recognition_queue.put(_QueuedAudio(arr, time.monotonic()))
 
     def _on_sentence(self, text: str) -> None:
         """Recognition callback: queue every sentence for translation."""
-        logger.debug("识别终句: chars=%d lang=%s->%s", len(text),
-                     self._src_lang, self._dst_lang)
+        text = str(text or "").strip()
+        if not text:
+            return
+        queued_at = time.monotonic()
+        with self._metrics_lock:
+            self._translation_times[text].append(queued_at)
+        logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s queue=%d",
+                    len(text), self._src_lang, self._dst_lang,
+                    self._translation_queue.qsize() + 1)
         self._translation_queue.put(text)
 
-    def _translate_sentence(self, text: str) -> None:
+    def _take_translation_timestamp(self, text: str) -> float | None:
+        with self._metrics_lock:
+            timestamps = self._translation_times.get(text)
+            if not timestamps:
+                return None
+            value = timestamps.popleft()
+            if not timestamps:
+                self._translation_times.pop(text, None)
+            return value
+
+    def _translate_sentence(self, text: str, queued_at: float | None = None) -> None:
         """翻译单句并回调 UI；只在翻译工作线程调用。"""
         self._emit_status("翻译中…")
+        started = time.perf_counter()
+        queue_wait_ms = ((time.monotonic() - queued_at) * 1000.0
+                         if queued_at is not None else None)
         try:
             translation = self._translator.translate(text, self._src_lang, self._dst_lang)
+            request_ms = (time.perf_counter() - started) * 1000.0
+            logger.info("翻译完成: src_chars=%d dst_chars=%d queue_wait_ms=%s request_ms=%.1f",
+                        len(text), len(translation),
+                        f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
+                        request_ms)
         except Exception as exc:
-            logger.error("翻译失败 text=%r: %s", text, exc, exc_info=True)
+            request_ms = (time.perf_counter() - started) * 1000.0
+            logger.error("翻译失败: src_chars=%d queue_wait_ms=%s request_ms=%.1f error=%s",
+                         len(text),
+                         f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
+                         request_ms, exc, exc_info=True)
             translation = text + " 〔翻译失败〕"
             self._emit_status("翻译失败(已保留原文)")
         self._emit_utterance(text, translation)
@@ -417,12 +542,16 @@ class Pipeline:
 
     def _translation_loop(self) -> None:
         """翻译与 ASR 解码解耦，慢模型不得堵住音频/VAD 线程。"""
+        warmup = getattr(self._translator, "warmup", None)
+        if callable(warmup):
+            logger.info("翻译工作线程开始预热")
+            warmup()
         while not self._translation_input_done.is_set() or not self._translation_queue.empty():
             try:
                 text = self._translation_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            self._translate_sentence(text)
+            self._translate_sentence(text, self._take_translation_timestamp(text))
 
     def _recognition_loop(self) -> None:
         """Decode VAD-complete waveforms without ever blocking audio capture."""
@@ -430,16 +559,58 @@ class Pipeline:
             while (not self._recognition_input_done.is_set() or
                    not self._recognition_queue.empty()):
                 try:
-                    audio = self._recognition_queue.get(timeout=0.2)
+                    item = self._recognition_queue.get(timeout=0.2)
                 except queue.Empty:
                     continue
+                if isinstance(item, _QueuedAudio):
+                    audio = item.audio
+                    queued_at = item.queued_at
+                else:
+                    # Keep tests and integrations that enqueue raw PCM arrays
+                    # compatible with the queue contract.
+                    audio = np.asarray(item, dtype=np.float32)
+                    queued_at = None
                 backlog = self._recognition_queue.qsize()
                 if backlog:
-                    logger.info("生成式 ASR 解码积压: segments=%d（音频已完整保留）", backlog)
-                stream = self._asr.create_stream()
-                self._asr.feed(stream, audio)
-                text = self._asr.decode(stream).strip()
-                self._asr.reset(stream)
+                    logger.info("STT 处理积压: segments=%d（音频已完整保留）", backlog)
+                stt_started = time.perf_counter()
+                wait_ms = ((time.monotonic() - queued_at) * 1000.0
+                            if queued_at is not None else None)
+                if self._is_cloud_stt:
+                    if self._cloud_stt is None:
+                        raise RuntimeError("云 STT 客户端未初始化")
+                    try:
+                        text = self._cloud_stt.transcribe_samples(
+                            audio, source_lang=self._src_lang).strip()
+                    except Exception as exc:
+                        # A single network failure must not kill the capture
+                        # and translation workers; later segments can recover.
+                        logger.error("云 STT 片段失败: %s", exc, exc_info=True)
+                        self._emit_status("云 STT 请求失败，已跳过当前片段")
+                        continue
+                else:
+                    try:
+                        stream = self._asr.create_stream()
+                        self._asr.feed(stream, audio)
+                        text = self._asr.decode(stream).strip()
+                        self._asr.reset(stream)
+                    except Exception as exc:
+                        logger.error("本地 STT 片段失败: audio_ms=%.1f error=%s",
+                                     audio.size * 1000.0 / SAMPLE_RATE, exc,
+                                     exc_info=True)
+                        self._emit_status("本地 STT 请求失败，已跳过当前片段")
+                        continue
+                decode_ms = (time.perf_counter() - stt_started) * 1000.0
+                logger.info(
+                    "STT 片段完成: runtime=%s provider=%s audio_ms=%.1f wait_ms=%s "
+                    "decode_ms=%.1f chars=%d",
+                    getattr(self._asr, "runtime", "cloud-stt") if not self._is_cloud_stt
+                    else "cloud-stt",
+                    getattr(self._asr, "provider", "cloud") if not self._is_cloud_stt
+                    else "cloud",
+                    audio.size * 1000.0 / SAMPLE_RATE,
+                    f"{wait_ms:.1f}" if wait_ms is not None else "na",
+                    decode_ms, len(text))
                 if text:
                     self._on_sentence(text)
         except Exception as exc:
@@ -474,6 +645,8 @@ class Pipeline:
                 self._translation_queue.get_nowait()
             except queue.Empty:
                 break
+        with self._metrics_lock:
+            self._translation_times.clear()
         self._stop_evt.clear()
         self._pause_evt.clear()
         self._recognition_input_done.clear()
@@ -647,6 +820,8 @@ class Pipeline:
                     chunk = self._queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                if seg is None:
+                    raise RuntimeError("识别分句器未初始化，已取消本次任务")
                 if chunk is _PAUSE_MARKER:
                     seg.flush()
                     continue
@@ -677,8 +852,12 @@ class Pipeline:
         wav_path: Optional[Path] = None
         try:
             self._emit_status(f"正在提取/读取音频: {self._in_path.name}")
-            lines, wav_path = self._transcribe_file(self._in_path)
             self._ensure_translator()
+            warmup = getattr(self._translator, "warmup", None)
+            if callable(warmup):
+                logger.info("文件模式开始预热翻译引擎")
+                warmup()
+            lines, wav_path = self._transcribe_file(self._in_path)
             out = self._in_path.with_suffix(".srt")
             self.write_srt(lines, out)
             self._emit_status(f"完成 → {out}")
@@ -723,6 +902,8 @@ class Pipeline:
 
         if sr != SAMPLE_RATE:
             pcm = resample_16k(pcm, sr)
+        if self._requested_stt_provider == "cloud":
+            return self._recognize_cloud_file(pcm), wav_path
         return self._recognize_streaming(pcm), wav_path
 
     @staticmethod
@@ -816,6 +997,71 @@ class Pipeline:
                 ln.translation = ln.text + " 〔翻译失败〕"
         return lines
 
+    def _recognize_cloud_file(self, pcm: np.ndarray) -> list[SubtitleLine]:
+        """VAD-split file audio and send finalized segments to cloud STT."""
+        self._build_real_time()
+        if self._cloud_stt is None or self._vad is None:
+            raise RuntimeError("云 STT 未正确初始化")
+        vad = self._vad
+        tuning = self._effective_asr_tuning(generative=True)
+        min_silence = int(SAMPLE_RATE * tuning["silence_ms"] / 1000)
+        max_utterance = int(SAMPLE_RATE * tuning["max_utterance_ms"] / 1000)
+        win = vad.window_size
+        segments: list[tuple[int, np.ndarray]] = []
+        current: list[np.ndarray] = []
+        current_samples = 0
+        start_sample: int | None = None
+        silence = 0
+
+        def finish() -> None:
+            nonlocal current, current_samples, start_sample, silence
+            if current and start_sample is not None:
+                segments.append((start_sample, np.concatenate(current)))
+            current = []
+            current_samples = 0
+            start_sample = None
+            silence = 0
+            vad.reset()
+
+        for i in range(0, pcm.size - win + 1, win):
+            chunk = pcm[i:i + win]
+            speech = vad.is_speech(chunk)
+            if speech:
+                if start_sample is None:
+                    start_sample = i
+                current.append(chunk.copy())
+                current_samples += len(chunk)
+                silence = 0
+            elif start_sample is not None:
+                current.append(chunk.copy())
+                current_samples += len(chunk)
+                silence += win
+                if silence >= min_silence or current_samples >= max_utterance:
+                    finish()
+        if start_sample is not None:
+            finish()
+
+        lines: list[SubtitleLine] = []
+        for start, audio in segments:
+            try:
+                text = self._cloud_stt.transcribe_samples(
+                    audio, source_lang=self._src_lang).strip()
+            except Exception as exc:
+                logger.error("云 STT 文件片段失败: %s", exc, exc_info=True)
+                continue
+            if text:
+                lines.append(SubtitleLine(
+                    text=text, ts_ms=int(start * 1000 / SAMPLE_RATE)))
+
+        self._ensure_translator()
+        for line in lines:
+            try:
+                line.translation = self._translator.translate(
+                    line.text, self._src_lang, self._dst_lang)
+            except Exception:
+                line.translation = line.text + " 〔翻译失败〕"
+        return lines
+
     # ---- srt / vtt / txt 导出 (模块级函数, 便于单测) ----
     @staticmethod
     def _fmt_ts(ms: int) -> str:
@@ -833,7 +1079,7 @@ class Pipeline:
             end = ln.ts_ms + (3000 if idx == len(lines) else dur_ms)
             body.append(f"{idx}\n{cls._fmt_ts(ln.ts_ms)} --> {cls._fmt_ts(end)}\n"
                         f"{ln.text}\n{ln.translation}\n")
-        out.write_text("\n".join(body), encoding="utf-8-sig")
+        write_text_atomically(out, "\n".join(body), encoding="utf-8-sig")
 
     @classmethod
     def write_vtt(cls, lines: list[SubtitleLine], out: Path) -> None:
@@ -843,10 +1089,13 @@ class Pipeline:
             body.append(f"{cls._fmt_ts(ln.ts_ms).replace(',', '.')} --> "
                         f"{cls._fmt_ts(ln.ts_ms + 3000).replace(',', '.')}\n"
                         f"{ln.text}\n{ln.translation}\n")
-        out.write_text("\n".join(body), encoding="utf-8")
+        write_text_atomically(out, "\n".join(body), encoding="utf-8")
 
     @classmethod
     def write_txt(cls, lines: list[SubtitleLine], out: Path) -> None:
         """写纯文本: 原文 ⇄ 译文, tab 分隔。"""
-        out.write_text("\n".join(f"{ln.text}\t{ln.translation}" for ln in lines),
-                       encoding="utf-8")
+        write_text_atomically(
+            out,
+            "\n".join(f"{ln.text}\t{ln.translation}" for ln in lines),
+            encoding="utf-8",
+        )

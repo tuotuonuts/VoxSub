@@ -3,7 +3,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from voxsub.hardware import HardwareProfile, select_llama_runtime
+from voxsub.hardware import (
+    HardwareProfile,
+    _is_integrated_gpu,
+    _is_virtual_display,
+    select_llama_runtime,
+)
 
 
 def _runtime(root: Path, name: str, marker: str = "") -> None:
@@ -47,3 +52,22 @@ def test_llama_runtime_priority_gpu_npu_igpu_cpu(tmp_path: Path, monkeypatch) ->
     cpu = HardwareProfile("cpu", 2, 4, 8.0)
     selected = select_llama_runtime(cpu)
     assert selected and selected.backend == "cpu" and selected.target == "CPU"
+
+
+def test_physical_npu_without_runtime_is_skipped(tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    _runtime(tmp_path, "cpu")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile(
+        "cpu", 4, 8, 16.0, npu_name="Intel AI Boost",
+        integrated_gpu_name="Intel Arc 130T GPU",
+    )
+    selected = select_llama_runtime(profile)
+    assert selected and selected.target == "GPU"
+
+
+def test_virtual_display_is_not_a_gpu_and_arc_130t_is_integrated() -> None:
+    assert _is_virtual_display("IddDesk Device")
+    assert not _is_integrated_gpu("IddDesk Device")
+    assert _is_integrated_gpu("Intel(R) Arc(TM) 130T GPU")
+    assert not _is_integrated_gpu("Intel Arc A770")

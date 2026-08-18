@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from voxsub.logging_setup import get_logger
 
-from ._http_client import OpenAICompatError, chat_completion
+from ._http_client import OpenAICompatError, chat_completion, normalize_api_base
 from .base import TranslationError, Translator
 
 logger = get_logger("translate.cloud")
@@ -29,6 +29,10 @@ DEFAULT_ALLOWLIST = {
     "api.openai.com",
     "api.moonshot.cn",
     "dashscope.aliyuncs.com",
+    "api.groq.com",
+    "api.mistral.ai",
+    "api.siliconflow.cn",
+    "open.bigmodel.cn",
     # 回环地址始终放行: 本地 llama-server (质量档) 与本地 mock 端点测试
     # 都挂在 127.0.0.1/localhost, 属于进程自身可控边界, 不构成越权调用。
     "127.0.0.1",
@@ -62,11 +66,17 @@ class CloudTranslator(Translator):
 
     def __init__(self, config=None, *, allowlist: set[str] | None = None,
                  timeout_ms: int = 15000):
-        self._api_key = _cfg_get(config, "api_key", "DEEPSEEK_API_KEY")
-        base_url = _cfg_get(config, "base_url", "DEEPSEEK_BASE_URL",
-                            "https://api.deepseek.com")
-        self._base_url = base_url.rstrip("/")
-        self._model = _cfg_get(config, "model", "DEEPSEEK_MODEL", "deepseek-chat")
+        # New settings keep translation credentials separate from STT.  The
+        # legacy keys remain fallbacks so existing 0.3.x configs keep working.
+        self._api_key = (_cfg_get(config, "translate_api_key") or
+                         _cfg_get(config, "api_key", "DEEPSEEK_API_KEY"))
+        base_url = (_cfg_get(config, "translate_base_url") or
+                    _cfg_get(config, "base_url", "DEEPSEEK_BASE_URL",
+                             "https://api.deepseek.com/v1"))
+        self._base_url = normalize_api_base(base_url)
+        self._model = (str(_cfg_get(config, "translate_model") or
+                           _cfg_get(config, "model", "DEEPSEEK_MODEL",
+                                    "deepseek-chat")))
         self._allowlist = allowlist if allowlist is not None else DEFAULT_ALLOWLIST
         self._timeout = timeout_ms / 1000.0
         self._lock = threading.Lock()
@@ -75,8 +85,8 @@ class CloudTranslator(Translator):
     def _validate_endpoint(self) -> str:
         parsed = urlparse(self._base_url)
         host = (parsed.hostname or "").lower()
-        if host in self._allowlist:
-            endpoint = f"{self._base_url}/v1/chat/completions"
+        if parsed.scheme in {"http", "https"} and host in self._allowlist:
+            endpoint = f"{self._base_url}/chat/completions"
             return endpoint
         # 只记 host/scheme, 不记完整 base_url (防止带 query 的 URL 泄漏)
         logger.warning("云翻译端点拒绝: host=%s 不在白名单内 (scheme=%s), 不发起调用",
@@ -104,8 +114,13 @@ class CloudTranslator(Translator):
         if not self._api_key:
             logger.debug("云翻译未配置 api_key, 按未就绪处理 (正常软降级)")
             raise TranslationError("云翻译未配置 DEEPSEEK_API_KEY")
-        # 调用方未显式传超时时, 用构造时的实例超时(self._timeout)
-        effective_timeout = timeout_ms if timeout_ms != 15000 else self._timeout
+        # ``self._timeout`` is already expressed in seconds.  Convert only an
+        # explicit per-call millisecond override; otherwise a previous
+        # double-conversion could turn the default 15 seconds into 15 ms.
+        if timeout_ms == 15000:
+            effective_timeout = self._timeout
+        else:
+            effective_timeout = max(1.0, int(timeout_ms) / 1000.0)
         endpoint = self._validate_endpoint()
         lang_hint = {
             ("zh", "en"): "Translate to English.",
@@ -122,7 +137,7 @@ class CloudTranslator(Translator):
                 out = chat_completion(
                     endpoint, messages=messages, api_key=self._api_key,
                     model=self._model, temperature=0.2,
-                    timeout_sec=max(int(effective_timeout), 1) / 1000.0)
+                    timeout_sec=effective_timeout)
         except OpenAICompatError as exc:
             # 只记 host 与 model; api_key 只在 Authorization header 中出现, 绝不落日志
             logger.exception("云翻译 API 调用失败 (host=%s, model=%s)",

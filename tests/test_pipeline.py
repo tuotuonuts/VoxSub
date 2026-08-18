@@ -165,6 +165,101 @@ def test_segmenter_flush_has_single_owner() -> None:
     assert seg.flushes == 1
 
 
+def test_realtime_setup_is_transactional_when_vad_is_missing(tmp_path: Path, monkeypatch) -> None:
+    """A failed first load must not make the next Start use ``_seg = None``."""
+    import voxsub.pipeline as pl
+
+    p = Pipeline(provider="cpu", models=tmp_path / "models")
+    created: list[object] = []
+    monkeypatch.setattr(pl, "ensure_bundled_vad", lambda _root: None)
+    monkeypatch.setattr(pl, "create_asr", lambda *_a, **_kw: created.append(object()) or created[-1])
+    monkeypatch.setattr(p, "_ensure_translator", lambda: None)
+
+    with pytest.raises(FileNotFoundError, match="基础 VAD"):
+        p._build_real_time()  # noqa: SLF001
+    assert p._asr is None and p._vad is None and p._seg is None  # noqa: SLF001
+
+    vad_path = tmp_path / "models" / "vad" / "silero_vad_v5.onnx"
+    vad_path.parent.mkdir(parents=True)
+    vad_path.write_bytes(b"vad")
+
+    class _Vad:
+        pass
+
+    class _Segmenter:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+    monkeypatch.setattr(pl, "ensure_bundled_vad", lambda _root: vad_path)
+    monkeypatch.setattr(pl, "WindowVAD", lambda *_a, **_kw: _Vad())
+    monkeypatch.setattr(pl, "UtteranceSegmenter", _Segmenter)
+    p._build_real_time()  # noqa: SLF001
+
+    assert len(created) == 1
+    assert p._asr is created[0]  # noqa: SLF001
+    assert isinstance(p._vad, _Vad)  # noqa: SLF001
+    assert isinstance(p._seg, _Segmenter)  # noqa: SLF001
+
+
+def test_cloud_stt_builds_without_loading_local_asr(tmp_path: Path, monkeypatch) -> None:
+    import voxsub.pipeline as pl
+
+    p = Pipeline(provider="cpu", models=tmp_path / "models")
+    p.set_stt("cloud", {
+        "stt_api_key": "stt-key",
+        "stt_base_url": "https://api.openai.com/v1",
+        "stt_model": "whisper-1",
+    })
+    monkeypatch.setattr(p, "_ensure_translator", lambda: None)
+    vad_path = tmp_path / "models" / "vad" / "silero_vad_v5.onnx"
+    vad_path.parent.mkdir(parents=True)
+    vad_path.write_bytes(b"vad")
+    monkeypatch.setattr(pl, "ensure_bundled_vad", lambda _root: vad_path)
+
+    class _Vad:
+        window_size = 512
+
+    class _Segmenter:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+    class _Cloud:
+        def __init__(self, _config) -> None:
+            pass
+
+        @staticmethod
+        def ready() -> bool:
+            return True
+
+    monkeypatch.setattr(pl, "WindowVAD", lambda *_a, **_kw: _Vad())
+    monkeypatch.setattr(pl, "AudioUtteranceSegmenter", _Segmenter)
+    monkeypatch.setattr(pl, "CloudSTT", _Cloud)
+    p._build_real_time()  # noqa: SLF001
+
+    assert p._asr is None  # noqa: SLF001
+    assert isinstance(p._cloud_stt, _Cloud)  # noqa: SLF001
+    assert p._is_cloud_stt is True  # noqa: SLF001
+    assert p._is_generative is True  # noqa: SLF001
+
+
+def test_cloud_stt_recognition_feeds_the_independent_translation_queue() -> None:
+    p = Pipeline()
+    p._is_cloud_stt = True  # noqa: SLF001
+
+    class _Cloud:
+        @staticmethod
+        def transcribe_samples(audio, *, source_lang):
+            assert audio.size == 320
+            assert source_lang == "zh"
+            return "云端原文"
+
+    p._cloud_stt = _Cloud()  # noqa: SLF001
+    p._recognition_queue.put(np.ones(320, dtype=np.float32))  # noqa: SLF001
+    p._recognition_input_done.set()  # noqa: SLF001
+    p._recognition_loop()  # noqa: SLF001
+    assert p._translation_queue.get_nowait() == "云端原文"  # noqa: SLF001
+
+
 def test_translation_is_queued_outside_asr_thread() -> None:
     p = Pipeline()
     calls: list[str] = []

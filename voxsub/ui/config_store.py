@@ -26,10 +26,12 @@ class ConfigStore:
 
     # 默认配置（与 DESIGN.md 组件清单对应）
     DEFAULTS: dict[str, Any] = {
+        "language": "system",       # system | zh | en
         "theme": "system",           # light | dark | system
         "mode": "a",                 # a 麦克风同传 | b 系统声音字幕 | c 文件字幕
         "lang_pair": "zh-en",        # 语言对
         "translate_tier": "fast",    # fast 快档 | quality 质量档 | cloud 云 API
+        "stt_provider": "local",     # local 本地模型 | cloud 云音频转写
         "asr_model_id": "asr-zipformer-bilingual-fast",
         "asr_tuning_profile": "auto", # auto | responsive | balanced | accuracy | custom
         "asr_vad_threshold": 0.35,     # 自定义：语音触发灵敏度
@@ -40,8 +42,16 @@ class ConfigStore:
         "asr_hotwords": "",           # 逗号分隔领域词
         "translate_model_id": "mt-opus-fast-builtin",
         "download_source": "auto",  # auto | global | china
-        "api_key": "",               # 云 API Key（仅 cloud 档使用）
-        "base_url": "https://api.deepseek.com/v1",  # OpenAI 兼容端点（白名单由 M6 落）
+        "stt_api_key": "",           # 云 STT 独立 API Key
+        "stt_base_url": "https://api.openai.com/v1",  # 云 STT OpenAI 兼容基址
+        "stt_model": "whisper-1",    # 云 STT 模型名
+        "translate_api_key": "",     # 云翻译独立 API Key
+        "translate_base_url": "https://api.deepseek.com/v1",  # 云翻译基址
+        "translate_model": "deepseek-chat",  # 云翻译模型名
+        # 0.3.x legacy aliases; kept for migration and external scripts.
+        "api_key": "",
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "",
         "tts_enabled": True,         # 语音朗读开关
         "mic_device_id": "",        # A 模式麦克风；空=系统默认
         "loopback_device_id": "",   # B 模式输出端点；空=系统默认
@@ -50,6 +60,9 @@ class ConfigStore:
         "last_input_file": "",      # C 模式最近选择的音视频
         "debug_mode": False,         # 内置实时调试日志
         "overlay_font_size": 20,     # 字幕浮窗字号
+        "overlay_width": 560,         # 字幕浮窗用户调整后的宽度
+        "overlay_height": 168,        # 字幕浮窗用户调整后的高度
+        "overlay_size_customized": False,
         "overlay_opacity": 0.92,     # 字幕浮窗透明度
         "overlay_click_through": False, # 锁定浮窗并把鼠标点击穿透到底层窗口
         "record_with_translation": False, # A 模式同时保存麦克风 WAV
@@ -67,6 +80,15 @@ class ConfigStore:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
                     data.update({k: v for k, v in raw.items() if k in self.DEFAULTS})
+                    # 0.3.6 and earlier stored one cloud translation credential
+                    # set.  Treat it as the translation side when the new keys
+                    # are absent, without overwriting an explicit new setting.
+                    if "translate_api_key" not in raw and raw.get("api_key"):
+                        data["translate_api_key"] = raw["api_key"]
+                    if "translate_base_url" not in raw and raw.get("base_url"):
+                        data["translate_base_url"] = raw["base_url"]
+                    if "translate_model" not in raw and raw.get("model"):
+                        data["translate_model"] = raw["model"]
             except (json.JSONDecodeError, OSError) as exc:
                 # 损坏配置：保留默认值即可（不覆盖原文件，等用户下次保存）；
                 # 设计内行为 → debug 记录, 不打断读取

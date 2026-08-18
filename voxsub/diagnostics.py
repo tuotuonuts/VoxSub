@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+from voxsub import __version__
 from voxsub.models import ModelManager
 from voxsub.logging_setup import get_logger
 
@@ -169,12 +170,18 @@ def _check_asr_smoke() -> dict:
 def _check_vad_smoke() -> dict:
     """加载 silero VAD, 合成 220Hz 音应能触发语音检测。"""
     vad_dir = models_dir() / "vad"
+    try:
+        from voxsub.bootstrap_models import ensure_bundled_vad
+
+        ensure_bundled_vad(models_dir())
+    except Exception:
+        logger.warning("自检[VAD 冒烟] 无法修复基础 VAD", exc_info=True)
     hits = sorted(vad_dir.glob("*.onnx"))
     if not hits:
         logger.warning("自检[VAD 冒烟] 缺少 VAD 模型: %s", vad_dir.name)
         return {"check": "VAD 冒烟", "status": "fail",
                 "detail": f"缺少 VAD 模型: {vad_dir}",
-                "suggestion": "下载 silero_vad_v5.onnx 到 models/vad/"}
+                "suggestion": f"重新安装 VoxSub {__version__} 以修复基础 VAD 模型"}
     try:
         import sherpa_onnx
 

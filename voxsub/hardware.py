@@ -122,12 +122,26 @@ def _is_integrated_gpu(name: str) -> bool:
         return False
     if "radeon rx" in lower or "radeon pro" in lower:
         return False
-    if "intel" in lower and any(token in lower for token in (" arc a", " arc b")):
-        return False
+    if "intel" in lower:
+        # Arc A/B desktop cards are discrete; newer Core Ultra graphics are
+        # reported as ``Arc 130T/140T`` or simply ``Arc Graphics``.
+        if re.search(r"\barc\s*[ab]\s*\d", lower) or "arc pro" in lower:
+            return False
+        return True
     return any(token in lower for token in (
-        "intel", "iris", "uhd", "integrated", "radeon graphics", "radeon 6",
+        "iris", "uhd", "integrated", "radeon graphics", "radeon 6",
         "radeon 7", "radeon 8", "adreno", "qualcomm",
     ))
+
+
+def _is_virtual_display(name: str) -> bool:
+    """Exclude display adapters that cannot execute inference workloads."""
+    lower = name.casefold()
+    return (("idd" in lower and "desk" in lower) or any(marker in lower for marker in (
+        "indirect display", "microsoft basic display",
+        "remote display", "virtual display", "parsec display",
+        "spacedesk", "usb display",
+    )))
 
 
 def _ort_inventory() -> tuple[set[str], list[tuple[str, str, str]]]:
@@ -187,7 +201,8 @@ def detect_hardware() -> HardwareProfile:
 
     for item in _video_controllers():
         name = str(item.get("Name") or "").strip()
-        if not name or "basic display" in name.casefold():
+        if not name or _is_virtual_display(name):
+            logger.debug("忽略非计算显示设备: %s", name)
             continue
         if _is_integrated_gpu(name):
             integrated_name = integrated_name or name
@@ -217,7 +232,7 @@ def detect_hardware() -> HardwareProfile:
 
     integrated_provider = ""
     if integrated_name:
-        if "DmlExecutionProvider" in providers and not gpu_name:
+        if "DmlExecutionProvider" in providers:
             integrated_provider = "DirectML"
         elif "OpenVINOExecutionProvider" in providers and "intel" in integrated_name.casefold():
             integrated_provider = "OpenVINO"
@@ -289,16 +304,22 @@ def discover_llama_runtimes() -> list[LlamaRuntime]:
 
 def select_llama_runtime(profile: HardwareProfile,
                          explicit: Path | str | None = None,
-                         required_gb: float = 0.0) -> LlamaRuntime | None:
+                         required_gb: float = 0.0,
+                         excluded: set[tuple[str, str]] | None = None) -> LlamaRuntime | None:
     """Select GGUF runtime using GPU -> NPU -> integrated GPU -> CPU."""
     if explicit:
         exe = Path(explicit)
         return LlamaRuntime(exe, _classify_llama_backend(exe.parent))
     runtimes = discover_llama_runtimes()
+    excluded = excluded or set()
 
     def first(backends: tuple[str, ...], target: str = "") -> LlamaRuntime | None:
         for runtime in runtimes:
             if runtime.backend in backends:
+                if (runtime.backend, target) in excluded:
+                    logger.info("llama 运行时跳过: backend=%s target=%s 已记录启动失败",
+                                runtime.backend, target or "CPU")
+                    continue
                 return LlamaRuntime(runtime.server_exe, runtime.backend, target)
         return None
 
@@ -310,7 +331,14 @@ def select_llama_runtime(profile: HardwareProfile,
         picked = first(preferred, "GPU")
         if picked:
             return picked
-    if (profile.has_npu and "intel" in profile.npu_name.casefold() and
+    if profile.has_npu:
+        if not profile.has_npu_runtime:
+            logger.info("llama NPU 跳过: 检测到物理 NPU，但没有可用执行运行时")
+        elif "openvino" not in profile.npu_provider.casefold():
+            logger.info("llama NPU 跳过: 当前运行时=%s，llama.cpp 需要 OpenVINO",
+                        profile.npu_provider)
+    if (profile.has_npu_runtime and "openvino" in profile.npu_provider.casefold() and
+            "intel" in profile.npu_name.casefold() and
             profile.ram_gb >= required_gb + 4.0):
         picked = first(("openvino",), "NPU")
         if picked:
@@ -338,7 +366,8 @@ def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:
                       {"sycl", "openvino", "vulkan"})
         if backends & compatible:
             result.append("gpu")
-    if (profile.has_npu and "intel" in profile.npu_name.casefold() and
+    if (profile.has_npu_runtime and "openvino" in profile.npu_provider.casefold() and
+            "intel" in profile.npu_name.casefold() and
             "openvino" in backends):
         result.append("npu")
     if profile.has_integrated_gpu:

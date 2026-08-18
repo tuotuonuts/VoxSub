@@ -30,6 +30,7 @@ from voxsub.logging_setup import get_logger
 logger = get_logger("ui.theme")
 
 _SYSTEM_HOOK_CONNECTED = False  # qconfig.themeChanged 只连接一次（避免重复连接告警）
+_ACTIVE_THEME_NAME = "light"
 
 # ---------------------------------------------------------------------------
 # 设计令牌表（单点事实来源；tests/test_ui.py 逐项校验存在性）
@@ -124,6 +125,11 @@ class AppTheme(enum.Enum):
     SYSTEM = "system"
 
 
+def active_theme_name() -> str:
+    """Return the concrete palette currently applied to custom widgets."""
+    return _ACTIVE_THEME_NAME
+
+
 # ---------------------------------------------------------------------------
 # QSS 模板 —— 以 @token 占位，构建时按主题令牌替换。
 # 全部选择器限定在本项目自绘组件上（objectName / dynamic property），
@@ -142,6 +148,23 @@ QMainWindow, QDialog {
 QWidget#rootShell {
     background-color: @bg_base;
 }
+QWidget#mainScene { background-color: @bg_base; }
+QWidget#mainContent { background-color: @bg_base; }
+QFrame#inAppPageLayer {
+    background-color: rgba(0,0,0,0.24);
+}
+QFrame#inAppPageHeader { background: transparent; }
+QLabel#inAppPageTitle {
+    color: @text_primary;
+    font-size: 22px;
+    font-weight: 650;
+}
+QFrame#inAppPageSurface {
+    background-color: @surface_1;
+    border: 1px solid @border_strong;
+    border-radius: @radius_card;
+}
+QStackedWidget#inAppPageStack { background: transparent; }
 QWidget#settingsWindow, QWidget#diagnosticsWindow {
     background-color: @bg_base;
 }
@@ -154,9 +177,50 @@ QLabel#secondaryLabel { color: @text_secondary; font-size: 14px; }
 QLabel#accentLabel    { color: @accent; }
 QLabel#sectionTitle   { font-size: 16px; font-weight: 600; }
 QLabel#eyebrowLabel   { color: @accent; font-size: 12px; font-weight: 600; }
+QLabel#windowTitleLabel { font-size: 24px; font-weight: 650; }
+QLabel#windowSubtitleLabel { color: @text_secondary; font-size: 13px; }
+QLabel#sectionHint { color: @text_secondary; font-size: 13px; line-height: 1.35; }
 QLabel#emptyHint      { color: @text_secondary; font-size: 14px; }
 QLabel#statusText     { color: @text_secondary; font-size: 14px; }
 QLabel#trayTipLabel   { color: @text_secondary; font-size: 12px; }
+QLabel#statusPill { color: @text_secondary; background: @surface_2;
+    border: 1px solid @border; border-radius: 12px; padding: 5px 10px; }
+
+/* ---- 通用容器与滚动体验 ---- */
+QWidget#settingsPage, QWidget#diagnosticsPage { background: transparent; }
+QFrame#windowHeader { background: transparent; }
+QFrame#settingsCard, QFrame#diagnosticCard { padding: 0; }
+QFrame#settingsCard[emphasis="true"] {
+    background-color: rgba(@accent_rgb, 0.06);
+    border: 1px solid rgba(@accent_rgb, 0.20);
+}
+QFrame#settingsCard[muted="true"] { background-color: @surface_2; }
+QFrame#settingsCard QLabel#sectionTitle { font-size: 17px; }
+QFrame#settingsCard QLabel#cardCaption { color: @text_secondary; font-size: 13px; }
+QFrame#actionRow { background: transparent; }
+QFrame#subtleDivider { background-color: @border; min-height: 1px; max-height: 1px; }
+QScrollArea#settingsScroll, QScrollArea#diagnosticsScroll {
+    background: transparent; border: none;
+}
+QScrollArea#settingsScroll > QWidget > QWidget,
+QScrollArea#diagnosticsScroll > QWidget > QWidget { background: transparent; }
+QScrollBar:vertical {
+    width: 9px; margin: 4px 1px 4px 1px; background: transparent;
+}
+QScrollBar::handle:vertical {
+    min-height: 34px; border-radius: 4px; background: rgba(@accent_rgb, 0.28);
+}
+QScrollBar::handle:vertical:hover { background: rgba(@accent_rgb, 0.52); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    height: 0; background: transparent;
+}
+QScrollBar:horizontal { height: 9px; background: transparent; }
+QScrollBar::handle:horizontal { min-width: 34px; border-radius: 4px; background: rgba(@accent_rgb, 0.28); }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    width: 0; background: transparent;
+}
 
 /* ---- 模型广场：Soft Premium，低密度大卡片 ---- */
 QLabel#hubTitle { font-size: 30px; font-weight: 650; }
@@ -180,6 +244,7 @@ QFrame#modelCard[selected="true"] {
 }
 QLabel#modelName { font-size: 19px; font-weight: 650; }
 QLabel#modelFacts { color: @text_secondary; font-size: 13px; }
+QLabel#downloadStatus { color: @text_secondary; font-size: 12px; }
 QLabel#modelTag {
     color: @text_secondary;
     background-color: @surface_2;
@@ -196,11 +261,31 @@ QPushButton#filterPill {
     background-color: transparent;
     border: 1px solid @border;
 }
-QPushButton#filterPill:hover { color: @text_primary; border: 1px solid @border_strong; }
+QPushButton#filterPill:hover, QPushButton#filterPill:focus {
+    min-height: 34px;
+    padding: 0 15px;
+    border-radius: 17px;
+    color: @text_primary;
+    border: 1px solid @border_strong;
+}
 QPushButton#filterPill:checked {
+    min-height: 34px;
+    padding: 0 15px;
+    border-radius: 17px;
     color: @accent;
     background-color: rgba(@accent_rgb, 0.12);
     border: 1px solid rgba(@accent_rgb, 0.46);
+    font-weight: 600;
+}
+QPushButton#filterPill:checked:hover,
+QPushButton#filterPill:checked:focus,
+QPushButton#filterPill:checked:pressed {
+    min-height: 34px;
+    padding: 0 15px;
+    border-radius: 17px;
+    color: @accent_deep;
+    background-color: rgba(@accent_rgb, 0.17);
+    border: 1px solid @accent;
     font-weight: 600;
 }
 QPushButton#modelActionButton {
@@ -315,6 +400,21 @@ QComboBox#inputBox {
 QComboBox#inputBox:hover { border: 1px solid @border_strong; }
 QComboBox#inputBox:focus { border: 1px solid @accent; }
 QComboBox#inputBox:disabled { color: @text_secondary; }
+QAbstractSpinBox#inputBox {
+    min-height: @control_height; padding: 0 10px;
+    background-color: @surface_2; border: 1px solid @border;
+    border-radius: @radius_input; color: @text_primary;
+}
+QAbstractSpinBox#inputBox:hover { border: 1px solid @border_strong; }
+QAbstractSpinBox#inputBox:focus { border: 1px solid @accent; }
+QAbstractSpinBox#inputBox:disabled { color: @text_secondary; }
+QComboBox#inputBox QAbstractItemView {
+    background-color: @surface_2; color: @text_primary;
+    border: 1px solid @border; selection-background-color: rgba(@accent_rgb, 0.16);
+    selection-color: @text_primary; padding: 4px;
+}
+QComboBox#inputBox::drop-down { width: 30px; border: none; }
+QComboBox#inputBox::down-arrow { width: 8px; height: 8px; }
 
 QFrame#filePickerCard {
     background-color: rgba(@accent_rgb, 0.06);
@@ -331,6 +431,14 @@ QPushButton#secondaryButton, QPushButton#inputBox {
     background-color: transparent;
     border: 1px solid @border;
 }
+QPushButton#primaryButton {
+    min-height: @control_height; padding: 0 18px; border-radius: @radius_input;
+    color: @on_accent; background-color: @accent_deep;
+    border: 1px solid @accent; font-weight: 650;
+}
+QPushButton#primaryButton:hover { background-color: @accent; }
+QPushButton#primaryButton:pressed { background-color: @accent_deep; }
+QPushButton#primaryButton:disabled { color: @text_secondary; background-color: @surface_2; border-color: @border; }
 QPushButton#compactGhostButton { padding: 0 8px; }
 QPushButton#ghostButton:hover, QPushButton#compactGhostButton:hover,
 QPushButton#secondaryButton:hover, QPushButton#inputBox:hover {
@@ -346,6 +454,8 @@ QPushButton#ghostButton:focus, QPushButton#compactGhostButton:focus,
 QPushButton#secondaryButton:focus, QPushButton#inputBox:focus {
     border: 1px solid @accent;
 }
+QPushButton#secondaryButton { font-weight: 550; }
+QPushButton#ghostButton { border-color: transparent; }
 QPushButton:disabled {
     color: @text_secondary;
     background-color: @surface_2;
@@ -353,30 +463,67 @@ QPushButton:disabled {
 
 /* ---- 设置页 ---- */
 QWidget#settingsTabs > QWidget { background: transparent; }
+QTabWidget#settingsTabs, QTabWidget#diagnosticsTabs { background: transparent; }
 QFrame#settingsCard {
     background-color: @surface_1;
     border: 1px solid @border;
     border-radius: @radius_card;
 }
 QLabel#fieldLabel { font-size: 14px; color: @text_secondary; }
+QLabel#formLabel { color: @text_secondary; font-size: 13px; }
+QToolButton#infoButton {
+    color: @text_secondary; background: @surface_2; border: 1px solid @border;
+    border-radius: 12px; font-weight: 700; font-size: 12px;
+}
+QToolButton#infoButton:hover { color: @accent; border-color: @accent; background: rgba(@accent_rgb, 0.08); }
+QToolButton#infoButton:pressed { background: rgba(@accent_rgb, 0.15); }
+QLabel#dirtyState { color: @warning; font-size: 13px; }
+QLabel#savedState { color: @success; font-size: 13px; }
+QFrame#optionRow { background: transparent; }
+QFrame#deviceStatus { background: rgba(@accent_rgb, 0.06); border: 1px solid rgba(@accent_rgb, 0.18); border-radius: @radius_card_compact; }
+QFrame#appearancePreview { background: @surface_2; border: 1px solid @border; border-radius: @radius_card_compact; }
+QFrame#aboutIdentity { background: rgba(@accent_rgb, 0.06); border: 1px solid rgba(@accent_rgb, 0.18); border-radius: @radius_card; }
 
-/* ---- 单选按钮（Soft Premium 圆点）---- */
+/* ---- 单选按钮（Soft Premium 圆环）---- */
 QRadioButton {
     color: @text_primary;
     spacing: 10px;
     padding: 2px 0;
 }
 QRadioButton::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 8px;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
     border: 1px solid @text_secondary;
-    background: transparent;
+    background-color: transparent;
 }
-QRadioButton::indicator:hover { border: 1px solid @accent; }
+QRadioButton::indicator:hover {
+    border-color: @accent;
+    background-color: rgba(@accent_rgb, 0.05);
+}
 QRadioButton::indicator:checked {
-    border: 4px solid rgba(@accent_rgb, 0.22);
-    background-color: @accent;
+    /* Repeat dimensions and radius here: Qt otherwise drops the base radius
+       when the checked pseudo-state replaces the border declaration. */
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 5px solid @accent;
+    background-color: @surface_1;
+}
+QRadioButton::indicator:checked:hover {
+    border-color: @accent_deep;
+    background-color: rgba(@accent_rgb, 0.10);
+}
+QRadioButton::indicator:disabled {
+    border-color: @border;
+    background-color: @surface_2;
+}
+QRadioButton::indicator:checked:disabled {
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border: 5px solid rgba(@accent_rgb, 0.34);
+    background-color: @surface_1;
 }
 QCheckBox {
     color: @text_primary;
@@ -423,7 +570,33 @@ QPlainTextEdit#logView {
     padding: 8px;
     font-family: @font_mono;
     font-size: 12px;
+    selection-background-color: rgba(@accent_rgb, 0.25);
 }
+QFrame#diagnosticToolbar { background: @surface_1; border: 1px solid @border; border-radius: @radius_card_compact; }
+QFrame#diagnosticCard {
+    background-color: @surface_1; border: 1px solid @border; border-radius: @radius_card_compact;
+}
+QFrame#diagnosticCard[status="ok"] { border-left: 3px solid @success; }
+QFrame#diagnosticCard[status="warn"] { border-left: 3px solid @warning; }
+QFrame#diagnosticCard[status="fail"] { border-left: 3px solid @error; }
+QLabel#diagnosticMark { font-size: 17px; }
+QLabel#logLiveState { color: @success; font-size: 13px; }
+
+/* ---- 浮窗控制岛 ---- */
+QFrame#overlayToolbar, QWidget#overlayLockedPanel {
+    background-color: rgba(12,12,12,238);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 14px;
+}
+QFrame#overlayToolbar QToolButton, QWidget#overlayLockedPanel QToolButton {
+    color: #E5E7EB; background: transparent; border: none;
+    min-height: 28px; border-radius: 9px; padding: 2px 7px; font-weight: 650;
+}
+QFrame#overlayToolbar QToolButton:hover, QWidget#overlayLockedPanel QToolButton:hover {
+    color: #14B8A6; background: rgba(20,184,166,0.16);
+}
+QFrame#overlayToolbar QLabel, QWidget#overlayLockedPanel QLabel { color: #9CA3AF; background: transparent; }
+QLabel#overlayFontValue { min-width: 28px; color: #F2F2F2; font-weight: 650; }
 
 /* ---- 弹窗 / 菜单 ---- */
 QMenu {
@@ -504,6 +677,8 @@ def load_theme(app: QApplication, theme: AppTheme) -> None:
 
     # -- 自定义 QSS 层 --
     theme_name = resolve_theme_name(theme)
+    global _ACTIVE_THEME_NAME
+    _ACTIVE_THEME_NAME = theme_name
     app.setStyleSheet(build_qss(theme_name))
 
     # SYSTEM 档：跟随系统主题切换重建 QSS（QFW 自身也监听该信号刷组件）
@@ -523,4 +698,7 @@ def _on_system_theme_changed() -> None:
     theme_mode = getattr(qconfig, "themeMode", None)
     mode_value = getattr(theme_mode, "value", theme_mode)
     if str(mode_value).lower() == "auto":
-        app.setStyleSheet(build_qss(resolve_theme_name(AppTheme.SYSTEM)))
+        theme_name = resolve_theme_name(AppTheme.SYSTEM)
+        global _ACTIVE_THEME_NAME
+        _ACTIVE_THEME_NAME = theme_name
+        app.setStyleSheet(build_qss(theme_name))

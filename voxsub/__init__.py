@@ -2,4 +2,4 @@
 
 模块划分见 DESIGN.md；audio (M2) / asr (M3) 等子模块各自独立实现。
 """
-__version__ = "0.3.3-beta"
+__version__ = "0.3.9-beta"

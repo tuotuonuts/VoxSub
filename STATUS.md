@@ -30,7 +30,7 @@
 - [x] M6 Pipeline：三模式编排 + C 模式 srt 导出 + 翻译容错延迟注入；7 测试绿
 - [x] M7 UI：PySide6 + QFluentWidgets Soft Premium；主窗/字幕浮窗/托盘/设置/诊断；32 测试绿，桌面启动正常，自动接真实 Pipeline
 - [x] M8 路由诊断：router/diagnostics/models(下载锁/断点续传)；15 测试绿；六项自检全 ok
-- [x] **集成：全量 pytest 153 passed / 3 skipped / 0 failed（2026-08-18）**
+- [x] **集成：全量 pytest 158 passed / 3 skipped / 0 failed（2026-08-18）**
 - [x] **端到端实盘**：A 模式实时字幕全链 1.01s + C 模式 srt 导出（真实模型全链路）
 - [x] 首个可运行 exe（515MB onedir，自签+DigiCert 时间戳，GUI 冒烟通过）
 - [x] v0.2 用户测试修复：B 模式默认端点、采集异常可见、Qt 线程桥、字幕浮窗自动显示
@@ -48,6 +48,20 @@
 - [x] 自审门禁：compileall + 153 测试 + 打包前/打包后 Soft Premium Windows GUI 真实点击验收
 - [x] v0.3.2-beta 已生成自签名安装包与 SHA256，写入 `Release`（203.37 MiB；SHA256 `1F480C61...D75B1F25`）
 - [x] v0.3.3-beta：修复真实字体渲染和解锁后原生穿透位残留；153 passed / 3 skipped，真实鼠标解锁/点击/拖动验收通过，Release 安装包 203.41 MiB（SHA256 `A4C527FC...BC14309B`）
+- [x] v0.3.4-beta 源码：主窗/设置/模型广场/诊断/浮窗完成 Soft Premium 统一改版；全量 154 passed / 3 skipped；PyInstaller dist 已生成
+- [x] v0.3.4-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.4-beta.exe`（203.41 MiB）；SHA256 `FF08F72ECE76AE6D8B0A7AA555A6572D55FB2FB9A0386E8C37CFBF1D5BDE3827`
+- [ ] v0.3.4-beta 签名：当前构建环境没有可用的 VoxSub 代码签名证书，安装包暂为未签名状态
+- [x] v0.3.5-beta 源码：翻译档位单选控件改为稳定圆环 + 圆心；新增 SenseVoice Small INT8 和 Hy-MT2 1.8B/7B 的 Q5/Q8 档位；全量 158 passed / 3 skipped
+- [x] v0.3.5-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.5-beta.exe`（203.37 MiB，未签名）；SHA256 `BD2B56302ABFF06DE6E2FE3DAAB8B4916D49C5681E3E1E050699D0F0B5FAC2FF`
+- [x] v0.3.6-beta 源码：基础 VAD 随包分发并首用自修复；Pipeline 初始化事务化；会话、日志和诊断报告导出使用应用内保存框 + 后台原子写入；全量 164 passed / 3 skipped
+- [x] v0.3.6-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.6-beta.exe`（205.09 MiB，未签名）；SHA256 `EA7B3BD9F73DD97AC876723F8B90CB2726F6843B97A39F06F7973C8807B9A57E`
+- [x] v0.3.7-beta 源码：云 STT 与云翻译独立配置、旧配置迁移、四种本地/云端混合链路；云 STT 分段独立队列；修复云翻译默认超时；全量 177 passed / 3 skipped
+- [x] v0.3.7-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.7-beta.exe`（205.05 MiB，未签名）；SHA256 `701E1AC4C2188629D503318A7F8EE758C5D53BF9149051D51BA6E523AF4AE698`；隔离配置启动冒烟通过
+- [x] v0.3.8-beta 源码：单选、开关和模型广场筛选统一为稳定新版控件；Inno Setup 支持英/简中/繁中并按 Windows UI 语言自动匹配；全量 181 passed / 3 skipped
+- [x] v0.3.8-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.8-beta.exe`（205.11 MiB，未签名）；SHA256 `A8B2D9AD82A7544033F6640116F5E783848F3F49EAB0A43DB55A6B4EA32BA99F`；隔离配置启动冒烟通过
+- [x] v0.3.9-beta 源码：设置与模型广场改为主窗内置页面；内置 OPUS/Zipformer 支持缺失文件检测与在线修复；全量 190 passed / 3 skipped
+- [x] v0.3.9-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.9-beta.exe`（205.15 MiB，未签名）；SHA256 `D500E7045B503C58F13C81ECCA37675205097157F13CB48B088ED089A4182F29`
+- [!] 已知问题：Intel NPU 目前可能被检测到但未真正用于推理，模型可能回退到 GPU/CPU；后续继续排查调度、运行时和模型支持链路
 - [ ] M9 发布候选：完成更多真实推理与无独显 NPU 轻薄本验收
 
 ## 环境事实（接手必知）
@@ -62,8 +76,8 @@
 ## 关键决策记录（ADR 简版）
 
 1. 推理统一走 onnxruntime：`onnxruntime-directml` 包（含 CPU EP 兜底），**不与标准 onnxruntime 同装**（包名冲突）——大众 CPU 基准，无 CUDA 硬依赖
-2. ASR：内置 Zipformer 作为低资源实时兜底，模型广场提供 Fun-ASR-Nano 2512 与 Qwen3-ASR 0.6B；生成式 ASR 只在句界解码
-3. 翻译：本地 OPUS 低资源兜底 / Hy-MT2 1.8B 与 7B GGUF 质量档 / 可选云 API；ASR 与翻译分离队列，慢翻译不堵采集
+2. ASR：内置 Zipformer 作为低资源实时兜底，模型广场提供 Fun-ASR-Nano 2512、Qwen3-ASR 0.6B 与 SenseVoice Small INT8；离线模型只在句界解码
+3. STT/翻译：本地 ASR 或独立云 STT，与本地 OPUS/Hy-MT2 或独立云翻译自由组合；音频采集、VAD 与云 STT 请求分离，ASR 与翻译分离队列，慢网络不堵采集
 4. 设备路由：独显 GPU → NPU → 核显 → CPU。先验证模型运行时支持，再选择/实测；sherpa 不支持 DML/NPU 时明确回 CPU
 5. 四层兼容防线：静态打包 / 装前体检 / 自检诊断中心 / 模型自愈（SHA256 + 断点续传，ModelScope + GitHub/Hugging Face 双源）
 6. 模型与运行时数据不入 git（`%LOCALAPPDATA%\VoxSub\models`）
@@ -78,7 +92,7 @@
 
 1. 从模型广场分别下载 Fun-ASR-Nano/Qwen3-ASR 与 Hy-MT2，做真实中文、混合语言、噪声素材 A/B 对比
 2. 在至少一台无独显 NPU 轻薄本验证硬件识别和实际后端日志；Intel NPU 重点验证 OpenVINO，AMD/Qualcomm 记录兼容性边界
-3. 使用 v0.3.3-beta 在更多真实音视频素材上继续验证识别质量、断句参数和长时间运行稳定性
+3. 使用 v0.3.8-beta 在更多真实音视频素材上继续验证识别质量、断句参数、云端兼容服务和长时间运行稳定性
 
 ## 发布约定（2026-08-17 用户指定）
 

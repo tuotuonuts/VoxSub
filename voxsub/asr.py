@@ -86,6 +86,8 @@ class StreamingASR:
                  decoding_method: str = "modified_beam_search",
                  max_active_paths: int = 4, source_lang: str = "auto"):
         self._model_dir = Path(model_dir)
+        self.provider = provider
+        self.runtime = "sherpa-streaming-transducer"
         tokens = self._model_dir / "tokens.txt"
         if not tokens.exists():
             logger.warning("ASR 模型不完整: 缺少 token 表 %s (目录 %s)",
@@ -160,12 +162,12 @@ class _OfflineBuffer:
 
 
 class OfflineGenerativeASR:
-    """Sentence-level adapter for Qwen3-ASR and Fun-ASR-Nano sherpa models.
+    """Sentence-level adapter for offline sherpa ASR models.
 
-    These models are non-streaming recognizers.  The existing VAD segmenter still
-    provides live sentence boundaries and feeds audio into this buffer; inference
-    happens once at the boundary so the expensive decoder is never rerun every
-    few hundred milliseconds for a partial result.
+    Qwen3-ASR, Fun-ASR-Nano, and SenseVoice are non-streaming recognizers. The
+    existing VAD segmenter still provides live sentence boundaries and feeds
+    audio into this buffer; inference happens once at the boundary so the
+    decoder is never rerun every few hundred milliseconds for a partial result.
     """
 
     def __init__(self, model_dir: Path, runtime: str, provider: str = "cpu",
@@ -173,6 +175,7 @@ class OfflineGenerativeASR:
                  max_new_tokens: int = 512, hotwords: str = "") -> None:
         self._model_dir = Path(model_dir)
         self.runtime = runtime
+        self.provider = provider
         threads = max(1, int(num_threads))
         if runtime == "sherpa-qwen3-asr":
             tokenizer = self._model_dir / "tokenizer"
@@ -220,6 +223,21 @@ class OfflineGenerativeASR:
                 language="",
                 itn=True,
                 hotwords=str(hotwords or ""),
+            )
+        elif runtime == "sherpa-sense-voice":
+            required = {
+                "model": self._model_dir / "model.int8.onnx",
+                "tokens": self._model_dir / "tokens.txt",
+            }
+            self._require(required.values())
+            language = source_lang if source_lang in {"zh", "en", "ja", "ko", "yue"} else ""
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=str(required["model"]),
+                tokens=str(required["tokens"]),
+                num_threads=threads,
+                provider=provider,
+                language=language,
+                use_itn=True,
             )
         else:
             raise ValueError(f"不支持的离线 ASR runtime: {runtime}")

@@ -122,7 +122,8 @@ def enumerate_devices() -> list[DeviceInfo]:
                      "NPUExecutionProvider"}:
             kind = "npu"
         elif raw == "OpenVINOExecutionProvider":
-            kind = "npu" if profile.has_npu else (
+            kind = ("npu" if profile.has_npu_runtime and
+                    "openvino" in profile.npu_provider.casefold() else
                 "igpu" if profile.has_integrated_gpu else "cpu")
         elif raw == "DmlExecutionProvider":
             kind = "gpu" if profile.has_discrete_gpu else "igpu"

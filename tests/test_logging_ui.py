@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 # 无头运行：必须在任何 Qt 构造前设置（QApplication 读取该变量）
@@ -41,6 +42,17 @@ def qapp():
 
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+def _wait_until(qapp, predicate, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        if predicate():
+            return
+        time.sleep(0.005)
+    qapp.processEvents()
+    assert predicate(), "timed out waiting for asynchronous export"
 
 
 # ===========================================================================
@@ -183,6 +195,64 @@ class TestDiagnosticsLogTab:
             assert logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
             dw.debug_switch.setChecked(False)
             assert not logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_log_export_does_not_block_the_ui_thread(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        output = tmp_path / "voxsub_log.txt"
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            monkeypatch.setattr(
+                diagnostics_window,
+                "choose_save_file",
+                lambda *a, **k: (str(output), "文本文件 (*.txt)"),
+            )
+
+            def _slow_tail(_lines):
+                time.sleep(0.15)
+                return "line one\nline two\n"
+
+            monkeypatch.setattr(diagnostics_window, "tail_log_file", _slow_tail)
+            started = time.monotonic()
+            dw._export_logs()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert not dw.export_log_btn.isEnabled()
+            _wait_until(qapp, lambda: "logs" not in dw._export_workers)  # noqa: SLF001
+            assert output.read_text(encoding="utf-8") == "line one\nline two\n"
+            assert dw.export_log_btn.isEnabled()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_report_export_does_not_block_the_ui_thread(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        class _SlowReport:
+            @staticmethod
+            def export_report() -> str:
+                time.sleep(0.15)
+                return "report body"
+
+        output = tmp_path / "voxsub_diagnostics.txt"
+        dw = DiagnosticsWindow(diagnostics_module=_SlowReport())
+        try:
+            monkeypatch.setattr(
+                diagnostics_window,
+                "choose_save_file",
+                lambda *a, **k: (str(output), "文本文件 (*.txt)"),
+            )
+            started = time.monotonic()
+            dw._export_report()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert not dw.export_btn.isEnabled()
+            _wait_until(qapp, lambda: "report" not in dw._export_workers)  # noqa: SLF001
+            assert output.read_text(encoding="utf-8") == "report body"
+            assert dw.export_btn.isEnabled()
         finally:
             dw.close()
             dw.deleteLater()

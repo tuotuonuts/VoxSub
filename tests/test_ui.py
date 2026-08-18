@@ -31,6 +31,11 @@ from voxsub.ui import config_store, pipeline_client  # noqa: E402
 from voxsub.ui.config_store import ConfigStore  # noqa: E402
 from voxsub.ui.main_window import MainWindow, ModeCard, SubtitleList, cycle_mode  # noqa: E402
 from voxsub.ui.pipeline_client import _PipelineStub, get_pipeline  # noqa: E402
+from voxsub.ui.selection_controls import (  # noqa: E402
+    PillChoiceButton,
+    RoundRadioButton,
+    ToggleSwitch,
+)
 from voxsub.ui.theme import (  # noqa: E402
     AppTheme,
     DESIGN_TOKENS,
@@ -49,7 +54,11 @@ def qapp():
 
     app = QApplication.instance() or QApplication([])
     load_theme(app, AppTheme.DARK)
+    from voxsub.ui.i18n import language_manager
+
+    language_manager.set_language("zh")
     yield app
+    language_manager.set_language("zh")
 
 
 def _wait_until(qapp, predicate, timeout: float = 2.0) -> None:
@@ -135,6 +144,23 @@ class TestQss:
             assert "border-radius" in qss
             assert "border: 1px solid rgba(20,184,166," in qss or "rgba(20,184,166" in qss
 
+    def test_checked_radio_indicator_keeps_its_round_geometry(self):
+        qss = build_qss("dark")
+        checked = qss.split("QRadioButton::indicator:checked {", 1)[1].split("}", 1)[0]
+        assert "width: 18px;" in checked
+        assert "height: 18px;" in checked
+        assert "border-radius: 9px;" in checked
+
+    def test_checked_filter_pill_keeps_capsule_geometry(self):
+        qss = build_qss("dark")
+        checked = qss.split("QPushButton#filterPill:checked {", 1)[1].split("}", 1)[0]
+        assert "min-height: 34px;" in checked
+        assert "border-radius: 17px;" in checked
+        checked_hover = qss.split(
+            "QPushButton#filterPill:checked:hover,", 1
+        )[1].split("}", 1)[0]
+        assert "border-radius: 17px;" in checked_hover
+
     def test_qss_theme_specific_colors(self):
         assert "#050505" in build_qss("dark")
         assert "#F7F7F5" in build_qss("light")
@@ -209,6 +235,7 @@ class TestConfigStore:
     def test_defaults_when_missing(self, tmp_path):
         store = ConfigStore(tmp_path / "cfg" / "config.json")
         data = store.load()
+        assert data["language"] == "system"
         assert data["mode"] == "a"
         assert data["theme"] == "system"
         assert data["translate_tier"] == "fast"
@@ -234,6 +261,17 @@ class TestConfigStore:
         assert data["base_url"] == "https://example.com/v1"
         # 未动的键保留默认
         assert data["lang_pair"] == "zh-en"
+
+    def test_legacy_cloud_keys_migrate_to_translation_side(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            '{"api_key":"legacy-key","base_url":"https://legacy.example/v1"}',
+            encoding="utf-8",
+        )
+        data = ConfigStore(path).load()
+        assert data["translate_api_key"] == "legacy-key"
+        assert data["translate_base_url"] == "https://legacy.example/v1"
+        assert data["stt_api_key"] == ""
 
     def test_corrupt_json_falls_back_to_defaults(self, tmp_path):
         path = tmp_path / "config.json"
@@ -321,6 +359,45 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    def test_secondary_pages_are_embedded_and_navigate_as_a_stack(self, qapp, tmp_path):
+        from voxsub.model_catalog import ModelMarketplace
+        from voxsub.ui.model_hub_window import ModelHubWindow
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        win = self._make_win(tmp_path)
+        settings = SettingsWindow(store=store)
+        hub = ModelHubWindow(
+            store=store,
+            marketplace=ModelMarketplace(tmp_path / "models"),
+        )
+        win.install_in_app_pages(settings, hub)
+        try:
+            win.show()
+            win.show_settings_page()
+            qapp.processEvents()
+            assert settings.parent() is win._page_stack  # noqa: SLF001
+            assert not settings.isWindow()
+            assert win._page_layer.isVisible()  # noqa: SLF001
+            assert win._page_blur.blurRadius() == 12  # noqa: SLF001
+
+            settings.model_hub_btn.click()
+            qapp.processEvents()
+            assert hub.parent() is win._page_stack  # noqa: SLF001
+            assert win._page_stack.currentWidget() is hub  # noqa: SLF001
+            assert len(win._page_history) == 1  # noqa: SLF001
+
+            win.close_in_app_page()
+            assert win._page_stack.currentWidget() is settings  # noqa: SLF001
+            win.close_in_app_page()
+            assert not win._page_layer.isVisible()  # noqa: SLF001
+            assert win._page_blur.blurRadius() == 0  # noqa: SLF001
+        finally:
+            win.close()
+            win.deleteLater()
+            settings.deleteLater()
+            hub.deleteLater()
+
     def test_mode_card_selection_highlights(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:
@@ -377,6 +454,41 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    @pytest.mark.parametrize(
+        ("stt_provider", "translate_tier", "expected_translator"),
+        [
+            ("local", "fast", "opus-fast"),
+            ("cloud", "fast", "opus-fast"),
+            ("local", "cloud", "cloud"),
+            ("cloud", "quality", "qwen-quality"),
+        ],
+    )
+    def test_pipeline_config_keeps_stt_and_translation_independent(
+        self, qapp, tmp_path, stt_provider, translate_tier, expected_translator
+    ):
+        store = ConfigStore(tmp_path / "config.json")
+        store.update({
+            "stt_provider": stt_provider,
+            "translate_tier": translate_tier,
+            "stt_api_key": "stt-key",
+            "stt_base_url": "https://api.openai.com/v1",
+            "stt_model": "whisper-1",
+            "translate_api_key": "translate-key",
+            "translate_base_url": "https://api.deepseek.com/v1",
+            "translate_model": "deepseek-chat",
+        })
+        pipeline = _PipelineStub()
+        win = MainWindow(store=store, pipeline=pipeline)
+        try:
+            win._apply_pipeline_config()  # noqa: SLF001
+            assert pipeline.stt[0] == stt_provider
+            assert pipeline.translator[0] == expected_translator
+            assert pipeline.stt[1]["stt_api_key"] == "stt-key"
+            assert pipeline.translator[1]["translate_api_key"] == "translate-key"
+        finally:
+            win.close()
+            win.deleteLater()
+
     def test_file_mode_uses_right_workspace_import_card(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:
@@ -394,9 +506,10 @@ class TestMainWindow:
         win = self._make_win(tmp_path)
         try:
             for button in (win.overlay_font_down_btn, win.overlay_font_up_btn):
-                # Regression: ghostButton used 32px horizontal padding inside
-                # a 46px fixed width, leaving only 14px and visibly clipping A−/A+.
+                # Compatibility hooks remain for integrations, but adjustment
+                # controls must no longer appear in the main workspace.
                 assert button.objectName() == "compactGhostButton"
+                assert button.isHidden()
                 assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 16
                 assert button.sizeHint().width() <= button.width()
         finally:
@@ -433,13 +546,12 @@ class TestMainWindow:
             win.deleteLater()
 
     def test_file_picker_persists_and_updates_pipeline(self, qapp, tmp_path, monkeypatch):
-        from PySide6.QtWidgets import QFileDialog
+        import voxsub.ui.main_window as main_window
 
         video = tmp_path / "meeting.mp4"
         video.write_bytes(b"placeholder")
         win = self._make_win(tmp_path)
-        monkeypatch.setattr(QFileDialog, "getOpenFileName",
-                            lambda *a, **k: (str(video), ""))
+        monkeypatch.setattr(main_window, "choose_open_file", lambda *a, **k: str(video))
         try:
             assert win.select_input_file()
             assert win._store.get("last_input_file") == str(video)  # noqa: SLF001
@@ -465,6 +577,36 @@ class TestMainWindow:
             win.clear_conversation()
             assert win.subtitle_list.count() == 0
             assert win._conversation == []  # noqa: SLF001
+        finally:
+            win.close()
+            win.deleteLater()
+
+    def test_interactive_conversation_export_runs_in_a_worker(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.main_window as main_window
+
+        win = self._make_win(tmp_path)
+        out = tmp_path / "conversation.txt"
+        try:
+            win._on_utterance("你好", "Hello")  # noqa: SLF001
+            monkeypatch.setattr(
+                main_window,
+                "choose_save_file",
+                lambda *a, **k: (str(out), "纯文本 (*.txt)"),
+            )
+            original_write = win._write_conversation_snapshot  # noqa: SLF001
+
+            def _slow_write(snapshot, destination):
+                time.sleep(0.15)
+                return original_write(snapshot, destination)
+
+            monkeypatch.setattr(win, "_write_conversation_snapshot", _slow_write)
+            started = time.monotonic()
+            assert win._begin_save_conversation()  # noqa: SLF001
+            assert time.monotonic() - started < 0.08
+            assert not win.save_conversation_btn.isEnabled()
+            _wait_until(qapp, lambda: not win._session_export_busy)  # noqa: SLF001
+            assert out.read_text(encoding="utf-8") == "你好\nHello"
+            assert win.save_conversation_btn.isEnabled()
         finally:
             win.close()
             win.deleteLater()
@@ -610,35 +752,63 @@ class TestSubtitleOverlay:
             assert ov.dst_label.fontMetrics().height() > before_dst_height
             assert "font-size: 18pt" in ov.src_label.styleSheet()
             assert "font-size: 22pt" in ov.dst_label.styleSheet()
-            ov.change_font_size(-99)  # 下限 14
-            assert ov._font_size == 14  # noqa: SLF001
+            ov.change_font_size(-99)  # 下限 10
+            assert ov._font_size == 10  # noqa: SLF001
             ov.set_overlay_opacity(0.5)
             # setWindowOpacity 内部量化到 8bit（127/255≈0.498），容差放宽
             assert ov.windowOpacity() == pytest.approx(0.5, abs=0.01)
-            assert ov._store.get("overlay_font_size") == 14  # noqa: SLF001
+            assert ov._store.get("overlay_font_size") == 10  # noqa: SLF001
             for button in (ov._font_down_btn, ov._font_up_btn):  # noqa: SLF001
                 assert button.sizeHint().width() <= button.width()
             ov._font_up_btn.click()  # noqa: SLF001
-            assert ov.font_size() == 16
+            assert ov.font_size() == 12
             ov._font_down_btn.click()  # noqa: SLF001
-            assert ov.font_size() == 14
+            assert ov.font_size() == 10
+            ov.change_font_size(+100)
+            assert ov.font_size() == 72
             # The body remains native click-through, while a separate hover
-            # control island provides in-place font and unlock actions.
+            # control island provides the only in-place unlock action.
             ov.set_click_through(True)
             assert ov.is_click_through()
             assert ov.windowFlags() & Qt.WindowType.WindowTransparentForInput
             ov._poll_locked_hover(ov.frameGeometry().center())  # noqa: SLF001
             assert ov._locked_panel.isVisible()  # noqa: SLF001
+            assert ov._locked_panel.layout().count() == 1  # noqa: SLF001
             assert ov._locked_panel.layout().sizeHint().width() <= ov._locked_panel.width()  # noqa: SLF001
-            for button in (ov._locked_panel.font_down, ov._locked_panel.font_up,  # noqa: SLF001
-                           ov._locked_panel.unlock):  # noqa: SLF001
-                assert button.sizeHint().width() <= button.width()
-            ov._locked_panel.font_up.click()  # noqa: SLF001
-            assert ov._font_size == 16  # noqa: SLF001
+            assert ov._locked_panel.unlock.sizeHint().width() <= ov._locked_panel.unlock.width()  # noqa: SLF001
             ov._locked_panel.unlock.click()  # noqa: SLF001
             assert not ov.is_click_through()
             assert not (ov.windowFlags() & Qt.WindowType.WindowTransparentForInput)
             assert not ov.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        finally:
+            ov.close()
+            ov.deleteLater()
+
+    def test_unlocked_overlay_can_resize_and_persist_size(self, qapp, tmp_path):
+        from PySide6.QtCore import QPoint
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        store = ConfigStore(tmp_path / "config.json")
+        ov = SubtitleOverlay(store=store)
+        try:
+            ov.show()
+            qapp.processEvents()
+            start = ov.frameGeometry()
+            ov._manual_size = True  # noqa: SLF001
+            ov._resize_edges = (False, True, False, True)  # noqa: SLF001
+            ov._resize_start_geometry = start  # noqa: SLF001
+            ov._resize_start_pos = start.bottomRight()  # noqa: SLF001
+            ov._resize_from_global(start.bottomRight() + QPoint(80, 40))  # noqa: SLF001
+            ov._persist_size()  # noqa: SLF001
+            assert ov.width() == start.width() + 80
+            assert ov.height() == start.height() + 40
+            assert store.get("overlay_width") == ov.width()
+            assert store.get("overlay_height") == ov.height()
+
+            # Locked mode must not alter the size controls: only unlock exists.
+            ov.set_click_through(True)
+            ov._poll_locked_hover(ov.frameGeometry().center())  # noqa: SLF001
+            assert ov._locked_panel.layout().count() == 1  # noqa: SLF001
         finally:
             ov.close()
             ov.deleteLater()
@@ -648,6 +818,110 @@ class TestSubtitleOverlay:
 # 9. 设置页冒烟（offscreen）
 # ===========================================================================
 class TestSettingsWindow:
+    def test_system_language_setting_resolves_current_system_language(self, monkeypatch):
+        import voxsub.ui.i18n as i18n
+
+        i18n.language_manager.set_language("zh")
+        monkeypatch.setattr(i18n, "system_language", lambda: "en")
+        try:
+            assert i18n.language_manager.set_language("system") == "en"
+            assert i18n.language_manager.setting == "system"
+            assert i18n.language_manager.language == "en"
+        finally:
+            i18n.language_manager.set_language("zh")
+
+    def test_bilingual_ui_follows_setting_and_refreshes_open_windows(self, qapp, tmp_path):
+        from voxsub.ui.i18n import language_manager
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        assert store.get("language") == "system"
+        sw = SettingsWindow(store=store)
+        try:
+            language_manager.set_language("en")
+            assert sw.windowTitle() == "Settings - VoxSub"
+            assert sw.tabs.tabText(0) == "Translation"
+            assert sw.tabs.tabText(1) == "Recognition tuning"
+            assert sw.language_combo.currentText() == "Follow system"
+            sw.language_combo.setCurrentIndex(2)
+            assert store.get("language") == "en"
+            assert language_manager.language == "en"
+            language_manager.set_language("zh")
+            assert sw.windowTitle() == "设置 — 语幕 VoxSub"
+            assert sw.tabs.tabText(0) == "翻译"
+        finally:
+            sw.close()
+
+    def test_language_change_refreshes_all_open_windows(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QLabel
+        from voxsub.model_catalog import HardwareProfile, ModelMarketplace
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+        from voxsub.ui.i18n import language_manager
+        from voxsub.ui.model_hub_window import ModelHubWindow
+        from voxsub.ui.settings_window import SettingsWindow
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        class _FakeDiag:
+            @staticmethod
+            def run_self_check():
+                return [{"check": "模型完整性", "status": "ok", "detail": "406 条登记全部就绪"}]
+
+        language_manager.set_language("zh")
+        store = ConfigStore(tmp_path / "config.json")
+        profile = HardwareProfile("test cpu", 8, 16, 32.0, "RTX 4060", 8.0, "CUDA")
+        win = MainWindow(store=store, pipeline=_PipelineStub())
+        overlay = SubtitleOverlay(store=store)
+        settings = SettingsWindow(store=store, overlay=overlay)
+        hub = ModelHubWindow(
+            store=store,
+            marketplace=ModelMarketplace(tmp_path / "models"),
+            profile=profile,
+        )
+        diagnostics = DiagnosticsWindow(store=store, diagnostics_module=_FakeDiag)
+        try:
+            language_manager.set_language("en")
+            qapp.processEvents()
+            assert win.windowTitle() == "VoxSub"
+            assert win.source_hint.text() == "Input: microphone selected in Settings"
+            assert overlay._lock_btn.text() == "Lock"  # noqa: SLF001
+            assert overlay._locked_panel.unlock.text() == "Unlock"  # noqa: SLF001
+            assert settings.tabs.tabText(3) == "Devices"
+            assert settings.language_combo.itemText(0) == "Follow system"
+            assert hub.windowTitle() == "Model Hub - VoxSub"
+            assert hub.source_combo.itemText(0) == "Auto benchmark and switch"
+            assert "8 cores" in hub.hardware_detail.text()
+            assert "Discrete GPU" in hub.hardware_detail.text()
+            assert diagnostics.windowTitle() == "Diagnostics - VoxSub"
+            assert diagnostics.tabs.tabText(0) == "Self-check"
+            texts = [label.text() for label in diagnostics.findChildren(QLabel)]
+            assert "Model integrity" in texts
+            assert any("registered entries are ready" in text for text in texts)
+        finally:
+            language_manager.set_language("zh")
+            for widget in (diagnostics, hub, settings, overlay, win):
+                widget.close()
+                widget.deleteLater()
+
+    def test_all_choice_controls_use_stable_variants(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QCheckBox, QRadioButton
+        from voxsub.ui.settings_window import SettingsWindow
+
+        sw = SettingsWindow(store=ConfigStore(tmp_path / "config.json"))
+        try:
+            radios = sw.findChildren(QRadioButton)
+            switches = sw.findChildren(QCheckBox)
+            assert len(radios) == 8
+            assert all(isinstance(radio, RoundRadioButton) for radio in radios)
+            assert switches
+            assert all(isinstance(switch, ToggleSwitch) for switch in switches)
+            for control in (*radios, *switches):
+                assert control.sizeHint().width() >= (
+                    control.fontMetrics().horizontalAdvance(control.text()) + 20
+                )
+        finally:
+            sw.close()
+            sw.deleteLater()
+
     def test_construct_and_tier_persist(self, qapp, tmp_path):
         from voxsub.ui.settings_window import SettingsWindow
 
@@ -666,6 +940,15 @@ class TestSettingsWindow:
             sw.api_key_edit.setText("sk-abc")
             sw.save_cloud_credentials()
             assert store.get("api_key") == "sk-abc"
+            sw.stt_cloud_radio.setChecked(True)
+            sw.stt_api_key_edit.setText("stt-key")
+            sw.stt_model_edit.setText("whisper-test")
+            sw.save_cloud_credentials()
+            assert sw.current_stt_provider() == "cloud"
+            assert store.get("stt_api_key") == "stt-key"
+            assert store.get("stt_model") == "whisper-test"
+            assert "云 STT" in sw.cloud_mode_summary.text()
+            assert "云翻译" in sw.cloud_mode_summary.text()
             # 切回快档 → 输入框禁用
             sw.tier_fast.setChecked(True)
             assert store.get("translate_tier") == "fast"
@@ -695,6 +978,31 @@ class TestSettingsWindow:
         finally:
             sw.close()
             sw.deleteLater()
+
+    def test_overlay_controls_sync_to_live_overlay(self, qapp, tmp_path):
+        from voxsub.ui.settings_window import SettingsWindow
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        store = ConfigStore(tmp_path / "config.json")
+        overlay = SubtitleOverlay(store=store)
+        sw = SettingsWindow(store=store, overlay=overlay)
+        try:
+            sw.overlay_font_spin.setValue(26)
+            assert overlay.font_size() == 26
+            assert store.get("overlay_font_size") == 26
+
+            sw.overlay_opacity_spin.setValue(70)
+            assert overlay.windowOpacity() == pytest.approx(0.70, abs=0.01)
+            assert store.get("overlay_opacity") == pytest.approx(0.70)
+
+            sw.overlay_lock_switch.setChecked(True)
+            assert overlay.is_click_through()
+            assert store.get("overlay_click_through") is True
+        finally:
+            sw.close()
+            sw.deleteLater()
+            overlay.close()
+            overlay.deleteLater()
 
     def test_asr_tuning_has_hover_info_transaction_and_wide_ranges(
         self, qapp, tmp_path, monkeypatch
@@ -801,7 +1109,7 @@ class TestModelHubWindow:
     def test_construct_sorted_cards_and_four_level_legend(self, qapp, tmp_path):
         from PySide6.QtWidgets import QLabel
 
-        from voxsub.model_catalog import HardwareProfile, ModelMarketplace
+        from voxsub.model_catalog import CATALOG, HardwareProfile, ModelMarketplace
         from voxsub.ui.model_hub_window import ModelHubWindow
 
         profile = HardwareProfile("test cpu", 8, 16, 32.0, "RTX 4060", 8.0, "CUDA")
@@ -812,7 +1120,7 @@ class TestModelHubWindow:
         )
         try:
             assert hub.windowTitle().startswith("模型广场")
-            assert len(hub._cards) == 6  # noqa: SLF001
+            assert len(hub._cards) == len(CATALOG) >= 11  # noqa: SLF001
             scores = [card.model.quality_score for card in hub._cards.values()]  # noqa: SLF001
             assert scores == sorted(scores, reverse=True)
             texts = [label.text() for label in hub.findChildren(QLabel)]
@@ -820,6 +1128,9 @@ class TestModelHubWindow:
                 assert level in texts
             assert hub.source_combo.count() == 3
             assert all(not card.progress.isTextVisible() for card in hub._cards.values())  # noqa: SLF001
+            assert all(isinstance(button, PillChoiceButton)
+                       for button in hub.filter_buttons.values())
+            assert all(button.isCheckable() for button in hub.filter_buttons.values())
         finally:
             hub.close()
             hub.deleteLater()

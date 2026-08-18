@@ -7,17 +7,20 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The current Windows installer is signed with a developer self-signed certificate. Microsoft SmartScreen or antivirus products may show an “unknown publisher” warning, flag the file as risky, or produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The `0.3.9-beta` build environment could not find a local code-signing certificate and the installer may therefore be unsigned. Windows SmartScreen or antivirus products may show an “unknown publisher” warning, flag the file as risky, or produce a false positive. Developer self-signed builds can show similar warnings. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
 
-VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default, with optional cloud translation for higher quality.
+VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Current version: `0.3.3-beta`. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
+Source version: `0.3.9-beta`. The complete installer has been generated, and this remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
+
+> **Known limitation: Intel NPU scheduling is still under development.** This build may detect Intel NPU hardware but cannot yet guarantee that inference actually runs on the NPU; execution may fall back to the GPU or CPU. Do not treat NPU acceleration as supported in this release. Investigation is ongoing.
 
 ## Download
 
-- [GitHub Release v0.3.3-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.3.3-beta)
-- Installer: `VoxSub-Setup-0.3.3-beta.exe`
-- SHA256: `A4C527FCF71D2A916E05F61DC32A5F763ED91328CEF110C0885EDCB5BC14309B`
+- [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
+- Installer: `VoxSub-Setup-0.3.9-beta.exe` (205.15 MiB, unsigned)
+- SHA256: `D500E7045B503C58F13C81ECCA37675205097157F13CB48B088ED089A4182F29` (the matching `.sha256` file has been generated)
+- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.9-beta.exe`
 
 ## Available Features
 
@@ -26,13 +29,17 @@ Current version: `0.3.3-beta`. Testing and feedback are welcome, but please expe
 - **Mode C — Audio/video subtitles:** import MP4, MKV, MOV, MP3, WAV, and other media; the bundled FFmpeg extracts audio automatically and VoxSub exports a matching SRT file.
 - **Model Hub:** browse supported open-source speech-recognition and translation models ordered by quality; download, switch, or uninstall them. Recommendations are labelled Not Recommended, Somewhat Recommended, Recommended, or Full Load based on the computer's CPU, RAM, GPU, and VRAM.
 - **Global and mainland-China download sources:** automatically benchmark and fail over between sources, or manually select Hugging Face/GitHub for global access or ModelScope for mainland China.
-- **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. An accelerator is used only when both the model and runtime genuinely support it; otherwise VoxSub falls back and records the reason in the in-app log.
-- **Built-in diagnostics and live logs:** view logs without opening or locking the log file, and switch DEBUG logging on inside the app.
+- **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. GPU/integrated-GPU fallback is wired in, but Intel NPU scheduling has a known issue and may currently fall back to the GPU or CPU.
+- **Built-in diagnostics and live logs:** view logs without opening or locking the log file, switch DEBUG logging on inside the app, and export logs, reports, and sessions through an in-app save dialog with background writing.
+- **New-device base-model repair:** a bundled Silero VAD is restored to the current user's model directory on first use, so an ASR model downloaded from Model Hub can run without a separate hidden VAD download.
+- **Cloud and hybrid pipelines:** choose STT and translation independently. Cloud STT and cloud translation each have their own API key, BaseURL, and model name, supporting cloud STT plus local translation, local STT plus cloud translation, and a fully cloud-based chain. Cloud STT uploads only VAD-finalized speech segments.
 - **Recognition tuning:** use Automatic, Low Latency, Balanced, or Accuracy presets, or adjust sensitivity, pause-based segmentation, maximum utterance length, decoding candidates, maximum text length, and custom vocabulary over broad ranges. Hover over each `i` icon for a plain-language explanation; changes are saved only when explicitly confirmed.
 - **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. When the overlay is locked, hover over it to adjust the font size or unlock it in place.
-- **Soft Premium UI:** light, dark, and system-following themes. The subtitle overlay supports font-size controls, dragging, locking, and click-through mode, and can also be unlocked from the main window.
+- **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports font-size controls, dragging, locking, and click-through mode, and can be unlocked from its hover control island or Settings.
+- **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
+- **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
 
-The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off. Built-in Zipformer and OPUS models remain available as very-low-resource fallbacks, while higher-quality options include Fun-ASR-Nano, Qwen3-ASR, and Hy-MT2.
+The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off: Fun-ASR-Nano, Qwen3-ASR, SenseVoice Small, and Hy-MT2 1.8B/7B in Q4/Q5/Q8 variants. Built-in Zipformer and OPUS models remain only as very-low-resource fallbacks.
 
 ## Documentation
 

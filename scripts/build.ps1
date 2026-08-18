@@ -9,7 +9,7 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Version = "0.3.3-beta"
+$Version = "0.3.9-beta"
 $LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 
@@ -21,8 +21,9 @@ function Run-Checked([string]$Label, [scriptblock]$Block) {
 
 
 if (-not $SkipTests) {
+    $TestBaseTemp = Join-Path $Root ".pytest-basetemp-build"
     Run-Checked "pytest" {
-        & ".venv\Scripts\python.exe" -m pytest tests/ -q
+        & ".venv\Scripts\python.exe" -m pytest tests/ -q --basetemp $TestBaseTemp
     }
 }
 
@@ -75,6 +76,22 @@ if (-not $SkipPyInstaller) {
 } elseif (-not (Test-Path (Join-Path $Dist "VoxSub.exe"))) {
     throw "-SkipPyInstaller requested but existing dist output is missing"
 }
+
+# Every recognizer, including Marketplace ASR models, needs Silero VAD.  Keep
+# this small shared dependency inside the installer instead of requiring a
+# hidden first-run download that leaves a new machine unable to start.
+$BootstrapVad = Join-Path $Root "assets\bootstrap_models\vad\silero_vad_v5.onnx"
+$BootstrapVadSha256 = "6B99CBFD39246B6706F98EC13C7C50C6B299181F2474FA05CBC8046ACC274396"
+if (-not (Test-Path $BootstrapVad)) {
+    throw "bundled VAD asset missing: $BootstrapVad"
+}
+if ((Get-FileHash -LiteralPath $BootstrapVad -Algorithm SHA256).Hash -ne $BootstrapVadSha256) {
+    throw "bundled VAD asset SHA256 mismatch"
+}
+$BootstrapVadDest = Join-Path $Dist "models_base\vad"
+New-Item -ItemType Directory -Path $BootstrapVadDest -Force | Out-Null
+Copy-Item -LiteralPath $BootstrapVad -Destination (Join-Path $BootstrapVadDest "silero_vad_v5.onnx") -Force
+Write-Host "[build] bundled base VAD -> $BootstrapVadDest" -ForegroundColor Green
 
 # GGUF runtime matrix.  End users receive all three small backends so runtime
 # selection can follow discrete GPU -> Intel NPU -> integrated GPU -> CPU

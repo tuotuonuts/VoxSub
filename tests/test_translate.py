@@ -103,6 +103,30 @@ def test_factory_unknown_kind_raises() -> None:
         TranslatorFactory.create("nope")
 
 
+def test_factory_uses_selected_hy_mt2_quantization(monkeypatch, tmp_path: Path) -> None:
+    import voxsub.model_catalog as catalog
+    import voxsub.translate.factory as factory
+
+    captured: dict[str, object] = {}
+
+    class _Marketplace:
+        def model_file(self, _model):
+            return tmp_path / "Hy-MT2-1.8B-Q8_0.gguf"
+
+    class _QualityTranslator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(catalog, "ModelMarketplace", _Marketplace)
+    monkeypatch.setattr(factory, "QwenQualityTranslator", _QualityTranslator)
+    translator = factory.TranslatorFactory.create(
+        "qwen-quality", {"translate_model_id": "mt-hy-mt2-1.8b-q8"})
+
+    assert isinstance(translator, _QualityTranslator)
+    assert captured["model_path"] == tmp_path / "Hy-MT2-1.8B-Q8_0.gguf"
+    assert captured["prompt_style"] == "hy-mt2"
+
+
 # ---------- cloud (mock 端点) ----------
 
 def _serve_once(handler):
@@ -151,6 +175,48 @@ def test_cloud_translate_via_mock_endpoint() -> None:
     assert out == "Hola 译文"
     assert captured["messages"][-1]["content"] == "你好"   # 用户消息透传
     assert captured["model"] == "deepseek-chat"
+
+
+def test_cloud_translate_uses_separate_translation_credentials(monkeypatch) -> None:
+    from voxsub.translate.cloud import CloudTranslator
+
+    captured: dict[str, object] = {}
+
+    def fake_chat(endpoint, **kwargs):
+        captured["endpoint"] = endpoint
+        captured.update(kwargs)
+        return "译文"
+
+    monkeypatch.setattr("voxsub.translate.cloud.chat_completion", fake_chat)
+    tr = CloudTranslator({
+        "translate_api_key": "translate-key",
+        "translate_base_url": "https://api.deepseek.com",
+        "translate_model": "translate-model",
+        "stt_api_key": "stt-key",
+        "stt_base_url": "https://api.openai.com/v1",
+        "stt_model": "stt-model",
+    })
+
+    assert tr.translate("你好", "zh", "en") == "译文"
+    assert captured["api_key"] == "translate-key"
+    assert captured["model"] == "translate-model"
+    assert str(captured["endpoint"]).endswith("/v1/chat/completions")
+
+
+def test_cloud_translate_default_timeout_is_seconds(monkeypatch) -> None:
+    from voxsub.translate.cloud import CloudTranslator
+
+    captured: dict[str, object] = {}
+
+    def fake_chat(_endpoint, **kwargs):
+        captured["timeout_sec"] = kwargs["timeout_sec"]
+        return "译文"
+
+    monkeypatch.setattr("voxsub.translate.cloud.chat_completion", fake_chat)
+    tr = CloudTranslator({"api_key": "key", "base_url": "https://api.deepseek.com"},
+                         timeout_ms=18_000)
+    assert tr.translate("你好", "zh", "en") == "译文"
+    assert captured["timeout_sec"] == 18.0
 
 
 def test_cloud_whitelist_rejects_unknown_host() -> None:

@@ -4,8 +4,8 @@
 
 ```
                         ┌─ 环形缓冲 ─ 16kHz PCM ─┐
-[audio 采集] 麦克风 ────┤                        ├─▶ [vad 切句] ─▶ [asr 可选识别器]
-             loopback ──┘   (soundcard/WASAPI)   │      (sherpa-vad)   (sherpa zipformer)
+[audio 采集] 麦克风 ────┤                        ├─▶ [vad 切句] ─▶ [本地 ASR / 云 STT]
+             loopback ──┘   (soundcard/WASAPI)   │      (sherpa-vad)   (仅发送完整语音片段)
              ffmpeg 提轨 ────────────────────────┘                        │
                                                                     on_utterance(text)
                                                                           ▼
@@ -25,6 +25,7 @@ voxsub/
   audio/      采集（mic / loopback / 文件提轨），环形缓冲
   vad/        silero 风格 VAD 封装（sherpa 内置模型）
   asr/        sherpa-onnx Zipformer / Fun-ASR-Nano / Qwen3-ASR 适配，句子回调
+  cloud_stt/  OpenAI 兼容 /v1/audio/transcriptions 客户端，WAV 分段上传
   translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
   tts/        piper 合成封装
   router/     设备枚举（CPU/GPU/NPU）+ 按任务实测计分 + 降级链
@@ -135,7 +136,7 @@ class Translator(ABC):
 
 class OpusFastTranslator(Translator):        # 快档: OPUS-MT zh-en/en-zh(Xenova onnx int8 + ORT 手写 seq2seq 循环), 目标 <0.5s/句
 class QwenQualityTranslator(Translator):     # 兼容类名；质量档实际加载模型广场所选 Hy-MT2 GGUF
-class CloudTranslator(Translator):           # 云: OpenAI 兼容端点(DEEPSEEK_API_KEY/BASE_URL 用户配置), 白名单 base_url
+class CloudTranslator(Translator):           # 云: OpenAI 兼容文本模型（独立 translate_* 配置）
 
 class TranslatorFactory:
     @staticmethod
@@ -150,7 +151,7 @@ class TranslatorFactory:
 - **TranslationCache**：LRU，key=(norm_text, src, dst)，上限 2000 条；重复出现的字幕/短句零延迟
 - **失败降级**：单句失败重试 1 次 → 保留原文 + 字幕标记 `[翻译失败]`；连续 3 句失败 → 弹提示（网络/模型问题），不崩管道
 
-### 模型清单（2026-08-17 已核实的 URL）
+### 模型清单（目录版本 2026-08-18）
 
 | 档位 | 模型 | 目标位置 | 大小 | 主源 / 镜像 |
 |---|---|---|---|---|
@@ -158,11 +159,19 @@ class TranslatorFactory:
 | 快档 | OPUS-MT en-zh int8（同构） | models/nmt/opus_en_zh/ | ~90MB | huggingface.co/Xenova/opus-mt-en-zh |
 | 识别高质 | Fun-ASR-Nano 2512 INT8 | models/marketplace/asr-funasr-nano-2512-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope |
 | 识别多语 | Qwen3-ASR 0.6B INT8 | models/marketplace/asr-qwen3-0.6b-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope 分文件镜像 |
-| 翻译均衡 | Hy-MT2 1.8B Q4_K_M GGUF | models/marketplace/mt-hy-mt2-1.8b-q4/ | ~1.13GB | Hugging Face / ModelScope |
-| 翻译高质 | Hy-MT2 7B Q4_K_M GGUF | models/marketplace/mt-hy-mt2-7b-q4/ | ~4.62GB | Hugging Face / ModelScope |
+| 识别轻量多语 | SenseVoice Small INT8 | models/marketplace/asr-sensevoice-small-int8/ | ~245MB | GitHub sherpa-onnx / ModelScope |
+| 翻译均衡 | Hy-MT2 1.8B Q4/Q5/Q8 GGUF | models/marketplace/mt-hy-mt2-1.8b-q*/ | ~1.13–1.94GB | Hugging Face / ModelScope |
+| 翻译高质 | Hy-MT2 7B Q4/Q5/Q8 GGUF | models/marketplace/mt-hy-mt2-7b-q*/ | ~4.62–7.65GB | Hugging Face / ModelScope |
 | 云 | 用户 OpenAI 兼容端点 | — | — | 用户配置 |
 
 注：目录按任务内质量分排序，不追求“列得多”。旧模型只有在显著更低资源/延迟下仍不可替代时才作为内置兜底保留。下载源支持自动测速故障切换和手动选择；安装过程使用断点续传、SHA256 与安全解压。
+
+### 云 STT 与混合模式
+
+- `CloudSTT` 使用 OpenAI 兼容的 `POST /v1/audio/transcriptions`。音频采集、VAD 与分句始终留在本机；仅把 VAD 已结束的 16 kHz WAV 片段上传，采集线程不等待网络。
+- STT 与翻译的 API Key、BaseURL 和模型名完全独立：`stt_api_key` / `stt_base_url` / `stt_model` 和 `translate_api_key` / `translate_base_url` / `translate_model`。旧版单一 `api_key` / `base_url` / `model` 自动迁移到翻译侧。
+- 设置页可自由组合四条实际链路：本地 STT + 本地翻译、云 STT + 本地翻译、本地 STT + 云翻译、云 STT + 云翻译。本地翻译包括 OPUS 快档和模型广场质量档。
+- 两类云端点均限制为 HTTPS/HTTP 和受信任的 OpenAI 兼容服务白名单；日志只记录主机和模型名，不记录 API Key 或完整请求体。
 
 ## TTS 契约（M5）
 
@@ -186,12 +195,14 @@ class Pipeline:
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def set_mode(self, mode: str) -> None: ...
+    def set_stt(self, provider: str, config: dict) -> None: ...
+    def set_translator(self, kind: str, config: dict) -> None: ...
     def on_utterance(self, cb: Callable[[str, str], None]) -> None: ...  # (原文, 译文)
     def on_status(self, cb: Callable[[str], None]) -> None: ...          # 状态文本
     def is_running(self) -> bool: ...
 ```
 
-扩展配置入口：`set_langs`、`set_input_file`、`set_audio_devices`、`set_capture_process`、`set_translator`。所有工作线程回调必须经 Qt Signal 桥接到主线程；音频源 `start()` 失败也必须回收运行态并发出可读状态，禁止静默线程退出。
+扩展配置入口：`set_langs`、`set_input_file`、`set_audio_devices`、`set_capture_process`、`set_stt`、`set_translator`。STT 和翻译分别构建，任一侧切换都不得重用另一侧凭据。所有工作线程回调必须经 Qt Signal 桥接到主线程；音频源 `start()` 失败也必须回收运行态并发出可读状态，禁止静默线程退出。
 
 ## Pipeline 编排设计（M6）
 
@@ -209,9 +220,9 @@ class Pipeline:
 
 | 模式 | 输入 | 处理 |
 |---|---|---|
-| A 麦克风同传 | MicSource | 实时 segmenter → 翻译 → 可选 TTS → 字幕 |
+| A 麦克风同传 | MicSource | 本地 ASR 或云 STT 分句识别 → 独立选择本地/云翻译 → 可选 TTS → 字幕 |
 | B 系统声音字幕 | LoopbackSource | 同上（输入源不同，管线同一）|
-| C 文件字幕 | ffmpeg 提轨 → 16k wav | **离线识别**（sherpa OfflineRecognizer，1.13.5 提供，天然带词级时间戳）→ 分句 → 批量翻译（可并发 4 路）→ 导出 srt/vtt/纯文本；进度回调 on_progress(pct) |
+| C 文件字幕 | ffmpeg 提轨 → 16k wav | 本地离线 ASR，或按本地 VAD 分段上传云 STT → 独立选择本地/云翻译 → 导出 srt/vtt/纯文本 |
 
 ### C 模式导出格式
 
@@ -269,12 +280,19 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 - 间距：4px 基准刻度；卡片内 padding 20-28px；节距大（py-24 级）
 - 动效：QEasingCurve.OutCubic，时长 200-280ms（**>500ms 禁用**）；仅 animate opacity/pos
 - 图标：QFluentWidgets FluentIcons（禁 emoji 图标）
+- 选择控件：单选统一使用 `RoundRadioButton` 自绘圆环 + 圆心；二值设置使用圆角 `ToggleSwitch`；紧凑筛选使用胶囊 `PillChoiceButton`。禁止新增裸 `QRadioButton` / `QCheckBox` 进入业务界面，避免 Windows 原生选中态改变几何形状。
+
+### UI 语言契约
+- 应用 UI 当前支持简体中文与 English；配置默认值为 `system`，启动时按 Windows/Qt 界面语言解析。用户可在“设置 → 外观 → 语言”改为固定简体中文或 English，所有已打开窗口即时刷新。
+- 所有用户可见的静态文案必须由 `voxsub/ui/i18n.py` 的 `tr()` 或集中词条生成；动态摘要必须保留源数据，并在语言改变时重新生成。不得把已经翻译出的字符串当作唯一状态保存。
+- 字幕正文、设备的真实名称、文件名、日志内容和模型返回内容属于用户/系统数据，不得为了界面本地化而改写。
+- **每次 UI 迭代都必须同步补齐全部已支持语言的文案，并扩展中英切换回归测试覆盖受影响窗口；未完成双语核验不得作为 UI 完成。**
 
 ### 组件清单（M7 验收依据）
 1. **主窗**：编辑式左右分栏（左=模式三卡片 A/B/C + 语言对 + 状态灯；右=实时字幕流列表）；底部胶囊 CTA 在普通同传为“开始/停止”，录音同传为“开始/暂停/继续”，另提供“结束并保存”
 2. **字幕浮窗**：无边框置顶半透明；Double-Bezel 双层壳；双语两行（原文+译文）可选中复制；可拖动；悬停字号 -/+/锁定/关闭；锁定后鼠标穿透、主窗解锁；透明度可调；历史滚动
 3. **托盘**：模式快捷切换、开机自启开关（QStandardPaths 启动项）、退出
-4. **设置页**（独立窗口）：翻译档位（快档/质量档/云 API key）、识别调优预设与自定义参数、TTS 开关、麦克风/系统输出端点、应用进程隔离目标、主题三档。每个识别调优项必须附带鼠标悬停即显示的 `i` 通俗说明；调优参数使用保存/放弃事务，关窗不得隐式保存
+4. **设置页**（主窗内置二级页面）：本地/云 STT 与本地快档/质量档/云翻译独立选择；云 STT 和云翻译分别配置模型、Key、BaseURL，并展示当前本地/云/混合组合；另含识别调优预设与自定义参数、TTS 开关、麦克风/系统输出端点、应用进程隔离目标、主题三档。单选与开关必须使用公共选择控件；每个识别调优项必须附带鼠标悬停即显示的 `i` 通俗说明；调优参数使用保存/放弃事务，返回主页面不得隐式保存
 5. **诊断页**：自检结果卡（✅/⚠️/❌ + 一句话处置）、应用内实时日志、运行时 DEBUG 开关、报告/日志导出
 
 ### 状态全覆盖（每组件）
@@ -292,5 +310,5 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 
 - 推理全部经 onnxruntime，CPU 为兜底执行提供器；DirectML 为加速层（自动枚举 GPU/NPU）
 - "说一句翻一句"句子级节奏，非逐词；翻译预取使感知延迟 ≈ 识别延迟 + 400ms
-- 云翻译仅允许用户显式配置的 OpenAI 兼容端点，key 存本地 config
+- 云 STT 与云翻译仅允许用户显式配置的 OpenAI 兼容端点，凭据分开保存在本地 config；云 STT 只上传已完成的语音片段
 - 默认音频仅存在于内存流水线；只有用户明确打开同传录音时才本地落盘（C 模式仅处理用户主动导入的文件）

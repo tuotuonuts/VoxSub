@@ -21,6 +21,7 @@ from PySide6.QtGui import QAction, QActionGroup, QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from voxsub.ui.main_window import MODE_INFO, MODE_ORDER
+from voxsub.ui.i18n import language_manager, retranslate_widget_tree, tr
 
 
 class TrayIcon(QSystemTrayIcon):
@@ -39,10 +40,12 @@ class TrayIcon(QSystemTrayIcon):
         self._running = False
 
         menu = QMenu()
+        self._menu = menu
         # -- 模式子菜单（单选）--
         self.mode_group = QActionGroup(menu)
         self.mode_actions: dict[str, QAction] = {}
-        mode_menu = menu.addMenu("模式")
+        mode_menu = menu.addMenu(tr("模式"))
+        self._mode_menu = mode_menu
         for m in MODE_ORDER:
             info = MODE_INFO[m]
             act = QAction(f"{info['badge']}  {info['title']}", mode_menu, checkable=True)
@@ -58,25 +61,31 @@ class TrayIcon(QSystemTrayIcon):
         self.toggle_action.triggered.connect(self.toggle_run_requested.emit)
         menu.addAction(self.toggle_action)
 
-        show_action = QAction("显示主窗", menu)
+        show_action = QAction(tr("显示主窗"), menu)
+        self._show_action = show_action
         show_action.triggered.connect(self.show_main_requested.emit)
         menu.addAction(show_action)
 
-        settings_action = QAction("设置", menu)
+        settings_action = QAction(tr("设置"), menu)
+        self._settings_action = settings_action
         settings_action.triggered.connect(self.settings_requested.emit)
         menu.addAction(settings_action)
 
-        diagnostics_action = QAction("诊断与实时日志", menu)
+        diagnostics_action = QAction(tr("诊断与实时日志"), menu)
+        self._diagnostics_action = diagnostics_action
         diagnostics_action.triggered.connect(self.diagnostics_requested.emit)
         menu.addAction(diagnostics_action)
 
         menu.addSeparator()
-        quit_action = QAction("退出", menu)
+        quit_action = QAction(tr("退出"), menu)
+        self._quit_action = quit_action
         quit_action.triggered.connect(self.quit_requested.emit)
         menu.addAction(quit_action)
         self.setContextMenu(menu)
 
         self.activated.connect(self._on_activated)
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
 
     # -- 状态同步（主窗 / app.py 回调入口）---------------------------------
     def set_mode_state(self, mode: str) -> None:
@@ -87,7 +96,20 @@ class TrayIcon(QSystemTrayIcon):
 
     def set_running_state(self, running: bool) -> None:
         self._running = bool(running)
-        self.toggle_action.setText("停止" if running else "开始")
+        self.toggle_action.setText(tr("停止") if running else tr("开始"))
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        self.setToolTip(tr("语幕 VoxSub"))
+        self._mode_menu.setTitle(tr("模式"))
+        for mode, action in self.mode_actions.items():
+            info = MODE_INFO[mode]
+            action.setText(f"{info['badge']}  {tr(info['title'])}")
+        self._show_action.setText(tr("显示主窗"))
+        self._settings_action.setText(tr("设置"))
+        self._diagnostics_action.setText(tr("诊断与实时日志"))
+        self._quit_action.setText(tr("退出"))
+        self.toggle_action.setText(tr("停止") if self._running else tr("开始"))
 
     # -- 内部 ---------------------------------------------------------------
     def _on_mode_picked(self, action: QAction) -> None:

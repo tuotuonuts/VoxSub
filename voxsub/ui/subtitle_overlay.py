@@ -3,7 +3,7 @@
 - 主壳 Double-Bezel 双层：外壳圆角 32px + ring 描边 + 内芯圆角 24px inset 高光
   （DESIGN.md 圆角分级 / 自绘 QPainter 实现，透明背景由 WA_TranslucentBackground 承载）
 - 悬停显示精简工具条：字号 - / + / 锁定穿透 / 关闭；锁定时由
-  独立的悬停控制条保留字号和解锁入口，其余区域仍可鼠标穿透
+  独立的悬停控制条只保留解锁入口，其余区域仍可鼠标穿透
 - 右键菜单：字号 + / 字号 - / 字色（白·teal·黑）/ 透明度滑条 / 关闭浮窗
 - 历史：内存 deque(maxlen=200) 滚动，滚轮翻看历史（不改写队列）
 - 新句入场：240ms OutCubic 透明度脉冲（动效阈值内）
@@ -16,6 +16,7 @@ from collections import deque
 from PySide6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
+    QRect,
     Signal,
     Qt,
     QTimer,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.ui.config_store import ConfigStore
+from voxsub.ui.i18n import language_manager, retranslate_widget_tree, tr
 from voxsub.ui.theme import DESIGN_TOKENS
 from voxsub.logging_setup import get_logger
 
@@ -41,6 +43,9 @@ logger = get_logger("ui.subtitle_overlay")
 
 # 历史上限（内存滚动，不落盘 —— DESIGN.md：字幕历史不做自动落盘）
 _HISTORY_MAX = 200
+_MIN_WIDTH = 360
+_MIN_HEIGHT = 132
+_RESIZE_MARGIN = 12
 
 
 class _LockedHoverPanel(QWidget):
@@ -65,45 +70,28 @@ class _LockedHoverPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.setStyleSheet(
-            "QWidget#overlayLockedPanel { background: rgba(10,10,10,238);"
-            " border: 1px solid rgba(255,255,255,45); border-radius: 17px; }"
-            "QToolButton { color: #F3F4F6; background: transparent; border: none;"
-            " min-width: 0px; min-height: 0px; border-radius: 10px;"
-            " font-weight: 650; padding: 3px 7px; }"
-            "QToolButton:hover { color: #14B8A6; background: rgba(20,184,166,38); }"
-            "QLabel { color: #9CA3AF; background: transparent; }"
-        )
         row = QHBoxLayout(self)
         row.setContentsMargins(7, 4, 7, 4)
         row.setSpacing(2)
 
-        self.font_down = self._button("A−", "减小字号", 76)
-        self.font_value = QLabel(str(overlay.font_size()), self)
-        self.font_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.font_value.setFixedWidth(28)
-        self.font_up = self._button("A+", "增大字号", 76)
         self.unlock = self._button("解锁", "解锁浮窗，恢复拖动和文字选择", 80)
-        self.font_down.clicked.connect(lambda: overlay.change_font_size(-2))
-        self.font_up.clicked.connect(lambda: overlay.change_font_size(+2))
         self.unlock.clicked.connect(lambda: overlay.set_click_through(False))
-        for widget in (self.font_down, self.font_value, self.font_up, self.unlock):
-            row.addWidget(widget)
-        # QWindowsStyle reports a 71px text-button size hint even for A−/A+.
-        # Respect that native metric instead of forcing the old clipped 40px.
-        self.setFixedSize(288, 36)
+        row.addWidget(self.unlock)
+        self.setFixedSize(100, 36)
         self.hide()
+        language_manager.language_changed.connect(self._on_language_changed)
+        self._on_language_changed(language_manager.language)
 
     def _button(self, text: str, tooltip: str, width: int) -> QToolButton:
         button = QToolButton(self)
-        button.setText(text)
-        button.setToolTip(tooltip)
+        button.setText(tr(text))
+        button.setToolTip(tr(tooltip))
         button.setFixedSize(width, 28)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
 
-    def refresh_font_size(self, value: int) -> None:
-        self.font_value.setText(str(value))
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
 
 
 class SubtitleOverlay(QWidget):
@@ -129,7 +117,11 @@ class SubtitleOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setObjectName("subtitleOverlay")
-        self.resize(560, 168)
+        self.setMinimumSize(_MIN_WIDTH, _MIN_HEIGHT)
+        saved_width = max(_MIN_WIDTH, int(self._store.get("overlay_width", 560)))
+        saved_height = max(_MIN_HEIGHT, int(self._store.get("overlay_height", 168)))
+        self.resize(saved_width, saved_height)
+        self.setMouseTracking(True)
 
         # 状态
         self._font_size = int(self._store.get("overlay_font_size", 20))
@@ -137,6 +129,10 @@ class SubtitleOverlay(QWidget):
         self._text_color = "#F2F2F2"  # 字色（右键菜单可改）
         self._click_through = bool(self._store.get("overlay_click_through", False))
         self._drag_offset = None
+        self._resize_edges: tuple[bool, bool, bool, bool] | None = None
+        self._resize_start_geometry: QRect | None = None
+        self._resize_start_pos = None
+        self._manual_size = bool(self._store.get("overlay_size_customized", False))
         self._wheel_locked = False
         self._history: deque[tuple[str, str]] = deque(maxlen=_HISTORY_MAX)
         self._history_pos = 0
@@ -156,6 +152,7 @@ class SubtitleOverlay(QWidget):
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.src_label.setCursor(Qt.CursorShape.IBeamCursor)
+        self.src_label.setMouseTracking(True)
         self.dst_label = QLabel("", self)
         self.dst_label.setObjectName("overlayDst")
         self.dst_label.setWordWrap(True)
@@ -165,11 +162,13 @@ class SubtitleOverlay(QWidget):
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.dst_label.setCursor(Qt.CursorShape.IBeamCursor)
+        self.dst_label.setMouseTracking(True)
         self._box.addWidget(self.src_label)
         self._box.addWidget(self.dst_label)
         self._apply_typography()
         self._build_hover_toolbar()
         self._locked_panel = _LockedHoverPanel(self)
+        language_manager.language_changed.connect(self._on_language_changed)
         self._locked_hover_timer = QTimer(self)
         self._locked_hover_timer.setInterval(90)
         self._locked_hover_timer.timeout.connect(self._poll_locked_hover)
@@ -194,21 +193,13 @@ class SubtitleOverlay(QWidget):
         """NetEase-style compact controls shown only while the overlay is hovered."""
         self._toolbar = QFrame(self)
         self._toolbar.setObjectName("overlayToolbar")
-        self._toolbar.setStyleSheet(
-            "QFrame#overlayToolbar { background: rgba(12,12,12,235);"
-            " border: 1px solid rgba(255,255,255,35); border-radius: 14px; }"
-            "QToolButton { color: #E5E7EB; background: transparent; border: none;"
-            " min-width: 0px; min-height: 0px; border-radius: 9px;"
-            " padding: 2px 6px; font-weight: 650; }"
-            "QToolButton:hover { color: #14B8A6; background: rgba(20,184,166,32); }"
-            "QLabel { color: #9CA3AF; background: transparent; }"
-        )
         row = QHBoxLayout(self._toolbar)
         row.setContentsMargins(7, 4, 7, 4)
         row.setSpacing(2)
         self._font_down_btn = QToolButton(self._toolbar)
         self._font_down_btn.setObjectName("overlayFontDown")
         self._font_value_label = QLabel(str(self._font_size), self._toolbar)
+        self._font_value_label.setObjectName("overlayFontValue")
         self._font_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._font_value_label.setFixedWidth(28)
         self._font_up_btn = QToolButton(self._toolbar)
@@ -227,13 +218,17 @@ class SubtitleOverlay(QWidget):
         for button, text, tip, action, width in controls:
             if button is not self._font_down_btn:
                 row.addWidget(button)
-            button.setText(text)
+            button.setText(tr(text))
             button.setFixedSize(width, 28)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setToolTip(tip)
+            button.setToolTip(tr(tip))
             button.clicked.connect(action)
         self._toolbar.adjustSize()
         self._toolbar.hide()
+
+    def _on_language_changed(self, _language: str) -> None:
+        retranslate_widget_tree(self)
+        self._locked_panel._on_language_changed(_language)
 
     def font_size(self) -> int:
         return self._font_size
@@ -333,10 +328,10 @@ class SubtitleOverlay(QWidget):
         self._pulse.start()
         QTimer.singleShot(0, self._fit_height_to_text)
 
-    def set_partial(self, src: str, dst: str = "识别中…") -> None:
+    def set_partial(self, src: str, dst: str | None = None) -> None:
         """Update temporary text without polluting the scroll-back history."""
         self.src_label.setText(src)
-        self.dst_label.setText(dst)
+        self.dst_label.setText(dst if dst is not None else tr("识别中…"))
         QTimer.singleShot(0, self._fit_height_to_text)
 
     def show_subtitles(self, src: str = "", dst: str = "") -> None:
@@ -349,10 +344,9 @@ class SubtitleOverlay(QWidget):
     # 字号 / 字色 / 透明度
     # ------------------------------------------------------------------
     def change_font_size(self, delta: int) -> None:
-        self._font_size = max(14, min(36, self._font_size + delta))
+        self._font_size = max(10, min(72, self._font_size + delta))
         self._store.set("overlay_font_size", self._font_size)
         self._font_value_label.setText(str(self._font_size))
-        self._locked_panel.refresh_font_size(self._font_size)
         self._apply_typography()
         QTimer.singleShot(0, self._fit_height_to_text)
 
@@ -367,7 +361,7 @@ class SubtitleOverlay(QWidget):
 
     def _apply_typography(self) -> None:
         t = DESIGN_TOKENS["dark"]
-        src_size = max(11, self._font_size - 4)
+        src_size = max(8, self._font_size - 4)
         # The application stylesheet defines QWidget { font-size: 14px; }.
         # A bare setFont() is overridden by that QSS rule, which previously made
         # the counter change while the rendered subtitle stayed at 14px.  Give
@@ -385,7 +379,13 @@ class SubtitleOverlay(QWidget):
 
     def _fit_height_to_text(self) -> None:
         self._box.activate()
-        desired = max(132, min(360, self.sizeHint().height() + 8))
+        desired = max(_MIN_HEIGHT, min(600, self.sizeHint().height() + 8))
+        if self._manual_size:
+            # Keep a user-selected height stable, but grow when a larger font
+            # would otherwise be clipped.
+            if desired > self.height():
+                self.resize(self.width(), desired)
+            return
         if abs(self.height() - desired) >= 2:
             self.resize(self.width(), desired)
 
@@ -456,23 +456,99 @@ class SubtitleOverlay(QWidget):
         p.end()
 
     # ------------------------------------------------------------------
-    # 拖动（锁定时由原生窗口标志实现鼠标穿透）
+    # 拖动与自由调整大小（锁定时由原生窗口标志实现鼠标穿透）
     # ------------------------------------------------------------------
+    def _resize_edges_for_pos(self, pos) -> tuple[bool, bool, bool, bool] | None:
+        x, y = pos.x(), pos.y()
+        margin = _RESIZE_MARGIN
+        left = 0 <= x <= margin
+        right = self.width() - margin <= x < self.width()
+        top = 0 <= y <= margin
+        bottom = self.height() - margin <= y < self.height()
+        return (left, right, top, bottom) if left or right or top or bottom else None
+
+    @staticmethod
+    def _resize_cursor(edges: tuple[bool, bool, bool, bool] | None):
+        if edges is None:
+            return Qt.CursorShape.ArrowCursor
+        left, right, top, bottom = edges
+        if (left and top) or (right and bottom):
+            return Qt.CursorShape.SizeFDiagCursor
+        if (right and top) or (left and bottom):
+            return Qt.CursorShape.SizeBDiagCursor
+        if left or right:
+            return Qt.CursorShape.SizeHorCursor
+        return Qt.CursorShape.SizeVerCursor
+
+    def _persist_size(self) -> None:
+        self._store.update({
+            "overlay_width": self.width(),
+            "overlay_height": self.height(),
+            "overlay_size_customized": True,
+        })
+
+    def _resize_from_global(self, global_pos) -> None:
+        if self._resize_start_geometry is None or self._resize_edges is None:
+            return
+        start = self._resize_start_geometry
+        delta = global_pos - self._resize_start_pos
+        left, right, top, bottom = self._resize_edges
+        x, y, width, height = start.left(), start.top(), start.width(), start.height()
+        if left:
+            x += delta.x()
+            width -= delta.x()
+        elif right:
+            width += delta.x()
+        if top:
+            y += delta.y()
+            height -= delta.y()
+        elif bottom:
+            height += delta.y()
+        if width < _MIN_WIDTH:
+            if left:
+                x = start.right() - _MIN_WIDTH + 1
+            width = _MIN_WIDTH
+        if height < _MIN_HEIGHT:
+            if top:
+                y = start.bottom() - _MIN_HEIGHT + 1
+            height = _MIN_HEIGHT
+        self.setGeometry(QRect(x, y, width, height))
+
     def mousePressEvent(self, ev) -> None:  # noqa: N802
         if ev.button() == Qt.MouseButton.LeftButton and not self._click_through:
+            edges = self._resize_edges_for_pos(ev.position().toPoint())
+            if edges is not None:
+                self._manual_size = True
+                self._resize_edges = edges
+                self._resize_start_geometry = self.frameGeometry()
+                self._resize_start_pos = ev.globalPosition().toPoint()
+                ev.accept()
+                return
             self._drag_offset = ev.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev) -> None:  # noqa: N802
-        if (
-            not self._click_through
-            and self._drag_offset is not None
-            and ev.buttons() & Qt.MouseButton.LeftButton
-        ):
+        if self._resize_edges is not None and ev.buttons() & Qt.MouseButton.LeftButton:
+            self._resize_from_global(ev.globalPosition().toPoint())
+            ev.accept()
+            return
+        if (not self._click_through and self._drag_offset is not None
+                and ev.buttons() & Qt.MouseButton.LeftButton):
             self.move(ev.globalPosition().toPoint() - self._drag_offset)
+        elif not self._click_through:
+            self.setCursor(self._resize_cursor(
+                self._resize_edges_for_pos(ev.position().toPoint())))
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev) -> None:  # noqa: N802
+        if self._resize_edges is not None:
+            self._persist_size()
+            self._resize_edges = None
+            self._resize_start_geometry = None
+            self._resize_start_pos = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            ev.accept()
+            return
         self._drag_offset = None
         super().mouseReleaseEvent(ev)
 
@@ -485,13 +561,13 @@ class SubtitleOverlay(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(self._menu_qss())
 
-        menu.addAction("字号 +", lambda: self.change_font_size(+2))
-        menu.addAction("字号 -", lambda: self.change_font_size(-2))
-        menu.addAction("锁定并允许点击穿透", lambda: self.set_click_through(True))
-        color_menu = menu.addMenu("字色")
-        color_menu.addAction("白", lambda: self.set_text_color("#F2F2F2"))
-        color_menu.addAction("青绿", lambda: self.set_text_color("#14B8A6"))
-        color_menu.addAction("黑", lambda: self.set_text_color("#1A1A1A"))
+        menu.addAction(tr("字号 +"), lambda: self.change_font_size(+2))
+        menu.addAction(tr("字号 -"), lambda: self.change_font_size(-2))
+        menu.addAction(tr("锁定并允许点击穿透"), lambda: self.set_click_through(True))
+        color_menu = menu.addMenu(tr("字色"))
+        color_menu.addAction(tr("白"), lambda: self.set_text_color("#F2F2F2"))
+        color_menu.addAction(tr("青绿"), lambda: self.set_text_color("#14B8A6"))
+        color_menu.addAction(tr("黑"), lambda: self.set_text_color("#1A1A1A"))
         color_menu.setStyleSheet(self._menu_qss())
 
         # 透明度滑条（QMenu 内嵌 widget action）
@@ -501,7 +577,7 @@ class SubtitleOverlay(QWidget):
         lay = QVBoxLayout(holder)
         lay.setContentsMargins(12, 8, 12, 8)
         lay.setSpacing(4)
-        cap = QLabel(f"透明度 {int(self._opacity * 100)}%", holder)
+        cap = QLabel(f"{tr('透明度')} {int(self._opacity * 100)}%", holder)
         cap.setObjectName("trayTipLabel")
         cap.setStyleSheet("color: #9CA3AF; font-size: 12px;")
         slider = QSlider(Qt.Orientation.Horizontal, holder)
@@ -510,7 +586,7 @@ class SubtitleOverlay(QWidget):
 
         def _on_slide(v: int) -> None:
             self.set_overlay_opacity(v / 100)
-            cap.setText(f"透明度 {v}%")
+            cap.setText(f"{tr('透明度')} {v}%")
 
         slider.valueChanged.connect(_on_slide)
         lay.addWidget(cap)
@@ -519,7 +595,7 @@ class SubtitleOverlay(QWidget):
         menu.addAction(slider_action)
 
         menu.addSeparator()
-        menu.addAction("关闭浮窗", self.hide)
+        menu.addAction(tr("关闭浮窗"), self.hide)
         menu.exec(ev.globalPos())
 
     def _menu_qss(self) -> str:

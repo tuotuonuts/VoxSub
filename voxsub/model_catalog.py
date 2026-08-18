@@ -21,7 +21,7 @@ from urllib import request as urlrequest
 
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import HardwareProfile, detect_hardware
-from voxsub.models import DownloadCancelled, fetch_file
+from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 
 logger = get_logger("model_catalog")
 
@@ -67,6 +67,7 @@ class ModelSpec:
     installed_bytes: int
     install_rel: str
     required_paths: tuple[str, ...]
+    required_patterns: tuple[str, ...] = ()
     sources: tuple[ModelSource, ...] = ()
     asset_name: str = ""
     sha256: str = ""
@@ -89,6 +90,31 @@ _GH_ASR = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
 _MS_ASR = "https://modelscope.cn/models/csukuangfj/asr-models/resolve/master"
 _HF = "https://huggingface.co"
 _MS = "https://modelscope.cn"
+_HF_MIRROR = "https://hf-mirror.com"
+
+
+def _opus_remote_files(language_pair: str, base_url: str) -> tuple[RemoteFile, ...]:
+    """Return the exact files needed by one Xenova OPUS direction.
+
+    The upstream repository keeps ONNX weights under ``onnx/`` while VoxSub
+    stores the four runtime files directly under ``models/nmt/opus_*``.
+    """
+    prefix = f"opus_{language_pair.replace('-', '_')}"
+    repo = f"opus-mt-{language_pair}"
+    files = (
+        ("onnx/encoder_model_int8.onnx", "encoder_model_int8.onnx"),
+        ("onnx/decoder_model_int8.onnx", "decoder_model_int8.onnx"),
+        ("config.json", "config.json"),
+        ("tokenizer.json", "tokenizer.json"),
+    )
+    return tuple(
+        RemoteFile(
+            f"{base_url}/Xenova/{repo}/resolve/main/{remote}?download=true",
+            f"{prefix}/{local}",
+            0,
+        )
+        for remote, local in files
+    )
 
 
 CATALOG: tuple[ModelSpec, ...] = (
@@ -183,6 +209,36 @@ CATALOG: tuple[ModelSpec, ...] = (
         tags=("多语种", "方言", "混合语言", "2026"),
     ),
     ModelSpec(
+        id="asr-sensevoice-small-int8",
+        task="asr",
+        name="SenseVoice Small · INT8",
+        vendor="FunAudioLLM / sherpa-onnx",
+        release="2024-07-17",
+        description="轻量多语种识别，覆盖中文、粤语、英语、日语和韩语；适合更重视响应速度的轻薄本。",
+        runtime="sherpa-sense-voice",
+        quality_score=88,
+        languages="中文 / 粤语 / 英语 / 日语 / 韩语",
+        license="Apache-2.0",
+        download_bytes=245_000_000,
+        installed_bytes=270_000_000,
+        install_rel="marketplace/asr-sensevoice-small-int8",
+        required_paths=("model.int8.onnx", "tokens.txt"),
+        sources=(
+            ModelSource("global", "GitHub 全球源",
+                        f"{_GH_ASR}/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+                        "https://github.com/favicon.ico"),
+            ModelSource("china", "ModelScope 中国源",
+                        f"{_MS_ASR}/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+                        "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+        archive=True,
+        min_ram_gb=4.0,
+        working_ram_gb=0.85,
+        compute_cost=38,
+        tags=("低资源", "粤语", "多语种", "响应快"),
+    ),
+    ModelSpec(
         id="asr-zipformer-bilingual-fast",
         task="asr",
         name="Zipformer 中英双语 · 极速兼容",
@@ -197,6 +253,21 @@ CATALOG: tuple[ModelSpec, ...] = (
         installed_bytes=150_000_000,
         install_rel="asr",
         required_paths=("tokens.txt",),
+        required_patterns=("*encoder*.onnx", "*decoder*.onnx", "*joiner*.onnx"),
+        sources=(
+            ModelSource(
+                "global", "GitHub 全球源",
+                f"{_GH_ASR}/sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
+                "https://github.com/favicon.ico",
+            ),
+            ModelSource(
+                "china", "ModelScope 中国源",
+                f"{_MS_ASR}/sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
+                "https://modelscope.cn/favicon.ico",
+            ),
+        ),
+        asset_name="sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
+        archive=True,
         builtin=True,
         min_ram_gb=4.0,
         working_ram_gb=0.45,
@@ -237,6 +308,68 @@ CATALOG: tuple[ModelSpec, ...] = (
         tags=("最高质量", "复杂语境", "2026"),
     ),
     ModelSpec(
+        id="mt-hy-mt2-7b-q5",
+        task="translate",
+        name="Hy-MT2 7B · Q5_K_M",
+        vendor="Tencent Hunyuan",
+        release="2026-05-21",
+        description="保留 7B 的复杂语境与术语优势，同时比 Q8 更适合高性能游戏本和主流独显。",
+        runtime="llama-hy-mt2",
+        quality_score=100,
+        languages="33 种语言",
+        license="Apache-2.0",
+        download_bytes=5_360_000_000,
+        installed_bytes=5_360_000_000,
+        install_rel="marketplace/mt-hy-mt2-7b-q5",
+        required_paths=("Hy-MT2-7B-Q5_K_M.gguf",),
+        sources=(
+            ModelSource("global", "Hugging Face 全球源",
+                        f"{_HF}/tencent/Hy-MT2-7B-GGUF/resolve/main/Hy-MT2-7B-Q5_K_M.gguf?download=true",
+                        "https://huggingface.co/favicon.ico"),
+            ModelSource("china", "ModelScope 中国源",
+                        f"{_MS}/models/Tencent-Hunyuan/Hy-MT2-7B-GGUF/resolve/master/Hy-MT2-7B-Q5_K_M.gguf",
+                        "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="Hy-MT2-7B-Q5_K_M.gguf",
+        min_ram_gb=14.0,
+        working_ram_gb=7.2,
+        compute_cost=174,
+        npu_supported=True,
+        igpu_supported=True,
+        tags=("高质量", "术语", "高性能设备", "Q5"),
+    ),
+    ModelSpec(
+        id="mt-hy-mt2-7b-q8",
+        task="translate",
+        name="Hy-MT2 7B · Q8_0",
+        vendor="Tencent Hunyuan",
+        release="2026-05-21",
+        description="7B 的高保真量化档，优先保留术语和复杂句质量；只适合内存、显存充裕的电脑。",
+        runtime="llama-hy-mt2",
+        quality_score=100,
+        languages="33 种语言",
+        license="Apache-2.0",
+        download_bytes=7_650_000_000,
+        installed_bytes=7_650_000_000,
+        install_rel="marketplace/mt-hy-mt2-7b-q8",
+        required_paths=("Hy-MT2-7B-Q8_0.gguf",),
+        sources=(
+            ModelSource("global", "Hugging Face 全球源",
+                        f"{_HF}/tencent/Hy-MT2-7B-GGUF/resolve/main/Hy-MT2-7B-Q8_0.gguf?download=true",
+                        "https://huggingface.co/favicon.ico"),
+            ModelSource("china", "ModelScope 中国源",
+                        f"{_MS}/models/Tencent-Hunyuan/Hy-MT2-7B-GGUF/resolve/master/Hy-MT2-7B-Q8_0.gguf",
+                        "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="Hy-MT2-7B-Q8_0.gguf",
+        min_ram_gb=18.0,
+        working_ram_gb=9.7,
+        compute_cost=190,
+        npu_supported=True,
+        igpu_supported=True,
+        tags=("高保真", "术语", "满载级", "Q8"),
+    ),
+    ModelSpec(
         id="mt-hy-mt2-1.8b-q4",
         task="translate",
         name="Hy-MT2 1.8B · Q4_K_M",
@@ -269,6 +402,68 @@ CATALOG: tuple[ModelSpec, ...] = (
         tags=("平衡", "端侧", "33 语言", "2026"),
     ),
     ModelSpec(
+        id="mt-hy-mt2-1.8b-q5",
+        task="translate",
+        name="Hy-MT2 1.8B · Q5_K_M",
+        vendor="Tencent Hunyuan",
+        release="2026-05-21",
+        description="端侧翻译的均衡高保真档，比 Q4 多占少量内存，适合希望进一步减少量化损失的用户。",
+        runtime="llama-hy-mt2",
+        quality_score=96,
+        languages="33 种语言",
+        license="Apache-2.0",
+        download_bytes=1_330_000_000,
+        installed_bytes=1_330_000_000,
+        install_rel="marketplace/mt-hy-mt2-1.8b-q5",
+        required_paths=("Hy-MT2-1.8B-Q5_K_M.gguf",),
+        sources=(
+            ModelSource("global", "Hugging Face 全球源",
+                        f"{_HF}/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q5_K_M.gguf?download=true",
+                        "https://huggingface.co/favicon.ico"),
+            ModelSource("china", "ModelScope 中国源",
+                        f"{_MS}/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q5_K_M.gguf",
+                        "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="Hy-MT2-1.8B-Q5_K_M.gguf",
+        min_ram_gb=6.0,
+        working_ram_gb=2.8,
+        compute_cost=76,
+        npu_supported=True,
+        igpu_supported=True,
+        tags=("均衡高保真", "端侧", "33 语言", "Q5"),
+    ),
+    ModelSpec(
+        id="mt-hy-mt2-1.8b-q8",
+        task="translate",
+        name="Hy-MT2 1.8B · Q8_0",
+        vendor="Tencent Hunyuan",
+        release="2026-05-21",
+        description="轻量模型中的高保真档，适合内存充裕但不想运行 7B 的笔记本和台式机。",
+        runtime="llama-hy-mt2",
+        quality_score=97,
+        languages="33 种语言",
+        license="Apache-2.0",
+        download_bytes=1_940_000_000,
+        installed_bytes=1_940_000_000,
+        install_rel="marketplace/mt-hy-mt2-1.8b-q8",
+        required_paths=("Hy-MT2-1.8B-Q8_0.gguf",),
+        sources=(
+            ModelSource("global", "Hugging Face 全球源",
+                        f"{_HF}/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q8_0.gguf?download=true",
+                        "https://huggingface.co/favicon.ico"),
+            ModelSource("china", "ModelScope 中国源",
+                        f"{_MS}/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q8_0.gguf",
+                        "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="Hy-MT2-1.8B-Q8_0.gguf",
+        min_ram_gb=8.0,
+        working_ram_gb=3.5,
+        compute_cost=97,
+        npu_supported=True,
+        igpu_supported=True,
+        tags=("高保真", "端侧", "33 语言", "Q8"),
+    ),
+    ModelSpec(
         id="mt-opus-fast-builtin",
         task="translate",
         name="OPUS-MT · 极速兼容",
@@ -279,11 +474,35 @@ CATALOG: tuple[ModelSpec, ...] = (
         quality_score=58,
         languages="中文 / 英语",
         license="Apache-2.0",
-        download_bytes=0,
-        installed_bytes=170_000_000,
+        installed_bytes=650_000_000,
         install_rel="nmt",
         required_paths=("opus_zh_en/encoder_model_int8.onnx",
-                        "opus_en_zh/encoder_model_int8.onnx"),
+                        "opus_zh_en/decoder_model_int8.onnx",
+                        "opus_zh_en/config.json",
+                        "opus_zh_en/tokenizer.json",
+                        "opus_en_zh/encoder_model_int8.onnx",
+                        "opus_en_zh/decoder_model_int8.onnx",
+                        "opus_en_zh/config.json",
+                        "opus_en_zh/tokenizer.json"),
+        sources=(
+            ModelSource(
+                "global", "Hugging Face 全球源", f"{_HF}/Xenova/opus-mt-zh-en",
+                "https://huggingface.co/favicon.ico",
+                files=(
+                    _opus_remote_files("zh-en", _HF)
+                    + _opus_remote_files("en-zh", _HF)
+                ),
+            ),
+            ModelSource(
+                "china", "HF 镜像中国源", f"{_HF_MIRROR}/Xenova/opus-mt-zh-en",
+                "https://hf-mirror.com/favicon.ico",
+                files=(
+                    _opus_remote_files("zh-en", _HF_MIRROR)
+                    + _opus_remote_files("en-zh", _HF_MIRROR)
+                ),
+            ),
+        ),
+        download_bytes=650_000_000,
         builtin=True,
         min_ram_gb=4.0,
         working_ram_gb=0.5,
@@ -328,7 +547,8 @@ def _capacity(profile: HardwareProfile, model: ModelSpec) -> tuple[float, str]:
         if (model.gpu_supported and profile.has_discrete_gpu and
                 profile.vram_gb >= required_gb):
             return max(cpu, 115.0 + profile.vram_gb * 7.0), "独立显卡"
-        if (model.npu_supported and profile.has_npu and
+        if (model.npu_supported and profile.has_npu_runtime and
+                "openvino" in profile.npu_provider.casefold() and
                 "intel" in profile.npu_name.casefold() and
                 profile.ram_gb >= required_gb + 4.0):
             return max(cpu, 132.0), "NPU"
@@ -409,9 +629,22 @@ class ModelMarketplace:
     def model_dir(self, model: ModelSpec) -> Path:
         return self.models_dir / model.install_rel
 
+    @staticmethod
+    def _missing_paths_at(base: Path, model: ModelSpec) -> tuple[str, ...]:
+        missing = [rel for rel in model.required_paths
+                   if not (base / rel).is_file()]
+        missing.extend(
+            pattern for pattern in model.required_patterns
+            if not any(path.is_file() for path in base.glob(pattern))
+        )
+        return tuple(missing)
+
+    def missing_paths(self, model: ModelSpec) -> tuple[str, ...]:
+        """Return the exact required files/patterns absent from a model."""
+        return self._missing_paths_at(self.model_dir(model), model)
+
     def is_installed(self, model: ModelSpec) -> bool:
-        base = self.model_dir(model)
-        return all((base / rel).is_file() for rel in model.required_paths)
+        return not self.missing_paths(model)
 
     def model_file(self, model: ModelSpec) -> Path:
         if not model.required_paths:
@@ -453,14 +686,16 @@ class ModelMarketplace:
     def install(self, model: ModelSpec, preference: str = "auto",
                 progress: Callable[[int, int, str], None] | None = None,
                 cancelled: Callable[[], bool] | None = None) -> Path:
-        if model.builtin:
-            if self.is_installed(model):
-                return self.model_dir(model)
-            raise RuntimeError("内置模型文件缺失，请通过安装包修复程序")
-        if self.is_installed(model):
+        missing = self.missing_paths(model)
+        if not missing:
             return self.model_dir(model)
         sources = self.ordered_sources(model, preference)
         if not sources:
+            if model.builtin:
+                raise RuntimeError(
+                    "内置模型缺少文件：" + ", ".join(missing) +
+                    "；没有可用在线修复源，请通过最新安装包修复。"
+                )
             raise RuntimeError("该模型没有可用下载源")
 
         self._downloads.mkdir(parents=True, exist_ok=True)
@@ -469,8 +704,9 @@ class ModelMarketplace:
             try:
                 target = self._install_from_source(
                     model, source, progress=progress, cancelled=cancelled)
-                if not self.is_installed(model):
-                    raise RuntimeError("模型已下载，但关键文件校验失败")
+                remaining = self.missing_paths(model)
+                if remaining:
+                    raise RuntimeError("下载完成但仍缺少：" + ", ".join(remaining))
                 self._record(model, source.id)
                 logger.info("模型安装完成: id=%s source=%s path=%s",
                             model.id, source.id, target)
@@ -481,7 +717,10 @@ class ModelMarketplace:
                 errors.append(f"{source.label}: {exc}")
                 logger.warning("模型源安装失败，尝试下一源: model=%s source=%s error=%s",
                                model.id, source.id, exc)
-        raise RuntimeError("所有下载源均失败：" + "；".join(errors))
+        prefix = "内置模型在线修复失败，仍缺少：" if model.builtin else "所有下载源均失败："
+        detail = ", ".join(self.missing_paths(model))
+        fallback = "；请通过最新安装包修复或查看日志" if model.builtin else ""
+        raise RuntimeError(prefix + detail + "。" + "；".join(errors) + fallback)
 
     def _install_from_source(self, model: ModelSpec, source: ModelSource,
                              progress: Callable[[int, int, str], None] | None,
@@ -518,10 +757,26 @@ class ModelMarketplace:
                               progress: Callable[[int, int, str], None] | None,
                               cancelled: Callable[[], bool] | None) -> Path:
         download_root = self._downloads / model.id
-        total = sum(item.size for item in source.files)
+        total = sum(item.size for item in source.files) or model.download_bytes
         completed = 0
         for item in source.files:
             destination = download_root / item.install_rel
+
+            target_file = self.model_dir(model) / item.install_rel
+            if target_file.is_file() and (
+                not item.sha256 or sha256_of(target_file) == item.sha256
+            ):
+                completed += item.size or target_file.stat().st_size
+                if progress:
+                    progress(completed, total, source.label)
+                continue
+            if destination.is_file() and (
+                not item.sha256 or sha256_of(destination) == item.sha256
+            ):
+                completed += item.size or destination.stat().st_size
+                if progress:
+                    progress(completed, total, source.label)
+                continue
 
             def _progress(done: int, _file_total: int, _url: str,
                           base: int = completed) -> None:
@@ -532,14 +787,19 @@ class ModelMarketplace:
                             progress=_progress, cancelled=cancelled)
             if not ok:
                 raise RuntimeError(f"文件下载失败: {item.install_rel}")
-            completed += item.size
-        if not all((download_root / rel).is_file() for rel in model.required_paths):
-            raise RuntimeError("下载文件结构与模型目录清单不匹配")
+            completed += item.size or destination.stat().st_size
+
         target = self.model_dir(model)
-        if target.exists():
-            shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        download_root.replace(target)
+        for item in source.files:
+            staged = download_root / item.install_rel
+            if not staged.is_file():
+                continue
+            destination = target / item.install_rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(staged, destination)
+        if download_root.exists():
+            shutil.rmtree(download_root)
         return target
 
     def _install_archive(self, model: ModelSpec, archive: Path, target: Path) -> None:
@@ -562,7 +822,7 @@ class ModelMarketplace:
             candidates.extend(path for path in staging.iterdir() if path.is_dir())
             source_root = next(
                 (path for path in candidates
-                 if all((path / rel).is_file() for rel in model.required_paths)), None)
+                 if not self._missing_paths_at(path, model)), None)
             if source_root is None:
                 raise RuntimeError("模型压缩包结构与目录清单不匹配")
             if target.exists():

@@ -39,6 +39,7 @@ from voxsub.ui import __version__ as _UI_VERSION  # noqa: E402
 from voxsub.ui.config_store import ConfigStore  # noqa: E402
 from voxsub.ui.diagnostics_window import DiagnosticsWindow  # noqa: E402
 from voxsub.ui.icons import make_app_icon  # noqa: E402
+from voxsub.ui.i18n import language_manager, tr  # noqa: E402
 from voxsub.ui.main_window import MainWindow  # noqa: E402
 from voxsub.ui.model_hub_window import ModelHubWindow  # noqa: E402
 from voxsub.ui.settings_window import SettingsWindow  # noqa: E402
@@ -61,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(log_to_console=False)
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("VoxSub")
-    app.setApplicationDisplayName("语幕 VoxSub")
+    store = ConfigStore()
+    language_manager.set_language(store.get("language", "system"))
+    app.setApplicationDisplayName(tr("语幕 VoxSub", "VoxSub"))
     app.setOrganizationName("VoxSub")
     app.setWindowIcon(make_app_icon())
     app.setQuitOnLastWindowClosed(False)
@@ -78,25 +81,30 @@ def main(argv: list[str] | None = None) -> int:
     instance_lock.setStaleLockTime(30_000)
     if not instance_lock.tryLock(100):
         logger.warning("检测到另一个 VoxSub 实例，当前实例退出")
-        QMessageBox.information(None, "语幕 VoxSub", "语幕已经在运行，请查看任务栏或系统托盘。")
+        QMessageBox.information(
+            None,
+            tr("语幕 VoxSub", "VoxSub"),
+            tr("语幕已经在运行，请查看任务栏或系统托盘。",
+               "VoxSub is already running. Check the taskbar or system tray."),
+        )
         return 0
     logger.info("应用启动: ui=%s core=%s argv=%r", _UI_VERSION, _CORE_VERSION, argv)
 
-    store = ConfigStore()
     set_debug_mode(bool(store.get("debug_mode", False)))
     theme = parse_theme(store.get("theme", "system"))
     load_theme(app, theme)
     logger.info("配置已加载, 主题=%s", theme.value)
 
-    # -- 组件实例化（主窗 / 浮窗 / 设置 / 诊断 / 托盘）--
+    # -- 组件实例化（主窗 / 浮窗 / 内置设置与模型广场 / 诊断 / 托盘）--
     win = MainWindow(store=store)
     overlay = SubtitleOverlay(store=store)
     win.attach_overlay(overlay)
 
-    settings_win = SettingsWindow(store=store)
+    settings_win = SettingsWindow(store=store, overlay=overlay)
     diagnostics_win = DiagnosticsWindow(store=store)
     model_hub_win = ModelHubWindow(store=store)
-    logger.info("窗口组件已创建: 主窗 / 字幕浮窗 / 模型广场 / 设置 / 诊断")
+    win.install_in_app_pages(settings_win, model_hub_win)
+    logger.info("窗口组件已创建: 主窗 / 浮窗 / 内置模型广场 / 内置设置 / 诊断")
 
     tray = TrayIcon.create(make_app_icon(), win)
 
@@ -122,10 +130,10 @@ def main(argv: list[str] | None = None) -> int:
             win.activateWindow()
 
         def _on_tray_settings() -> None:
-            settings_win.refresh_devices()
-            settings_win.showNormal()
-            settings_win.raise_()
-            settings_win.activateWindow()
+            win.showNormal()
+            win.show_settings_page()
+            win.raise_()
+            win.activateWindow()
 
         def _on_tray_diagnostics() -> None:
             diagnostics_win.showNormal()
@@ -158,10 +166,10 @@ def main(argv: list[str] | None = None) -> int:
     win.running_state_changed.connect(lambda _running: _sync_tray_state())
 
     def _show_settings() -> None:
-        settings_win.refresh_devices()
-        settings_win.showNormal()
-        settings_win.raise_()
-        settings_win.activateWindow()
+        win.showNormal()
+        win.show_settings_page()
+        win.raise_()
+        win.activateWindow()
 
     def _show_diagnostics() -> None:
         diagnostics_win.showNormal()
@@ -169,19 +177,18 @@ def main(argv: list[str] | None = None) -> int:
         diagnostics_win.activateWindow()
 
     def _show_model_hub() -> None:
-        model_hub_win.refresh()
-        model_hub_win.showNormal()
-        model_hub_win.raise_()
-        model_hub_win.activateWindow()
+        win.showNormal()
+        win.show_model_hub_page()
+        win.raise_()
+        win.activateWindow()
 
     win.settings_requested.connect(_show_settings)
     win.diagnostics_requested.connect(_show_diagnostics)
     win.model_hub_requested.connect(_show_model_hub)
-    settings_win.model_hub_requested.connect(_show_model_hub)
-
     win.show()
     # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
     app.aboutToQuit.connect(model_hub_win.shutdown)
+    app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
     app.aboutToQuit.connect(lambda: logger.info("应用退出"))
     logger.info("事件循环开始")
     return app.exec()

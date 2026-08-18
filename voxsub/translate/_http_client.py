@@ -1,17 +1,17 @@
-"""voxsub.translate._http_client —— 极简 OpenAI 兼容 /v1/chat/completions 客户端。
+"""OpenAI-compatible HTTP clients shared by cloud translation and cloud STT.
 
-云翻译 (CloudTranslator) 与 llama-server (QwenQualityTranslator) 共用:
-两者都只依赖 OpenAI 兼容的 chat completions 接口, 这里统一实现网络层,
-避免重复。
+The translation client uses ``/v1/chat/completions`` while cloud STT uses
+``/v1/audio/transcriptions``.  Both stay on the standard library network path.
 
 仅用标准库 urllib。失败一律抛 OpenAICompatError (调用方转成 TranslationError)。
 """
 from __future__ import annotations
 
 import json
+import uuid
 from urllib import error as urlerror
 from urllib import request as urlrequest
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from voxsub.logging_setup import get_logger
 
@@ -20,6 +20,23 @@ logger = get_logger("translate._http_client")
 
 class OpenAICompatError(RuntimeError):
     """OpenAI 兼容端点调用失败 (网络/HTTP/解析)。"""
+
+
+def normalize_api_base(base_url: str) -> str:
+    """Normalize a provider base URL to a single ``.../v1`` prefix.
+
+    The settings UI accepts both ``https://host`` and ``https://host/v1``.
+    Keeping normalization here prevents the old ``/v1/v1`` endpoint bug and
+    lets chat and audio endpoints share exactly the same convention.
+    """
+    raw = str(base_url or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1"):
+        path = f"{path}/v1" if path else "/v1"
+    return urlunparse(parsed._replace(path=path, query="", fragment="")).rstrip("/")
 
 
 def chat_completion(
@@ -85,3 +102,79 @@ def chat_completion(
     except (KeyError, IndexError, TypeError) as exc:
         logger.exception("OpenAI 兼容端点响应结构异常: host=%s", host)
         raise OpenAICompatError(f"响应格式异常: {str(body)[:200]}") from exc
+
+
+def audio_transcription(
+    endpoint: str,
+    *,
+    audio_bytes: bytes,
+    filename: str = "voxsub.wav",
+    api_key: str | None = None,
+    model: str,
+    language: str | None = None,
+    response_format: str = "json",
+    timeout_sec: float = 15.0,
+) -> str:
+    """POST an audio file to an OpenAI-compatible transcription endpoint."""
+    boundary = f"----VoxSubBoundary{uuid.uuid4().hex}"
+    boundary_bytes = boundary.encode("ascii")
+    chunks: list[bytes] = []
+
+    def add_field(name: str, value: str) -> None:
+        chunks.extend((
+            b"--" + boundary_bytes + b"\r\n",
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ))
+
+    add_field("model", model)
+    add_field("response_format", response_format)
+    if language and language != "auto":
+        add_field("language", language)
+    chunks.extend((
+        b"--" + boundary_bytes + b"\r\n",
+        (f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+         "Content-Type: audio/wav\r\n\r\n").encode("utf-8"),
+        bytes(audio_bytes),
+        b"\r\n--" + boundary_bytes + b"--\r\n",
+    ))
+    payload = b"".join(chunks)
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(payload)),
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urlrequest.Request(endpoint, data=payload, headers=headers)
+    host = (urlparse(endpoint).hostname or "").lower() or "<unknown>"
+    try:
+        with urlrequest.urlopen(req, timeout=timeout_sec) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8")[:300]
+        except Exception:
+            pass
+        logger.error("音频转写端点非 2xx 响应: code=%s host=%s", exc.code, host)
+        raise OpenAICompatError(f"HTTP {exc.code}: {detail}") from exc
+    except urlerror.URLError as exc:
+        logger.exception("音频转写端点网络错误: host=%s", host)
+        raise OpenAICompatError(f"网络错误: {exc.reason}") from exc
+    except (TimeoutError, OSError) as exc:
+        logger.exception("音频转写端点超时/IO 错误: host=%s", host)
+        raise OpenAICompatError(f"超时/IO: {exc}") from exc
+    except ValueError as exc:
+        logger.exception("音频转写端点响应解析失败: host=%s", host)
+        raise OpenAICompatError("响应不是有效 JSON") from exc
+
+    if isinstance(body, dict):
+        text = body.get("text")
+        if isinstance(text, str):
+            return text.strip()
+        nested = body.get("data")
+        if isinstance(nested, dict) and isinstance(nested.get("text"), str):
+            return nested["text"].strip()
+    logger.error("音频转写端点响应结构异常: host=%s", host)
+    raise OpenAICompatError(f"响应格式异常: {str(body)[:200]}")

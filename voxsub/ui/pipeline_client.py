@@ -51,6 +51,7 @@ class _PipelineStub:
         self.tts_enabled = False
         self.audio_devices = ("", "")
         self.capture_process = (0, "")
+        self.stt = ("local", None)
         self.translator = ("opus-fast", None)
         self.asr_model_id = "asr-zipformer-bilingual-fast"
         self.asr_tuning = {"profile": "auto"}
@@ -91,6 +92,9 @@ class _PipelineStub:
 
     def set_translator(self, kind: str, config=None) -> None:
         self.translator = (kind, config)
+
+    def set_stt(self, provider: str = "local", config=None) -> None:
+        self.stt = (str(provider), config)
 
     def set_asr_model(self, model_id: str) -> None:
         self.asr_model_id = str(model_id)

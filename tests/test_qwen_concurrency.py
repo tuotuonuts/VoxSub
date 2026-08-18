@@ -16,6 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from voxsub.hardware import LlamaRuntime  # noqa: E402
+from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
 from voxsub.translate.qwen import _invalid_translation  # noqa: E402
 
@@ -131,6 +133,31 @@ def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> Non
     endpoint = q._ensure()
     assert endpoint == "http://127.0.0.1:9999/v1/chat/completions"
     assert spawned["n"] == 1
+
+
+def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None:
+    """A crashed accelerator is blacklisted before the next spawn attempt."""
+    q = _make_qwen(tmp_path)
+    monkeypatch.setattr(QwenQualityTranslator, "close", lambda self: None)
+    attempts: list[tuple[str, str]] = []
+
+    def fake_spawn(self) -> None:
+        if not attempts:
+            runtime = LlamaRuntime(Path("npu/llama-server.exe"), "openvino", "NPU")
+            self._runtime = runtime
+            attempts.append((runtime.backend, runtime.target))
+            raise TranslationError("exit code 0xC0000005")
+        runtime = LlamaRuntime(Path("cpu/llama-server.exe"), "cpu", "CPU")
+        self._runtime = runtime
+        attempts.append((runtime.backend, runtime.target))
+        self._proc = _FakeProc(2)
+        self._port = 9998
+        self._endpoint = "http://127.0.0.1:9998/v1/chat/completions"
+
+    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
+    assert q._ensure().endswith("9998/v1/chat/completions")
+    assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
+    assert ("openvino", "NPU") in q._failed_runtimes
 
 
 def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:

@@ -41,11 +41,11 @@ class TranslatorFactory:
                     from voxsub.router import preferred_onnx_providers
 
                     return OpusFastTranslator(providers=preferred_onnx_providers("translate"))
-                if model_id.startswith("mt-hy-mt2-"):
+                if model_id:
                     from voxsub.model_catalog import ModelMarketplace, get_model
 
                     model = get_model(model_id)
-                    if model is not None:
+                    if model is not None and model.runtime == "llama-hy-mt2":
                         marketplace = ModelMarketplace()
                         return QwenQualityTranslator(
                             model_path=marketplace.model_file(model),
