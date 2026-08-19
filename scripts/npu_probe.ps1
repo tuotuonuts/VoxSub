@@ -21,11 +21,15 @@ function Find-LlamaServer([string]$PreferredDir) {
     if ($PreferredDir) {
         $roots += $PreferredDir
     }
+    $roots += (Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-assets\openvino')
     $roots += (Join-Path $env:LOCALAPPDATA 'VoxSub\tools\llama')
     foreach ($root in $roots | Select-Object -Unique) {
-        $candidate = Join-Path $root 'llama-server.exe'
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+        if (Test-Path -LiteralPath $root -PathType Container) {
+            $candidate = Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -File -Recurse |
+                Select-Object -First 1
+            if ($candidate) {
+                return $candidate.FullName
+            }
         }
     }
     throw 'OpenVINO llama-server.exe not found. Install VoxSub or provide llama_dir.'
@@ -39,13 +43,19 @@ function Find-GgufModel([string]$PreferredPath) {
         return (Resolve-Path -LiteralPath $PreferredPath).Path
     }
     $modelsRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\models\llm'
-    if (Test-Path -LiteralPath $modelsRoot -PathType Container) {
-        $model = Get-ChildItem -LiteralPath $modelsRoot -Filter '*.gguf' -File -Recurse |
+    $modelsRoots = @(
+        (Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-assets\models'),
+        $modelsRoot
+    )
+    foreach ($root in $modelsRoots | Select-Object -Unique) {
+      if (Test-Path -LiteralPath $root -PathType Container) {
+        $model = Get-ChildItem -LiteralPath $root -Filter '*.gguf' -File -Recurse |
             Sort-Object LastWriteTimeUtc -Descending |
             Select-Object -First 1
         if ($model) {
             return $model.FullName
         }
+      }
     }
     throw 'No GGUF model found. Provide the absolute model_path on the Intel NPU computer.'
 }
