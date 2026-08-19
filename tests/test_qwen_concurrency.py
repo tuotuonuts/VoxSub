@@ -158,6 +158,8 @@ def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None
     assert q._ensure().endswith("9998/v1/chat/completions")
     assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
     assert ("openvino", "NPU") in q._failed_runtimes
+    q._proc = None
+    q._endpoint = None
 
 
 def test_spawn_requests_openvino_device_and_disables_npu_fallback(
@@ -206,6 +208,7 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
         "backend": "openvino",
         "target": "NPU",
     }
+    q.close()
 
 
 def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:

@@ -461,17 +461,31 @@ jobs:
             Stop-Transcript | Out-Null
           }
 
-      - name: Set up Python for application-path probe
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Verify VoxSub application NPU startup path
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         env:
           VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
           VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
-        run: python ./scripts/npu_app_probe.py
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $pythonRoot = Join-Path $PWD '.npu-assets\python-3.11.9-embed-amd64'
+          $pythonExe = Join-Path $pythonRoot 'python.exe'
+          if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+            $pythonZip = Join-Path $PWD '.npu-assets\python-3.11.9-embed-amd64.zip'
+            $pythonUrl = 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip'
+            Remove-Item -LiteralPath $pythonZip -Force -ErrorAction SilentlyContinue
+            Invoke-WebRequest -Uri $pythonUrl -OutFile $pythonZip -UseBasicParsing -TimeoutSec 180
+            if ((Get-Item -LiteralPath $pythonZip).Length -lt 8MB) {
+              throw 'Embedded Python archive is unexpectedly small.'
+            }
+            New-Item -ItemType Directory -Path $pythonRoot -Force | Out-Null
+            Expand-Archive -LiteralPath $pythonZip -DestinationPath $pythonRoot -Force
+          }
+          & $pythonExe ./scripts/npu_app_probe.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "VoxSub application-path probe failed (exit $LASTEXITCODE)."
+          }
 
       - name: Verify Intel NPU execution
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
