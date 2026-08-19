@@ -108,6 +108,24 @@ jobs:
               }
               Write-Output "Built NPU-compatible runtime: $patchedDir"
             }
+
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Redist.14.Latest -property installationPath |
+              Select-Object -First 1)
+            if (-not $vsInstall) { throw 'Visual C++ redistributable directory could not be located.' }
+            $vcRedistVersion = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Redist\MSVC') -Directory |
+              Sort-Object Name -Descending |
+              Select-Object -First 1
+            $vcCrtDir = Get-ChildItem -LiteralPath (Join-Path $vcRedistVersion.FullName 'x64') -Directory |
+              Where-Object { $_.Name -like 'Microsoft.VC*.CRT' } |
+              Select-Object -First 1
+            if (-not $vcCrtDir) { throw 'The x64 Visual C++ runtime DLL directory was not found.' }
+            Copy-Item -Path (Join-Path $vcCrtDir.FullName '*.dll') -Destination $patchedDir -Force
+            Get-ChildItem -LiteralPath $patchedDir -File |
+              Sort-Object Name |
+              ForEach-Object { "$($_.Name)`t$($_.Length)" } |
+              Set-Content -LiteralPath (Join-Path $patchedDir 'runtime-files.txt') -Encoding utf8
+            Write-Output "Packaged Visual C++ runtime: $($vcCrtDir.FullName)"
           } catch {
             Write-Error $_
             throw
