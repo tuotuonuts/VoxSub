@@ -29,7 +29,9 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          New-Item -ItemType Directory -Path (Join-Path $PWD '.npu-probe') -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $PWD '.npu-probe\prepare.log') -Force | Out-Null
+          try {
           $assetRoot = Join-Path $PWD '.npu-assets'
           $probeRoot = Join-Path $PWD '.npu-probe'
           $runtimeRoot = Join-Path $assetRoot 'openvino'
@@ -40,13 +42,6 @@ jobs:
           $runtimeUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10470/llama-b10470-bin-win-openvino-2026.2.1-x64.zip'
           if (-not (Test-Path -LiteralPath $runtimeZip)) {
             Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
-          }
-          try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose() } catch {
-            Remove-Item -LiteralPath $runtimeZip -Force
-            Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
-            try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose() } catch {
-              throw "llama OpenVINO runtime archive is invalid: $runtimeZip"
-            }
           }
           Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
           $openvinoDll = Get-ChildItem -LiteralPath $runtimeRoot -Filter 'ggml-openvino.dll' -File -Recurse | Select-Object -First 1
@@ -83,6 +78,12 @@ jobs:
           if ($actualSha -ne 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699') {
             throw "Model SHA256 mismatch: $actualSha"
           }
+          } catch {
+            Write-Error $_
+            throw
+          } finally {
+            Stop-Transcript | Out-Null
+          }
 
       - name: Verify Intel NPU execution
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
@@ -95,7 +96,7 @@ jobs:
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
-          $logs = @('.npu-probe\build.log', '.npu-probe\probe.log') | Where-Object { Test-Path -LiteralPath $_ }
+          $logs = @('.npu-probe\prepare.log', '.npu-probe\build.log', '.npu-probe\probe.log') | Where-Object { Test-Path -LiteralPath $_ }
           if ($logs.Count -gt 0) {
             $summary = (($logs | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`n").Trim()
             $logs | ForEach-Object { Get-Content -LiteralPath $_ }
