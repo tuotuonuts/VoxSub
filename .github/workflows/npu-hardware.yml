@@ -29,6 +29,10 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path (Join-Path $PWD '.npu-probe') -Force | Out-Null
+          $transcript = Join-Path $PWD '.npu-probe\build.log'
+          Start-Transcript -LiteralPath $transcript -Force | Out-Null
+          try {
           $assetRoot = Join-Path $PWD '.npu-assets'
           $srcRoot = Join-Path $assetRoot 'llama-src'
           $ovRoot = Join-Path $assetRoot 'openvino-toolkit'
@@ -67,6 +71,12 @@ jobs:
           New-Item -ItemType Directory -Path $patchedDir -Force | Out-Null
           Copy-Item -Path (Join-Path $runtimeDir '*') -Destination $patchedDir -Recurse -Force
           Copy-Item -Path (Join-Path $ovDir.FullName 'runtime\bin\intel64\Release\*') -Destination $patchedDir -Recurse -Force
+          } catch {
+            Write-Error $_
+            throw
+          } finally {
+            Stop-Transcript | Out-Null
+          }
 
       - name: Prepare NPU probe assets
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
@@ -111,13 +121,14 @@ jobs:
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
-          if (Test-Path -LiteralPath .npu-probe\probe.log) {
-            $summary = (Get-Content -LiteralPath .npu-probe\probe.log -Raw).Trim()
-            Get-Content -LiteralPath .npu-probe\probe.log
+          $logs = @('.npu-probe\build.log', '.npu-probe\probe.log') | Where-Object { Test-Path -LiteralPath $_ }
+          if ($logs.Count -gt 0) {
+            $summary = (($logs | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`n").Trim()
+            $logs | ForEach-Object { Get-Content -LiteralPath $_ }
             $annotation = $summary.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error file=.npu-probe/probe.log,line=1,title=NPU probe summary::$annotation"
+            Write-Output "::error file=.npu-probe/build.log,line=1,title=NPU probe summary::$annotation"
           } else {
-            Write-Output 'probe.log was not created.'
+            Write-Output 'No NPU probe or build log was created.'
           }
 
       - name: Upload probe diagnostics
