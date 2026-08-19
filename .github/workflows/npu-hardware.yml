@@ -25,87 +25,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build patched OpenVINO llama runtime
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          New-Item -ItemType Directory -Path (Join-Path $PWD '.npu-probe') -Force | Out-Null
-          $transcript = Join-Path $PWD '.npu-probe\build.log'
-          Start-Transcript -LiteralPath $transcript -Force | Out-Null
-          try {
-          $assetRoot = Join-Path $PWD '.npu-assets'
-          $srcRoot = Join-Path $assetRoot 'llama-src'
-          $ovRoot = Join-Path $assetRoot 'openvino-toolkit'
-          $buildRoot = Join-Path $assetRoot 'llama-build'
-          if (-not (Test-Path -LiteralPath (Join-Path $srcRoot 'CMakeLists.txt'))) {
-            git clone --depth 1 --branch b10470 https://github.com/ggml-org/llama.cpp.git $srcRoot
-          }
-          if (-not (Test-Path -LiteralPath (Join-Path $ovRoot 'openvino_toolkit'))) {
-            $ovZip = Join-Path $assetRoot 'openvino-toolkit.zip'
-            $ovUrl = 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.2/windows/openvino_toolkit_windows_2026.2.1.21919.ede283a88e3_x86_64.zip'
-            if (Test-Path -LiteralPath $ovZip) {
-              try { [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose() } catch { Remove-Item -LiteralPath $ovZip -Force }
-            }
-            if (-not (Test-Path -LiteralPath $ovZip)) {
-              curl.exe --ipv4 --fail --location --retry 5 --retry-delay 3 --connect-timeout 20 --max-time 900 --output $ovZip $ovUrl
-              if ($LASTEXITCODE -ne 0) { throw "OpenVINO download failed (exit $LASTEXITCODE)." }
-            }
-            try { [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose() } catch { throw "OpenVINO archive is invalid: $ovZip" }
-            Expand-Archive -LiteralPath $ovZip -DestinationPath $ovRoot -Force
-          }
-          $ovDir = Get-ChildItem -LiteralPath $ovRoot -Directory | Select-Object -First 1
-          if (-not $ovDir) { throw 'OpenVINO toolkit directory was not found.' }
-          $extra = Join-Path $srcRoot 'ggml\src\ggml-openvino\ggml-openvino-extra.cpp'
-          $source = Get-Content -LiteralPath $extra -Raw
-          $patched = $source -replace '\s*\{"NPU_COMPILER_DYNAMIC_QUANTIZATION",\s*"YES"\s*\},', ''
-          if ($patched -eq $source) { throw 'Could not remove incompatible NPU compiler option.' }
-          Set-Content -LiteralPath $extra -Value $patched -Encoding utf8
-          $vcpkg = 'C:\vcpkg'
-          if (-not (Test-Path -LiteralPath (Join-Path $vcpkg 'vcpkg.exe'))) {
-            git clone --depth 1 https://github.com/microsoft/vcpkg $vcpkg
-            & (Join-Path $vcpkg 'bootstrap-vcpkg.bat')
-          }
-          & (Join-Path $vcpkg 'vcpkg.exe') install opencl --triplet x64-windows
-          & (Join-Path $ovDir.FullName 'setupvars.bat')
-          cmake -S $srcRoot -B $buildRoot -G 'Visual Studio 17 2022' -A x64 -DGGML_OPENVINO=ON -DOpenVINO_DIR="$($ovDir.FullName)\runtime\cmake" -DCMAKE_TOOLCHAIN_FILE="$vcpkg\scripts\buildsystems\vcpkg.cmake"
-          cmake --build $buildRoot --config Release --target llama-server -- /m
-          $runtimeDir = Join-Path $buildRoot 'bin\Release'
-          if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'llama-server.exe'))) {
-            throw 'Patched llama-server.exe was not built.'
-          }
-          $patchedDir = Join-Path $assetRoot 'patched-openvino'
-          New-Item -ItemType Directory -Path $patchedDir -Force | Out-Null
-          Copy-Item -Path (Join-Path $runtimeDir '*') -Destination $patchedDir -Recurse -Force
-          Copy-Item -Path (Join-Path $ovDir.FullName 'runtime\bin\intel64\Release\*') -Destination $patchedDir -Recurse -Force
-          } catch {
-            Write-Error $_
-            throw
-          } finally {
-            Stop-Transcript | Out-Null
-          }
-
       - name: Prepare NPU probe assets
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           $assetRoot = Join-Path $PWD '.npu-assets'
+          $probeRoot = Join-Path $PWD '.npu-probe'
           $runtimeRoot = Join-Path $assetRoot 'openvino'
           $modelRoot = Join-Path $assetRoot 'models'
-          New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $probeRoot -Force | Out-Null
 
           $runtimeZip = Join-Path $assetRoot 'llama-b10470-openvino.zip'
           $runtimeUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10470/llama-b10470-bin-win-openvino-2026.2.1-x64.zip'
           if (-not (Test-Path -LiteralPath $runtimeZip)) {
             Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
           }
-          Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
-          $patchedRuntime = Join-Path $assetRoot 'patched-openvino'
-          if (Test-Path -LiteralPath (Join-Path $patchedRuntime 'llama-server.exe')) {
-            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
-            New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
-            Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
+          try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose() } catch {
+            Remove-Item -LiteralPath $runtimeZip -Force
+            Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
+            try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose() } catch {
+              throw "llama OpenVINO runtime archive is invalid: $runtimeZip"
+            }
           }
+          Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
+          $openvinoDll = Get-ChildItem -LiteralPath $runtimeRoot -Filter 'ggml-openvino.dll' -File -Recurse | Select-Object -First 1
+          if (-not $openvinoDll) { throw 'ggml-openvino.dll was not found in the OpenVINO runtime.' }
+          $bytes = [System.IO.File]::ReadAllBytes($openvinoDll.FullName)
+          $name = [Text.Encoding]::ASCII.GetBytes('NPU_COMPILER_DYNAMIC_QUANTIZATION')
+          $yes = [Text.Encoding]::ASCII.GetBytes('YES')
+          $patched = $false
+          for ($i = 0; $i -le $bytes.Length - $name.Length; $i++) {
+            $matchesName = $true
+            for ($n = 0; $n -lt $name.Length; $n++) { if ($bytes[$i + $n] -ne $name[$n]) { $matchesName = $false; break } }
+            if (-not $matchesName) { continue }
+            $scanEnd = [Math]::Min($bytes.Length - 4, $i + $name.Length + 512)
+            for ($j = $i + $name.Length; $j -le $scanEnd; $j++) {
+              if ($bytes[$j] -eq $yes[0] -and $bytes[$j + 1] -eq $yes[1] -and $bytes[$j + 2] -eq $yes[2] -and $bytes[$j + 3] -eq 0) {
+                $bytes[$j] = [byte][char]'N'; $bytes[$j + 1] = [byte][char]'O'; $bytes[$j + 2] = 0
+                $patched = $true
+                Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched ggml-openvino.dll NPU_COMPILER_DYNAMIC_QUANTIZATION at byte offset $j (YES -> NO)."
+                break
+              }
+            }
+            if ($patched) { break }
+          }
+          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION=YES in ggml-openvino.dll.' }
+          [System.IO.File]::WriteAllBytes($openvinoDll.FullName, $bytes)
+          Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using patched runtime: $($openvinoDll.FullName)"
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelUrl = 'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf'
