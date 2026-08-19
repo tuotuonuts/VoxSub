@@ -133,6 +133,26 @@ jobs:
               Sort-Object Name |
               ForEach-Object { "$($_.Name)`t$($_.Length)" } |
               Set-Content -LiteralPath (Join-Path $patchedDir 'runtime-files.txt') -Encoding utf8
+            $dumpbin = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Tools\MSVC') `
+              -Filter 'dumpbin.exe' -File -Recurse |
+              Where-Object { $_.FullName -match '(?i)\\bin\\Hostx64\\x64\\dumpbin\.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $dumpbin) { throw 'The x64 dumpbin.exe tool was not found.' }
+            $dependencyReport = Join-Path $patchedDir 'runtime-dependencies.txt'
+            Set-Content -LiteralPath $dependencyReport -Value "dumpbin: $($dumpbin.FullName)" -Encoding utf8
+            $runtimeBinaries = Get-ChildItem -LiteralPath $patchedDir -File |
+              Where-Object { $_.Extension -in @('.exe', '.dll') } |
+              Sort-Object Name
+            foreach ($runtimeBinary in $runtimeBinaries) {
+              Add-Content -LiteralPath $dependencyReport -Value "`r`n===== $($runtimeBinary.Name) =====" -Encoding utf8
+              $dependencyOutput = & $dumpbin.FullName /dependents $runtimeBinary.FullName 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                throw "dumpbin failed for $($runtimeBinary.Name) (exit $LASTEXITCODE)."
+              }
+              Add-Content -LiteralPath $dependencyReport -Value $dependencyOutput -Encoding utf8
+            }
+            Get-Content -LiteralPath $dependencyReport
             Write-Output "Packaged Visual C++ runtime: $($vcCrtDir.FullName)"
           } catch {
             Write-Error $_
@@ -331,6 +351,13 @@ jobs:
           }
           Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
           Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using source-built NPU-compatible runtime: $patchedRuntime"
+          foreach ($diagnosticName in @('runtime-files.txt', 'runtime-dependencies.txt')) {
+            $diagnosticPath = Join-Path $patchedRuntime $diagnosticName
+            if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "`r`n===== $diagnosticName ====="
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value (Get-Content -LiteralPath $diagnosticPath -Raw)
+            }
+          }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelSha = 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'
