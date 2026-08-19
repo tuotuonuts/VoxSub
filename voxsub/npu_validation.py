@@ -60,6 +60,18 @@ _GGUF_PENDING = NpuCompatibility(
     "The model format is compatible with the packaged OpenVINO NPU runtime, but this quantized file has not completed hardware inference validation.",
 )
 
+_GGUF_1_8B_VERIFIED = NpuCompatibility(
+    NPU_STATUS_VERIFIED,
+    "NPU 已验证",
+    "NPU verified",
+    "已在 Intel AI Boost 真机通过 VoxSub 自动 NPU 调度，以及禁用 CPU 回退的强制 NPU 推理。",
+    "Passed VoxSub's automatic NPU route and forced-NPU inference with CPU fallback disabled on Intel AI Boost hardware.",
+    device="Intel(R) AI Boost (Core Ultra 5 225H)",
+    driver="32.0.100.4841",
+    runtime="llama.cpp OpenVINO / NPU",
+    validated_at="2026-08-20",
+)
+
 
 # Hardware-probe results are promoted from pending only after both the explicit
 # NPU probe and VoxSub's automatic application route pass for the exact file.
@@ -71,9 +83,9 @@ NPU_COMPATIBILITY: dict[str, NpuCompatibility] = {
     "mt-hy-mt2-7b-q4": _GGUF_PENDING,
     "mt-hy-mt2-7b-q6": _GGUF_PENDING,
     "mt-hy-mt2-7b-q8": _GGUF_PENDING,
-    "mt-hy-mt2-1.8b-q4": _GGUF_PENDING,
-    "mt-hy-mt2-1.8b-q6": _GGUF_PENDING,
-    "mt-hy-mt2-1.8b-q8": _GGUF_PENDING,
+    "mt-hy-mt2-1.8b-q4": _GGUF_1_8B_VERIFIED,
+    "mt-hy-mt2-1.8b-q6": _GGUF_1_8B_VERIFIED,
+    "mt-hy-mt2-1.8b-q8": _GGUF_1_8B_VERIFIED,
     "mt-opus-fast-builtin": _OPUS_UNSUPPORTED,
 }
 

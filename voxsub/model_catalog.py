@@ -26,7 +26,7 @@ from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 logger = get_logger("model_catalog")
 
 GIB = 1024 ** 3
-CATALOG_UPDATED = "2026-08-18"
+CATALOG_UPDATED = "2026-08-20"
 
 
 def default_models_dir() -> Path:

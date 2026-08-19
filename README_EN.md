@@ -13,7 +13,7 @@ VoxSub is a Windows 10/11 live translation app designed for general users. It tu
 
 Source version: `0.3.9-beta`. The complete installer has been generated, and this remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
 
-> **Known limitation: Intel NPU scheduling is still under development.** This build may detect Intel NPU hardware but cannot yet guarantee that inference actually runs on the NPU; execution may fall back to the GPU or CPU. Do not treat NPU acceleration as supported in this release. Investigation is ongoing.
+> **Intel NPU support remains limited.** The current source has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B still awaits hardware validation, while the current sherpa-onnx ASR and OPUS runtimes do not support the NPU. The published `0.3.9-beta` installer predates these fixes and does not contain the verified NPU support described here.
 
 ## Download
 
@@ -29,7 +29,7 @@ Source version: `0.3.9-beta`. The complete installer has been generated, and thi
 - **Mode C — Audio/video subtitles:** import MP4, MKV, MOV, MP3, WAV, and other media; the bundled FFmpeg extracts audio automatically and VoxSub exports a matching SRT file.
 - **Model Hub:** browse supported open-source speech-recognition and translation models ordered by quality; download, switch, or uninstall them. Recommendations are labelled Not Recommended, Somewhat Recommended, Recommended, or Full Load based on the computer's CPU, RAM, GPU, and VRAM.
 - **Global and mainland-China download sources:** automatically benchmark and fail over between sources, or manually select Hugging Face/GitHub for global access or ModelScope for mainland China.
-- **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. GPU/integrated-GPU fallback is wired in, but Intel NPU scheduling has a known issue and may currently fall back to the GPU or CPU.
+- **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. The current source has verified automatic Intel NPU routing for Hy-MT2 1.8B Q4/Q6/Q8; other models follow their per-card Verified, Pending, or Unavailable NPU label.
 - **Built-in diagnostics and live logs:** view logs without opening or locking the log file, switch DEBUG logging on inside the app, and export logs, reports, and sessions through an in-app save dialog with background writing.
 - **New-device base-model repair:** a bundled Silero VAD is restored to the current user's model directory on first use, so an ASR model downloaded from Model Hub can run without a separate hidden VAD download.
 - **Cloud and hybrid pipelines:** choose STT and translation independently. Cloud STT and cloud translation each have their own API key, BaseURL, and model name, supporting cloud STT plus local translation, local STT plus cloud translation, and a fully cloud-based chain. Cloud STT uploads only VAD-finalized speech segments.

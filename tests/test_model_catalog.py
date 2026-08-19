@@ -63,6 +63,21 @@ def test_every_catalog_model_has_explicit_npu_compatibility() -> None:
         npu_compatibility(model.id).status == NPU_STATUS_UNSUPPORTED
         for model in CATALOG if model.task == "asr"
     )
+    for model_id in (
+        "mt-hy-mt2-1.8b-q4", "mt-hy-mt2-1.8b-q6", "mt-hy-mt2-1.8b-q8",
+    ):
+        evidence = npu_compatibility(model_id)
+        assert evidence.status == NPU_STATUS_VERIFIED
+        assert evidence.device == "Intel(R) AI Boost (Core Ultra 5 225H)"
+        assert evidence.driver == "32.0.100.4841"
+        assert evidence.runtime == "llama.cpp OpenVINO / NPU"
+        assert evidence.validated_at == "2026-08-20"
+    assert all(
+        npu_compatibility(model_id).status == NPU_STATUS_PENDING
+        for model_id in (
+            "mt-hy-mt2-7b-q4", "mt-hy-mt2-7b-q6", "mt-hy-mt2-7b-q8",
+        )
+    )
 
 
 def test_sensevoice_catalog_entry_has_downloadable_runtime_contract() -> None:

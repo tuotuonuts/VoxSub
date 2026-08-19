@@ -490,10 +490,10 @@ jobs:
           $summaryPath = '.npu-probe\catalog-summary.json'
           $markdownPath = '.npu-probe\catalog-summary.md'
           if (Test-Path -LiteralPath $markdownPath) {
-            Get-Content -LiteralPath $markdownPath
+            Get-Content -LiteralPath $markdownPath -Encoding UTF8
           }
           if (Test-Path -LiteralPath $summaryPath) {
-            $summary = Get-Content -LiteralPath $summaryPath -Raw
+            $summary = Get-Content -LiteralPath $summaryPath -Raw -Encoding UTF8
             $summary
             $result = $summary | ConvertFrom-Json
             $annotation = ($result.models | ForEach-Object {
