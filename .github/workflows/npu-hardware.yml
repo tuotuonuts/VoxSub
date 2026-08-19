@@ -73,12 +73,22 @@ jobs:
           } elseif ($existingServer) {
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing extracted runtime: $($existingServer.FullName)"
           }
-          $nameText = 'NPU_COMPILER_DYNAMIC_QUANTIZATION'
-          $name = [Text.Encoding]::ASCII.GetBytes($nameText)
-          # Collapse the unsupported legacy option into the existing NPUW
-          # enable flag. Both entries use YES, so the resulting duplicate key
-          # is equivalent to omitting dynamic quantization.
-          $replacementText = 'NPU_USE_NPUW'
+          $privateNpuProperties = @(
+            'NPU_COMPILER_DYNAMIC_QUANTIZATION',
+            'NPU_USE_NPUW',
+            'NPUW_DEVICES',
+            'NPUW_FOLD',
+            'NPUW_WEIGHTS_BANK',
+            'NPUW_FUNCALL_FOR_ALL',
+            'NPUW_FUNCALL_ASYNC',
+            'NPUW_DQ',
+            'NPUW_DQ_FULL'
+          )
+          # This llama.cpp build hardcodes private NPUW options that are not
+          # accepted by every Intel NPU driver. Collapse all entries into the
+          # standard PERF_COUNT=YES property. OpenVINO AnyMap keeps the first
+          # duplicate key, so the resulting compile config has one valid item.
+          $replacementText = 'PERF_COUNT'
           $replacement = [Text.Encoding]::ASCII.GetBytes($replacementText)
           $binaryEncoding = [Text.Encoding]::GetEncoding(28591)
           $patched = $false
@@ -86,17 +96,27 @@ jobs:
             Where-Object { $_.Extension -in @('.dll', '.exe') }
           foreach ($binary in $binaryCandidates) {
             $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
-            $offset = $binaryEncoding.GetString($bytes).IndexOf($nameText, [StringComparison]::Ordinal)
-            if ($offset -lt 0) { continue }
-            for ($n = 0; $n -lt $name.Length; $n++) { $bytes[$offset + $n] = 0 }
-            for ($n = 0; $n -lt $replacement.Length; $n++) { $bytes[$offset + $n] = $replacement[$n] }
+            $binaryText = $binaryEncoding.GetString($bytes)
+            $offsets = @{}
+            foreach ($propertyName in $privateNpuProperties) {
+              $offset = $binaryText.IndexOf("$propertyName`0", [StringComparison]::Ordinal)
+              if ($offset -lt 0) { $offsets = @{}; break }
+              $offsets[$propertyName] = $offset
+            }
+            if ($offsets.Count -ne $privateNpuProperties.Count) { continue }
+            foreach ($propertyName in $privateNpuProperties) {
+              $offset = [int]$offsets[$propertyName]
+              $clearLength = [Math]::Max($propertyName.Length, $replacement.Length)
+              for ($n = 0; $n -le $clearLength; $n++) { $bytes[$offset + $n] = 0 }
+              for ($n = 0; $n -lt $replacement.Length; $n++) { $bytes[$offset + $n] = $replacement[$n] }
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset ($propertyName -> $replacementText)."
+            }
             [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
             $patched = $true
-            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset (NPU_COMPILER_DYNAMIC_QUANTIZATION -> $replacementText)."
-            if ($patched) { break }
+            break
           }
           if (-not $patched) {
-            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value 'NPU compiler option was already absent from runtime binaries.'
+            throw 'The expected private NPU property table was not found in the OpenVINO runtime.'
           }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
