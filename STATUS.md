@@ -62,7 +62,9 @@
 - [x] v0.3.9-beta 源码：设置与模型广场改为主窗内置页面；内置 OPUS/Zipformer 支持缺失文件检测与在线修复；全量 190 passed / 3 skipped
 - [x] v0.3.9-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.9-beta.exe`（205.15 MiB，未签名）；SHA256 `D500E7045B503C58F13C81ECCA37675205097157F13CB48B088ED089A4182F29`
 - [x] Intel NPU 基础链路：Intel AI Boost（驱动 32.0.100.4841）上 Hy-MT2 1.8B Q4/Q6/Q8 已通过应用自动调度和禁用 CPU 回退的强制 NPU 推理
-- [!] Intel NPU 剩余边界：Hy-MT2 7B 因模型资源下载失败尚未真机验证；现有 sherpa-onnx ASR 与 OPUS 运行时不支持 NPU；已发布 0.3.9 安装包早于本修复
+- [x] v0.4.0-beta 源码：真机验证通过的 no-NPUW OpenVINO 运行时进入正式构建；NPU 真实翻译探针、当前句后端重试和动态核显/CPU 降级完成；7B 大模型断流续传完成；全量 209 passed / 2 skipped
+- [x] v0.4.0-beta 安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.0-beta.exe`（204.73 MiB，开发者自签名）；SHA256 `408AE75789EDDD880BF1A50976363CA27564C80D27988382EA6B5AE887BDDFCA`；隔离配置启动冒烟通过
+- [!] Intel NPU 剩余边界：Hy-MT2 7B Q4/Q6/Q8 仅按公开兼容资料列为待验证，精确权重尚未真机实测；现有 sherpa-onnx ASR 与 OPUS 运行时不支持 NPU
 - [ ] M9 发布候选：完成更多真实推理与无独显 NPU 轻薄本验收
 
 ## 环境事实（接手必知）
@@ -92,8 +94,8 @@
 ## 下一步（当前唯一任务线）
 
 1. 从模型广场分别下载 Fun-ASR-Nano/Qwen3-ASR 与 Hy-MT2，做真实中文、混合语言、噪声素材 A/B 对比
-2. 继续验证 Hy-MT2 7B 的 Intel NPU 内存与算子兼容性；Intel 1.8B 已完成 OpenVINO 真机验证，AMD/Qualcomm 仍需记录兼容性边界
-3. 使用 v0.3.8-beta 在更多真实音视频素材上继续验证识别质量、断句参数、云端兼容服务和长时间运行稳定性
+2. 继续验证 Hy-MT2 7B Q4/Q6/Q8 的 Intel NPU 内存与算子兼容性；Intel 1.8B 已完成 OpenVINO 真机验证，AMD/Qualcomm 仍需记录兼容性边界
+3. 使用 v0.4.0-beta 在更多真实音视频素材上继续验证识别质量、断句参数、云端兼容服务和长时间运行稳定性
 
 ## 发布约定（2026-08-17 用户指定）
 

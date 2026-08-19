@@ -26,3 +26,17 @@ def test_installer_custom_messages_cover_visible_actions():
         assert f"english.{key}=" in script
         assert f"chinesesimplified.{key}=" in script
         assert f"chinesetraditional.{key}=" in script
+
+
+def test_release_build_requires_the_validated_no_npuw_runtime():
+    build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    builder = (ROOT / "scripts" / "build_npu_runtime.ps1").read_text(
+        encoding="utf-8")
+
+    assert "VOXSUB_NPU_RUNTIME_DIR" in build
+    assert "runtime-dependencies.txt" in build
+    assert "build_npu_runtime.ps1" in build
+    assert "bin-win-openvino" not in build
+    assert "NPU_USE_NPUW" in builder
+    assert "A private NPUW compile option remains" in builder
+    assert "openvino_intel_npu_plugin.dll" in builder

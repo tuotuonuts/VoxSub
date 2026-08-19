@@ -75,6 +75,50 @@ def test_physical_npu_uses_bundled_openvino_without_ort_provider(
     assert selected and selected.backend == "openvino" and selected.target == "NPU"
 
 
+def test_fallback_scores_cpu_when_shared_memory_headroom_is_too_small(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    _runtime(tmp_path, "cpu")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile(
+        "Core Ultra", 4, 8, 8.0,
+        integrated_gpu_name="Intel Arc Graphics",
+        integrated_gpu_provider="DirectML",
+    )
+
+    selected = select_llama_runtime(profile, required_gb=6.0)
+
+    assert selected and selected.backend == "cpu" and selected.target == "CPU"
+    assert "CPU" in selected.selection_reason
+
+
+def test_fallback_prefers_integrated_gpu_with_healthy_headroom(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    _runtime(tmp_path, "cpu")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile(
+        "Core Ultra", 4, 8, 16.0,
+        integrated_gpu_name="Intel Arc Graphics",
+        integrated_gpu_provider="DirectML",
+    )
+
+    selected = select_llama_runtime(
+        profile, required_gb=6.0, excluded={("openvino", "NPU")},
+    )
+
+    assert selected and selected.backend == "openvino" and selected.target == "GPU"
+    assert "降级评分" in selected.selection_reason
+
+
+def test_openvino_gpu_is_reported_as_gpu_accelerator(
+        tmp_path: Path) -> None:
+    from voxsub.hardware import LlamaRuntime
+
+    runtime = LlamaRuntime(tmp_path / "llama-server.exe", "openvino", "GPU")
+    assert runtime.accelerator == "gpu"
+
+
 def test_outdated_intel_npu_driver_falls_back_to_igpu(
         tmp_path: Path, monkeypatch) -> None:
     _runtime(tmp_path, "openvino", "ggml-openvino.dll")

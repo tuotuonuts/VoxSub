@@ -70,7 +70,7 @@ def test_every_catalog_model_has_explicit_npu_compatibility() -> None:
         assert evidence.status == NPU_STATUS_VERIFIED
         assert evidence.device == "Intel(R) AI Boost (Core Ultra 5 225H)"
         assert evidence.driver == "32.0.100.4841"
-        assert evidence.runtime == "llama.cpp OpenVINO / NPU"
+        assert evidence.runtime == "llama.cpp b10470 OpenVINO 2026.2.1 / NPU"
         assert evidence.validated_at == "2026-08-20"
     assert all(
         npu_compatibility(model_id).status == NPU_STATUS_PENDING

@@ -179,11 +179,18 @@ class QwenQualityTranslator(Translator):
         gpu_layers = self._n_gpu_layers
         if gpu_layers is None:
             gpu_layers = self._auto_gpu_layers(profile, runtime)
+        effective_ctx = self._n_ctx
+        if runtime is not None and runtime.backend == "openvino" and runtime.target == "NPU":
+            # OpenVINO NPU uses a static graph.  The official backend guidance
+            # recommends an explicit small context because a model's large
+            # training context can otherwise cause compile-time OOM. Subtitle
+            # translation does not need more than 1024 tokens of context.
+            effective_ctx = min(effective_ctx, 1024)
         cmd = [str(self._server_exe),
                "--model", str(self._model_path),
                "--host", "127.0.0.1",
                "--port", str(port),
-               "--ctx-size", str(self._n_ctx),
+               "--ctx-size", str(effective_ctx),
                "--n-gpu-layers", str(gpu_layers),
                "--threads", str(self._n_threads),
                ]
@@ -215,6 +222,19 @@ class QwenQualityTranslator(Translator):
                     child_env["GGML_OPENVINO_ENABLE_FALLBACK"] = "0"
                 if runtime.target == "GPU":
                     child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "1"
+                elif runtime.target == "NPU":
+                    # NPU supports stateless execution only.  Streaming weight
+                    # conversion lowers peak host-memory pressure for 7B
+                    # candidates, and the compiled-model cache avoids repeating
+                    # that work on later launches when the backend can reuse it.
+                    child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "0"
+                    child_env["GGML_OPENVINO_MEMORY_OPTIMIZE"] = "1"
+                    cache_dir = (
+                        Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+                        / "VoxSub" / "cache" / "openvino-compiled"
+                    )
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    child_env["GGML_OPENVINO_COMPILED_MODEL_CACHE_DIR"] = str(cache_dir)
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
@@ -227,10 +247,13 @@ class QwenQualityTranslator(Translator):
         self._server_output_tail.clear()
         threading.Thread(target=self._drain_server_output, args=(self._proc,),
                          name="llama-server-log", daemon=True).start()
-        logger.info("llama-server 已启动 (model=%s backend=%s target=%s port=%s "
-                    "pid=%s gpu_layers=%s)", self._model_name,
+        logger.info("llama-server 进程已创建，等待运行时验证 "
+                    "(model=%s backend=%s target=%s port=%s pid=%s "
+                    "gpu_layers=%s ctx=%s reason=%s)", self._model_name,
                     runtime.backend if runtime else "cpu",
-                    runtime.target if runtime else "CPU", port, self._proc.pid, gpu_layers)
+                    runtime.target if runtime else "CPU", port, self._proc.pid,
+                    gpu_layers, effective_ctx,
+                    runtime.selection_reason if runtime else "CPU fallback")
         try:
             startup_timeout = 600.0 if (
                 runtime is not None and
@@ -243,10 +266,50 @@ class QwenQualityTranslator(Translator):
                 backend=runtime.backend if runtime else "cpu",
                 target=runtime.target if runtime else "CPU",
             )
+            if (runtime is not None and runtime.backend == "openvino" and
+                    runtime.target == "NPU"):
+                self._probe_runtime_inference(timeout_sec=180.0)
+            logger.info(
+                "llama-server 运行时验证通过 "
+                "(model=%s backend=%s target=%s health=ok inference=%s)",
+                self._model_name,
+                runtime.backend if runtime else "cpu",
+                runtime.target if runtime else "CPU",
+                "ok" if runtime and runtime.target == "NPU" else "deferred",
+            )
         except Exception:
             proc, failed_port = self._clear_server_state()
             self._terminate_process(proc, failed_port)
             raise
+
+    def _probe_runtime_inference(self, timeout_sec: float = 180.0) -> None:
+        """Require one real completion before accepting a candidate NPU route."""
+        endpoint = self._endpoint
+        if endpoint is None:
+            raise TranslationError("NPU 推理探针缺少 llama-server endpoint")
+        started = time.perf_counter()
+        try:
+            result = chat_completion(
+                endpoint,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Translate the following text into English. Only output the "
+                        "translated result and do not add explanations:\n你好"
+                    ),
+                }],
+                temperature=0.0,
+                max_tokens=8,
+                timeout_sec=timeout_sec,
+            )
+        except OpenAICompatError as exc:
+            logger.error("NPU 真实推理探针失败: %s", exc)
+            raise TranslationError(f"NPU 真实推理探针失败: {exc}") from exc
+        if not str(result or "").strip():
+            logger.error("NPU 真实推理探针返回空结果")
+            raise TranslationError("NPU 真实推理探针返回空结果")
+        logger.info("NPU 真实推理探针通过: elapsed_ms=%.1f output_chars=%d",
+                    (time.perf_counter() - started) * 1000.0, len(str(result)))
 
     def _auto_gpu_layers(self, profile, runtime: LlamaRuntime | None) -> int:
         """Offload only when a matching backend exists and memory is sufficient."""
@@ -355,30 +418,41 @@ class QwenQualityTranslator(Translator):
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
-        endpoint = self._ensure()
-        try:
-            with self._lock:
-                out = self._request_translation(endpoint, text, names, timeout_ms)
-                cleaned = _clean(out)
-                if _invalid_translation(text, cleaned, src_lang, dst_lang):
-                    logger.warning("质量档输出越界，使用更严格提示重试: src_chars=%d out_chars=%d",
-                                   len(text), len(cleaned))
-                    out = self._request_translation(
-                        endpoint, text, names, timeout_ms, retry=True)
+        last_error: OpenAICompatError | None = None
+        for _backend_attempt in range(4):
+            endpoint = self._ensure()
+            try:
+                with self._lock:
+                    out = self._request_translation(endpoint, text, names, timeout_ms)
                     cleaned = _clean(out)
-        except OpenAICompatError as exc:
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
+                    if _invalid_translation(text, cleaned, src_lang, dst_lang):
+                        logger.warning(
+                            "质量档输出越界，使用更严格提示重试: src_chars=%d out_chars=%d",
+                            len(text), len(cleaned))
+                        out = self._request_translation(
+                            endpoint, text, names, timeout_ms, retry=True)
+                        cleaned = _clean(out)
+            except OpenAICompatError as exc:
+                last_error = exc
                 key = self._runtime_key(self._runtime)
-                if self._explicit_server_exe is None and key is not None and key[0] != "cpu":
-                    self._failed_runtimes.add(key)
-                    logger.warning("翻译请求期间运行时退出，后续请求将降级: backend=%s target=%s",
-                                   key[0], key[1])
-                self._clear_server_state()
-            raise TranslationError(f"本地翻译引擎调用失败: {exc}") from exc
-        if _invalid_translation(text, cleaned, src_lang, dst_lang):
-            raise TranslationError("质量档返回了说明性或异常长度内容，已拒绝显示")
-        return cleaned
+                can_fallback = (
+                    self._explicit_server_exe is None and key is not None
+                    and key[0] != "cpu"
+                )
+                if not can_fallback:
+                    raise TranslationError(f"本地翻译引擎调用失败: {exc}") from exc
+                self._failed_runtimes.add(key)
+                logger.warning(
+                    "翻译请求期间加速后端失败，同一句立即降级重试: "
+                    "backend=%s target=%s error=%s",
+                    key[0], key[1], exc,
+                )
+                self.close()
+                continue
+            if _invalid_translation(text, cleaned, src_lang, dst_lang):
+                raise TranslationError("质量档返回了说明性或异常长度内容，已拒绝显示")
+            return cleaned
+        raise TranslationError(f"本地翻译引擎所有后端均失败: {last_error}")
 
     def _request_translation(self, endpoint: str, text: str,
                              names: tuple[str, str], timeout_ms: int,

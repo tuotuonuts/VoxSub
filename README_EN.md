@@ -7,20 +7,20 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The `0.3.9-beta` build environment could not find a local code-signing certificate and the installer may therefore be unsigned. Windows SmartScreen or antivirus products may show an “unknown publisher” warning, flag the file as risky, or produce a false positive. Developer self-signed builds can show similar warnings. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The `0.4.0-beta` installer uses a developer self-signed certificate. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.3.9-beta`. The complete installer has been generated, and this remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
+Source version: `0.4.0-beta`. The complete installer has been generated, and this remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
 
-> **Intel NPU support remains limited.** The current source has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B still awaits hardware validation, while the current sherpa-onnx ASR and OPUS runtimes do not support the NPU. The published `0.3.9-beta` installer predates these fixes and does not contain the verified NPU support described here.
+> **Intel NPU support remains limited.** `0.4.0-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
 ## Download
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
-- Installer: `VoxSub-Setup-0.3.9-beta.exe` (205.15 MiB, unsigned)
-- SHA256: `D500E7045B503C58F13C81ECCA37675205097157F13CB48B088ED089A4182F29` (the matching `.sha256` file has been generated)
-- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.3.9-beta.exe`
+- Installer: `VoxSub-Setup-0.4.0-beta.exe` (204.73 MiB, developer self-signed)
+- SHA256: `408AE75789EDDD880BF1A50976363CA27564C80D27988382EA6B5AE887BDDFCA` (the matching `.sha256` file has been generated)
+- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.0-beta.exe`
 
 ## Available Features
 
@@ -28,7 +28,7 @@ Source version: `0.3.9-beta`. The complete installer has been generated, and thi
 - **Mode B — Application/system audio:** choose a Windows output endpoint, or capture audio only from a selected application's process tree.
 - **Mode C — Audio/video subtitles:** import MP4, MKV, MOV, MP3, WAV, and other media; the bundled FFmpeg extracts audio automatically and VoxSub exports a matching SRT file.
 - **Model Hub:** browse supported open-source speech-recognition and translation models ordered by quality; download, switch, or uninstall them. Recommendations are labelled Not Recommended, Somewhat Recommended, Recommended, or Full Load based on the computer's CPU, RAM, GPU, and VRAM.
-- **Global and mainland-China download sources:** automatically benchmark and fail over between sources, or manually select Hugging Face/GitHub for global access or ModelScope for mainland China.
+- **Global and mainland-China download sources:** automatically benchmark and fail over between sources, or manually select Hugging Face/GitHub for global access or ModelScope for mainland China. Multi-gigabyte downloads retain progress and resume automatically after a CDN disconnect.
 - **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. The current source has verified automatic Intel NPU routing for Hy-MT2 1.8B Q4/Q6/Q8; other models follow their per-card Verified, Pending, or Unavailable NPU label.
 - **Built-in diagnostics and live logs:** view logs without opening or locking the log file, switch DEBUG logging on inside the app, and export logs, reports, and sessions through an in-app save dialog with background writing.
 - **New-device base-model repair:** a bundled Silero VAD is restored to the current user's model directory on first use, so an ASR model downloaded from Model Hub can run without a separate hidden VAD download.

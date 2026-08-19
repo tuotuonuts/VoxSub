@@ -86,14 +86,15 @@ class LlamaRuntime:
     server_exe: Path
     backend: str       # cuda | hip | vulkan | openvino | sycl | cpu
     target: str = ""  # OpenVINO: GPU | NPU | CPU
+    selection_reason: str = ""
 
     @property
     def accelerator(self) -> str:
         if self.backend == "openvino" and self.target == "NPU":
             return "npu"
-        if self.backend in {"cuda", "hip"}:
+        if self.backend in {"cuda", "hip", "vulkan", "sycl"}:
             return "gpu"
-        if self.backend in {"vulkan", "sycl"}:
+        if self.backend == "openvino" and self.target == "GPU":
             return "gpu"
         return "cpu"
 
@@ -391,21 +392,34 @@ def select_llama_runtime(profile: HardwareProfile,
                          explicit: Path | str | None = None,
                          required_gb: float = 0.0,
                          excluded: set[tuple[str, str]] | None = None) -> LlamaRuntime | None:
-    """Select GGUF runtime using GPU -> NPU -> integrated GPU -> CPU."""
+    """Select a GGUF runtime and explain accelerator/fallback decisions.
+
+    A discrete GPU and Intel NPU retain product priority.  Once those are not
+    usable, integrated-GPU and CPU candidates are scored from runtime
+    compatibility, shared-memory headroom and CPU capacity.  This prevents a
+    large model from being forced onto an iGPU when CPU execution is more
+    likely to remain responsive, while still preferring a healthy iGPU for the
+    smaller on-device models.
+    """
     if explicit:
         exe = Path(explicit)
-        return LlamaRuntime(exe, _classify_llama_backend(exe.parent))
+        return LlamaRuntime(
+            exe, _classify_llama_backend(exe.parent),
+            selection_reason="用户指定 llama-server，禁用自动后端选择",
+        )
     runtimes = discover_llama_runtimes()
     excluded = excluded or set()
 
-    def first(backends: tuple[str, ...], target: str = "") -> LlamaRuntime | None:
+    def first(backends: tuple[str, ...], target: str = "", *,
+              reason: str = "") -> LlamaRuntime | None:
         for runtime in runtimes:
             if runtime.backend in backends:
                 if (runtime.backend, target) in excluded:
                     logger.info("llama 运行时跳过: backend=%s target=%s 已记录启动失败",
                                 runtime.backend, target or "CPU")
                     continue
-                return LlamaRuntime(runtime.server_exe, runtime.backend, target)
+                return LlamaRuntime(runtime.server_exe, runtime.backend, target,
+                                    selection_reason=reason)
         return None
 
     if profile.has_discrete_gpu and profile.vram_gb >= required_gb:
@@ -413,8 +427,14 @@ def select_llama_runtime(profile: HardwareProfile,
         preferred = (("cuda", "vulkan") if "nvidia" in lower else
                      ("hip", "vulkan") if "amd" in lower or "radeon" in lower else
                      ("sycl", "openvino", "vulkan"))
-        picked = first(preferred, "GPU")
+        picked = first(
+            preferred, "GPU",
+            reason=(f"独立显卡 {profile.gpu_name} 显存 {profile.vram_gb:.1f} GB "
+                    f"满足模型约 {required_gb:.1f} GB 运行需求"),
+        )
         if picked:
+            logger.info("llama 后端选择: backend=%s target=%s reason=%s",
+                        picked.backend, picked.target, picked.selection_reason)
             return picked
     # The bundled llama.cpp OpenVINO runtime is independent from the Python
     # ONNX Runtime package. Requiring OpenVINOExecutionProvider here made
@@ -434,20 +454,71 @@ def select_llama_runtime(profile: HardwareProfile,
             logger.info("llama NPU 跳过: 内存不足 required_gb=%.2f ram_gb=%.2f",
                         required_gb + 4.0, profile.ram_gb)
         else:
-            picked = first(("openvino",), "NPU")
+            picked = first(
+                ("openvino",), "NPU",
+                reason=(f"检测到兼容 Intel NPU 与 OpenVINO 运行时，内存 "
+                        f"{profile.ram_gb:.1f} GB 满足候选执行条件"),
+            )
             if picked:
-                logger.info("llama NPU 选择: 使用随包 OpenVINO runtime=%s",
-                            picked.server_exe)
+                logger.info("llama 后端选择: backend=%s target=%s runtime=%s reason=%s",
+                            picked.backend, picked.target, picked.server_exe,
+                            picked.selection_reason)
                 return picked
-    if profile.has_integrated_gpu and profile.ram_gb >= required_gb + 4.0:
+
+    candidates: list[tuple[float, LlamaRuntime]] = []
+    memory_margin = max(0.0, profile.ram_gb - required_gb)
+    if profile.has_integrated_gpu and profile.ram_gb >= required_gb + 2.5:
         lower = profile.integrated_gpu_name.casefold()
         preferred = (("sycl", "openvino", "vulkan") if "intel" in lower else
                      ("hip", "vulkan") if "amd" in lower or "radeon" in lower else
                      ("vulkan",))
-        picked = first(preferred, "GPU")
-        if picked:
-            return picked
-    return first(("cpu",), "CPU")
+        backend_bonus = {"sycl": 20.0, "openvino": 18.0,
+                         "hip": 18.0, "vulkan": 12.0}
+        for order, backend in enumerate(preferred):
+            picked = first((backend,), "GPU")
+            if picked is None:
+                continue
+            score = (
+                86.0 + backend_bonus.get(backend, 0.0)
+                + min(memory_margin, 16.0) * 1.3
+                - min(required_gb, 16.0) * 0.8
+                - order * 0.1
+            )
+            reason = (
+                f"核显 {profile.integrated_gpu_name} 可用 {backend}；"
+                f"共享内存余量约 {memory_margin:.1f} GB；降级评分 {score:.1f}"
+            )
+            candidates.append((score, LlamaRuntime(
+                picked.server_exe, picked.backend, picked.target,
+                selection_reason=reason,
+            )))
+
+    cpu = first(("cpu",), "CPU")
+    if cpu is not None:
+        cpu_score = (
+            72.0 + min(max(profile.logical_cores, 1), 32) * 2.0
+            + min(memory_margin, 12.0) * 0.75
+        )
+        reason = (
+            f"CPU {profile.logical_cores} 线程；内存余量约 {memory_margin:.1f} GB；"
+            f"降级评分 {cpu_score:.1f}"
+        )
+        candidates.append((cpu_score, LlamaRuntime(
+            cpu.server_exe, cpu.backend, cpu.target,
+            selection_reason=reason,
+        )))
+
+    if not candidates:
+        logger.warning("llama 后端选择失败: 没有未被排除的兼容运行时")
+        return None
+    for score, candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
+        logger.info("llama 降级候选: backend=%s target=%s score=%.1f reason=%s",
+                    candidate.backend, candidate.target, score,
+                    candidate.selection_reason)
+    selected = max(candidates, key=lambda item: item[0])[1]
+    logger.info("llama 后端选择: backend=%s target=%s reason=%s",
+                selected.backend, selected.target, selected.selection_reason)
+    return selected
 
 
 def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:

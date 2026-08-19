@@ -9,7 +9,7 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Version = "0.3.9-beta"
+$Version = "0.4.0-beta"
 $LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 
@@ -21,7 +21,11 @@ function Run-Checked([string]$Label, [scriptblock]$Block) {
 
 
 if (-not $SkipTests) {
-    $TestBaseTemp = Join-Path $Root ".pytest-basetemp-build"
+    # OneDrive can retain handles on a reused workspace basetemp and make the
+    # next pytest run fail before test setup.  A unique OS temp directory keeps
+    # the release gate isolated from sync-client filesystem locks.
+    $TestBaseTemp = Join-Path $env:TEMP (
+        "VoxSub_pytest_build_" + [guid]::NewGuid().ToString("N"))
     Run-Checked "pytest" {
         & ".venv\Scripts\python.exe" -m pytest tests/ -q --basetemp $TestBaseTemp
     }
@@ -106,11 +110,6 @@ $LlamaAssets = @(
         Name = "vulkan";
         File = "llama-$LlamaVersion-bin-win-vulkan-x64.zip";
         Sha256 = "2E89637B30E0E2F90D4ED486118E8642F60625B1DBEBB9BA3A30BC4100306FC9"
-    },
-    @{
-        Name = "openvino";
-        File = "llama-$LlamaVersion-bin-win-openvino-2026.2.1-x64.zip";
-        Sha256 = "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD"
     }
 )
 $LlamaCache = Join-Path $env:TEMP "VoxSub_llama_$LlamaVersion"
@@ -135,7 +134,43 @@ foreach ($Asset in $LlamaAssets) {
     New-Item -ItemType Directory -Path $BackendDest -Force | Out-Null
     Copy-Item -Path (Join-Path $Extract "*") -Destination $BackendDest -Recurse -Force
 }
-Write-Host "[build] bundled llama.cpp $LlamaVersion CPU/Vulkan/OpenVINO -> $LlamaDest" -ForegroundColor Green
+
+# The official OpenVINO archive still contains a private NPUW compile option
+# that is incompatible with the Intel NPU driver used by our hardware runner.
+# Use the source-built no-NPUW runtime that passed the real NPU probe.  The
+# override is useful for CI and for a locally cached verified runtime; a clean
+# build falls back to the reproducible source builder.
+$NpuRuntimeDir = $env:VOXSUB_NPU_RUNTIME_DIR
+if (-not $NpuRuntimeDir) {
+    $NpuRuntimeDir = Join-Path $env:TEMP "VoxSub_npu_runtime_$LlamaVersion"
+}
+$NpuRequired = @(
+    "llama-server.exe",
+    "ggml-openvino.dll",
+    "openvino_intel_npu_plugin.dll",
+    "runtime-dependencies.txt"
+)
+$NpuReady = (@($NpuRequired | Where-Object {
+    Test-Path -LiteralPath (Join-Path $NpuRuntimeDir $_) -PathType Leaf
+}).Count -eq $NpuRequired.Count)
+if (-not $NpuReady) {
+    Run-Checked "build no-NPUW OpenVINO runtime" {
+        & (Join-Path $Root "scripts\build_npu_runtime.ps1") `
+            -OutputDir $NpuRuntimeDir `
+            -CacheRoot (Join-Path $env:TEMP "VoxSub_npu_source_$LlamaVersion")
+    }
+}
+$NpuReady = (@($NpuRequired | Where-Object {
+    Test-Path -LiteralPath (Join-Path $NpuRuntimeDir $_) -PathType Leaf
+}).Count -eq $NpuRequired.Count)
+if (-not $NpuReady) {
+    throw "NPU-compatible OpenVINO runtime is incomplete: $NpuRuntimeDir"
+}
+$NpuDest = Join-Path $LlamaDest "openvino"
+if (Test-Path -LiteralPath $NpuDest) { Remove-Item -LiteralPath $NpuDest -Recurse -Force }
+New-Item -ItemType Directory -Path $NpuDest -Force | Out-Null
+Copy-Item -Path (Join-Path $NpuRuntimeDir "*") -Destination $NpuDest -Recurse -Force
+Write-Host "[build] bundled llama.cpp $LlamaVersion CPU/Vulkan/no-NPUW-OpenVINO -> $LlamaDest" -ForegroundColor Green
 
 # C 模式必须开箱即用：将 ffmpeg 作为独立工具随 onedir 分发，并附许可证。
 $FfmpegPath = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source

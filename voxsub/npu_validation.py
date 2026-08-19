@@ -56,8 +56,8 @@ _GGUF_PENDING = NpuCompatibility(
     NPU_STATUS_PENDING,
     "NPU 待验证",
     "NPU pending",
-    "模型格式与随包 OpenVINO NPU 运行时兼容，但该量化文件尚未完成真机推理验证。",
-    "The model format is compatible with the packaged OpenVINO NPU runtime, but this quantized file has not completed hardware inference validation.",
+    "公开的 llama.cpp OpenVINO 资料列出了 Intel NPU、Q4_K_M/Q6_K/Q8_0 和相近的 7B/8B GGUF 模型支持；但该 Hy-MT2 量化文件尚未完成真机验证。VoxSub 启动后会先做真实翻译探针，失败则自动滑落到核显或 CPU。",
+    "Public llama.cpp OpenVINO documentation lists Intel NPU, Q4_K_M/Q6_K/Q8_0, and nearby 7B/8B GGUF models as supported candidates; this exact Hy-MT2 quantized file has not completed hardware validation. VoxSub runs a real translation probe at startup and automatically falls back to the integrated GPU or CPU if it fails.",
 )
 
 _GGUF_1_8B_VERIFIED = NpuCompatibility(
@@ -68,7 +68,7 @@ _GGUF_1_8B_VERIFIED = NpuCompatibility(
     "Passed VoxSub's automatic NPU route and forced-NPU inference with CPU fallback disabled on Intel AI Boost hardware.",
     device="Intel(R) AI Boost (Core Ultra 5 225H)",
     driver="32.0.100.4841",
-    runtime="llama.cpp OpenVINO / NPU",
+    runtime="llama.cpp b10470 OpenVINO 2026.2.1 / NPU",
     validated_at="2026-08-20",
 )
 

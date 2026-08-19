@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from voxsub.hardware import HardwareProfile, LlamaRuntime  # noqa: E402
+from voxsub.translate._http_client import OpenAICompatError  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
 from voxsub.translate.qwen import _invalid_translation  # noqa: E402
@@ -162,6 +163,41 @@ def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None
     q._endpoint = None
 
 
+def test_translation_retries_same_sentence_after_accelerator_failure(
+        tmp_path: Path, monkeypatch) -> None:
+    """A live accelerator request failure must fall back before dropping text."""
+    q = _make_qwen(tmp_path)
+    runtimes = [
+        LlamaRuntime(Path("npu/llama-server.exe"), "openvino", "NPU"),
+        LlamaRuntime(Path("cpu/llama-server.exe"), "cpu", "CPU"),
+    ]
+    attempts: list[tuple[str, str]] = []
+
+    def fake_ensure() -> str:
+        runtime = runtimes.pop(0)
+        q._runtime = runtime
+        q._proc = _FakeProc()
+        q._endpoint = f"http://127.0.0.1:{len(attempts) + 1}/v1/chat/completions"
+        return q._endpoint
+
+    def fake_request(*_args, **_kwargs) -> str:
+        assert q._runtime is not None
+        attempts.append((q._runtime.backend, q._runtime.target))
+        if q._runtime.target == "NPU":
+            raise OpenAICompatError("NPU graph execution failed")
+        return "Hello."
+
+    monkeypatch.setattr(q, "_ensure", fake_ensure)
+    monkeypatch.setattr(q, "_request_translation", fake_request)
+    monkeypatch.setattr(q, "close", lambda: None)
+
+    assert q.translate("你好。", "zh", "en") == "Hello."
+    assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
+    assert ("openvino", "NPU") in q._failed_runtimes
+    q._proc = None
+    q._endpoint = None
+
+
 def test_spawn_requests_openvino_device_and_disables_npu_fallback(
         tmp_path: Path, monkeypatch) -> None:
     """NPU launches must select OPENVINO0 and reject silent CPU fallback."""
@@ -191,6 +227,7 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
         wait_ready.update(kwargs)
 
     monkeypatch.setattr(q, "_wait_ready", fake_wait_ready)
+    monkeypatch.setattr(q, "_probe_runtime_inference", lambda **_kwargs: None)
     monkeypatch.setattr("voxsub.translate.qwen.detect_hardware", lambda: HardwareProfile(
         "test cpu", 4, 8, 16.0, npu_name="Intel AI Boost"))
     monkeypatch.setattr("voxsub.translate.qwen.select_llama_runtime",
@@ -202,6 +239,9 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
     assert captured["cmd"][-2:] == ["--parallel", "1"]
     assert captured["env"]["GGML_OPENVINO_DEVICE"] == "NPU"
     assert captured["env"]["GGML_OPENVINO_ENABLE_FALLBACK"] == "0"
+    assert captured["env"]["GGML_OPENVINO_STATEFUL_EXECUTION"] == "0"
+    assert captured["env"]["GGML_OPENVINO_MEMORY_OPTIMIZE"] == "1"
+    assert captured["cmd"][captured["cmd"].index("--ctx-size") + 1] == "64"
     assert wait_ready == {
         "port": 8090,
         "timeout": 600.0,
