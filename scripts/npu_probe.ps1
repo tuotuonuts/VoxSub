@@ -42,10 +42,19 @@ function Find-GgufModel([string]$PreferredPath) {
         }
         return (Resolve-Path -LiteralPath $PreferredPath).Path
     }
+    $assetModelsRoot = Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-assets\models'
+    $pathFile = Join-Path $assetModelsRoot 'model-path.txt'
+    if (Test-Path -LiteralPath $pathFile -PathType Leaf) {
+        $recordedPath = (Get-Content -LiteralPath $pathFile -Raw).Trim()
+        if ($recordedPath -and (Test-Path -LiteralPath $recordedPath -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $recordedPath).Path
+        }
+    }
     $modelsRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\models\llm'
     $modelsRoots = @(
-        (Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-assets\models'),
-        $modelsRoot
+        $assetModelsRoot,
+        $modelsRoot,
+        (Join-Path $env:LOCALAPPDATA 'VoxSub\models')
     )
     foreach ($root in $modelsRoots | Select-Object -Unique) {
       if (Test-Path -LiteralPath $root -PathType Container) {
@@ -81,6 +90,7 @@ function Quote-WindowsArgument([string]$Value) {
 $serverProcess = $null
 $stdoutTask = $null
 $stderrTask = $null
+$inferenceSucceeded = $false
 try {
     $npuDevices = @(Get-CimInstance Win32_PnPEntity |
         Where-Object { $_.Name -match '\bNPU\b|Neural Processing|AI Boost|Ryzen AI|Hexagon' } |
@@ -175,6 +185,7 @@ try {
         throw 'llama-server started but returned no valid chat result.'
     }
     Write-Probe "Inference reply: $content"
+    $inferenceSucceeded = $true
 }
 catch {
     Write-Probe "FAIL: $($_.Exception.Message)"
@@ -196,14 +207,22 @@ finally {
             if (Test-Path -LiteralPath $ServerOutPath) { Get-Content -LiteralPath $ServerOutPath -Raw }
             if (Test-Path -LiteralPath $ServerErrPath) { Get-Content -LiteralPath $ServerErrPath -Raw }
         ) -join "`n"
-        if ($combined -match '(?i)fallback to CPU|device NPU is not available') {
-            Write-Probe 'FAIL: llama.cpp reported NPU fallback or unavailable NPU.'
-            throw 'NPU is unavailable or fell back to CPU. Download intel-npu-probe diagnostics.'
+        $fallbackDetected = $combined -match '(?i)fallback to CPU|device NPU is not available'
+        $npuMarkerDetected = $combined -match '(?is)openvino.{0,240}npu|npu.{0,240}openvino|using device.{0,80}npu'
+        if ($inferenceSucceeded) {
+            if ($fallbackDetected) {
+                Write-Probe 'FAIL: llama.cpp reported NPU fallback or unavailable NPU.'
+                throw 'NPU is unavailable or fell back to CPU. Download intel-npu-probe diagnostics.'
+            }
+            if (-not $npuMarkerDetected) {
+                Write-Probe 'FAIL: no explicit OpenVINO NPU execution marker was found.'
+                throw 'No proof of OpenVINO NPU execution was found in llama-server logs.'
+            }
+            Write-Probe 'PASS: health check and inference succeeded on OpenVINO NPU; no CPU fallback marker found.'
+        } elseif ($fallbackDetected) {
+            Write-Probe 'DIAGNOSTIC: llama.cpp reported NPU fallback or unavailable NPU before inference completed.'
+        } elseif (-not $npuMarkerDetected) {
+            Write-Probe 'DIAGNOSTIC: no explicit OpenVINO NPU execution marker was found before inference failed.'
         }
-        if ($combined -notmatch '(?is)openvino.{0,240}npu|npu.{0,240}openvino|using device.{0,80}npu') {
-            Write-Probe 'FAIL: no explicit OpenVINO NPU execution marker was found.'
-            throw 'No proof of OpenVINO NPU execution was found in llama-server logs.'
-        }
-        Write-Probe 'PASS: OpenVINO NPU execution marker found; no CPU fallback marker found.'
     }
 }

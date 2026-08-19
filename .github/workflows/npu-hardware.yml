@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: intel-npu-hardware-probe
+  cancel-in-progress: true
+
 jobs:
   probe:
     # Manual only: a public repository must never run pull-request code on a personal PC.
@@ -94,8 +98,23 @@ jobs:
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelSha = 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'
           $modelValid = $false
+          $installedModelsRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\models'
+          if (Test-Path -LiteralPath $installedModelsRoot -PathType Container) {
+            $installedModel = Get-ChildItem -LiteralPath $installedModelsRoot -Filter '*.gguf' -File -Recurse |
+              Where-Object { $_.Length -gt 100MB } |
+              Sort-Object LastWriteTimeUtc -Descending |
+              Select-Object -First 1
+            if ($installedModel) {
+              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $installedModel.FullName
+              $modelValid = $true
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using installed GGUF model: $($installedModel.FullName)"
+            }
+          }
           if (Test-Path -LiteralPath $model) {
-            $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
+            if (-not $modelValid) {
+              $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
+              if ($modelValid) { Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model }
+            }
           }
           $modelUrls = @(
             'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf',
@@ -112,6 +131,7 @@ jobs:
               Remove-Item -LiteralPath $model -Force -ErrorAction SilentlyContinue
               Move-Item -LiteralPath $partial -Destination $model -Force
               $modelValid = $true
+              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model
             } catch {
               Write-Warning "Model source failed: $modelUrl - $($_.Exception.Message)"
               Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
@@ -141,7 +161,13 @@ jobs:
             $summary = (($logs | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`n").Trim()
             $logs | ForEach-Object { Get-Content -LiteralPath $_ }
             $annotation = $summary.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error file=.npu-probe/build.log,line=1,title=NPU probe summary::$annotation"
+            $passed = (Test-Path -LiteralPath '.npu-probe\probe.log') -and
+              ((Get-Content -LiteralPath '.npu-probe\probe.log' -Raw) -match '(?m)^.*PASS: health check and inference succeeded on OpenVINO NPU')
+            if ($passed) {
+              Write-Output "::notice file=.npu-probe/probe.log,line=1,title=NPU probe passed::$annotation"
+            } else {
+              Write-Output "::error file=.npu-probe/probe.log,line=1,title=NPU probe failed::$annotation"
+            }
           } else {
             Write-Output 'No NPU probe or build log was created.'
           }
