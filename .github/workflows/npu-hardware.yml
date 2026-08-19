@@ -41,15 +41,18 @@ jobs:
           $runtimeRoot = Join-Path $assetRoot 'openvino'
           $modelRoot = Join-Path $assetRoot 'models'
           New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $probeRoot -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value ''
 
           $runtimeZip = Join-Path $assetRoot 'llama-b10470-openvino.zip'
           $runtimeUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10470/llama-b10470-bin-win-openvino-2026.2.1-x64.zip'
           $existingServer = Get-ChildItem -LiteralPath $runtimeRoot -Filter 'llama-server.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $existingServer) {
-            $validZip = $false
-            if (Test-Path -LiteralPath $runtimeZip) {
-              try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose(); $validZip = $true } catch { $validZip = $false }
-            }
+          $validZip = $false
+          if (Test-Path -LiteralPath $runtimeZip) {
+            try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose(); $validZip = $true } catch { $validZip = $false }
+          }
+          if ($validZip) {
+            Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
+          } elseif (-not $existingServer) {
             for ($attempt = 1; $attempt -le 5 -and -not $validZip; $attempt++) {
               Remove-Item -LiteralPath $runtimeZip -Force -ErrorAction SilentlyContinue
               try {
@@ -57,13 +60,13 @@ jobs:
                 [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose()
                 $validZip = $true
               } catch {
-                Add-Content -LiteralPath (Join-Path $probeRoot 'prepare.log') -Value "Runtime download attempt $attempt failed: $($_.Exception.Message)"
+                Write-Warning "Runtime download attempt $attempt failed: $($_.Exception.Message)"
                 Start-Sleep -Seconds ([Math]::Min(30, $attempt * 5))
               }
             }
             if (-not $validZip) { throw "llama OpenVINO runtime archive could not be downloaded after 5 attempts." }
             Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
-          } else {
+          } elseif ($existingServer) {
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing extracted runtime: $($existingServer.FullName)"
           }
           $nameText = 'NPU_COMPILER_DYNAMIC_QUANTIZATION'
@@ -84,17 +87,37 @@ jobs:
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset (NPU_COMPILER_DYNAMIC_QUANTIZATION -> NPUW_DQ)."
             if ($patched) { break }
           }
-          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION in runtime binaries.' }
+          if (-not $patched) {
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value 'NPU compiler option was already absent from runtime binaries.'
+          }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
-          $modelUrl = 'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf'
-          if (-not (Test-Path -LiteralPath $model)) {
-            Invoke-WebRequest -Uri $modelUrl -OutFile $model -UseBasicParsing
+          $modelSha = 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'
+          $modelValid = $false
+          if (Test-Path -LiteralPath $model) {
+            $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
           }
-          $actualSha = (Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualSha -ne 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699') {
-            throw "Model SHA256 mismatch: $actualSha"
+          $modelUrls = @(
+            'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf',
+            'https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true'
+          )
+          foreach ($modelUrl in $modelUrls) {
+            if ($modelValid) { break }
+            $partial = "$model.part"
+            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+            try {
+              Invoke-WebRequest -Uri $modelUrl -OutFile $partial -UseBasicParsing -TimeoutSec 900
+              $actualSha = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actualSha -ne $modelSha) { throw "Downloaded model SHA256 mismatch: $actualSha" }
+              Remove-Item -LiteralPath $model -Force -ErrorAction SilentlyContinue
+              Move-Item -LiteralPath $partial -Destination $model -Force
+              $modelValid = $true
+            } catch {
+              Write-Warning "Model source failed: $modelUrl - $($_.Exception.Message)"
+              Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+            }
           }
+          if (-not $modelValid) { throw 'Could not download a valid NPU probe model from either source.' }
           } catch {
             Write-Error $_
             throw
