@@ -199,6 +199,14 @@ TRANSLATIONS: dict[str, str] = {
     "已检测": "Detected",
     "已检测，等待兼容模型后端": "Detected; waiting for a compatible model backend",
     "运行设备": "Runtime devices",
+    "NPU 可用": "NPU available",
+    "NPU 待验证": "NPU pending",
+    "NPU 不可用": "NPU unavailable",
+    "NPU 配置不足": "NPU requirements not met",
+    "验证设备": "Validated device",
+    "驱动": "Driver",
+    "运行时": "Runtime",
+    "验证日期": "Validated",
     "质量分": "Quality",
     "随应用内置": "Bundled with the app",
     "下载": "Download",
@@ -387,7 +395,7 @@ TRANSLATIONS: dict[str, str] = {
         "A high-fidelity 7B quantization that prioritizes terminology and complex sentences; only suitable for computers with ample RAM and VRAM.",
     "面向端侧的专用翻译模型，在速度、资源占用和质量间更均衡。":
         "An edge-focused translation model with a balanced speed, resource, and quality profile.",
-    "端侧翻译的均衡高保真档，比 Q4 多占少量内存，适合希望进一步减少量化损失的用户。":
+    "端侧翻译的均衡高保真档，比 Q4 多占一些内存，适合希望进一步减少量化损失的用户。":
         "A balanced high-fidelity edge translation model that uses slightly more memory than Q4 to reduce quantization loss.",
     "轻量模型中的高保真档，适合内存充裕但不想运行 7B 的笔记本和台式机。":
         "A high-fidelity lightweight model for laptops and desktops with enough memory that do not need a 7B model.",

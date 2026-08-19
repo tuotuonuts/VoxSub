@@ -1131,6 +1131,10 @@ class TestModelHubWindow:
             assert all(isinstance(button, PillChoiceButton)
                        for button in hub.filter_buttons.values())
             assert all(button.isCheckable() for button in hub.filter_buttons.values())
+            assert all(card.npu_badge.text().startswith("NPU ")
+                       for card in hub._cards.values())  # noqa: SLF001
+            assert all(card.npu_badge.toolTip()
+                       for card in hub._cards.values())  # noqa: SLF001
         finally:
             hub.close()
             hub.deleteLater()

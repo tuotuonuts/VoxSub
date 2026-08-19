@@ -160,8 +160,8 @@ class TranslatorFactory:
 | 识别高质 | Fun-ASR-Nano 2512 INT8 | models/marketplace/asr-funasr-nano-2512-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope |
 | 识别多语 | Qwen3-ASR 0.6B INT8 | models/marketplace/asr-qwen3-0.6b-int8/ | ~1GB | GitHub sherpa-onnx / ModelScope 分文件镜像 |
 | 识别轻量多语 | SenseVoice Small INT8 | models/marketplace/asr-sensevoice-small-int8/ | ~245MB | GitHub sherpa-onnx / ModelScope |
-| 翻译均衡 | Hy-MT2 1.8B Q4/Q5/Q8 GGUF | models/marketplace/mt-hy-mt2-1.8b-q*/ | ~1.13–1.94GB | Hugging Face / ModelScope |
-| 翻译高质 | Hy-MT2 7B Q4/Q5/Q8 GGUF | models/marketplace/mt-hy-mt2-7b-q*/ | ~4.62–7.65GB | Hugging Face / ModelScope |
+| 翻译均衡 | Hy-MT2 1.8B Q4/Q6/Q8 GGUF | models/marketplace/mt-hy-mt2-1.8b-q*/ | ~1.13–1.91GB | Hugging Face / ModelScope |
+| 翻译高质 | Hy-MT2 7B Q4/Q6/Q8 GGUF | models/marketplace/mt-hy-mt2-7b-q*/ | ~4.62–7.98GB | Hugging Face / ModelScope |
 | 云 | 用户 OpenAI 兼容端点 | — | — | 用户配置 |
 
 注：目录按任务内质量分排序，不追求“列得多”。旧模型只有在显著更低资源/延迟下仍不可替代时才作为内置兜底保留。下载源支持自动测速故障切换和手动选择；安装过程使用断点续传、SHA256 与安全解压。

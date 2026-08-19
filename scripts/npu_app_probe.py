@@ -1,6 +1,7 @@
 """Exercise VoxSub's real GGUF startup path on an Intel NPU computer."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import socket
@@ -53,18 +54,50 @@ def _free_port() -> int:
 
 
 def main() -> int:
-    PROBE_DIR.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--model-path", default=os.environ.get("VOXSUB_NPU_TEST_MODEL", ""))
+    parser.add_argument("--model-id", default="")
+    parser.add_argument("--runtime-dir", default=os.environ.get("VOXSUB_LLAMA_DIR", ""))
+    parser.add_argument("--output-dir", default=str(PROBE_DIR))
+    parser.add_argument("--force", choices=("auto", "npu", "cpu"), default="auto")
+    args = parser.parse_args()
+
+    probe_dir = Path(args.output_dir)
+    report_path = probe_dir / "app-path.json"
+    server_log_path = probe_dir / "app-path-server.log"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    if args.model_path:
+        os.environ["VOXSUB_NPU_TEST_MODEL"] = args.model_path
+    if args.runtime_dir:
+        os.environ["VOXSUB_LLAMA_DIR"] = args.runtime_dir
     model = _find_model()
     runtime_dir = _find_runtime_dir()
     os.environ["VOXSUB_LLAMA_DIR"] = str(runtime_dir)
     os.environ["VOXSUB_LOG"] = "INFO"
 
     sys.path.insert(0, str(REPO_ROOT))
+    import voxsub.translate.qwen as qwen_module
+    from voxsub.hardware import LlamaRuntime
     from voxsub.translate.qwen import QwenQualityTranslator
 
+    server_exe = runtime_dir / "llama-server.exe"
+    if args.force == "npu":
+        def select_forced_npu(*_args, **kwargs):
+            runtime = LlamaRuntime(server_exe, "openvino", "NPU")
+            if (runtime.backend, runtime.target) in (kwargs.get("excluded") or set()):
+                raise RuntimeError("The forced OpenVINO NPU runtime already failed.")
+            return runtime
+
+        qwen_module.select_llama_runtime = select_forced_npu
+    elif args.force == "cpu":
+        qwen_module.select_llama_runtime = lambda *_args, **_kwargs: LlamaRuntime(
+            server_exe, "cpu", "CPU")
+
     report: dict[str, object] = {
+        "model_id": args.model_id,
         "model": str(model),
         "runtime_dir": str(runtime_dir),
+        "mode": args.force,
         "result": "FAIL",
     }
     translator = QwenQualityTranslator(
@@ -87,18 +120,31 @@ def main() -> int:
             "target": runtime.target if runtime else "CPU",
             "failed_runtimes": [list(item) for item in sorted(translator._failed_runtimes)],
         })
-        if runtime is None or runtime.backend != "openvino" or runtime.target != "NPU":
+        if args.force in {"auto", "npu"} and (
+                runtime is None or runtime.backend != "openvino" or runtime.target != "NPU"):
             raise RuntimeError(
                 "VoxSub application path did not select OpenVINO NPU: "
                 f"backend={report['backend']} target={report['target']}"
             )
+        if args.force == "cpu" and (
+                runtime is None or runtime.backend != "cpu"):
+            raise RuntimeError(
+                "CPU baseline did not select CPU runtime: "
+                f"backend={report['backend']} target={report['target']}"
+            )
         if ("openvino", "NPU") in translator._failed_runtimes:
             raise RuntimeError("OpenVINO NPU was incorrectly marked as failed.")
+        inference_started = time.monotonic()
+        translation = translator.translate(
+            "你好，世界。", "zh", "en", timeout_ms=180000)
+        report["inference_seconds"] = round(time.monotonic() - inference_started, 3)
+        report["translation"] = translation
+        if not translation.strip():
+            raise RuntimeError("Application translation returned empty output.")
         report["result"] = "PASS"
-        print(
-            "PASS: VoxSub application startup selected OpenVINO NPU "
-            f"and became ready in {elapsed:.1f}s."
-        )
+        selected = f"{report['backend']}/{report['target']}"
+        print(f"PASS: VoxSub application path selected {selected} "
+              f"and translated in {elapsed:.1f}s startup.")
         return 0
     except Exception as exc:
         report["error"] = str(exc)
@@ -109,9 +155,9 @@ def main() -> int:
         translator.close()
         time.sleep(0.5)
         server_output = "\n".join(translator._server_output_tail)
-        SERVER_LOG_PATH.write_text(server_output, encoding="utf-8")
+        server_log_path.write_text(server_output, encoding="utf-8")
         report["server_output_lines"] = len(translator._server_output_tail)
-        REPORT_PATH.write_text(
+        report_path.write_text(
             json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))

@@ -30,6 +30,7 @@ from voxsub.model_catalog import (
     models_for_task,
 )
 from voxsub.models import DownloadCancelled
+from voxsub.npu_validation import npu_compatibility
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.i18n import (
     language_manager,
@@ -90,6 +91,38 @@ class RecommendationBadge(QLabel):
         )
 
 
+class NpuCompatibilityBadge(QLabel):
+    def __init__(self, model_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.model_id = model_id
+        self.setObjectName("npuCompatibilityBadge")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.refresh_language()
+
+    def refresh_language(self) -> None:
+        evidence = npu_compatibility(self.model_id)
+        self.setText(tr(evidence.label_zh, evidence.label_en))
+        details = [tr(evidence.reason_zh, evidence.reason_en)]
+        if evidence.device:
+            details.append(f"{tr('验证设备', 'Validated device')}: {evidence.device}")
+        if evidence.driver:
+            details.append(f"{tr('驱动', 'Driver')}: {evidence.driver}")
+        if evidence.runtime:
+            details.append(f"{tr('运行时', 'Runtime')}: {evidence.runtime}")
+        if evidence.validated_at:
+            details.append(f"{tr('验证日期', 'Validated')}: {evidence.validated_at}")
+        self.setToolTip("\n".join(details))
+        value = evidence.color.lstrip("#")
+        red, green, blue = (int(value[index:index + 2], 16) for index in (0, 2, 4))
+        self.setStyleSheet(
+            f"QLabel#npuCompatibilityBadge {{ color: {evidence.color}; "
+            f"background-color: rgba({red},{green},{blue},0.12); "
+            f"border: 1px solid rgba({red},{green},{blue},0.38); "
+            "border-radius: 9px; padding: 3px 8px; font-size: 12px; "
+            "font-weight: 600; }}"
+        )
+
+
 class ModelCard(QFrame):
     action_requested = Signal(str)
     uninstall_requested = Signal(str)
@@ -145,6 +178,8 @@ class ModelCard(QFrame):
 
         tags = QHBoxLayout()
         tags.setSpacing(7)
+        self.npu_badge = NpuCompatibilityBadge(model.id, self)
+        tags.addWidget(self.npu_badge)
         for text in model.tags:
             tag = QLabel(tr(text), self)
             tag.setObjectName("modelTag")
@@ -235,6 +270,7 @@ class ModelCard(QFrame):
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
+        self.npu_badge.refresh_language()
         self.refresh()
 
 

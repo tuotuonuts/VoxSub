@@ -1,14 +1,8 @@
 name: Intel NPU hardware probe
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
-      model_path:
-        description: Absolute path to a local GGUF model on the Intel NPU PC. Leave empty to search VoxSub's model directory.
-        required: false
-        type: string
       llama_dir:
         description: Absolute path to the folder containing the packaged OpenVINO llama-server.exe. Leave empty to use the installed VoxSub runtime.
         required: false
@@ -16,7 +10,7 @@ on:
       runtime_variant:
         description: OpenVINO runtime flavor to verify on the Intel NPU computer.
         required: false
-        default: patched
+        default: official
         type: choice
         options:
           - patched
@@ -216,7 +210,7 @@ jobs:
     needs: build-runtime
     # Manual only: a public repository must never run pull-request code on a personal PC.
     runs-on: [self-hosted, windows, x64, intel-npu]
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -362,10 +356,8 @@ jobs:
           $assetRoot = Join-Path $PWD '.npu-assets'
           $probeRoot = Join-Path $PWD '.npu-probe'
           $runtimeRoot = Join-Path $assetRoot 'openvino'
-          $modelRoot = Join-Path $assetRoot 'models'
-          $persistentModelRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\npu-probe\models'
           $runtimeVariant = if ($env:VOXSUB_NPU_RUNTIME_VARIANT -eq 'official') { 'official' } else { 'patched' }
-          New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $persistentModelRoot, $probeRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $runtimeRoot, $probeRoot -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value ''
           Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Requested runtime variant: $runtimeVariant"
 
@@ -422,38 +414,6 @@ jobs:
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using official llama.cpp b10470 OpenVINO 2026.2.1 runtime."
           }
 
-          $model = Join-Path $persistentModelRoot 'Qwen_Qwen3-0.6B-Q4_K_M.gguf'
-          $modelSha = '9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14'
-          $modelValid = $false
-          if (Test-Path -LiteralPath $model) {
-            $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
-            if ($modelValid) {
-              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing validated NPU probe model: $model"
-            }
-          }
-          $modelUrls = @(
-            'https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf?download=true',
-            'https://hf-mirror.com/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf'
-          )
-          foreach ($modelUrl in $modelUrls) {
-            if ($modelValid) { break }
-            $partial = "$model.part"
-            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
-            try {
-              Invoke-WebRequest -Uri $modelUrl -OutFile $partial -UseBasicParsing -TimeoutSec 900
-              $actualSha = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant()
-              if ($actualSha -ne $modelSha) { throw "Downloaded model SHA256 mismatch: $actualSha" }
-              Remove-Item -LiteralPath $model -Force -ErrorAction SilentlyContinue
-              Move-Item -LiteralPath $partial -Destination $model -Force
-              $modelValid = $true
-              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model
-            } catch {
-              Write-Warning "Model source failed: $modelUrl - $($_.Exception.Message)"
-              Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
-            }
-          }
-          if (-not $modelValid) { throw 'Could not download a valid NPU probe model from either source.' }
           } catch {
             Write-Error $_
             throw
@@ -461,14 +421,12 @@ jobs:
             Stop-Transcript | Out-Null
           }
 
-      - name: Verify VoxSub application NPU startup path
+      - name: Verify every Model Hub NPU contract
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         env:
-          VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
-          VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
+          VOXSUB_LLAMA_DIR_INPUT: ${{ inputs.llama_dir }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
           $pythonRoot = Join-Path $PWD '.npu-assets\python-3.11.9-embed-amd64'
           $pythonExe = Join-Path $pythonRoot 'python.exe'
           if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
@@ -482,45 +440,45 @@ jobs:
             New-Item -ItemType Directory -Path $pythonRoot -Force | Out-Null
             Expand-Archive -LiteralPath $pythonZip -DestinationPath $pythonRoot -Force
           }
-          & $pythonExe ./scripts/npu_app_probe.py
-          if ($LASTEXITCODE -ne 0) {
-            throw "VoxSub application-path probe failed (exit $LASTEXITCODE)."
+          $runtimeDir = if ($env:VOXSUB_LLAMA_DIR_INPUT) {
+            $env:VOXSUB_LLAMA_DIR_INPUT
+          } else {
+            Join-Path $PWD '.npu-assets\openvino'
           }
-
-      - name: Verify Intel NPU execution
-        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
-        env:
-          VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
-          VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
-        run: ./scripts/npu_probe.ps1
+          # Keep the 23 GB model matrix outside the checkout. actions/checkout
+          # cleans untracked files in the repository at the start of each run.
+          $modelsDir = Join-Path $env:RUNNER_WORKSPACE '.voxsub-npu-cache\catalog-models'
+          & $pythonExe ./scripts/npu_catalog_probe.py `
+            --runtime-dir $runtimeDir `
+            --models-dir $modelsDir `
+            --output-dir (Join-Path $PWD '.npu-probe')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Model Hub NPU matrix failed (exit $LASTEXITCODE)."
+          }
 
       - name: Print probe summary
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
-          $logs = @(
-            '.npu-probe\prepare.log',
-            '.npu-probe\build.log',
-            '.npu-probe\probe.log',
-            '.npu-probe\app-path.json',
-            '.npu-probe\app-path-server.log',
-            '.npu-probe\inference-response.json',
-            '.npu-probe\llama-server.stdout.log',
-            '.npu-probe\llama-server.stderr.log'
-          ) | Where-Object { Test-Path -LiteralPath $_ }
-          if ($logs.Count -gt 0) {
-            $summary = (($logs | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`n").Trim()
-            $logs | ForEach-Object { Get-Content -LiteralPath $_ }
-            $annotation = $summary.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            $passed = (Test-Path -LiteralPath '.npu-probe\probe.log') -and
-              ((Get-Content -LiteralPath '.npu-probe\probe.log' -Raw) -match '(?m)^.*PASS: health check and inference succeeded on OpenVINO NPU')
-            if ($passed) {
-              Write-Output "::notice file=.npu-probe/probe.log,line=1,title=NPU probe passed::$annotation"
+          $summaryPath = '.npu-probe\catalog-summary.json'
+          $markdownPath = '.npu-probe\catalog-summary.md'
+          if (Test-Path -LiteralPath $markdownPath) {
+            Get-Content -LiteralPath $markdownPath
+          }
+          if (Test-Path -LiteralPath $summaryPath) {
+            $summary = Get-Content -LiteralPath $summaryPath -Raw
+            $summary
+            $result = $summary | ConvertFrom-Json
+            $annotation = ($result.models | ForEach-Object {
+              "$($_.model_id)=$($_.status)/$($_.reason_code)"
+            }) -join '; '
+            if ($result.result -eq 'PASS') {
+              Write-Output "::notice file=.npu-probe/catalog-summary.json,line=1,title=NPU model matrix passed::$annotation"
             } else {
-              Write-Output "::error file=.npu-probe/probe.log,line=1,title=NPU probe failed::$annotation"
+              Write-Output "::error file=.npu-probe/catalog-summary.json,line=1,title=NPU model matrix failed::$annotation"
             }
           } else {
-            Write-Output 'No NPU probe or build log was created.'
+            Write-Output 'No NPU model matrix summary was created.'
           }
 
       - name: Upload probe diagnostics

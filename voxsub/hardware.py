@@ -166,6 +166,19 @@ def _npu_drivers() -> list[dict[str, str]]:
         return []
 
 
+def _windows_ram_gb() -> float | None:
+    """Read physical memory without psutil (portable probe/frozen fallback)."""
+    raw = _run_powershell(
+        "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory")
+    if not raw:
+        return None
+    try:
+        value = int(raw.strip()) / GIB
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_integrated_gpu(name: str) -> bool:
     lower = name.casefold()
     if "nvidia" in lower or "geforce" in lower or "quadro" in lower:
@@ -227,6 +240,9 @@ def detect_hardware() -> HardwareProfile:
         ram_gb = psutil.virtual_memory().total / GIB
     except Exception:
         logger.debug("psutil 硬件检测失败", exc_info=True)
+        windows_ram = _windows_ram_gb()
+        if windows_ram is not None:
+            ram_gb = windows_ram
 
     cpu_name = platform.processor().strip() or platform.machine() or "未知 CPU"
     providers, ep_devices = _ort_inventory()

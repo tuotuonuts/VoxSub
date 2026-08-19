@@ -4,9 +4,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from voxsub.hardware import (
+    GIB,
     HardwareProfile,
     _is_integrated_gpu,
     _is_virtual_display,
+    _windows_ram_gb,
     intel_llama_npu_driver_outdated,
     llama_accelerators,
     select_llama_runtime,
@@ -111,3 +113,17 @@ def test_virtual_display_is_not_a_gpu_and_arc_130t_is_integrated() -> None:
     assert not _is_integrated_gpu("IddDesk Device")
     assert _is_integrated_gpu("Intel(R) Arc(TM) 130T GPU")
     assert not _is_integrated_gpu("Intel Arc A770")
+
+
+def test_windows_ram_fallback_parses_total_physical_memory(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "voxsub.hardware._run_powershell", lambda _script: str(32 * GIB))
+
+    assert _windows_ram_gb() == 32.0
+
+
+def test_windows_ram_fallback_rejects_missing_or_invalid_values(monkeypatch) -> None:
+    for value in ("", "not-a-number", "0", "-1"):
+        monkeypatch.setattr(
+            "voxsub.hardware._run_powershell", lambda _script, value=value: value)
+        assert _windows_ram_gb() is None

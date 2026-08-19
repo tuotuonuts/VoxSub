@@ -19,6 +19,15 @@ from voxsub.model_catalog import (
     get_model,
     models_for_task,
 )
+from voxsub.npu_validation import (
+    NPU_COMPATIBILITY,
+    NPU_STATUS_FAILED,
+    NPU_STATUS_LIMITED,
+    NPU_STATUS_PENDING,
+    NPU_STATUS_UNSUPPORTED,
+    NPU_STATUS_VERIFIED,
+    npu_compatibility,
+)
 
 
 def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
@@ -29,10 +38,31 @@ def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
     assert "mt-hy-mt2-1.8b-q4" in ids
     assert "mt-hy-mt2-7b-q4" in ids
     assert "asr-sensevoice-small-int8" in ids
-    assert {"mt-hy-mt2-1.8b-q5", "mt-hy-mt2-1.8b-q8",
-            "mt-hy-mt2-7b-q5", "mt-hy-mt2-7b-q8"}.issubset(ids)
+    assert {"mt-hy-mt2-1.8b-q6", "mt-hy-mt2-1.8b-q8",
+            "mt-hy-mt2-7b-q6", "mt-hy-mt2-7b-q8"}.issubset(ids)
     assert len(ids) >= 11
     assert not any("qwen2.5" in model.id for model in CATALOG)
+
+
+def test_every_catalog_model_has_explicit_npu_compatibility() -> None:
+    assert set(NPU_COMPATIBILITY) == {model.id for model in CATALOG}
+    for model in CATALOG:
+        evidence = npu_compatibility(model.id)
+        assert evidence.status in {
+            NPU_STATUS_VERIFIED, NPU_STATUS_PENDING, NPU_STATUS_UNSUPPORTED,
+            NPU_STATUS_FAILED, NPU_STATUS_LIMITED,
+        }
+        assert bool(model.npu_supported) == (
+            evidence.status in {NPU_STATUS_VERIFIED, NPU_STATUS_PENDING}
+        )
+        assert evidence.label_zh.startswith("NPU ")
+        assert evidence.label_en.startswith("NPU ")
+
+    assert npu_compatibility("mt-opus-fast-builtin").status == NPU_STATUS_UNSUPPORTED
+    assert all(
+        npu_compatibility(model.id).status == NPU_STATUS_UNSUPPORTED
+        for model in CATALOG if model.task == "asr"
+    )
 
 
 def test_sensevoice_catalog_entry_has_downloadable_runtime_contract() -> None:

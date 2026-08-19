@@ -2,11 +2,16 @@
 param(
     [string]$ModelPath = $env:VOXSUB_NPU_TEST_MODEL,
     [string]$LlamaDir = $env:VOXSUB_LLAMA_DIR,
+    [string]$OutputDir = $env:VOXSUB_NPU_PROBE_DIR,
     [switch]$DriverCheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
-$ProbeDir = Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-probe'
+$ProbeDir = if ($OutputDir) {
+    [System.IO.Path]::GetFullPath($OutputDir)
+} else {
+    Join-Path (Split-Path -Parent $PSScriptRoot) '.npu-probe'
+}
 New-Item -ItemType Directory -Path $ProbeDir -Force | Out-Null
 $LogPath = Join-Path $ProbeDir 'probe.log'
 $ServerOutPath = Join-Path $ProbeDir 'llama-server.stdout.log'
