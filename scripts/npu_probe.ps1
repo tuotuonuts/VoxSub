@@ -11,6 +11,7 @@ New-Item -ItemType Directory -Path $ProbeDir -Force | Out-Null
 $LogPath = Join-Path $ProbeDir 'probe.log'
 $ServerOutPath = Join-Path $ProbeDir 'llama-server.stdout.log'
 $ServerErrPath = Join-Path $ProbeDir 'llama-server.stderr.log'
+$InferenceResponsePath = Join-Path $ProbeDir 'inference-response.json'
 $MinimumIntelNpuDriver = [version]'32.0.100.4778'
 $IntelNpuDriverUrl = 'https://www.intel.com/content/www/us/en/download/794734/intel-npu-driver-windows.html'
 
@@ -159,7 +160,8 @@ try {
         '--ctx-size', '512',
         '--n-gpu-layers', '999',
         '--threads', '4',
-        '--parallel', '1'
+        '--parallel', '1',
+        '--verbose'
     )
     Write-Probe "Starting NPU server: --device OPENVINO0 --n-gpu-layers 999 --parallel 1"
 
@@ -215,15 +217,25 @@ try {
     }
     Write-Probe 'llama-server health check passed.'
 
-    $body = @{ messages = @(@{ role = 'user'; content = 'Reply with only OK.' }); max_tokens = 4; temperature = 0 } |
-        ConvertTo-Json -Depth 5 -Compress
-    $reply = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post `
-        -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 45
-    $content = [string]$reply.choices[0].message.content
-    if ([string]::IsNullOrWhiteSpace($content)) {
-        throw 'llama-server started but returned no valid chat result.'
+    $body = @{
+        messages = @(@{ role = 'user'; content = 'Reply with only OK.' })
+        max_tokens = 16
+        temperature = 0
+        chat_template_kwargs = @{ enable_thinking = $false }
+    } | ConvertTo-Json -Depth 6 -Compress
+    $response = Invoke-WebRequest -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post `
+        -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 60 -UseBasicParsing
+    $response.Content | Set-Content -LiteralPath $InferenceResponsePath -Encoding utf8
+    $reply = $response.Content | ConvertFrom-Json
+    $message = $reply.choices[0].message
+    $content = [string]$message.content
+    $reasoning = [string]$message.reasoning_content
+    $completionTokens = [int]$reply.usage.completion_tokens
+    if ([string]::IsNullOrWhiteSpace($content) -and
+        [string]::IsNullOrWhiteSpace($reasoning) -and $completionTokens -le 0) {
+        throw 'llama-server started but returned no generated tokens.'
     }
-    Write-Probe "Inference reply: $content"
+    Write-Probe "Inference completed: content='$content' reasoning='$reasoning' completion_tokens=$completionTokens"
     $inferenceSucceeded = $true
 }
 catch {

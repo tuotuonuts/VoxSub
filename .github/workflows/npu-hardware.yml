@@ -455,6 +455,7 @@ jobs:
             '.npu-probe\prepare.log',
             '.npu-probe\build.log',
             '.npu-probe\probe.log',
+            '.npu-probe\inference-response.json',
             '.npu-probe\llama-server.stdout.log',
             '.npu-probe\llama-server.stderr.log'
           ) | Where-Object { Test-Path -LiteralPath $_ }
