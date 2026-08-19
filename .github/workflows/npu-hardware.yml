@@ -113,14 +113,18 @@ jobs:
             $vsInstall = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Redist.14.Latest -property installationPath |
               Select-Object -First 1)
             if (-not $vsInstall) { throw 'Visual C++ redistributable directory could not be located.' }
-            $vcRedistVersion = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Redist\MSVC') -Directory |
-              Sort-Object Name -Descending |
+            $vcRuntimeDll = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Redist\MSVC') `
+              -Filter 'vcruntime140.dll' -File -Recurse |
+              Where-Object { $_.FullName -match '(?i)\\x64\\Microsoft\.VC[^\\]*\.CRT\\vcruntime140\.dll$' } |
               Select-Object -First 1
-            $vcCrtDir = Get-ChildItem -LiteralPath (Join-Path $vcRedistVersion.FullName 'x64') -Directory |
-              Where-Object { $_.Name -like 'Microsoft.VC*.CRT' } |
-              Select-Object -First 1
-            if (-not $vcCrtDir) { throw 'The x64 Visual C++ runtime DLL directory was not found.' }
+            if (-not $vcRuntimeDll) { throw 'The x64 Visual C++ runtime DLL directory was not found.' }
+            $vcCrtDir = $vcRuntimeDll.Directory
             Copy-Item -Path (Join-Path $vcCrtDir.FullName '*.dll') -Destination $patchedDir -Force
+            foreach ($requiredCrt in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $patchedDir $requiredCrt) -PathType Leaf)) {
+                throw "Required Visual C++ runtime file was not packaged: $requiredCrt"
+              }
+            }
             Get-ChildItem -LiteralPath $patchedDir -File |
               Sort-Object Name |
               ForEach-Object { "$($_.Name)`t$($_.Length)" } |
