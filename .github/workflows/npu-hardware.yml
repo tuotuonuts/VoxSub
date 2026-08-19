@@ -348,7 +348,8 @@ jobs:
           $probeRoot = Join-Path $PWD '.npu-probe'
           $runtimeRoot = Join-Path $assetRoot 'openvino'
           $modelRoot = Join-Path $assetRoot 'models'
-          New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $probeRoot -Force | Out-Null
+          $persistentModelRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\npu-probe\models'
+          New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $persistentModelRoot, $probeRoot -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value ''
 
           $runtimeZip = Join-Path $assetRoot 'llama-b10470-openvino.zip'
@@ -396,30 +397,19 @@ jobs:
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "runtime-dependencies.txt generated ($dependencyReportSize bytes; retained in runtime artifact)."
           }
 
-          $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
-          $modelSha = 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'
+          $model = Join-Path $persistentModelRoot 'Qwen_Qwen3-0.6B-Q4_K_M.gguf'
+          $modelSha = '9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14'
           $modelValid = $false
-          $installedModelsRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\models'
-          if (Test-Path -LiteralPath $installedModelsRoot -PathType Container) {
-            $installedModel = Get-ChildItem -LiteralPath $installedModelsRoot -Filter '*.gguf' -File -Recurse |
-              Where-Object { $_.Length -gt 100MB } |
-              Sort-Object LastWriteTimeUtc -Descending |
-              Select-Object -First 1
-            if ($installedModel) {
-              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $installedModel.FullName
-              $modelValid = $true
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using installed GGUF model: $($installedModel.FullName)"
-            }
-          }
           if (Test-Path -LiteralPath $model) {
-            if (-not $modelValid) {
-              $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
-              if ($modelValid) { Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model }
+            $modelValid = ((Get-FileHash -LiteralPath $model -Algorithm SHA256).Hash.ToLowerInvariant() -eq $modelSha)
+            if ($modelValid) {
+              Set-Content -LiteralPath (Join-Path $modelRoot 'model-path.txt') -Value $model
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing validated NPU probe model: $model"
             }
           }
           $modelUrls = @(
-            'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf',
-            'https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/main/Hy-MT2-1.8B-Q4_K_M.gguf?download=true'
+            'https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf?download=true',
+            'https://hf-mirror.com/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf'
           )
           foreach ($modelUrl in $modelUrls) {
             if ($modelValid) { break }

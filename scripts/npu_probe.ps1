@@ -100,13 +100,17 @@ try {
         throw 'Windows did not detect an NPU device.'
     }
     Write-Probe "Detected NPU device(s): $($npuDevices -join '; ')"
+    $processorNames = @(Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name -Unique)
+    Write-Probe "Processor(s): $($processorNames -join '; ')"
+    $npuDrivers = @(Get-CimInstance Win32_PnPSignedDriver |
+        Where-Object { $_.DeviceName -match '\bNPU\b|Neural Processing|AI Boost' } |
+        ForEach-Object { "$($_.DeviceName) $($_.DriverVersion)" })
+    Write-Probe "NPU driver(s): $($npuDrivers -join '; ')"
 
     $server = Find-LlamaServer $LlamaDir
     $serverDir = Split-Path -Parent $server
     Write-Probe "llama-server: $server"
     $env:PATH = "$serverDir;$env:PATH"
-    $cacheDir = Join-Path $serverDir 'openvino-cache'
-    New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     foreach ($requiredFile in @('ggml-openvino.dll', 'openvino_intel_npu_plugin.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $serverDir $requiredFile) -PathType Leaf)) {
             throw "OpenVINO NPU runtime file missing: $requiredFile"
@@ -149,8 +153,7 @@ try {
     }) -join ' ')
     $startInfo.EnvironmentVariables['GGML_OPENVINO_DEVICE'] = 'NPU'
     $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_FALLBACK'] = '0'
-    $startInfo.EnvironmentVariables['GGML_OPENVINO_CACHE_DIR'] = $cacheDir
-    $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_CACHE'] = '1'
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_STATEFUL_EXECUTION'] = '0'
     $startInfo.EnvironmentVariables['GGML_OPENVINO_PROFILING'] = '1'
     $serverProcess = New-Object System.Diagnostics.Process
     $serverProcess.StartInfo = $startInfo
