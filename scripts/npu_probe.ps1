@@ -13,7 +13,8 @@ $ServerErrPath = Join-Path $ProbeDir 'llama-server.stderr.log'
 
 function Write-Probe([string]$Message) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
-    $line | Tee-Object -FilePath $LogPath -Append
+    Write-Output $line
+    $line | Out-File -LiteralPath $LogPath -Encoding utf8 -Append
 }
 
 function Find-LlamaServer([string]$PreferredDir) {

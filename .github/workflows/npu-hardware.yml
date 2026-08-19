@@ -156,7 +156,13 @@ jobs:
         if: always()
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
-          $logs = @('.npu-probe\prepare.log', '.npu-probe\build.log', '.npu-probe\probe.log') | Where-Object { Test-Path -LiteralPath $_ }
+          $logs = @(
+            '.npu-probe\prepare.log',
+            '.npu-probe\build.log',
+            '.npu-probe\probe.log',
+            '.npu-probe\llama-server.stdout.log',
+            '.npu-probe\llama-server.stderr.log'
+          ) | Where-Object { Test-Path -LiteralPath $_ }
           if ($logs.Count -gt 0) {
             $summary = (($logs | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join "`n").Trim()
             $logs | ForEach-Object { Get-Content -LiteralPath $_ }
