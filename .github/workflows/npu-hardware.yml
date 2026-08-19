@@ -75,7 +75,11 @@ jobs:
           }
           $nameText = 'NPU_COMPILER_DYNAMIC_QUANTIZATION'
           $name = [Text.Encoding]::ASCII.GetBytes($nameText)
-          $replacement = [Text.Encoding]::ASCII.GetBytes('NPUW_DQ')
+          # Collapse the unsupported legacy option into the existing NPUW
+          # enable flag. Both entries use YES, so the resulting duplicate key
+          # is equivalent to omitting dynamic quantization.
+          $replacementText = 'NPU_USE_NPUW'
+          $replacement = [Text.Encoding]::ASCII.GetBytes($replacementText)
           $binaryEncoding = [Text.Encoding]::GetEncoding(28591)
           $patched = $false
           $binaryCandidates = Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse |
@@ -88,7 +92,7 @@ jobs:
             for ($n = 0; $n -lt $replacement.Length; $n++) { $bytes[$offset + $n] = $replacement[$n] }
             [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
             $patched = $true
-            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset (NPU_COMPILER_DYNAMIC_QUANTIZATION -> NPUW_DQ)."
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset (NPU_COMPILER_DYNAMIC_QUANTIZATION -> $replacementText)."
             if ($patched) { break }
           }
           if (-not $patched) {
