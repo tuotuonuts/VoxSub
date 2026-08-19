@@ -468,6 +468,13 @@ jobs:
             '--models-dir', $modelsDir,
             '--output-dir', (Join-Path $PWD '.npu-probe')
           )
+          if ($env:LOCALAPPDATA) {
+            $installedModelsDir = Join-Path $env:LOCALAPPDATA 'VoxSub\models'
+            if (Test-Path -LiteralPath $installedModelsDir -PathType Container) {
+              Write-Output "Reusing installed VoxSub models from $installedModelsDir"
+              $probeArgs += @('--reuse-models-dir', $installedModelsDir)
+            }
+          }
           if ($env:VOXSUB_NPU_MODEL_ID -and $env:VOXSUB_NPU_MODEL_ID -ne 'all') {
             $probeArgs += @('--model-id', $env:VOXSUB_NPU_MODEL_ID)
           }

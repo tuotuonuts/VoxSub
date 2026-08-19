@@ -53,16 +53,48 @@ def _run(command: list[str], log_path: Path, env: dict[str, str]) -> int:
         return process.wait()
 
 
-def _download(model: ModelSpec, models_dir: Path) -> Path:
+def _valid_asset(path: Path, model: ModelSpec) -> bool:
+    return (
+        path.is_file()
+        and path.stat().st_size == model.download_bytes
+        and bool(model.sha256)
+        and sha256_of(path) == model.sha256
+    )
+
+
+def _find_reusable_asset(model: ModelSpec, roots: list[Path]) -> Path | None:
+    for root in roots:
+        candidate = root / model.install_rel / model.asset_name
+        if _valid_asset(candidate, model):
+            print(f"REUSE INSTALLED: {model.id} from {candidate}", flush=True)
+            return candidate
+        if candidate.is_file():
+            print(
+                f"IGNORE INSTALLED: {model.id} failed size or SHA256 validation "
+                f"at {candidate}",
+                flush=True,
+            )
+    return None
+
+
+def _download(model: ModelSpec, models_dir: Path,
+              reuse_roots: list[Path] | None = None,
+              prevalidated_asset: Path | None = None) -> Path:
+    if prevalidated_asset is not None and prevalidated_asset.is_file():
+        print(f"REUSE VALIDATED: {model.id} from {prevalidated_asset}", flush=True)
+        return prevalidated_asset
+
     destination = models_dir / model.id / model.asset_name
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if _valid_asset(destination, model):
+        print(f"REUSE CACHE: {model.id} ({destination.stat().st_size} bytes)", flush=True)
+        return destination
     if destination.is_file():
-        size_ok = destination.stat().st_size == model.download_bytes
-        sha_ok = bool(model.sha256) and sha256_of(destination) == model.sha256
-        if size_ok and sha_ok:
-            print(f"REUSE: {model.id} ({destination.stat().st_size} bytes)", flush=True)
-            return destination
         destination.unlink()
+
+    reusable = _find_reusable_asset(model, reuse_roots or [])
+    if reusable is not None:
+        return reusable
 
     ordered_sources = ModelMarketplace(models_dir).ordered_sources(model, "auto")
     urls = [source.url for source in ordered_sources if source.url]
@@ -195,12 +227,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--models-dir", required=True)
+    parser.add_argument(
+        "--reuse-models-dir", action="append", default=[],
+        help="VoxSub models root to search before downloading (repeatable).",
+    )
     parser.add_argument("--output-dir", default=str(REPO_ROOT / ".npu-probe"))
     parser.add_argument("--model-id", action="append", default=[])
     args = parser.parse_args()
 
     runtime_dir = Path(args.runtime_dir).resolve()
     models_dir = Path(args.models_dir).resolve()
+    reuse_roots = [
+        Path(value).resolve() for value in args.reuse_models_dir
+        if Path(value).is_dir()
+    ]
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -215,12 +255,16 @@ def main() -> int:
         key=lambda model: model.download_bytes,
     )
     required_download = 0
+    reusable_assets: dict[str, Path] = {}
     for model in eligible:
         cached = models_dir / model.id / model.asset_name
-        cached_bytes = cached.stat().st_size if cached.is_file() else 0
-        # An invalid cached file is removed before download, so only the net
-        # additional space is required. This also handles truncated files.
-        required_download += max(0, model.download_bytes - cached_bytes)
+        reusable = cached if _valid_asset(cached, model) else None
+        if reusable is None:
+            reusable = _find_reusable_asset(model, reuse_roots)
+        if reusable is None:
+            required_download += model.download_bytes
+        else:
+            reusable_assets[model.id] = reusable
     disk = shutil.disk_usage(models_dir)
     if disk.free < required_download + 2_000_000_000:
         _write_json(output_dir / "catalog-summary.json", {
@@ -250,7 +294,8 @@ def main() -> int:
     for index, model in enumerate(eligible, 1):
         print(f"\n===== NPU MODEL {index}/{len(eligible)}: {model.id} =====", flush=True)
         try:
-            model_path = _download(model, models_dir)
+            model_path = _download(
+                model, models_dir, reuse_roots, reusable_assets.get(model.id))
             result = _probe_model(
                 model, model_path, runtime_dir, output_dir, Path(sys.executable))
         except Exception as exc:
