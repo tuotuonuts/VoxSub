@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .npu-assets/patched-openvino-no-npuw-b10470
-          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v1
+          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v2
 
       - name: Build NPU-compatible OpenVINO llama runtime
         shell: powershell
@@ -88,6 +88,7 @@ jobs:
               cmake -S $srcRoot -B $buildRoot `
                 -DGGML_OPENVINO=ON `
                 -DLLAMA_CURL=OFF `
+                -DLLAMA_OPENSSL=OFF `
                 -DOpenVINO_DIR="$ovCmakeDir" `
                 -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
               if ($LASTEXITCODE -ne 0) { throw "llama.cpp CMake configure failed (exit $LASTEXITCODE)." }
@@ -128,6 +129,24 @@ jobs:
               if (-not (Test-Path -LiteralPath (Join-Path $patchedDir $requiredCrt) -PathType Leaf)) {
                 throw "Required Visual C++ runtime file was not packaged: $requiredCrt"
               }
+            }
+            $vcompDll = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Redist\MSVC') `
+              -Filter 'vcomp140.dll' -File -Recurse |
+              Where-Object {
+                $_.FullName -match '(?i)\\x64\\Microsoft\.VC[^\\]*\.OpenMP\\vcomp140\.dll$' -and
+                $_.FullName -notmatch '(?i)\\onecore\\'
+              } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $vcompDll) { throw 'The x64 Visual C++ OpenMP runtime DLL was not found.' }
+            Copy-Item -LiteralPath $vcompDll.FullName -Destination $patchedDir -Force
+            $packagedTbb = Join-Path $patchedDir 'tbb12.dll'
+            if (-not (Test-Path -LiteralPath $packagedTbb -PathType Leaf)) {
+              $tbbDll = Get-ChildItem -LiteralPath $ovRoot -Filter 'tbb12.dll' -File -Recurse |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1
+              if (-not $tbbDll) { throw 'The OpenVINO x64 tbb12.dll dependency was not found.' }
+              Copy-Item -LiteralPath $tbbDll.FullName -Destination $patchedDir -Force
             }
             Get-ChildItem -LiteralPath $patchedDir -File |
               Sort-Object Name |
