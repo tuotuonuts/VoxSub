@@ -93,14 +93,25 @@ try {
     $server = Find-LlamaServer $LlamaDir
     $serverDir = Split-Path -Parent $server
     Write-Probe "llama-server: $server"
+    $env:PATH = "$serverDir;$env:PATH"
     foreach ($requiredFile in @('ggml-openvino.dll', 'openvino_intel_npu_plugin.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $serverDir $requiredFile) -PathType Leaf)) {
             throw "OpenVINO NPU runtime file missing: $requiredFile"
         }
     }
 
+    # Device enumeration can initialize the NPU plugin with its default device
+    # before llama-server receives an explicit --device. Keep this diagnostic
+    # probe on OpenVINO CPU; the real server below is still forced to NPU.
+    $previousOpenvinoDevice = $env:GGML_OPENVINO_DEVICE
+    $env:GGML_OPENVINO_DEVICE = 'CPU'
     $deviceList = & $server --list-devices 2>&1
     $deviceExitCode = $LASTEXITCODE
+    if ($null -eq $previousOpenvinoDevice) {
+        Remove-Item Env:GGML_OPENVINO_DEVICE -ErrorAction SilentlyContinue
+    } else {
+        $env:GGML_OPENVINO_DEVICE = $previousOpenvinoDevice
+    }
     $deviceList | Set-Content -LiteralPath (Join-Path $ProbeDir 'llama-devices.log') -Encoding utf8
     Write-Probe "llama-server --list-devices exit=$deviceExitCode"
     $deviceList | ForEach-Object { Write-Probe "device: $_" }
