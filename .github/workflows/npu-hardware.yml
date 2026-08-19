@@ -21,9 +21,52 @@ jobs:
   probe:
     # Manual only: a public repository must never run pull-request code on a personal PC.
     runs-on: [self-hosted, windows, x64, intel-npu]
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build patched OpenVINO llama runtime
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assetRoot = Join-Path $PWD '.npu-assets'
+          $srcRoot = Join-Path $assetRoot 'llama-src'
+          $ovRoot = Join-Path $assetRoot 'openvino-toolkit'
+          $buildRoot = Join-Path $assetRoot 'llama-build'
+          if (-not (Test-Path -LiteralPath (Join-Path $srcRoot 'CMakeLists.txt'))) {
+            git clone --depth 1 --branch b10470 https://github.com/ggml-org/llama.cpp.git $srcRoot
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $ovRoot 'openvino_toolkit'))) {
+            $ovZip = Join-Path $assetRoot 'openvino-toolkit.zip'
+            if (-not (Test-Path -LiteralPath $ovZip)) {
+              Invoke-WebRequest -Uri 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.2/windows/openvino_toolkit_windows_2026.2.1.21919.ede283a88e3_x86_64.zip' -OutFile $ovZip -UseBasicParsing
+            }
+            Expand-Archive -LiteralPath $ovZip -DestinationPath $ovRoot -Force
+          }
+          $ovDir = Get-ChildItem -LiteralPath $ovRoot -Directory | Select-Object -First 1
+          if (-not $ovDir) { throw 'OpenVINO toolkit directory was not found.' }
+          $extra = Join-Path $srcRoot 'ggml\src\ggml-openvino\ggml-openvino-extra.cpp'
+          $source = Get-Content -LiteralPath $extra -Raw
+          $patched = $source -replace '\s*\{"NPU_COMPILER_DYNAMIC_QUANTIZATION",\s*"YES"\s*\},', ''
+          if ($patched -eq $source) { throw 'Could not remove incompatible NPU compiler option.' }
+          Set-Content -LiteralPath $extra -Value $patched -Encoding utf8
+          $vcpkg = 'C:\vcpkg'
+          if (-not (Test-Path -LiteralPath (Join-Path $vcpkg 'vcpkg.exe'))) {
+            git clone --depth 1 https://github.com/microsoft/vcpkg $vcpkg
+            & (Join-Path $vcpkg 'bootstrap-vcpkg.bat')
+          }
+          & (Join-Path $vcpkg 'vcpkg.exe') install opencl --triplet x64-windows
+          & (Join-Path $ovDir.FullName 'setupvars.bat')
+          cmake -S $srcRoot -B $buildRoot -G 'Visual Studio 17 2022' -A x64 -DGGML_OPENVINO=ON -DOpenVINO_DIR="$($ovDir.FullName)\runtime\cmake" -DCMAKE_TOOLCHAIN_FILE="$vcpkg\scripts\buildsystems\vcpkg.cmake"
+          cmake --build $buildRoot --config Release --target llama-server -- /m
+          $runtimeDir = Join-Path $buildRoot 'bin\Release'
+          if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'llama-server.exe'))) {
+            throw 'Patched llama-server.exe was not built.'
+          }
+          $patchedDir = Join-Path $assetRoot 'patched-openvino'
+          New-Item -ItemType Directory -Path $patchedDir -Force | Out-Null
+          Copy-Item -Path (Join-Path $runtimeDir '*') -Destination $patchedDir -Recurse -Force
+          Copy-Item -Path (Join-Path $ovDir.FullName 'runtime\bin\intel64\Release\*') -Destination $patchedDir -Recurse -Force
 
       - name: Prepare NPU probe assets
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
@@ -40,6 +83,12 @@ jobs:
             Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
           }
           Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
+          $patchedRuntime = Join-Path $assetRoot 'patched-openvino'
+          if (Test-Path -LiteralPath (Join-Path $patchedRuntime 'llama-server.exe')) {
+            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+            New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+            Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
+          }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelUrl = 'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf'
