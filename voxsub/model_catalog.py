@@ -20,7 +20,7 @@ from typing import Callable, Iterable
 from urllib import request as urlrequest
 
 from voxsub.logging_setup import get_logger
-from voxsub.hardware import HardwareProfile, detect_hardware
+from voxsub.hardware import HardwareProfile, detect_hardware, discover_llama_runtimes
 from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 
 logger = get_logger("model_catalog")
@@ -547,8 +547,11 @@ def _capacity(profile: HardwareProfile, model: ModelSpec) -> tuple[float, str]:
         if (model.gpu_supported and profile.has_discrete_gpu and
                 profile.vram_gb >= required_gb):
             return max(cpu, 115.0 + profile.vram_gb * 7.0), "独立显卡"
-        if (model.npu_supported and profile.has_npu_runtime and
-                "openvino" in profile.npu_provider.casefold() and
+        bundled_openvino = any(
+            runtime.backend == "openvino" for runtime in discover_llama_runtimes())
+        ort_openvino = (profile.has_npu_runtime and
+                        "openvino" in profile.npu_provider.casefold())
+        if (model.npu_supported and (bundled_openvino or ort_openvino) and
                 "intel" in profile.npu_name.casefold() and
                 profile.ram_gb >= required_gb + 4.0):
             return max(cpu, 132.0), "NPU"

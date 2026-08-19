@@ -54,7 +54,8 @@ def test_llama_runtime_priority_gpu_npu_igpu_cpu(tmp_path: Path, monkeypatch) ->
     assert selected and selected.backend == "cpu" and selected.target == "CPU"
 
 
-def test_physical_npu_without_runtime_is_skipped(tmp_path: Path, monkeypatch) -> None:
+def test_physical_npu_uses_bundled_openvino_without_ort_provider(
+        tmp_path: Path, monkeypatch) -> None:
     _runtime(tmp_path, "openvino", "ggml-openvino.dll")
     _runtime(tmp_path, "cpu")
     monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
@@ -63,7 +64,7 @@ def test_physical_npu_without_runtime_is_skipped(tmp_path: Path, monkeypatch) ->
         integrated_gpu_name="Intel Arc 130T GPU",
     )
     selected = select_llama_runtime(profile)
-    assert selected and selected.target == "GPU"
+    assert selected and selected.backend == "openvino" and selected.target == "NPU"
 
 
 def test_virtual_display_is_not_a_gpu_and_arc_130t_is_integrated() -> None:

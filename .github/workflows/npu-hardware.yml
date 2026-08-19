@@ -1,0 +1,40 @@
+name: Intel NPU hardware probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: Absolute path to a local GGUF model on the Intel NPU PC. Leave empty to search VoxSub's model directory.
+        required: false
+        type: string
+      llama_dir:
+        description: Absolute path to the folder containing the packaged OpenVINO llama-server.exe. Leave empty to use the installed VoxSub runtime.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    # Manual only: a public repository must never run pull-request code on a personal PC.
+    runs-on: [self-hosted, windows, x64, intel-npu]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Intel NPU execution
+        shell: pwsh
+        env:
+          VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
+          VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
+        run: ./scripts/npu_probe.ps1
+
+      - name: Upload probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intel-npu-probe
+          path: .npu-probe
+          if-no-files-found: warn
+          retention-days: 14

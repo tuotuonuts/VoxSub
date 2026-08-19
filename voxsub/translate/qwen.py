@@ -121,6 +121,12 @@ class QwenQualityTranslator(Translator):
                 line = str(line).strip()
                 if line:
                     self._server_output_tail.append(line[-1000:])
+                    lower = line.casefold()
+                    if ("openvino" in lower or "npu" in lower or
+                            "fallback" in lower or "device" in lower):
+                        logger.info("llama-server: %s", line[-1200:])
+                    else:
+                        logger.debug("llama-server: %s", line[-1200:])
         except Exception:
             logger.debug("读取 llama-server 输出失败", exc_info=True)
 
@@ -181,6 +187,11 @@ class QwenQualityTranslator(Translator):
                "--n-gpu-layers", str(gpu_layers),
                "--threads", str(self._n_threads),
                ]
+        if runtime is not None and runtime.backend == "openvino" and runtime.target == "NPU":
+            # llama.cpp's OpenVINO NPU backend accepts only one sequence.
+            # Make this explicit so a server-default change cannot cause an
+            # opaque NPU startup failure.
+            cmd.extend(["--parallel", "1"])
         # 隐藏子进程控制台窗口, 避免抢占用户
         flags = 0
         try:
@@ -191,7 +202,17 @@ class QwenQualityTranslator(Translator):
         try:
             child_env = os.environ.copy()
             if runtime is not None and runtime.backend == "openvino":
+                # llama.cpp exposes its OpenVINO backend as OPENVINO0. Without
+                # this explicit device selection, the server can start on a
+                # different backend while the UI still reports the requested
+                # NPU target.
+                cmd[1:1] = ["--device", "OPENVINO0"]
                 child_env["GGML_OPENVINO_DEVICE"] = runtime.target or "CPU"
+                if runtime.target in {"GPU", "NPU"}:
+                    # Never silently report an accelerator when OpenVINO had
+                    # to fall back to CPU. A startup failure is handled by
+                    # the existing runtime downgrade chain.
+                    child_env["GGML_OPENVINO_ENABLE_FALLBACK"] = "0"
                 if runtime.target == "GPU":
                     child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "1"
             self._proc = subprocess.Popen(

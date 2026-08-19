@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voxsub.hardware import LlamaRuntime  # noqa: E402
+from voxsub.hardware import HardwareProfile, LlamaRuntime  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
 from voxsub.translate.qwen import _invalid_translation  # noqa: E402
@@ -158,6 +158,42 @@ def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None
     assert q._ensure().endswith("9998/v1/chat/completions")
     assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
     assert ("openvino", "NPU") in q._failed_runtimes
+
+
+def test_spawn_requests_openvino_device_and_disables_npu_fallback(
+        tmp_path: Path, monkeypatch) -> None:
+    """NPU launches must select OPENVINO0 and reject silent CPU fallback."""
+    q = _make_qwen(tmp_path)
+    fake_server = tmp_path / "tools" / "llama" / "llama-server.exe"
+    runtime = LlamaRuntime(fake_server, "openvino", "NPU")
+    q._runtime = runtime
+    q._server_exe = runtime.server_exe
+    q._model_path = tmp_path / "model.gguf"
+    q._model_path.write_bytes(b"model")
+    captured: dict = {}
+
+    class _Proc(_FakeProc):
+        stdout = None
+        returncode = None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return _Proc(42)
+
+    monkeypatch.setattr(q, "_pick_free_port", lambda: 8090)
+    monkeypatch.setattr(q, "_wait_ready", lambda _port: None)
+    monkeypatch.setattr("voxsub.translate.qwen.detect_hardware", lambda: HardwareProfile(
+        "test cpu", 4, 8, 16.0, npu_name="Intel AI Boost"))
+    monkeypatch.setattr("voxsub.translate.qwen.select_llama_runtime",
+                        lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr("voxsub.translate.qwen.subprocess.Popen", fake_popen)
+    q._spawn()
+
+    assert captured["cmd"][1:3] == ["--device", "OPENVINO0"]
+    assert captured["cmd"][-2:] == ["--parallel", "1"]
+    assert captured["env"]["GGML_OPENVINO_DEVICE"] == "NPU"
+    assert captured["env"]["GGML_OPENVINO_ENABLE_FALLBACK"] == "0"
 
 
 def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:

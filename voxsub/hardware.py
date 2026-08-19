@@ -331,18 +331,23 @@ def select_llama_runtime(profile: HardwareProfile,
         picked = first(preferred, "GPU")
         if picked:
             return picked
-    if profile.has_npu:
-        if not profile.has_npu_runtime:
-            logger.info("llama NPU 跳过: 检测到物理 NPU，但没有可用执行运行时")
-        elif "openvino" not in profile.npu_provider.casefold():
-            logger.info("llama NPU 跳过: 当前运行时=%s，llama.cpp 需要 OpenVINO",
-                        profile.npu_provider)
-    if (profile.has_npu_runtime and "openvino" in profile.npu_provider.casefold() and
-            "intel" in profile.npu_name.casefold() and
-            profile.ram_gb >= required_gb + 4.0):
-        picked = first(("openvino",), "NPU")
-        if picked:
-            return picked
+    # The bundled llama.cpp OpenVINO runtime is independent from the Python
+    # ONNX Runtime package. Requiring OpenVINOExecutionProvider here made
+    # Intel NPU laptops fall through even though the packaged NPU plugin was
+    # available and usable by llama-server.
+    openvino_runtime = any(runtime.backend == "openvino" for runtime in runtimes)
+    if profile.has_npu and "intel" in profile.npu_name.casefold():
+        if not openvino_runtime:
+            logger.info("llama NPU 跳过: 检测到 Intel NPU，但未找到随包 OpenVINO 运行时")
+        elif profile.ram_gb < required_gb + 4.0:
+            logger.info("llama NPU 跳过: 内存不足 required_gb=%.2f ram_gb=%.2f",
+                        required_gb + 4.0, profile.ram_gb)
+        else:
+            picked = first(("openvino",), "NPU")
+            if picked:
+                logger.info("llama NPU 选择: 使用随包 OpenVINO runtime=%s",
+                            picked.server_exe)
+                return picked
     if profile.has_integrated_gpu and profile.ram_gb >= required_gb + 4.0:
         lower = profile.integrated_gpu_name.casefold()
         preferred = (("sycl", "openvino", "vulkan") if "intel" in lower else
@@ -366,8 +371,9 @@ def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:
                       {"sycl", "openvino", "vulkan"})
         if backends & compatible:
             result.append("gpu")
-    if (profile.has_npu_runtime and "openvino" in profile.npu_provider.casefold() and
-            "intel" in profile.npu_name.casefold() and
+    # This is the llama.cpp path, so its bundled OpenVINO runtime is the
+    # capability check; ORT providers describe the separate ONNX path.
+    if (profile.has_npu and "intel" in profile.npu_name.casefold() and
             "openvino" in backends):
         result.append("npu")
     if profile.has_integrated_gpu:

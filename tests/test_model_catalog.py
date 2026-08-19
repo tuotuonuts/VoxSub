@@ -101,6 +101,20 @@ def test_recommendation_levels_cover_requested_semantics() -> None:
     assert npu_assessment.reason.startswith("NPU ")
 
 
+def test_npu_assessment_accepts_bundled_openvino_runtime(monkeypatch) -> None:
+    npu_laptop = HardwareProfile(
+        "Core Ultra", 8, 16, 32.0,
+        npu_name="Intel AI Boost", integrated_gpu_name="Intel Arc Graphics")
+    monkeypatch.setattr(
+        "voxsub.model_catalog.discover_llama_runtimes",
+        lambda: [type("Runtime", (), {"backend": "openvino"})()],
+    )
+    hy_small = get_model("mt-hy-mt2-1.8b-q4")
+    assert hy_small is not None
+    assessment = assess_model(hy_small, npu_laptop)
+    assert assessment.reason.startswith("NPU ")
+
+
 def _make_archive(path: Path, root_name: str, files: dict[str, bytes]) -> None:
     with tarfile.open(path, "w:bz2") as tf:
         for rel, payload in files.items():
