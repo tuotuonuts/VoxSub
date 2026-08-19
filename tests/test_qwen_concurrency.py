@@ -182,7 +182,13 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
         return _Proc(42)
 
     monkeypatch.setattr(q, "_pick_free_port", lambda: 8090)
-    monkeypatch.setattr(q, "_wait_ready", lambda _port: None)
+    wait_ready: dict = {}
+
+    def fake_wait_ready(port, **kwargs) -> None:
+        wait_ready["port"] = port
+        wait_ready.update(kwargs)
+
+    monkeypatch.setattr(q, "_wait_ready", fake_wait_ready)
     monkeypatch.setattr("voxsub.translate.qwen.detect_hardware", lambda: HardwareProfile(
         "test cpu", 4, 8, 16.0, npu_name="Intel AI Boost"))
     monkeypatch.setattr("voxsub.translate.qwen.select_llama_runtime",
@@ -194,6 +200,12 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
     assert captured["cmd"][-2:] == ["--parallel", "1"]
     assert captured["env"]["GGML_OPENVINO_DEVICE"] == "NPU"
     assert captured["env"]["GGML_OPENVINO_ENABLE_FALLBACK"] == "0"
+    assert wait_ready == {
+        "port": 8090,
+        "timeout": 600.0,
+        "backend": "openvino",
+        "target": "NPU",
+    }
 
 
 def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:

@@ -461,6 +461,18 @@ jobs:
             Stop-Transcript | Out-Null
           }
 
+      - name: Set up Python for application-path probe
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify VoxSub application NPU startup path
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        env:
+          VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
+          VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
+        run: python ./scripts/npu_app_probe.py
+
       - name: Verify Intel NPU execution
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         env:
@@ -476,6 +488,8 @@ jobs:
             '.npu-probe\prepare.log',
             '.npu-probe\build.log',
             '.npu-probe\probe.log',
+            '.npu-probe\app-path.json',
+            '.npu-probe\app-path-server.log',
             '.npu-probe\inference-response.json',
             '.npu-probe\llama-server.stdout.log',
             '.npu-probe\llama-server.stderr.log'

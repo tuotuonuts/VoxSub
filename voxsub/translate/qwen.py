@@ -232,7 +232,17 @@ class QwenQualityTranslator(Translator):
                     runtime.backend if runtime else "cpu",
                     runtime.target if runtime else "CPU", port, self._proc.pid, gpu_layers)
         try:
-            self._wait_ready(port)
+            startup_timeout = 600.0 if (
+                runtime is not None and
+                runtime.backend == "openvino" and
+                runtime.target == "NPU"
+            ) else 60.0
+            self._wait_ready(
+                port,
+                timeout=startup_timeout,
+                backend=runtime.backend if runtime else "cpu",
+                target=runtime.target if runtime else "CPU",
+            )
         except Exception:
             proc, failed_port = self._clear_server_state()
             self._terminate_process(proc, failed_port)
@@ -254,15 +264,20 @@ class QwenQualityTranslator(Translator):
             logger.debug("加速器内存评估失败，回落 CPU layers", exc_info=True)
         return 0
 
-    def _wait_ready(self, port: int, timeout: float = 60.0) -> None:
+    def _wait_ready(self, port: int, timeout: float = 60.0, *,
+                    backend: str = "cpu", target: str = "CPU") -> None:
         """轮询健康端点直到可用; 进程提前退出则报错。"""
         probe = f"http://127.0.0.1:{port}/health"
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        started = time.monotonic()
+        deadline = started + timeout
+        next_progress_log = 30.0
+        while time.monotonic() < deadline:
             if self._proc is not None and self._proc.poll() is not None:
                 detail = " | ".join(self._server_output_tail)
-                logger.error("llama-server 进程提前退出 (port=%s, 退出码=%s)",
-                             port, self._proc.returncode)
+                logger.error(
+                    "llama-server 进程提前退出 "
+                    "(backend=%s target=%s port=%s 退出码=%s)",
+                    backend, target, port, self._proc.returncode)
                 if detail:
                     logger.error("llama-server 最近输出: %s", detail)
                 raise TranslationError(
@@ -274,8 +289,18 @@ class QwenQualityTranslator(Translator):
                         return
             except Exception:
                 pass
+            elapsed = time.monotonic() - started
+            if elapsed >= next_progress_log:
+                logger.info(
+                    "llama-server 仍在初始化 "
+                    "(backend=%s target=%s port=%s 已等待=%.0fs 最长等待=%.0fs)",
+                    backend, target, port, elapsed, timeout)
+                while next_progress_log <= elapsed:
+                    next_progress_log += 30.0
             time.sleep(0.3)
-        logger.error("llama-server %.0fs 内未就绪 (port=%s)", timeout, port)
+        logger.error(
+            "llama-server %.0fs 内未就绪 (backend=%s target=%s port=%s)",
+            timeout, backend, target, port)
         detail = " | ".join(self._server_output_tail)
         if detail:
             logger.error("llama-server 最近输出: %s", detail)
