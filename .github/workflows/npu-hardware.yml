@@ -115,7 +115,11 @@ jobs:
             if (-not $vsInstall) { throw 'Visual C++ redistributable directory could not be located.' }
             $vcRuntimeDll = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC\Redist\MSVC') `
               -Filter 'vcruntime140.dll' -File -Recurse |
-              Where-Object { $_.FullName -match '(?i)\\x64\\Microsoft\.VC[^\\]*\.CRT\\vcruntime140\.dll$' } |
+              Where-Object {
+                $_.FullName -match '(?i)\\x64\\Microsoft\.VC[^\\]*\.CRT\\vcruntime140\.dll$' -and
+                $_.FullName -notmatch '(?i)\\onecore\\'
+              } |
+              Sort-Object FullName -Descending |
               Select-Object -First 1
             if (-not $vcRuntimeDll) { throw 'The x64 Visual C++ runtime DLL directory was not found.' }
             $vcCrtDir = $vcRuntimeDll.Directory
@@ -136,6 +140,7 @@ jobs:
           } finally {
             Stop-Transcript | Out-Null
           }
+          exit 0
 
       - name: Upload NPU-compatible runtime
         uses: actions/upload-artifact@v4
