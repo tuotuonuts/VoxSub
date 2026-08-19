@@ -35,7 +35,10 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           if (Test-Path -LiteralPath .npu-probe\probe.log) {
+            $summary = (Get-Content -LiteralPath .npu-probe\probe.log -Raw).Trim()
             Get-Content -LiteralPath .npu-probe\probe.log
+            $annotation = $summary.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error file=.npu-probe/probe.log,line=1,title=NPU probe summary::$annotation"
           } else {
             Write-Output 'probe.log was not created.'
           }
