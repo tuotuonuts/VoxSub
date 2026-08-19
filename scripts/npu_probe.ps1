@@ -28,13 +28,13 @@ function Find-LlamaServer([string]$PreferredDir) {
             return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
-    throw '未找到带 OpenVINO 的 llama-server.exe。请先在该电脑安装 VoxSub，或在工作流输入 llama_dir。'
+    throw 'OpenVINO llama-server.exe not found. Install VoxSub or provide llama_dir.'
 }
 
 function Find-GgufModel([string]$PreferredPath) {
     if ($PreferredPath) {
         if (-not (Test-Path -LiteralPath $PreferredPath -PathType Leaf)) {
-            throw "指定的 GGUF 模型不存在: $PreferredPath"
+            throw "GGUF model does not exist: $PreferredPath"
         }
         return (Resolve-Path -LiteralPath $PreferredPath).Path
     }
@@ -47,7 +47,7 @@ function Find-GgufModel([string]$PreferredPath) {
             return $model.FullName
         }
     }
-    throw '未找到 GGUF 模型。请在工作流的 model_path 输入该 Intel NPU 电脑上的绝对模型路径。'
+    throw 'No GGUF model found. Provide the absolute model_path on the Intel NPU computer.'
 }
 
 function Get-FreePort {
@@ -61,6 +61,13 @@ function Get-FreePort {
     }
 }
 
+function Quote-WindowsArgument([string]$Value) {
+    if ($Value -notmatch '[\s\"]') {
+        return $Value
+    }
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
 $serverProcess = $null
 $stdoutTask = $null
 $stderrTask = $null
@@ -69,7 +76,7 @@ try {
         Where-Object { $_.Name -match '\bNPU\b|Neural Processing|AI Boost|Ryzen AI|Hexagon' } |
         Select-Object -ExpandProperty Name)
     if ($npuDevices.Count -eq 0) {
-        throw 'Windows 没有检测到 NPU 设备，无法执行 Intel NPU 验证。'
+        throw 'Windows did not detect an NPU device.'
     }
     Write-Probe "Detected NPU device(s): $($npuDevices -join '; ')"
 
@@ -88,10 +95,10 @@ try {
     Write-Probe "llama-server --list-devices exit=$deviceExitCode"
     $deviceList | ForEach-Object { Write-Probe "device: $_" }
     if ($deviceExitCode -ne 0) {
-        throw 'llama-server --list-devices 失败。请查看 llama-devices.log。'
+        throw 'llama-server --list-devices failed. See llama-devices.log.'
     }
     if (-not (($deviceList -join "`n") -match 'OPENVINO')) {
-        throw 'llama-server 没有列出 OpenVINO 后端。请确认使用的是 VoxSub 随包 OpenVINO runtime。'
+        throw 'llama-server did not list an OpenVINO backend.'
     }
 
     $model = Find-GgufModel $ModelPath
@@ -117,15 +124,17 @@ try {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.Environment['GGML_OPENVINO_DEVICE'] = 'NPU'
-    $startInfo.Environment['GGML_OPENVINO_ENABLE_FALLBACK'] = '0'
-    foreach ($argument in $args) {
-        [void]$startInfo.ArgumentList.Add($argument)
-    }
-    $serverProcess = [System.Diagnostics.Process]::new()
+    # Use .Arguments/.EnvironmentVariables for Windows PowerShell 5.1;
+    # ArgumentList/Environment are only available on newer .NET runtimes.
+    $startInfo.Arguments = (($args | ForEach-Object {
+        Quote-WindowsArgument ([string]$_)
+    }) -join ' ')
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_DEVICE'] = 'NPU'
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_FALLBACK'] = '0'
+    $serverProcess = New-Object System.Diagnostics.Process
     $serverProcess.StartInfo = $startInfo
     if (-not $serverProcess.Start()) {
-        throw 'llama-server 进程无法启动。'
+        throw 'llama-server process could not start.'
     }
     $stdoutTask = $serverProcess.StandardOutput.ReadToEndAsync()
     $stderrTask = $serverProcess.StandardError.ReadToEndAsync()
@@ -134,7 +143,7 @@ try {
     $deadline = (Get-Date).AddSeconds(90)
     while ((Get-Date) -lt $deadline) {
         if ($serverProcess.HasExited) {
-            throw "llama-server 提前退出，退出码=$($serverProcess.ExitCode)"
+            throw "llama-server exited early with code $($serverProcess.ExitCode)"
         }
         try {
             $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
@@ -148,7 +157,7 @@ try {
         }
     }
     if (-not $ready) {
-        throw 'llama-server 在 90 秒内未就绪。'
+        throw 'llama-server did not become ready within 90 seconds.'
     }
     Write-Probe 'llama-server health check passed.'
 
@@ -158,7 +167,7 @@ try {
         -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 45
     $content = [string]$reply.choices[0].message.content
     if ([string]::IsNullOrWhiteSpace($content)) {
-        throw 'llama-server 已启动，但未返回有效聊天结果。'
+        throw 'llama-server started but returned no valid chat result.'
     }
     Write-Probe "Inference reply: $content"
 }
@@ -169,7 +178,7 @@ catch {
 finally {
     if ($serverProcess) {
         if (-not $serverProcess.HasExited) {
-            $serverProcess.Kill($true)
+            $serverProcess.Kill()
             $serverProcess.WaitForExit()
         }
         if ($stdoutTask) {
@@ -184,11 +193,11 @@ finally {
         ) -join "`n"
         if ($combined -match '(?i)fallback to CPU|device NPU is not available') {
             Write-Probe 'FAIL: llama.cpp reported NPU fallback or unavailable NPU.'
-            throw 'NPU 不可用或已回退到 CPU；请下载 intel-npu-probe 诊断附件。'
+            throw 'NPU is unavailable or fell back to CPU. Download intel-npu-probe diagnostics.'
         }
         if ($combined -notmatch '(?is)openvino.{0,240}npu|npu.{0,240}openvino|using device.{0,80}npu') {
             Write-Probe 'FAIL: no explicit OpenVINO NPU execution marker was found.'
-            throw '未在 llama-server 日志中找到 NPU 实际执行证据；请下载 intel-npu-probe 诊断附件。'
+            throw 'No proof of OpenVINO NPU execution was found in llama-server logs.'
         }
         Write-Probe 'PASS: OpenVINO NPU execution marker found; no CPU fallback marker found.'
     }
