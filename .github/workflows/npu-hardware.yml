@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .npu-assets/patched-openvino-no-npuw-b10470
-          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v2
+          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v3
 
       - name: Build NPU-compatible OpenVINO llama runtime
         shell: powershell
