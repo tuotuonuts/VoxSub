@@ -32,7 +32,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .npu-assets/patched-openvino-no-npuw-b10470
-          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v3
+          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v4
 
       - name: Build NPU-compatible OpenVINO llama runtime
         shell: powershell
@@ -58,14 +58,17 @@ jobs:
               $extra = Join-Path $srcRoot 'ggml\src\ggml-openvino\ggml-openvino-extra.cpp'
               $source = Get-Content -LiteralPath $extra -Raw
               $configPattern = New-Object Text.RegularExpressions.Regex(
-                '(?s)(if \(device_name == "NPU"\) \{\s*)compile_config = \{.*?\};'
+                '(?s)\s*if \(device_name == "NPU"\) \{.*?\}\s*else if \(cache_dir && strlen\(cache_dir\) > 0\) \{\s*compile_config\.insert\(ov::cache_dir\(cache_dir\)\);\s*compile_config\.insert\(ov::cache_mode\(ov::CacheMode::OPTIMIZE_SIZE\)\);\s*\}'
               )
               $patchedSource = $configPattern.Replace(
                 $source,
-                '$1compile_config = {}; if (cache_dir && strlen(cache_dir) > 0) { compile_config.insert(ov::cache_dir(cache_dir)); compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE)); }',
+                "`r`n    if (cache_dir && strlen(cache_dir) > 0) {`r`n        compile_config.insert(ov::cache_dir(cache_dir));`r`n        compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE));`r`n    }",
                 1
               )
               if ($patchedSource -eq $source) { throw 'Could not remove the private NPUW compile configuration.' }
+              if ($patchedSource -match 'NPU_COMPILER_DYNAMIC_QUANTIZATION|NPU_USE_NPUW|NPUW_[A-Z_]+') {
+                throw 'A private NPUW compile option remains after patching.'
+              }
               Set-Content -LiteralPath $extra -Value $patchedSource -Encoding utf8
 
               $ovZip = Join-Path $assetRoot 'openvino-toolkit-windows-2026.2.1.zip'
@@ -175,7 +178,6 @@ jobs:
               }
               Add-Content -LiteralPath $dependencyReport -Value $dependencyOutput -Encoding utf8
             }
-            Get-Content -LiteralPath $dependencyReport
             Write-Output "Packaged Visual C++ runtime: $($vcCrtDir.FullName)"
           } catch {
             Write-Error $_
@@ -240,19 +242,22 @@ jobs:
               $extra = Join-Path $srcRoot 'ggml\src\ggml-openvino\ggml-openvino-extra.cpp'
               $source = Get-Content -LiteralPath $extra -Raw
               $configPattern = New-Object Text.RegularExpressions.Regex(
-                '(?s)(if \(device_name == "NPU"\) \{\s*)compile_config = \{.*?\};'
+                '(?s)\s*if \(device_name == "NPU"\) \{.*?\}\s*else if \(cache_dir && strlen\(cache_dir\) > 0\) \{\s*compile_config\.insert\(ov::cache_dir\(cache_dir\)\);\s*compile_config\.insert\(ov::cache_mode\(ov::CacheMode::OPTIMIZE_SIZE\)\);\s*\}'
               )
               $patchedSource = $configPattern.Replace(
                 $source,
-                '$1compile_config = {}; if (cache_dir && strlen(cache_dir) > 0) { compile_config.insert(ov::cache_dir(cache_dir)); compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE)); }',
+                "`r`n    if (cache_dir && strlen(cache_dir) > 0) {`r`n        compile_config.insert(ov::cache_dir(cache_dir));`r`n        compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE));`r`n    }",
                 1
               )
               if ($patchedSource -eq $source) {
-                if ($source -notmatch 'compile_config = \{\};') {
+                if ($source -notmatch 'compile_config\.insert\(ov::cache_dir\(cache_dir\)\)') {
                   throw 'Could not remove the private NPUW compile configuration.'
                 }
               } else {
                 Set-Content -LiteralPath $extra -Value $patchedSource -Encoding utf8
+              }
+              if ($patchedSource -match 'NPU_COMPILER_DYNAMIC_QUANTIZATION|NPU_USE_NPUW|NPUW_[A-Z_]+') {
+                throw 'A private NPUW compile option remains after patching.'
               }
 
               $ovZip = Join-Path $assetRoot 'openvino-toolkit-windows-2026.2.1.zip'
@@ -378,12 +383,17 @@ jobs:
           }
           Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
           Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using source-built NPU-compatible runtime: $patchedRuntime"
-          foreach ($diagnosticName in @('runtime-files.txt', 'runtime-dependencies.txt')) {
+          foreach ($diagnosticName in @('runtime-files.txt')) {
             $diagnosticPath = Join-Path $patchedRuntime $diagnosticName
             if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
               Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "`r`n===== $diagnosticName ====="
               Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value (Get-Content -LiteralPath $diagnosticPath -Raw)
             }
+          }
+          $dependencyReport = Join-Path $patchedRuntime 'runtime-dependencies.txt'
+          if (Test-Path -LiteralPath $dependencyReport -PathType Leaf) {
+            $dependencyReportSize = (Get-Item -LiteralPath $dependencyReport).Length
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "runtime-dependencies.txt generated ($dependencyReportSize bytes; retained in runtime artifact)."
           }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
