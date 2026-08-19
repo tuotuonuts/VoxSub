@@ -44,30 +44,33 @@ jobs:
             Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
           }
           Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
-          $openvinoDll = Get-ChildItem -LiteralPath $runtimeRoot -Filter 'ggml-openvino.dll' -File -Recurse | Select-Object -First 1
-          if (-not $openvinoDll) { throw 'ggml-openvino.dll was not found in the OpenVINO runtime.' }
-          $bytes = [System.IO.File]::ReadAllBytes($openvinoDll.FullName)
           $name = [Text.Encoding]::ASCII.GetBytes('NPU_COMPILER_DYNAMIC_QUANTIZATION')
           $yes = [Text.Encoding]::ASCII.GetBytes('YES')
           $patched = $false
-          for ($i = 0; $i -le $bytes.Length - $name.Length; $i++) {
-            $matchesName = $true
-            for ($n = 0; $n -lt $name.Length; $n++) { if ($bytes[$i + $n] -ne $name[$n]) { $matchesName = $false; break } }
-            if (-not $matchesName) { continue }
-            $scanEnd = [Math]::Min($bytes.Length - 4, $i + $name.Length + 512)
-            for ($j = $i + $name.Length; $j -le $scanEnd; $j++) {
-              if ($bytes[$j] -eq $yes[0] -and $bytes[$j + 1] -eq $yes[1] -and $bytes[$j + 2] -eq $yes[2] -and $bytes[$j + 3] -eq 0) {
-                $bytes[$j] = [byte][char]'N'; $bytes[$j + 1] = [byte][char]'O'; $bytes[$j + 2] = 0
-                $patched = $true
-                Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched ggml-openvino.dll NPU_COMPILER_DYNAMIC_QUANTIZATION at byte offset $j (YES -> NO)."
-                break
+          $binaryCandidates = Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse |
+            Where-Object { $_.Extension -in @('.dll', '.exe') }
+          foreach ($binary in $binaryCandidates) {
+            $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
+            for ($i = 0; $i -le $bytes.Length - $name.Length; $i++) {
+              $matchesName = $true
+              for ($n = 0; $n -lt $name.Length; $n++) { if ($bytes[$i + $n] -ne $name[$n]) { $matchesName = $false; break } }
+              if (-not $matchesName) { continue }
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Found option string in $($binary.Name) at byte offset $i."
+              $scanEnd = [Math]::Min($bytes.Length - 4, $i + $name.Length + 4096)
+              for ($j = $i + $name.Length; $j -le $scanEnd; $j++) {
+                if ($bytes[$j] -eq $yes[0] -and $bytes[$j + 1] -eq $yes[1] -and $bytes[$j + 2] -eq $yes[2] -and $bytes[$j + 3] -eq 0) {
+                  $bytes[$j] = [byte][char]'N'; $bytes[$j + 1] = [byte][char]'O'; $bytes[$j + 2] = 0
+                  [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
+                  $patched = $true
+                  Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $j (YES -> NO)."
+                  break
+                }
               }
+              if ($patched) { break }
             }
             if ($patched) { break }
           }
-          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION=YES in ggml-openvino.dll.' }
-          [System.IO.File]::WriteAllBytes($openvinoDll.FullName, $bytes)
-          Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using patched runtime: $($openvinoDll.FullName)"
+          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION=YES in runtime binaries.' }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelUrl = 'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf'
