@@ -14,7 +14,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from voxsub.model_catalog import CATALOG, ModelSpec  # noqa: E402
+from voxsub.model_catalog import CATALOG, ModelMarketplace, ModelSpec  # noqa: E402
 from voxsub.models import fetch_file, sha256_of  # noqa: E402
 from voxsub.npu_validation import npu_compatibility  # noqa: E402
 
@@ -64,9 +64,15 @@ def _download(model: ModelSpec, models_dir: Path) -> Path:
             return destination
         destination.unlink()
 
-    urls = [source.url for source in model.sources if source.url]
+    ordered_sources = ModelMarketplace(models_dir).ordered_sources(model, "auto")
+    urls = [source.url for source in ordered_sources if source.url]
     if not urls:
         raise RuntimeError(f"No download source is configured for {model.id}.")
+    print(
+        f"SOURCE ORDER {model.id}: "
+        + " -> ".join(source.id for source in ordered_sources),
+        flush=True,
+    )
     progress_state = {"bucket": -1, "last": 0.0}
 
     def progress(done: int, total: int, source: str) -> None:
