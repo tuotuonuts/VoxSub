@@ -32,6 +32,7 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           New-Item -ItemType Directory -Path (Join-Path $PWD '.npu-probe') -Force | Out-Null
           Start-Transcript -LiteralPath (Join-Path $PWD '.npu-probe\prepare.log') -Force | Out-Null
           try {
@@ -43,9 +44,22 @@ jobs:
 
           $runtimeZip = Join-Path $assetRoot 'llama-b10470-openvino.zip'
           $runtimeUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10470/llama-b10470-bin-win-openvino-2026.2.1-x64.zip'
-          if (-not (Test-Path -LiteralPath $runtimeZip)) {
-            Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing
+          $validZip = $false
+          if (Test-Path -LiteralPath $runtimeZip) {
+            try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose(); $validZip = $true } catch { $validZip = $false }
           }
+          for ($attempt = 1; $attempt -le 5 -and -not $validZip; $attempt++) {
+            Remove-Item -LiteralPath $runtimeZip -Force -ErrorAction SilentlyContinue
+            try {
+              Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeZip -UseBasicParsing -TimeoutSec 900
+              [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose()
+              $validZip = $true
+            } catch {
+              Add-Content -LiteralPath (Join-Path $probeRoot 'prepare.log') -Value "Runtime download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds ([Math]::Min(30, $attempt * 5))
+            }
+          }
+          if (-not $validZip) { throw "llama OpenVINO runtime archive could not be downloaded after 5 attempts." }
           Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
           $name = [Text.Encoding]::ASCII.GetBytes('NPU_COMPILER_DYNAMIC_QUANTIZATION')
           $yes = [Text.Encoding]::ASCII.GetBytes('YES')
@@ -114,6 +128,7 @@ jobs:
 
       - name: Upload probe diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: intel-npu-probe
