@@ -105,6 +105,8 @@ try {
     $serverDir = Split-Path -Parent $server
     Write-Probe "llama-server: $server"
     $env:PATH = "$serverDir;$env:PATH"
+    $cacheDir = Join-Path $serverDir 'openvino-cache'
+    New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
     foreach ($requiredFile in @('ggml-openvino.dll', 'openvino_intel_npu_plugin.dll')) {
         if (-not (Test-Path -LiteralPath (Join-Path $serverDir $requiredFile) -PathType Leaf)) {
             throw "OpenVINO NPU runtime file missing: $requiredFile"
@@ -147,6 +149,9 @@ try {
     }) -join ' ')
     $startInfo.EnvironmentVariables['GGML_OPENVINO_DEVICE'] = 'NPU'
     $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_FALLBACK'] = '0'
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_CACHE_DIR'] = $cacheDir
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_CACHE'] = '1'
+    $startInfo.EnvironmentVariables['GGML_OPENVINO_PROFILING'] = '1'
     $serverProcess = New-Object System.Diagnostics.Process
     $serverProcess.StartInfo = $startInfo
     if (-not $serverProcess.Start()) {
@@ -156,10 +161,17 @@ try {
     $stderrTask = $serverProcess.StandardError.ReadToEndAsync()
 
     $ready = $false
-    $deadline = (Get-Date).AddSeconds(90)
+    $startupTimeoutSeconds = 600
+    $deadline = (Get-Date).AddSeconds($startupTimeoutSeconds)
+    $lastHeartbeat = Get-Date
     while ((Get-Date) -lt $deadline) {
         if ($serverProcess.HasExited) {
             throw "llama-server exited early with code $($serverProcess.ExitCode)"
+        }
+        if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge 30) {
+            $elapsed = [Math]::Floor(((Get-Date) - $deadline.AddSeconds(-$startupTimeoutSeconds)).TotalSeconds)
+            Write-Probe "Still waiting for llama-server health after ${elapsed}s (first NPU compile may be slow)."
+            $lastHeartbeat = Get-Date
         }
         try {
             $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
@@ -173,7 +185,7 @@ try {
         }
     }
     if (-not $ready) {
-        throw 'llama-server did not become ready within 90 seconds.'
+        throw "llama-server did not become ready within $startupTimeoutSeconds seconds."
     }
     Write-Probe 'llama-server health check passed.'
 

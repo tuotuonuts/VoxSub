@@ -60,7 +60,11 @@ jobs:
               $configPattern = New-Object Text.RegularExpressions.Regex(
                 '(?s)(if \(device_name == "NPU"\) \{\s*)compile_config = \{.*?\};'
               )
-              $patchedSource = $configPattern.Replace($source, '$1compile_config = {};', 1)
+              $patchedSource = $configPattern.Replace(
+                $source,
+                '$1compile_config = {}; if (cache_dir && strlen(cache_dir) > 0) { compile_config.insert(ov::cache_dir(cache_dir)); compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE)); }',
+                1
+              )
               if ($patchedSource -eq $source) { throw 'Could not remove the private NPUW compile configuration.' }
               Set-Content -LiteralPath $extra -Value $patchedSource -Encoding utf8
 
@@ -238,7 +242,11 @@ jobs:
               $configPattern = New-Object Text.RegularExpressions.Regex(
                 '(?s)(if \(device_name == "NPU"\) \{\s*)compile_config = \{.*?\};'
               )
-              $patchedSource = $configPattern.Replace($source, '$1compile_config = {};', 1)
+              $patchedSource = $configPattern.Replace(
+                $source,
+                '$1compile_config = {}; if (cache_dir && strlen(cache_dir) > 0) { compile_config.insert(ov::cache_dir(cache_dir)); compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE)); }',
+                1
+              )
               if ($patchedSource -eq $source) {
                 if ($source -notmatch 'compile_config = \{\};') {
                   throw 'Could not remove the private NPUW compile configuration.'
