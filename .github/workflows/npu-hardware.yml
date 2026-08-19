@@ -371,6 +371,13 @@ jobs:
           $runtimeRoot = Join-Path $assetRoot 'openvino'
           $runtimeVariant = if ($env:VOXSUB_NPU_RUNTIME_VARIANT -eq 'official') { 'official' } else { 'patched' }
           New-Item -ItemType Directory -Path $runtimeRoot, $probeRoot -Force | Out-Null
+          foreach ($staleSummary in @(
+            'catalog-summary.json',
+            'catalog-summary.partial.json',
+            'catalog-summary.md'
+          )) {
+            Remove-Item -LiteralPath (Join-Path $probeRoot $staleSummary) -Force -ErrorAction SilentlyContinue
+          }
           Set-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value ''
           Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Requested runtime variant: $runtimeVariant"
 
