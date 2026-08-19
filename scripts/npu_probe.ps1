@@ -180,6 +180,7 @@ try {
     $startInfo.EnvironmentVariables['GGML_OPENVINO_ENABLE_FALLBACK'] = '0'
     $startInfo.EnvironmentVariables['GGML_OPENVINO_STATEFUL_EXECUTION'] = '0'
     $startInfo.EnvironmentVariables['GGML_OPENVINO_PROFILING'] = '1'
+    $startInfo.EnvironmentVariables['OV_NPU_LOG_LEVEL'] = 'LOG_INFO'
     $serverProcess = New-Object System.Diagnostics.Process
     $serverProcess.StartInfo = $startInfo
     if (-not $serverProcess.Start()) {
@@ -259,7 +260,13 @@ finally {
             if (Test-Path -LiteralPath $ServerErrPath) { Get-Content -LiteralPath $ServerErrPath -Raw }
         ) -join "`n"
         $fallbackDetected = $combined -match '(?i)fallback to CPU|device NPU is not available'
-        $npuMarkerDetected = $combined -match '(?is)openvino.{0,240}npu|npu.{0,240}openvino|using device.{0,80}npu'
+        # Require NPU as a standalone device/plugin name. A broad substring
+        # search incorrectly matched tensor names such as ``input_scale``.
+        $npuMarkerDetected = $combined -match (
+            '(?im)^.*(?:OpenVINO:\s+using device\s+NPU|' +
+            '\[[^\]\r\n]*\bNPU\b[^\]\r\n]*\]|Intel\s+NPU\s+Plugin|' +
+            '\bNPU\s+(?:compiler|driver|device|platform)\b).*$'
+        )
         if ($inferenceSucceeded) {
             if ($fallbackDetected) {
                 Write-Probe 'FAIL: llama.cpp reported NPU fallback or unavailable NPU.'
