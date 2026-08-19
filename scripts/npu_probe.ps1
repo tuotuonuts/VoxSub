@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ModelPath = $env:VOXSUB_NPU_TEST_MODEL,
-    [string]$LlamaDir = $env:VOXSUB_LLAMA_DIR
+    [string]$LlamaDir = $env:VOXSUB_LLAMA_DIR,
+    [switch]$DriverCheckOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,8 @@ New-Item -ItemType Directory -Path $ProbeDir -Force | Out-Null
 $LogPath = Join-Path $ProbeDir 'probe.log'
 $ServerOutPath = Join-Path $ProbeDir 'llama-server.stdout.log'
 $ServerErrPath = Join-Path $ProbeDir 'llama-server.stderr.log'
+$MinimumIntelNpuDriver = [version]'32.0.100.4778'
+$IntelNpuDriverUrl = 'https://www.intel.com/content/www/us/en/download/794734/intel-npu-driver-windows.html'
 
 function Write-Probe([string]$Message) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
@@ -104,8 +107,28 @@ try {
     Write-Probe "Processor(s): $($processorNames -join '; ')"
     $npuDrivers = @(Get-CimInstance Win32_PnPSignedDriver |
         Where-Object { $_.DeviceName -match '\bNPU\b|Neural Processing|AI Boost' } |
-        ForEach-Object { "$($_.DeviceName) $($_.DriverVersion)" })
-    Write-Probe "NPU driver(s): $($npuDrivers -join '; ')"
+        Select-Object DeviceName, DriverVersion)
+    Write-Probe "NPU driver(s): $((@($npuDrivers | ForEach-Object { "$($_.DeviceName) $($_.DriverVersion)" })) -join '; ')"
+    $parsedDrivers = @($npuDrivers | ForEach-Object {
+        try {
+            [pscustomobject]@{ Name = $_.DeviceName; Version = [version]$_.DriverVersion }
+        }
+        catch {
+            Write-Probe "Ignoring unreadable NPU driver version: $($_.DeviceName) $($_.DriverVersion)"
+        }
+    })
+    if ($parsedDrivers.Count -eq 0) {
+        throw "The Intel NPU driver version could not be read. Reinstall the latest driver: $IntelNpuDriverUrl"
+    }
+    $newestNpuDriver = $parsedDrivers | Sort-Object Version -Descending | Select-Object -First 1
+    if ($newestNpuDriver.Version -lt $MinimumIntelNpuDriver) {
+        throw "Intel NPU driver $($newestNpuDriver.Version) is too old for OpenVINO 2026.2. Minimum: $MinimumIntelNpuDriver. Update to 32.0.100.4841 or newer, restart Windows, then retry: $IntelNpuDriverUrl"
+    }
+    Write-Probe "Intel NPU driver compatibility check passed: $($newestNpuDriver.Version) >= $MinimumIntelNpuDriver"
+    if ($DriverCheckOnly) {
+        Write-Probe 'PASS: Intel NPU driver preflight completed.'
+        return
+    }
 
     $server = Find-LlamaServer $LlamaDir
     $serverDir = Split-Path -Parent $server

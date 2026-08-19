@@ -215,6 +215,10 @@ jobs:
           clean: false
           fetch-depth: 1
 
+      - name: Check Intel NPU driver compatibility
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: ./scripts/npu_probe.ps1 -DriverCheckOnly
+
       - name: Build NPU-compatible OpenVINO llama runtime
         if: ${{ false }}
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}

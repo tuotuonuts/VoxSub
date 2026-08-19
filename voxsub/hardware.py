@@ -20,6 +20,25 @@ from voxsub.logging_setup import get_logger
 
 logger = get_logger("hardware")
 GIB = 1024 ** 3
+INTEL_LLAMA_NPU_MIN_DRIVER = (32, 0, 100, 4778)
+INTEL_NPU_DRIVER_URL = (
+    "https://www.intel.com/content/www/us/en/download/794734/"
+    "intel-npu-driver-windows.html"
+)
+
+
+def _driver_version_tuple(value: str) -> tuple[int, int, int, int] | None:
+    """Parse a Windows driver version without accepting partial versions."""
+    parts = value.strip().split(".")
+    if len(parts) != 4 or any(not part.isdigit() for part in parts):
+        return None
+    return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+
+
+def intel_llama_npu_driver_outdated(version: str) -> bool:
+    """Return true only when a known Intel NPU driver is below our floor."""
+    parsed = _driver_version_tuple(version)
+    return parsed is not None and parsed < INTEL_LLAMA_NPU_MIN_DRIVER
 
 
 @dataclass(frozen=True)
@@ -35,6 +54,7 @@ class HardwareProfile:
     npu_provider: str = ""
     integrated_gpu_name: str = ""
     integrated_gpu_provider: str = ""
+    npu_driver_version: str = ""
 
     @property
     def has_discrete_gpu(self) -> bool:
@@ -47,6 +67,14 @@ class HardwareProfile:
     @property
     def has_npu_runtime(self) -> bool:
         return bool(self.npu_name and self.npu_provider)
+
+    @property
+    def has_llama_npu(self) -> bool:
+        return bool(
+            self.npu_name and
+            "intel" in self.npu_name.casefold() and
+            not intel_llama_npu_driver_outdated(self.npu_driver_version)
+        )
 
     @property
     def has_integrated_gpu(self) -> bool:
@@ -112,6 +140,28 @@ def _npu_devices() -> list[str]:
             r"\bnpu\b|neural processing|ai boost|ryzen ai|hexagon", re.IGNORECASE)
         return [name for item in values
                 if (name := str(item).strip()) and pattern.search(name)]
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _npu_drivers() -> list[dict[str, str]]:
+    raw = _run_powershell(
+        "$rx='\\bNPU\\b|Neural Processing|AI Boost|Ryzen AI|Hexagon'; "
+        "Get-CimInstance Win32_PnPSignedDriver | "
+        "Where-Object { $_.DeviceName -match $rx } | "
+        "Select-Object DeviceName,DriverVersion | ConvertTo-Json -Compress")
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+        values = value if isinstance(value, list) else [value]
+        return [
+            {
+                "name": str(item.get("DeviceName") or "").strip(),
+                "version": str(item.get("DriverVersion") or "").strip(),
+            }
+            for item in values if isinstance(item, dict)
+        ]
     except (json.JSONDecodeError, TypeError):
         return []
 
@@ -215,6 +265,16 @@ def detect_hardware() -> HardwareProfile:
 
     npu_names = _npu_devices()
     npu_name = npu_names[0] if npu_names else ""
+    npu_drivers = _npu_drivers()
+    if "intel" in npu_name.casefold():
+        npu_drivers = [item for item in npu_drivers
+                       if "intel" in item["name"].casefold()] or npu_drivers
+    parsed_drivers = [
+        (parsed, item["version"])
+        for item in npu_drivers
+        if (parsed := _driver_version_tuple(item["version"])) is not None
+    ]
+    npu_driver_version = max(parsed_drivers)[1] if parsed_drivers else ""
     npu_ep = next((ep for ep, kind, _vendor in ep_devices if kind == "npu"), "")
     if not npu_ep and npu_name:
         for candidate in ("QNNExecutionProvider", "VitisAIExecutionProvider",
@@ -238,15 +298,24 @@ def detect_hardware() -> HardwareProfile:
             integrated_provider = "OpenVINO"
 
     profile = HardwareProfile(
-        cpu_name, physical, logical, ram_gb,
-        gpu_name, vram_gb, gpu_provider,
-        npu_name, npu_ep.replace("ExecutionProvider", ""),
-        integrated_name, integrated_provider,
+        cpu_name=cpu_name,
+        physical_cores=physical,
+        logical_cores=logical,
+        ram_gb=ram_gb,
+        gpu_name=gpu_name,
+        vram_gb=vram_gb,
+        gpu_provider=gpu_provider,
+        npu_name=npu_name,
+        npu_provider=npu_ep.replace("ExecutionProvider", ""),
+        integrated_gpu_name=integrated_name,
+        integrated_gpu_provider=integrated_provider,
+        npu_driver_version=npu_driver_version,
     )
     logger.info(
-        "硬件画像: gpu=%s/%s npu=%s/%s igpu=%s/%s cpu=%s",
+        "硬件画像: gpu=%s/%s npu=%s/%s driver=%s igpu=%s/%s cpu=%s",
         profile.gpu_name or "none", profile.gpu_provider or "no-runtime",
         profile.npu_name or "none", profile.npu_provider or "no-runtime",
+        profile.npu_driver_version or "unknown",
         profile.integrated_gpu_name or "none",
         profile.integrated_gpu_provider or "no-runtime", profile.cpu_name,
     )
@@ -337,7 +406,13 @@ def select_llama_runtime(profile: HardwareProfile,
     # available and usable by llama-server.
     openvino_runtime = any(runtime.backend == "openvino" for runtime in runtimes)
     if profile.has_npu and "intel" in profile.npu_name.casefold():
-        if not openvino_runtime:
+        if intel_llama_npu_driver_outdated(profile.npu_driver_version):
+            minimum = ".".join(str(part) for part in INTEL_LLAMA_NPU_MIN_DRIVER)
+            logger.warning(
+                "llama NPU 跳过: Intel NPU 驱动过旧 current=%s minimum=%s update=%s",
+                profile.npu_driver_version, minimum, INTEL_NPU_DRIVER_URL,
+            )
+        elif not openvino_runtime:
             logger.info("llama NPU 跳过: 检测到 Intel NPU，但未找到随包 OpenVINO 运行时")
         elif profile.ram_gb < required_gb + 4.0:
             logger.info("llama NPU 跳过: 内存不足 required_gb=%.2f ram_gb=%.2f",
@@ -373,8 +448,7 @@ def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:
             result.append("gpu")
     # This is the llama.cpp path, so its bundled OpenVINO runtime is the
     # capability check; ORT providers describe the separate ONNX path.
-    if (profile.has_npu and "intel" in profile.npu_name.casefold() and
-            "openvino" in backends):
+    if profile.has_llama_npu and "openvino" in backends:
         result.append("npu")
     if profile.has_integrated_gpu:
         lower = profile.integrated_gpu_name.casefold()
@@ -390,4 +464,6 @@ def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:
 __all__ = [
     "HardwareProfile", "LlamaRuntime", "detect_hardware",
     "discover_llama_runtimes", "select_llama_runtime", "llama_accelerators",
+    "INTEL_LLAMA_NPU_MIN_DRIVER", "INTEL_NPU_DRIVER_URL",
+    "intel_llama_npu_driver_outdated",
 ]

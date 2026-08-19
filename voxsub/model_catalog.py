@@ -552,7 +552,7 @@ def _capacity(profile: HardwareProfile, model: ModelSpec) -> tuple[float, str]:
         ort_openvino = (profile.has_npu_runtime and
                         "openvino" in profile.npu_provider.casefold())
         if (model.npu_supported and (bundled_openvino or ort_openvino) and
-                "intel" in profile.npu_name.casefold() and
+                profile.has_llama_npu and
                 profile.ram_gb >= required_gb + 4.0):
             return max(cpu, 132.0), "NPU"
         if (model.igpu_supported and profile.has_integrated_gpu and

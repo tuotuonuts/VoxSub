@@ -7,6 +7,8 @@ from voxsub.hardware import (
     HardwareProfile,
     _is_integrated_gpu,
     _is_virtual_display,
+    intel_llama_npu_driver_outdated,
+    llama_accelerators,
     select_llama_runtime,
 )
 
@@ -27,19 +29,22 @@ def test_llama_runtime_priority_gpu_npu_igpu_cpu(tmp_path: Path, monkeypatch) ->
 
     full = HardwareProfile(
         "cpu", 8, 16, 32.0, "NVIDIA RTX", 8.0, "DirectML",
-        "Intel AI Boost", "OpenVINO", "Intel Arc Graphics", "DirectML")
+        "Intel AI Boost", "OpenVINO", "Intel Arc Graphics", "DirectML",
+        "32.0.100.4841")
     selected = select_llama_runtime(full)
     assert selected and selected.backend == "vulkan" and selected.target == "GPU"
 
     low_vram = HardwareProfile(
         "cpu", 8, 16, 32.0, "NVIDIA RTX", 4.0, "DirectML",
-        "Intel AI Boost", "OpenVINO", "Intel Arc Graphics", "DirectML")
+        "Intel AI Boost", "OpenVINO", "Intel Arc Graphics", "DirectML",
+        "32.0.100.4841")
     selected = select_llama_runtime(low_vram, required_gb=6.0)
     assert selected and selected.backend == "openvino" and selected.target == "NPU"
 
     npu = HardwareProfile(
         "cpu", 4, 8, 16.0, npu_name="Intel AI Boost", npu_provider="OpenVINO",
-        integrated_gpu_name="Intel Arc Graphics", integrated_gpu_provider="DirectML")
+        integrated_gpu_name="Intel Arc Graphics", integrated_gpu_provider="DirectML",
+        npu_driver_version="32.0.100.4841")
     selected = select_llama_runtime(npu)
     assert selected and selected.backend == "openvino" and selected.target == "NPU"
 
@@ -62,7 +67,41 @@ def test_physical_npu_uses_bundled_openvino_without_ort_provider(
     profile = HardwareProfile(
         "cpu", 4, 8, 16.0, npu_name="Intel AI Boost",
         integrated_gpu_name="Intel Arc 130T GPU",
+        npu_driver_version="32.0.100.4841",
     )
+    selected = select_llama_runtime(profile)
+    assert selected and selected.backend == "openvino" and selected.target == "NPU"
+
+
+def test_outdated_intel_npu_driver_falls_back_to_igpu(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    _runtime(tmp_path, "vulkan", "ggml-vulkan.dll")
+    _runtime(tmp_path, "cpu")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile(
+        "cpu", 4, 8, 16.0,
+        npu_name="Intel AI Boost",
+        integrated_gpu_name="Intel Arc 130T GPU",
+        npu_driver_version="32.0.100.3159",
+    )
+
+    assert intel_llama_npu_driver_outdated(profile.npu_driver_version)
+    selected = select_llama_runtime(profile)
+    assert selected and selected.backend in {"openvino", "vulkan"}
+    assert selected.target == "GPU"
+    assert llama_accelerators(profile) == ("igpu", "cpu")
+
+
+def test_unknown_intel_npu_driver_keeps_legacy_detection(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile("cpu", 4, 8, 16.0, npu_name="Intel AI Boost")
+
+    assert not intel_llama_npu_driver_outdated("")
+    assert not intel_llama_npu_driver_outdated("32.0.100.4778")
+    assert not intel_llama_npu_driver_outdated("32.0.100.4841")
     selected = select_llama_runtime(profile)
     assert selected and selected.backend == "openvino" and selected.target == "NPU"
 

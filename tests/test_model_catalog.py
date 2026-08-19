@@ -95,6 +95,7 @@ def test_recommendation_levels_cover_requested_semantics() -> None:
         "Core Ultra", 4, 8, 16.0,
         npu_name="Intel AI Boost", npu_provider="OpenVINO",
         integrated_gpu_name="Intel Arc Graphics", integrated_gpu_provider="DirectML",
+        npu_driver_version="32.0.100.4841",
     )
     npu_assessment = assess_model(hy_small, npu_laptop)
     assert npu_assessment.level in {"推荐", "较为推荐"}
@@ -104,7 +105,8 @@ def test_recommendation_levels_cover_requested_semantics() -> None:
 def test_npu_assessment_accepts_bundled_openvino_runtime(monkeypatch) -> None:
     npu_laptop = HardwareProfile(
         "Core Ultra", 8, 16, 32.0,
-        npu_name="Intel AI Boost", integrated_gpu_name="Intel Arc Graphics")
+        npu_name="Intel AI Boost", integrated_gpu_name="Intel Arc Graphics",
+        npu_driver_version="32.0.100.4841")
     monkeypatch.setattr(
         "voxsub.model_catalog.discover_llama_runtimes",
         lambda: [type("Runtime", (), {"backend": "openvino"})()],
@@ -113,6 +115,24 @@ def test_npu_assessment_accepts_bundled_openvino_runtime(monkeypatch) -> None:
     assert hy_small is not None
     assessment = assess_model(hy_small, npu_laptop)
     assert assessment.reason.startswith("NPU ")
+
+
+def test_npu_assessment_rejects_outdated_intel_driver(monkeypatch) -> None:
+    npu_laptop = HardwareProfile(
+        "Core Ultra", 8, 16, 32.0,
+        npu_name="Intel AI Boost", integrated_gpu_name="Intel Arc Graphics",
+        npu_driver_version="32.0.100.3159")
+    monkeypatch.setattr(
+        "voxsub.model_catalog.discover_llama_runtimes",
+        lambda: [type("Runtime", (), {"backend": "openvino"})()],
+    )
+    hy_small = get_model("mt-hy-mt2-1.8b-q4")
+    assert hy_small is not None
+
+    assessment = assess_model(hy_small, npu_laptop)
+
+    assert not assessment.reason.startswith("NPU ")
+    assert assessment.reason.startswith("核显 ")
 
 
 def _make_archive(path: Path, root_name: str, files: dict[str, bytes]) -> None:
