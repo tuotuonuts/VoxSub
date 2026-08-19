@@ -100,27 +100,11 @@ try {
         }
     }
 
-    # Device enumeration can initialize the NPU plugin with its default device
-    # before llama-server receives an explicit --device. Keep this diagnostic
-    # probe on OpenVINO CPU; the real server below is still forced to NPU.
-    $previousOpenvinoDevice = $env:GGML_OPENVINO_DEVICE
-    $env:GGML_OPENVINO_DEVICE = 'CPU'
-    $deviceList = & $server --list-devices 2>&1
-    $deviceExitCode = $LASTEXITCODE
-    if ($null -eq $previousOpenvinoDevice) {
-        Remove-Item Env:GGML_OPENVINO_DEVICE -ErrorAction SilentlyContinue
-    } else {
-        $env:GGML_OPENVINO_DEVICE = $previousOpenvinoDevice
-    }
-    $deviceList | Set-Content -LiteralPath (Join-Path $ProbeDir 'llama-devices.log') -Encoding utf8
-    Write-Probe "llama-server --list-devices exit=$deviceExitCode"
-    $deviceList | ForEach-Object { Write-Probe "device: $_" }
-    if ($deviceExitCode -ne 0) {
-        throw 'llama-server --list-devices failed. See llama-devices.log.'
-    }
-    if (-not (($deviceList -join "`n") -match 'OPENVINO')) {
-        throw 'llama-server did not list an OpenVINO backend.'
-    }
+    # Do not call --list-devices here. On some Intel NPU driver/runtime
+    # combinations that diagnostic path crashes before the explicit device
+    # selection is applied. The real server launch below is the authoritative
+    # test and captures its stdout/stderr for diagnosis.
+    Write-Probe 'Skipping --list-devices; testing explicit OPENVINO0/NPU launch.'
 
     $model = Find-GgufModel $ModelPath
     $modelInfo = Get-Item -LiteralPath $model
