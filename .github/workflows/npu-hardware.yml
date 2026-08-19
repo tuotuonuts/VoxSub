@@ -3,6 +3,19 @@ name: Intel NPU hardware probe
 on:
   workflow_dispatch:
     inputs:
+      model_id:
+        description: Model Hub entry to validate. Use all for the complete matrix.
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - mt-hy-mt2-1.8b-q4
+          - mt-hy-mt2-1.8b-q6
+          - mt-hy-mt2-1.8b-q8
+          - mt-hy-mt2-7b-q4
+          - mt-hy-mt2-7b-q6
+          - mt-hy-mt2-7b-q8
       llama_dir:
         description: Absolute path to the folder containing the packaged OpenVINO llama-server.exe. Leave empty to use the installed VoxSub runtime.
         required: false
@@ -425,6 +438,7 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         env:
           VOXSUB_LLAMA_DIR_INPUT: ${{ inputs.llama_dir }}
+          VOXSUB_NPU_MODEL_ID: ${{ inputs.model_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $pythonRoot = Join-Path $PWD '.npu-assets\python-3.11.9-embed-amd64'
@@ -448,10 +462,16 @@ jobs:
           # Keep the 23 GB model matrix outside the checkout. actions/checkout
           # cleans untracked files in the repository at the start of each run.
           $modelsDir = Join-Path $env:RUNNER_WORKSPACE '.voxsub-npu-cache\catalog-models'
-          & $pythonExe ./scripts/npu_catalog_probe.py `
-            --runtime-dir $runtimeDir `
-            --models-dir $modelsDir `
-            --output-dir (Join-Path $PWD '.npu-probe')
+          $probeArgs = @(
+            './scripts/npu_catalog_probe.py',
+            '--runtime-dir', $runtimeDir,
+            '--models-dir', $modelsDir,
+            '--output-dir', (Join-Path $PWD '.npu-probe')
+          )
+          if ($env:VOXSUB_NPU_MODEL_ID -and $env:VOXSUB_NPU_MODEL_ID -ne 'all') {
+            $probeArgs += @('--model-id', $env:VOXSUB_NPU_MODEL_ID)
+          }
+          & $pythonExe @probeArgs
           if ($LASTEXITCODE -ne 0) {
             throw "Model Hub NPU matrix failed (exit $LASTEXITCODE)."
           }
