@@ -66,33 +66,25 @@ jobs:
           } else {
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing extracted runtime: $($existingServer.FullName)"
           }
-          $name = [Text.Encoding]::ASCII.GetBytes('NPU_COMPILER_DYNAMIC_QUANTIZATION')
-          $yes = [Text.Encoding]::ASCII.GetBytes('YES')
+          $nameText = 'NPU_COMPILER_DYNAMIC_QUANTIZATION'
+          $name = [Text.Encoding]::ASCII.GetBytes($nameText)
+          $replacement = [Text.Encoding]::ASCII.GetBytes('NPUW_DQ')
+          $binaryEncoding = [Text.Encoding]::GetEncoding(28591)
           $patched = $false
           $binaryCandidates = Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse |
             Where-Object { $_.Extension -in @('.dll', '.exe') }
           foreach ($binary in $binaryCandidates) {
             $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
-            for ($i = 0; $i -le $bytes.Length - $name.Length; $i++) {
-              $matchesName = $true
-              for ($n = 0; $n -lt $name.Length; $n++) { if ($bytes[$i + $n] -ne $name[$n]) { $matchesName = $false; break } }
-              if (-not $matchesName) { continue }
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Found option string in $($binary.Name) at byte offset $i."
-              $scanEnd = [Math]::Min($bytes.Length - 4, $i + $name.Length + 4096)
-              for ($j = $i + $name.Length; $j -le $scanEnd; $j++) {
-                if ($bytes[$j] -eq $yes[0] -and $bytes[$j + 1] -eq $yes[1] -and $bytes[$j + 2] -eq $yes[2] -and $bytes[$j + 3] -eq 0) {
-                  $bytes[$j] = [byte][char]'N'; $bytes[$j + 1] = [byte][char]'O'; $bytes[$j + 2] = 0
-                  [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
-                  $patched = $true
-                  Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $j (YES -> NO)."
-                  break
-                }
-              }
-              if ($patched) { break }
-            }
+            $offset = $binaryEncoding.GetString($bytes).IndexOf($nameText, [StringComparison]::Ordinal)
+            if ($offset -lt 0) { continue }
+            for ($n = 0; $n -lt $name.Length; $n++) { $bytes[$offset + $n] = 0 }
+            for ($n = 0; $n -lt $replacement.Length; $n++) { $bytes[$offset + $n] = $replacement[$n] }
+            [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
+            $patched = $true
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset (NPU_COMPILER_DYNAMIC_QUANTIZATION -> NPUW_DQ)."
             if ($patched) { break }
           }
-          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION=YES in runtime binaries.' }
+          if (-not $patched) { throw 'Could not locate NPU_COMPILER_DYNAMIC_QUANTIZATION in runtime binaries.' }
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelUrl = 'https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf'
