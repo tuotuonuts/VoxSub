@@ -24,11 +24,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify Intel NPU execution
-        shell: pwsh
+        shell: powershell
         env:
           VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
           VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
         run: ./scripts/npu_probe.ps1
+
+      - name: Print probe summary
+        if: always()
+        shell: powershell
+        run: |
+          if (Test-Path -LiteralPath .npu-probe\probe.log) {
+            Get-Content -LiteralPath .npu-probe\probe.log
+          } else {
+            Write-Output 'probe.log was not created.'
+          }
 
       - name: Upload probe diagnostics
         if: always()
@@ -36,5 +46,6 @@ jobs:
         with:
           name: intel-npu-probe
           path: .npu-probe
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

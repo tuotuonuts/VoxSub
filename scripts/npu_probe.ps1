@@ -162,6 +162,10 @@ try {
     }
     Write-Probe "Inference reply: $content"
 }
+catch {
+    Write-Probe "FAIL: $($_.Exception.Message)"
+    throw
+}
 finally {
     if ($serverProcess) {
         if (-not $serverProcess.HasExited) {
