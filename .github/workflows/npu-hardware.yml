@@ -29,6 +29,7 @@ jobs:
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
           New-Item -ItemType Directory -Path (Join-Path $PWD '.npu-probe') -Force | Out-Null
           $transcript = Join-Path $PWD '.npu-probe\build.log'
           Start-Transcript -LiteralPath $transcript -Force | Out-Null
@@ -42,9 +43,15 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath (Join-Path $ovRoot 'openvino_toolkit'))) {
             $ovZip = Join-Path $assetRoot 'openvino-toolkit.zip'
-            if (-not (Test-Path -LiteralPath $ovZip)) {
-              Invoke-WebRequest -Uri 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.2/windows/openvino_toolkit_windows_2026.2.1.21919.ede283a88e3_x86_64.zip' -OutFile $ovZip -UseBasicParsing
+            $ovUrl = 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.2/windows/openvino_toolkit_windows_2026.2.1.21919.ede283a88e3_x86_64.zip'
+            if (Test-Path -LiteralPath $ovZip) {
+              try { [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose() } catch { Remove-Item -LiteralPath $ovZip -Force }
             }
+            if (-not (Test-Path -LiteralPath $ovZip)) {
+              curl.exe --ipv4 --fail --location --retry 5 --retry-delay 3 --connect-timeout 20 --max-time 900 --output $ovZip $ovUrl
+              if ($LASTEXITCODE -ne 0) { throw "OpenVINO download failed (exit $LASTEXITCODE)." }
+            }
+            try { [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose() } catch { throw "OpenVINO archive is invalid: $ovZip" }
             Expand-Archive -LiteralPath $ovZip -DestinationPath $ovRoot -Force
           }
           $ovDir = Get-ChildItem -LiteralPath $ovRoot -Directory | Select-Object -First 1
