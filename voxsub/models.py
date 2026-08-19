@@ -20,6 +20,7 @@ scripts/model_fetch.py 保留为薄 CLI 壳, 直接调用本模块 (不重复代
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ logger = get_logger("models")
 
 MANIFEST_NAME = "manifest.json"
 CHUNK = 1 << 20  # 1MB 分块读写
+DOWNLOAD_ATTEMPTS_PER_SOURCE = 3
 
 
 class DownloadCancelled(RuntimeError):
@@ -97,6 +99,7 @@ def sha256_of(path: Path | str) -> str:
 def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
                mirror: str | None = None, *,
                mirrors: Iterable[str] | None = None,
+               expected_size: int | None = None,
                progress: Callable[[int, int, str], None] | None = None,
                cancelled: Callable[[], bool] | None = None) -> bool:
     """下载单个文件(断点续传), sha256 校验; 主 URL 失败自动切镜像。
@@ -105,7 +108,9 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
     - 已有 ``<name>.part`` 时带 ``Range: bytes=<已有大小>-`` 请求;
     - 服务器忽略 Range 返回 200 全量时, 必须清空重写 (否则与旧 .part
       重复拼接损坏文件) —— 由 ``resp.status == 206`` 分支决定写模式;
-    - HTTP 416 (Range 越界, 本地 .part 已完整) 时删掉 .part 全量重下。
+    - CDN 提前 EOF 时按预期大小识别为未完成，保留 .part 并自动续传；
+    - 每个源最多重试三次，仍失败才切换备用源；
+    - 大小和 SHA256 均通过后才把 .part 提升为最终文件。
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -119,65 +124,137 @@ def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
     sources = list(dict.fromkeys(sources))
     logger.info("开始下载 %s (候选源 %d 个)", dest.name, len(sources))
 
-    for src in sources:
-        try:
-            if cancelled and cancelled():
-                raise DownloadCancelled("下载已取消")
-            existing = part.stat().st_size if part.exists() else 0
-            headers = {"Range": f"bytes={existing}-"} if existing else {}
-            headers["User-Agent"] = "VoxSub/0.3"
-            req = urlrequest.Request(src, headers=headers)
-            with urlrequest.urlopen(req, timeout=60) as resp, \
-                    part.open("ab" if resp.status == 206 else "wb") as out:
-                resumed = existing if resp.status == 206 else 0
-                total = 0
-                content_range = resp.headers.get("Content-Range", "")
-                if "/" in content_range:
-                    try:
-                        total = int(content_range.rsplit("/", 1)[1])
-                    except ValueError:
-                        total = 0
-                if not total:
-                    try:
-                        total = resumed + int(resp.headers.get("Content-Length", "0"))
-                    except ValueError:
-                        total = 0
-                written = resumed
-                if progress:
-                    progress(written, total, src)
-                while True:
-                    if cancelled and cancelled():
-                        raise DownloadCancelled("下载已取消")
-                    block = resp.read(CHUNK)
-                    if not block:
-                        break
-                    out.write(block)
-                    written += len(block)
-                    if progress:
-                        progress(written, total, src)
-            part.replace(dest)
-            size_mb = dest.stat().st_size / 1e6
-            print(f"  下载完成: {dest.name} ({size_mb:.1f} MB)")
-            logger.info("下载完成: %s (%.1f MB)", dest.name, size_mb)
-            if expected_sha:
-                actual = sha256_of(dest)
-                if actual != expected_sha:
-                    print(f"  [错误] SHA256 不匹配: 期望 {expected_sha}, 实际 {actual}")
-                    logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
-                                 dest.name, expected_sha, actual)
-                    return False
-                print("  SHA256 校验通过")
-            return True
-        except DownloadCancelled:
-            logger.info("下载已取消，保留断点文件: %s", part)
-            raise
-        except (urlerror.URLError, OSError, TimeoutError) as exc:
-            print(f"  源 {src} 失败: {exc}")
-            logger.warning("下载源失败: 目标=%s 源=%s 错误=%s", dest.name, src, exc)
-            # 失败原因若是 HTTP 416(Range 越界), 说明本地 .part 已完整, 去掉续传重来
-            if isinstance(exc, urlerror.HTTPError) and exc.code == 416:
+    expected_size = expected_size if expected_size and expected_size > 0 else None
+
+    def _matches_expected(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        if expected_size is not None and path.stat().st_size != expected_size:
+            return False
+        if expected_sha and sha256_of(path) != expected_sha:
+            return False
+        return True
+
+    def _finish() -> bool:
+        if expected_size is not None and part.stat().st_size != expected_size:
+            return False
+        if expected_sha:
+            actual = sha256_of(part)
+            if actual != expected_sha:
+                print(f"  [错误] SHA256 不匹配: 期望 {expected_sha}, 实际 {actual}")
+                logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
+                             dest.name, expected_sha, actual)
                 part.unlink(missing_ok=True)
-            continue
+                return False
+            print("  SHA256 校验通过")
+        part.replace(dest)
+        size_mb = dest.stat().st_size / 1e6
+        print(f"  下载完成: {dest.name} ({size_mb:.1f} MB)")
+        logger.info("下载完成: %s (%.1f MB)", dest.name, size_mb)
+        return True
+
+    # 旧下载器会在提前 EOF 后把不完整文件从 .part 提升为 dest。升级后
+    # 将它恢复成断点文件，避免用户重新下载数 GB 已有数据。
+    if dest.is_file():
+        if _matches_expected(dest):
+            logger.info("复用已完成下载: %s", dest)
+            return True
+        if (not part.exists() and expected_size is not None
+                and dest.stat().st_size < expected_size):
+            dest.replace(part)
+            logger.info("恢复旧版未完成下载为断点文件: %s (%d/%d)",
+                        part, part.stat().st_size, expected_size)
+        else:
+            dest.unlink(missing_ok=True)
+    if (part.is_file() and expected_size is not None
+            and part.stat().st_size > expected_size):
+        logger.warning("断点文件超过预期大小，重新下载: %s actual=%d expected=%d",
+                       part, part.stat().st_size, expected_size)
+        part.unlink(missing_ok=True)
+
+    for src in sources:
+        for attempt in range(1, DOWNLOAD_ATTEMPTS_PER_SOURCE + 1):
+            try:
+                if cancelled and cancelled():
+                    raise DownloadCancelled("下载已取消")
+                if part.is_file() and _matches_expected(part):
+                    return _finish()
+
+                existing = part.stat().st_size if part.exists() else 0
+                headers = {"Range": f"bytes={existing}-"} if existing else {}
+                headers["User-Agent"] = "VoxSub/0.3"
+                req = urlrequest.Request(src, headers=headers)
+                with urlrequest.urlopen(req, timeout=60) as resp:
+                    status = getattr(resp, "status", resp.getcode())
+                    resumed = existing if status == 206 else 0
+                    content_range = resp.headers.get("Content-Range", "")
+                    reported_total = 0
+                    if "/" in content_range:
+                        try:
+                            reported_total = int(content_range.rsplit("/", 1)[1])
+                        except ValueError:
+                            reported_total = 0
+                    try:
+                        response_bytes = int(resp.headers.get("Content-Length", "0"))
+                    except ValueError:
+                        response_bytes = 0
+                    total = expected_size or reported_total or (
+                        resumed + response_bytes if response_bytes else 0)
+                    if (expected_size is not None and reported_total
+                            and reported_total != expected_size):
+                        raise OSError(
+                            f"服务器总大小异常: {reported_total}, 预期 {expected_size}")
+
+                    received = 0
+                    with part.open("ab" if status == 206 else "wb") as out:
+                        written = resumed
+                        if progress:
+                            progress(written, total, src)
+                        while True:
+                            if cancelled and cancelled():
+                                raise DownloadCancelled("下载已取消")
+                            block = resp.read(CHUNK)
+                            if not block:
+                                break
+                            out.write(block)
+                            received += len(block)
+                            written += len(block)
+                            if progress:
+                                progress(written, total, src)
+
+                actual_size = part.stat().st_size
+                if response_bytes and received < response_bytes:
+                    raise OSError(
+                        f"CDN 提前断流: 本次收到 {received}/{response_bytes} 字节")
+                if total and actual_size < total:
+                    raise OSError(
+                        f"下载未完成: 当前 {actual_size}/{total} 字节")
+                if total and actual_size > total:
+                    part.unlink(missing_ok=True)
+                    raise OSError(
+                        f"下载大小超出预期: 当前 {actual_size}/{total} 字节")
+                if _finish():
+                    return True
+                # 完整大小但哈希错误时不能继续拼接；换源从零重下。
+                break
+            except DownloadCancelled:
+                logger.info("下载已取消，保留断点文件: %s", part)
+                raise
+            except (urlerror.URLError, OSError, TimeoutError,
+                    http.client.HTTPException) as exc:
+                print(
+                    f"  源 {src} 第 {attempt}/{DOWNLOAD_ATTEMPTS_PER_SOURCE} 次失败: {exc}")
+                logger.warning(
+                    "下载源失败: 目标=%s 源=%s attempt=%d/%d 已有字节=%d 错误=%s",
+                    dest.name, src, attempt, DOWNLOAD_ATTEMPTS_PER_SOURCE,
+                    part.stat().st_size if part.exists() else 0, exc,
+                )
+                if isinstance(exc, urlerror.HTTPError):
+                    if exc.code == 416:
+                        part.unlink(missing_ok=True)
+                    elif exc.code in {400, 401, 403, 404, 410}:
+                        break
+                continue
     print("  [错误] 所有源均失败")
     logger.error("所有下载源均失败: %s", dest.name)
     return False

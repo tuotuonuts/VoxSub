@@ -119,6 +119,7 @@ def _download(model: ModelSpec, models_dir: Path,
         urls[0],
         destination,
         expected_sha=model.sha256,
+        expected_size=model.download_bytes,
         mirrors=urls[1:],
         progress=progress,
     )

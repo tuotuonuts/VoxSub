@@ -742,6 +742,7 @@ class ModelMarketplace:
                 progress(done, total or model.download_bytes, source.label)
 
         ok = fetch_file(source.url, download, expected_sha=model.sha256 or None,
+                        expected_size=model.download_bytes or None,
                         progress=_progress, cancelled=cancelled)
         if not ok:
             raise RuntimeError("下载失败")
@@ -791,6 +792,7 @@ class ModelMarketplace:
                     progress(base + done, total, source.label)
 
             ok = fetch_file(item.url, destination, expected_sha=item.sha256 or None,
+                            expected_size=item.size or None,
                             progress=_progress, cancelled=cancelled)
             if not ok:
                 raise RuntimeError(f"文件下载失败: {item.install_rel}")

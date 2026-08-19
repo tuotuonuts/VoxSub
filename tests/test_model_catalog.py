@@ -89,6 +89,16 @@ def test_sensevoice_catalog_entry_has_downloadable_runtime_contract() -> None:
     assert {source.id for source in model.sources} == {"global", "china"}
 
 
+def test_hy_mt2_7b_q8_uses_exact_upstream_asset_metadata() -> None:
+    model = get_model("mt-hy-mt2-7b-q8")
+    assert model is not None
+    assert model.asset_name == "HY-MT2-7B-Q8_0.gguf"
+    assert model.required_paths == ("HY-MT2-7B-Q8_0.gguf",)
+    assert model.download_bytes == 7_981_928_896
+    assert model.sha256 == "58b3ad55dd6f6fa08c695cddc34fb5f8f708a844f78ae10508071914b0ed67c0"
+    assert all("HY-MT2-7B-Q8_0.gguf" in source.url for source in model.sources)
+
+
 def test_sensevoice_runtime_uses_catalog_file_layout(tmp_path: Path, monkeypatch) -> None:
     import voxsub.asr as asr
 

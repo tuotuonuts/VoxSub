@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from voxsub.diagnostics import export_report, run_self_check
-from voxsub.models import ModelManager, sha256_of
+from voxsub.models import ModelManager, fetch_file, sha256_of
 
 MODELS_DIR = Path(os.environ.get("LOCALAPPDATA", ".")) / "VoxSub" / "models"
 
@@ -105,9 +105,12 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
     """
     payload = b""
     ignore_range = False
+    truncate_first_at = 0
+    request_count = 0
     seen_ranges: list[str] = []
 
     def do_GET(self):  # noqa: N802 (http.server 命名)
+        type(self).request_count += 1
         rng = self.headers.get("Range")
         self.seen_ranges.append(rng or "")
         if rng and not self.ignore_range:
@@ -118,12 +121,21 @@ class _RangeHandler(http.server.BaseHTTPRequestHandler):
                              f"bytes {start}-{len(self.payload) - 1}/{len(self.payload)}")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            if self.truncate_first_at and self.request_count == 1:
+                self.wfile.write(body[:self.truncate_first_at])
+                self.close_connection = True
+            else:
+                self.wfile.write(body)
         else:
+            body = self.payload
             self.send_response(200)
-            self.send_header("Content-Length", str(len(self.payload)))
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(self.payload)
+            if self.truncate_first_at and self.request_count == 1:
+                self.wfile.write(body[:self.truncate_first_at])
+                self.close_connection = True
+            else:
+                self.wfile.write(body)
 
     def log_message(self, *args) -> None:  # 静默访问日志
         pass
@@ -134,6 +146,8 @@ def http_server():
     """起一个本地 HTTP 服务, 返回 (url, handler_class)。"""
     _RangeHandler.payload = b""
     _RangeHandler.ignore_range = False
+    _RangeHandler.truncate_first_at = 0
+    _RangeHandler.request_count = 0
     _RangeHandler.seen_ranges = []
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _RangeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -190,6 +204,40 @@ def test_fetch_server_ignores_range_200(http_server, tmp_path) -> None:
 
     assert dest.read_bytes() == data, "200 响应应全量覆盖, 而非拼接旧 .part"
     assert sha256_of(dest) == expected
+
+
+def test_fetch_resumes_after_cdn_early_eof(http_server, tmp_path) -> None:
+    """CDN 静默提前 EOF 时保留断点，下一请求必须 Range 续传。"""
+    url, handler = http_server
+    data = _payload(256000)
+    handler.payload = data
+    handler.truncate_first_at = 64000
+    expected = hashlib.sha256(data).hexdigest()
+    dest = tmp_path / "large-model.bin"
+
+    assert fetch_file(
+        url, dest, expected_sha=expected, expected_size=len(data)) is True
+
+    assert dest.read_bytes() == data
+    assert not dest.with_name(dest.name + ".part").exists()
+    assert handler.seen_ranges[:2] == ["", "bytes=64000-"]
+
+
+def test_fetch_recovers_short_file_promoted_by_old_downloader(
+        http_server, tmp_path) -> None:
+    """0.3.9 将提前 EOF 文件提升为 dest 后，升级版应原地续传。"""
+    url, handler = http_server
+    data = _payload(192000)
+    handler.payload = data
+    expected = hashlib.sha256(data).hexdigest()
+    dest = tmp_path / "legacy-incomplete.bin"
+    dest.write_bytes(data[:48000])
+
+    assert fetch_file(
+        url, dest, expected_sha=expected, expected_size=len(data)) is True
+
+    assert dest.read_bytes() == data
+    assert handler.seen_ranges[0] == "bytes=48000-"
 
 
 def test_fetch_falls_back_to_mirror(http_server, tmp_path) -> None:
