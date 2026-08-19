@@ -25,12 +25,119 @@ jobs:
   probe:
     # Manual only: a public repository must never run pull-request code on a personal PC.
     runs-on: [self-hosted, windows, x64, intel-npu]
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           clean: false
           fetch-depth: 1
+
+      - name: Build NPU-compatible OpenVINO llama runtime
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $assetRoot = Join-Path $PWD '.npu-assets'
+          $probeRoot = Join-Path $PWD '.npu-probe'
+          $srcRoot = Join-Path $assetRoot 'llama-src-b10470'
+          $ovRoot = Join-Path $assetRoot 'openvino-toolkit-2026.2.1'
+          $buildRoot = Join-Path $assetRoot 'llama-build-no-npuw-b10470'
+          $patchedDir = Join-Path $assetRoot 'patched-openvino-no-npuw-b10470'
+          New-Item -ItemType Directory -Path $assetRoot, $probeRoot -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $probeRoot 'build.log') -Force | Out-Null
+          try {
+            if ((Test-Path -LiteralPath (Join-Path $patchedDir 'llama-server.exe') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $patchedDir 'ggml-openvino.dll') -PathType Leaf)) {
+              Write-Output "Reusing cached NPU-compatible runtime: $patchedDir"
+            } else {
+              if (-not (Test-Path -LiteralPath (Join-Path $srcRoot 'CMakeLists.txt') -PathType Leaf)) {
+                git clone --depth 1 --branch b10470 https://github.com/ggml-org/llama.cpp.git $srcRoot
+                if ($LASTEXITCODE -ne 0) { throw "llama.cpp clone failed (exit $LASTEXITCODE)." }
+              }
+
+              $extra = Join-Path $srcRoot 'ggml\src\ggml-openvino\ggml-openvino-extra.cpp'
+              $source = Get-Content -LiteralPath $extra -Raw
+              $configPattern = New-Object Text.RegularExpressions.Regex(
+                '(?s)(if \(device_name == "NPU"\) \{\s*)compile_config = \{.*?\};'
+              )
+              $patchedSource = $configPattern.Replace($source, '$1compile_config = {};', 1)
+              if ($patchedSource -eq $source) {
+                if ($source -notmatch 'compile_config = \{\};') {
+                  throw 'Could not remove the private NPUW compile configuration.'
+                }
+              } else {
+                Set-Content -LiteralPath $extra -Value $patchedSource -Encoding utf8
+              }
+
+              $ovZip = Join-Path $assetRoot 'openvino-toolkit-windows-2026.2.1.zip'
+              $ovUrl = 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.2.1/windows/openvino_toolkit_windows_2026.2.1.21919.ede283a88e3_x86_64.zip'
+              $validOvZip = $false
+              if (Test-Path -LiteralPath $ovZip -PathType Leaf) {
+                try {
+                  if ((Get-Item -LiteralPath $ovZip).Length -lt 190MB) { throw 'Archive is too small.' }
+                  [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose()
+                  $validOvZip = $true
+                } catch { $validOvZip = $false }
+              }
+              if (-not $validOvZip) {
+                Remove-Item -LiteralPath $ovZip -Force -ErrorAction SilentlyContinue
+                curl.exe --ipv4 --fail --location --retry 5 --retry-delay 5 --connect-timeout 20 --max-time 1800 --output $ovZip $ovUrl
+                if ($LASTEXITCODE -ne 0) { throw "OpenVINO SDK download failed (exit $LASTEXITCODE)." }
+                if ((Get-Item -LiteralPath $ovZip).Length -lt 190MB) { throw 'OpenVINO SDK archive is too small.' }
+                [System.IO.Compression.ZipFile]::OpenRead($ovZip).Dispose()
+              }
+              $ovConfig = Get-ChildItem -LiteralPath $ovRoot -Filter 'OpenVINOConfig.cmake' -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if (-not $ovConfig) {
+                Expand-Archive -LiteralPath $ovZip -DestinationPath $ovRoot -Force
+                $ovConfig = Get-ChildItem -LiteralPath $ovRoot -Filter 'OpenVINOConfig.cmake' -File -Recurse |
+                  Select-Object -First 1
+              }
+              if (-not $ovConfig) { throw 'OpenVINOConfig.cmake was not found after SDK extraction.' }
+              $ovCmakeDir = Split-Path -Parent $ovConfig.FullName
+              $ovPackageRoot = Split-Path -Parent (Split-Path -Parent $ovCmakeDir)
+
+              $vcpkgRoot = Join-Path $assetRoot 'vcpkg'
+              if (-not (Test-Path -LiteralPath (Join-Path $vcpkgRoot 'vcpkg.exe') -PathType Leaf)) {
+                git clone --depth 1 https://github.com/microsoft/vcpkg.git $vcpkgRoot
+                if ($LASTEXITCODE -ne 0) { throw "vcpkg clone failed (exit $LASTEXITCODE)." }
+                & (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') -disableMetrics
+                if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed (exit $LASTEXITCODE)." }
+              }
+              & (Join-Path $vcpkgRoot 'vcpkg.exe') install opencl --triplet x64-windows --disable-metrics
+              if ($LASTEXITCODE -ne 0) { throw "vcpkg OpenCL install failed (exit $LASTEXITCODE)." }
+
+              cmake -S $srcRoot -B $buildRoot -G 'Visual Studio 17 2022' -A x64 `
+                -DGGML_OPENVINO=ON `
+                -DLLAMA_CURL=OFF `
+                -DOpenVINO_DIR="$ovCmakeDir" `
+                -DCMAKE_TOOLCHAIN_FILE="$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
+              if ($LASTEXITCODE -ne 0) { throw "llama.cpp CMake configure failed (exit $LASTEXITCODE)." }
+              cmake --build $buildRoot --config Release --target llama-server --parallel 4
+              if ($LASTEXITCODE -ne 0) { throw "llama.cpp build failed (exit $LASTEXITCODE)." }
+
+              $runtimeDir = Join-Path $buildRoot 'bin\Release'
+              if (-not (Test-Path -LiteralPath (Join-Path $runtimeDir 'llama-server.exe') -PathType Leaf)) {
+                throw 'NPU-compatible llama-server.exe was not built.'
+              }
+              New-Item -ItemType Directory -Path $patchedDir -Force | Out-Null
+              Copy-Item -Path (Join-Path $runtimeDir '*') -Destination $patchedDir -Recurse -Force
+              $ovRuntimeBin = Join-Path $ovPackageRoot 'runtime\bin\intel64\Release'
+              if (Test-Path -LiteralPath $ovRuntimeBin -PathType Container) {
+                Copy-Item -Path (Join-Path $ovRuntimeBin '*') -Destination $patchedDir -Recurse -Force
+              }
+              $openClDll = Join-Path $vcpkgRoot 'installed\x64-windows\bin\OpenCL.dll'
+              if (Test-Path -LiteralPath $openClDll -PathType Leaf) {
+                Copy-Item -LiteralPath $openClDll -Destination $patchedDir -Force
+              }
+              Write-Output "Built NPU-compatible runtime: $patchedDir"
+            }
+          } catch {
+            Write-Error $_
+            throw
+          } finally {
+            Stop-Transcript | Out-Null
+          }
 
       - name: Prepare NPU probe assets
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
@@ -73,51 +180,12 @@ jobs:
           } elseif ($existingServer) {
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing extracted runtime: $($existingServer.FullName)"
           }
-          $privateNpuProperties = @(
-            'NPU_COMPILER_DYNAMIC_QUANTIZATION',
-            'NPU_USE_NPUW',
-            'NPUW_DEVICES',
-            'NPUW_FOLD',
-            'NPUW_WEIGHTS_BANK',
-            'NPUW_FUNCALL_FOR_ALL',
-            'NPUW_FUNCALL_ASYNC',
-            'NPUW_DQ',
-            'NPUW_DQ_FULL'
-          )
-          # This llama.cpp build hardcodes private NPUW options that are not
-          # accepted by every Intel NPU driver. Collapse all entries into the
-          # standard PERF_COUNT=YES property. OpenVINO AnyMap keeps the first
-          # duplicate key, so the resulting compile config has one valid item.
-          $replacementText = 'PERF_COUNT'
-          $replacement = [Text.Encoding]::ASCII.GetBytes($replacementText)
-          $binaryEncoding = [Text.Encoding]::GetEncoding(28591)
-          $patched = $false
-          $binaryCandidates = Get-ChildItem -LiteralPath $runtimeRoot -File -Recurse |
-            Where-Object { $_.Extension -in @('.dll', '.exe') }
-          foreach ($binary in $binaryCandidates) {
-            $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
-            $binaryText = $binaryEncoding.GetString($bytes)
-            $offsets = @{}
-            foreach ($propertyName in $privateNpuProperties) {
-              $offset = $binaryText.IndexOf("$propertyName`0", [StringComparison]::Ordinal)
-              if ($offset -lt 0) { $offsets = @{}; break }
-              $offsets[$propertyName] = $offset
-            }
-            if ($offsets.Count -ne $privateNpuProperties.Count) { continue }
-            foreach ($propertyName in $privateNpuProperties) {
-              $offset = [int]$offsets[$propertyName]
-              $clearLength = [Math]::Max($propertyName.Length, $replacement.Length)
-              for ($n = 0; $n -le $clearLength; $n++) { $bytes[$offset + $n] = 0 }
-              for ($n = 0; $n -lt $replacement.Length; $n++) { $bytes[$offset + $n] = $replacement[$n] }
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Patched $($binary.Name) at byte offset $offset ($propertyName -> $replacementText)."
-            }
-            [System.IO.File]::WriteAllBytes($binary.FullName, $bytes)
-            $patched = $true
-            break
+          $patchedRuntime = Join-Path $assetRoot 'patched-openvino-no-npuw-b10470'
+          if (-not (Test-Path -LiteralPath (Join-Path $patchedRuntime 'llama-server.exe') -PathType Leaf)) {
+            throw 'The NPU-compatible OpenVINO runtime is missing.'
           }
-          if (-not $patched) {
-            throw 'The expected private NPU property table was not found in the OpenVINO runtime.'
-          }
+          Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
+          Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using source-built NPU-compatible runtime: $patchedRuntime"
 
           $model = Join-Path $modelRoot 'Hy-MT2-1.8B-Q4_K_M.gguf'
           $modelSha = 'dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699'
