@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify Intel NPU execution
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         env:
           VOXSUB_NPU_TEST_MODEL: ${{ inputs.model_path }}
           VOXSUB_LLAMA_DIR: ${{ inputs.llama_dir }}
@@ -32,7 +32,7 @@ jobs:
 
       - name: Print probe summary
         if: always()
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
         run: |
           if (Test-Path -LiteralPath .npu-probe\probe.log) {
             Get-Content -LiteralPath .npu-probe\probe.log
