@@ -13,6 +13,14 @@ on:
         description: Absolute path to the folder containing the packaged OpenVINO llama-server.exe. Leave empty to use the installed VoxSub runtime.
         required: false
         type: string
+      runtime_variant:
+        description: OpenVINO runtime flavor to verify on the Intel NPU computer.
+        required: false
+        default: patched
+        type: choice
+        options:
+          - patched
+          - official
 
 permissions:
   contents: read
@@ -335,6 +343,7 @@ jobs:
           }
 
       - name: Download NPU-compatible OpenVINO runtime
+        if: ${{ inputs.runtime_variant != 'official' }}
         uses: actions/download-artifact@v4
         with:
           name: npu-compatible-openvino-runtime
@@ -342,6 +351,8 @@ jobs:
 
       - name: Prepare NPU probe assets
         shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        env:
+          VOXSUB_NPU_RUNTIME_VARIANT: ${{ inputs.runtime_variant || 'patched' }}
         run: |
           $ErrorActionPreference = 'Stop'
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -353,8 +364,10 @@ jobs:
           $runtimeRoot = Join-Path $assetRoot 'openvino'
           $modelRoot = Join-Path $assetRoot 'models'
           $persistentModelRoot = Join-Path $env:LOCALAPPDATA 'VoxSub\npu-probe\models'
+          $runtimeVariant = if ($env:VOXSUB_NPU_RUNTIME_VARIANT -eq 'official') { 'official' } else { 'patched' }
           New-Item -ItemType Directory -Path $runtimeRoot, $modelRoot, $persistentModelRoot, $probeRoot -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value ''
+          Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Requested runtime variant: $runtimeVariant"
 
           $runtimeZip = Join-Path $assetRoot 'llama-b10470-openvino.zip'
           $runtimeUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10470/llama-b10470-bin-win-openvino-2026.2.1-x64.zip'
@@ -363,9 +376,7 @@ jobs:
           if (Test-Path -LiteralPath $runtimeZip) {
             try { [System.IO.Compression.ZipFile]::OpenRead($runtimeZip).Dispose(); $validZip = $true } catch { $validZip = $false }
           }
-          if ($validZip) {
-            Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
-          } elseif (-not $existingServer) {
+          if (-not $validZip -and ($runtimeVariant -eq 'official' -or -not $existingServer)) {
             for ($attempt = 1; $attempt -le 5 -and -not $validZip; $attempt++) {
               Remove-Item -LiteralPath $runtimeZip -Force -ErrorAction SilentlyContinue
               try {
@@ -378,27 +389,37 @@ jobs:
               }
             }
             if (-not $validZip) { throw "llama OpenVINO runtime archive could not be downloaded after 5 attempts." }
+          }
+          if ($validZip) {
+            if ($runtimeVariant -eq 'official' -and (Test-Path -LiteralPath $runtimeRoot)) {
+              Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+              New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+            }
             Expand-Archive -LiteralPath $runtimeZip -DestinationPath $runtimeRoot -Force
           } elseif ($existingServer) {
             Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Reusing extracted runtime: $($existingServer.FullName)"
           }
-          $patchedRuntime = Join-Path $assetRoot 'patched-openvino-no-npuw-b10470'
-          if (-not (Test-Path -LiteralPath (Join-Path $patchedRuntime 'llama-server.exe') -PathType Leaf)) {
-            throw 'The NPU-compatible OpenVINO runtime is missing.'
-          }
-          Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
-          Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using source-built NPU-compatible runtime: $patchedRuntime"
-          foreach ($diagnosticName in @('runtime-files.txt')) {
-            $diagnosticPath = Join-Path $patchedRuntime $diagnosticName
-            if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "`r`n===== $diagnosticName ====="
-              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value (Get-Content -LiteralPath $diagnosticPath -Raw)
+          if ($runtimeVariant -eq 'patched') {
+            $patchedRuntime = Join-Path $assetRoot 'patched-openvino-no-npuw-b10470'
+            if (-not (Test-Path -LiteralPath (Join-Path $patchedRuntime 'llama-server.exe') -PathType Leaf)) {
+              throw 'The NPU-compatible OpenVINO runtime is missing.'
             }
-          }
-          $dependencyReport = Join-Path $patchedRuntime 'runtime-dependencies.txt'
-          if (Test-Path -LiteralPath $dependencyReport -PathType Leaf) {
-            $dependencyReportSize = (Get-Item -LiteralPath $dependencyReport).Length
-            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "runtime-dependencies.txt generated ($dependencyReportSize bytes; retained in runtime artifact)."
+            Copy-Item -Path (Join-Path $patchedRuntime '*') -Destination $runtimeRoot -Recurse -Force
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using source-built NPU-compatible runtime: $patchedRuntime"
+            foreach ($diagnosticName in @('runtime-files.txt')) {
+              $diagnosticPath = Join-Path $patchedRuntime $diagnosticName
+              if (Test-Path -LiteralPath $diagnosticPath -PathType Leaf) {
+                Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "`r`n===== $diagnosticName ====="
+                Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value (Get-Content -LiteralPath $diagnosticPath -Raw)
+              }
+            }
+            $dependencyReport = Join-Path $patchedRuntime 'runtime-dependencies.txt'
+            if (Test-Path -LiteralPath $dependencyReport -PathType Leaf) {
+              $dependencyReportSize = (Get-Item -LiteralPath $dependencyReport).Length
+              Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "runtime-dependencies.txt generated ($dependencyReportSize bytes; retained in runtime artifact)."
+            }
+          } else {
+            Add-Content -LiteralPath (Join-Path $probeRoot 'probe.log') -Value "Using official llama.cpp b10470 OpenVINO 2026.2.1 runtime."
           }
 
           $model = Join-Path $persistentModelRoot 'Qwen_Qwen3-0.6B-Q4_K_M.gguf'
