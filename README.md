@@ -8,7 +8,7 @@
 # 语幕 VoxSub
 
 > [!WARNING]
-> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** 本次本地构建的 `0.4.1-beta` 安装包未签名，Windows 可能显示“未知发布者”，安全软件也可能误报。请只从本仓库的 Releases 下载，并在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
+> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** 本次本地构建的 `0.4.1-beta` 安装包使用 VoxSub 开发者自签名证书，Windows 可能显示“未知发布者”，安全软件也可能误报。请只从本仓库的 Releases 下载，并在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，云 STT 与云翻译可独立配置并混合使用。
 
@@ -19,8 +19,8 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 ## 下载
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
-- 安装包：`VoxSub-Setup-0.4.1-beta.exe`（本地构建包未签名）
-- SHA256：`22484B064FC427F62763EF3D6045F9A837F04877613CC7971C54A19DB1C4493E`（见同名 `.sha256` 文件）
+- 安装包：`VoxSub-Setup-0.4.1-beta.exe`（VoxSub 开发者自签名，Windows 仍可能显示未知发布者）
+- SHA256：`4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8`（见同名 `.sha256` 文件）
 - 本地构建路径：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
 
 ## 当前可用功能

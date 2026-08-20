@@ -7,7 +7,7 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** This local `0.4.1-beta` installer is unsigned. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** This local `0.4.1-beta` installer uses a VoxSub developer self-signed certificate. Windows may still show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
@@ -18,8 +18,8 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 ## Download
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
-- Installer: `VoxSub-Setup-0.4.1-beta.exe` (this local build is unsigned)
-- SHA256: `22484B064FC427F62763EF3D6045F9A837F04877613CC7971C54A19DB1C4493E` (also in the matching `.sha256` file)
+- Installer: `VoxSub-Setup-0.4.1-beta.exe` (self-signed by the VoxSub developer; Windows may still show an unknown publisher)
+- SHA256: `4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8` (also in the matching `.sha256` file)
 - Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
 
 ## Available Features

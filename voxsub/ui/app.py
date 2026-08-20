@@ -36,6 +36,7 @@ setup_logging(log_to_console=False)
 logger = get_logger("ui.app")
 
 from voxsub.ui import __version__ as _UI_VERSION  # noqa: E402
+from voxsub import diagnostics as diagnostics_module  # noqa: E402
 from voxsub.ui.config_store import ConfigStore  # noqa: E402
 from voxsub.ui.diagnostics_window import DiagnosticsWindow  # noqa: E402
 from voxsub.ui.icons import make_app_icon  # noqa: E402
@@ -104,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
     win.attach_overlay(overlay)
 
     settings_win = SettingsWindow(store=store, overlay=overlay)
-    diagnostics_win = DiagnosticsWindow(store=store)
+    diagnostics_win = DiagnosticsWindow(
+        store=store, diagnostics_module=diagnostics_module)
     model_hub_win = ModelHubWindow(store=store)
     win.install_in_app_pages(settings_win, model_hub_win)
     settings_win.set_storage_change_guard(model_hub_win.has_active_downloads)
@@ -148,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
             diagnostics_win.activateWindow()
 
         def _on_tray_quit() -> None:
+            if not settings_win.can_close_application():
+                if not win.isVisible():
+                    win.show()
+                win.show_settings_page()
+                settings_win.tabs.setCurrentIndex(4)
+                win.raise_()
+                win.activateWindow()
+                return
             app._voxsub_quitting = True  # type: ignore[attr-defined]
             try:
                 win.pipeline.stop()

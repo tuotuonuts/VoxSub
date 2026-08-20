@@ -70,6 +70,7 @@ if (-not $SkipPyInstaller) {
             "--collect-all", "onnxruntime",
             "--collect-all", "qfluentwidgets",
             "--hidden-import", "voxsub.pipeline",
+            "--hidden-import", "voxsub.diagnostics",
             "--hidden-import", "voxsub.process_audio",
             "--hidden-import", "voxsub.model_catalog",
             "--hidden-import", "voxsub.translate.factory",

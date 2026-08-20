@@ -1,7 +1,7 @@
 # 语幕 VoxSub — 发布说明 (RELEASE_NOTES)
 
 > [!WARNING]
-> VoxSub 尚未成熟，当前版本均为开发测试版，不应依赖它处理关键工作。本地构建的 `0.4.1-beta` 安装包未签名；SmartScreen 或杀毒软件仍可能出现“未知发布者”、风险提示或误报。请仅从本仓库 Releases 下载并核对 SHA256，不建议关闭安全软件绕过警告。
+> VoxSub 尚未成熟，当前版本均为开发测试版，不应依赖它处理关键工作。本地构建的 `0.4.1-beta` 安装包使用 VoxSub 开发者自签名证书；SmartScreen 或杀毒软件仍可能出现“未知发布者”、风险提示或误报。请仅从本仓库 Releases 下载并核对 SHA256，不建议关闭安全软件绕过警告。
 
 ## 版本: v0.4.1-beta（2026-08-21 重打包）
 
@@ -30,8 +30,9 @@
 
 ### 验证与发布
 
-- 本版安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`（214,709,141 字节，204.76 MiB，未签名）。
-- SHA256：`22484B064FC427F62763EF3D6045F9A837F04877613CC7971C54A19DB1C4493E`；同名 `.sha256` 文件已生成。
+- 本版安装包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`（214,744,160 字节，204.80 MiB，VoxSub 开发者自签名）。
+- SHA256：`4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8`；同名 `.sha256` 文件已生成。
+- 回归验证：`193 passed, 7 skipped`；另有 1 条声卡驱动数据不连续的非阻塞警告。
 - 本版仍为开发测试版，Intel NPU 的已知边界与上一版保持不变：Hy-MT2 7B 精确权重仍未在 Intel NPU 真机完成验证，sherpa-onnx ASR 和 OPUS 运行时也不支持 NPU。
 
 ## 版本: v0.4.0-beta（2026-08-20）

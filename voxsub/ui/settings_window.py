@@ -15,7 +15,7 @@ from html import escape
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -31,8 +31,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QScrollArea,
     QSpinBox,
-    QStyle,
-    QStyleOptionSpinBox,
     QTabWidget,
     QToolButton,
     QToolTip,
@@ -62,60 +60,73 @@ logger = get_logger("ui.settings_window")
 
 
 class _ReliableSpinButtonMixin:
-    """Keep native spin arrows usable with Fluent's custom Qt style.
+    """Use explicit step buttons instead of unreliable native spin subcontrols.
 
-    Some Windows style combinations paint the upper arrow correctly but do
-    not deliver its mouse release to QAbstractSpinBox. Let the native widget
-    handle the event first, then perform one explicit step only when the value
-    did not change. This preserves native pressed/repeat behavior where it
-    works and repairs the silent upper-arrow failure where it does not.
+    Qt's Windows style can paint an upper arrow that is not part of the real
+    hit-test region after the application stylesheet is applied.  A test that
+    clicks the style's reported rectangle therefore passes while a physical
+    click does nothing.  Child tool buttons have their own hit targets,
+    pressed state and auto-repeat, so their behavior is independent of the
+    platform spinbox style.
     """
 
-    def _spin_subcontrol_at(self, pos):
-        option = QStyleOptionSpinBox()
-        self.initStyleOption(option)
-        style = self.style()
-        for subcontrol, direction in (
-            (QStyle.SubControl.SC_SpinBoxUp, 1),
-            (QStyle.SubControl.SC_SpinBoxDown, -1),
+    def _install_spin_step_buttons(self) -> None:
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self._voxsub_step_up_btn = QToolButton(self)
+        self._voxsub_step_down_btn = QToolButton(self)
+        for button, direction, callback, label in (
+            (self._voxsub_step_up_btn, Qt.ArrowType.UpArrow, self.stepUp,
+             tr("增加", "Increase")),
+            (self._voxsub_step_down_btn, Qt.ArrowType.DownArrow, self.stepDown,
+             tr("减小", "Decrease")),
         ):
-            rect = style.subControlRect(
-                QStyle.ComplexControl.CC_SpinBox, option, subcontrol, self)
-            if rect.contains(pos):
-                return direction
-        return 0
+            button.setObjectName("spinStepButton")
+            button.setProperty(
+                "stepDirection",
+                "up" if direction == Qt.ArrowType.UpArrow else "down",
+            )
+            button.setArrowType(direction)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setAutoRepeat(True)
+            button.setAutoRepeatDelay(350)
+            button.setAutoRepeatInterval(75)
+            button.setAccessibleName(label)
+            button.setToolTip(label)
+            button.clicked.connect(callback)
+        line_edit = self.lineEdit()
+        if line_edit is not None:
+            line_edit.setTextMargins(0, 0, 30, 0)
+        self._layout_spin_step_buttons()
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        self._voxsub_spin_press = (
-            self._spin_subcontrol_at(event.position().toPoint())
-            if event.button() == Qt.MouseButton.LeftButton else 0,
-            self.value(),
-        )
-        super().mousePressEvent(event)
+    def _layout_spin_step_buttons(self) -> None:
+        margin = 3
+        width = 28
+        available = max(2, self.height() - margin * 2)
+        upper_height = available // 2
+        lower_height = available - upper_height
+        x = max(margin, self.width() - width - margin)
+        self._voxsub_step_up_btn.setGeometry(x, margin, width, upper_height)
+        self._voxsub_step_down_btn.setGeometry(
+            x, margin + upper_height, width, lower_height)
+        self._voxsub_step_up_btn.raise_()
+        self._voxsub_step_down_btn.raise_()
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        super().mouseReleaseEvent(event)
-        direction, before = getattr(self, "_voxsub_spin_press", (0, self.value()))
-        self._voxsub_spin_press = (0, self.value())
-        if not direction or event.button() != Qt.MouseButton.LeftButton:
-            return
-        if self.value() == before:
-            if direction > 0:
-                self.stepUp()
-            else:
-                self.stepDown()
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_spin_step_buttons()
 
 
 class _ReliableSpinBox(_ReliableSpinButtonMixin, QSpinBox):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self._install_spin_step_buttons()
 
 
 class _ReliableDoubleSpinBox(_ReliableSpinButtonMixin, QDoubleSpinBox):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+        self._install_spin_step_buttons()
 
 
 class _InfoButton(QToolButton):
@@ -215,6 +226,7 @@ class SettingsWindow(QWidget):
         self._tuning_dirty = False
         self._embedded = False
         self._storage_worker: _ModelMigrationWorker | None = None
+        self._storage_dialog: QFileDialog | None = None
         self._storage_change_guard: Callable[[], bool] | None = None
         self._storage_switch_destination: Path | None = None
         self.setObjectName("settingsWindow")
@@ -1134,26 +1146,63 @@ class SettingsWindow(QWidget):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
     def _choose_models_folder(self) -> None:
-        current = resolve_models_root(self._store)
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            tr("选择新的模型保存位置", "Choose a new model storage folder"),
-            str(current.parent if current.parent.exists() else current),
-        )
-        if not selected:
-            return
-        self._begin_model_migration(Path(selected), switch_default=True)
+        self._open_storage_folder_dialog(switch_default=True)
 
     def _choose_models_to_import(self) -> None:
+        self._open_storage_folder_dialog(switch_default=False)
+
+    def _open_storage_folder_dialog(self, *, switch_default: bool) -> None:
+        """Open a non-native folder chooser without blocking the Qt event loop."""
+        if self._storage_dialog is not None or self._storage_worker is not None:
+            return
         current = resolve_models_root(self._store)
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            tr("选择已有模型文件夹", "Choose an existing model folder"),
-            str(current.parent if current.parent.exists() else current),
+        title = (
+            tr("选择新的模型保存位置", "Choose a new model storage folder")
+            if switch_default
+            else tr("选择已有模型文件夹", "Choose an existing model folder")
         )
+        # The native Windows shell picker caused AppHangB1 on systems with
+        # OneDrive/shell extensions.  Qt's own dialog stays inside our event
+        # loop, and open() returns immediately instead of nesting exec().
+        dialog = QFileDialog(self.window(), title, str(current.parent))
+        dialog.setObjectName("modelStorageFolderDialog")
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.fileSelected.connect(
+            lambda selected: self._on_storage_folder_selected(
+                selected, switch_default=switch_default))
+        dialog.finished.connect(
+            lambda _result, opened=dialog: self._on_storage_dialog_finished(opened))
+        self._storage_dialog = dialog
+        self._set_storage_controls_enabled(False)
+        self.model_storage_status.setText(
+            tr("请选择一个文件夹；关闭选择器不会更改任何文件。",
+               "Choose a folder. Closing the picker will not change any files."))
+        logger.info("打开模型目录选择器: mode=%s current=%s",
+                    "relocate" if switch_default else "import", current)
+        dialog.open()
+        QTimer.singleShot(0, dialog.raise_)
+        QTimer.singleShot(0, dialog.activateWindow)
+
+    def _on_storage_folder_selected(
+        self, selected: str, *, switch_default: bool
+    ) -> None:
         if not selected:
             return
-        self._begin_model_migration(Path(selected), switch_default=False)
+        logger.info("模型目录已选择: mode=%s selected=%s",
+                    "relocate" if switch_default else "import", selected)
+        self._begin_model_migration(Path(selected), switch_default=switch_default)
+
+    def _on_storage_dialog_finished(self, dialog: QFileDialog) -> None:
+        if dialog is not self._storage_dialog:
+            return
+        self._storage_dialog = None
+        dialog.deleteLater()
+        if self._storage_worker is None:
+            self._set_storage_controls_enabled(True)
 
     def _begin_model_migration(self, selected: Path, *, switch_default: bool) -> None:
         if self._storage_worker is not None:
@@ -1166,11 +1215,6 @@ class SettingsWindow(QWidget):
 
         active_root = resolve_models_root(self._store)
         source, destination = (active_root, selected) if switch_default else (selected, active_root)
-        if source.resolve() == destination.resolve():
-            self.model_storage_status.setText(tr("选择的位置已经是当前模型位置。",
-                                                  "That folder is already the current model location."))
-            return
-
         self._storage_switch_destination = destination if switch_default else None
         self._set_storage_controls_enabled(False)
         self.model_storage_status.setText(
@@ -1181,6 +1225,8 @@ class SettingsWindow(QWidget):
         worker.finished.connect(self._on_model_migration_finished)
         worker.finished.connect(worker.deleteLater)
         self._storage_worker = worker
+        logger.info("模型迁移任务开始: mode=%s source=%s destination=%s",
+                    "relocate" if switch_default else "import", source, destination)
         worker.start()
 
     def _on_model_migration_completed(self, success: bool, detail: str) -> None:
@@ -1188,7 +1234,6 @@ class SettingsWindow(QWidget):
         # block the settings page while QThread is still unwinding, especially
         # for a cross-drive multi-gigabyte move. The finished signal clears the
         # reference after run() has returned.
-        self._set_storage_controls_enabled(True)
         switch_to, self._storage_switch_destination = self._storage_switch_destination, None
         if not success:
             self.model_storage_status.setText(
@@ -1209,9 +1254,24 @@ class SettingsWindow(QWidget):
         worker = self.sender()
         if worker is self._storage_worker:
             self._storage_worker = None
+            if self._storage_dialog is None:
+                self._set_storage_controls_enabled(True)
+            logger.info("模型迁移工作线程已结束")
 
     def _storage_worker_is_running(self) -> bool:
         return self._storage_worker is not None and self._storage_worker.isRunning()
+
+    def can_close_application(self) -> bool:
+        """Prevent Qt from destroying a live migration thread on app exit."""
+        if self._storage_dialog is not None:
+            self._storage_dialog.reject()
+        if not self._storage_worker_is_running():
+            return True
+        self.model_storage_status.setText(
+            tr("模型仍在后台迁移，请等待完成后再退出应用。",
+               "Models are still moving. Wait for completion before exiting VoxSub."))
+        logger.warning("迁移进行中，已阻止应用退出以保护模型文件")
+        return False
 
     @staticmethod
     def _select_data(combo: QComboBox, value) -> None:
@@ -1344,6 +1404,8 @@ class SettingsWindow(QWidget):
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._storage_dialog is not None:
+            self._storage_dialog.reject()
         if self._storage_worker_is_running():
             # Never let Qt destroy a live QThread. The move cannot be safely
             # interrupted in the middle of a file operation, so keep this

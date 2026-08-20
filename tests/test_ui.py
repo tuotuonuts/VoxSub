@@ -1071,27 +1071,66 @@ class TestSettingsWindow:
     def test_asr_tuning_spinbox_up_and_down_arrows_both_step(self, qapp, tmp_path):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
-        from PySide6.QtWidgets import QStyle, QStyleOptionSpinBox
+        from PySide6.QtWidgets import QAbstractSpinBox
         from voxsub.ui.settings_window import SettingsWindow
 
         sw = SettingsWindow(store=ConfigStore(tmp_path / "config.json"))
         try:
+            sw.tabs.setCurrentIndex(1)
             sw.asr_profile_combo.setCurrentIndex(
                 sw.asr_profile_combo.findData("custom"))
-            spin = sw.silence_spin
-            option = QStyleOptionSpinBox()
-            spin.initStyleOption(option)
-            up = spin.style().subControlRect(
-                QStyle.ComplexControl.CC_SpinBox, option,
-                QStyle.SubControl.SC_SpinBoxUp, spin).center()
-            down = spin.style().subControlRect(
-                QStyle.ComplexControl.CC_SpinBox, option,
-                QStyle.SubControl.SC_SpinBoxDown, spin).center()
-            before = spin.value()
-            QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=up)
-            assert spin.value() == before + spin.singleStep()
-            QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=down)
-            assert spin.value() == before
+            sw.show()
+            qapp.processEvents()
+            for spin in (
+                sw.vad_threshold_spin,
+                sw.silence_spin,
+                sw.max_segment_spin,
+                sw.beam_paths_spin,
+                sw.max_tokens_spin,
+            ):
+                assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+                before = spin.value()
+                up = spin._voxsub_step_up_btn  # noqa: SLF001
+                down = spin._voxsub_step_down_btn  # noqa: SLF001
+                assert up.isVisible() and down.isVisible()
+                QTest.mousePress(up, Qt.MouseButton.LeftButton)
+                qapp.processEvents()
+                assert up.isDown()
+                QTest.mouseRelease(up, Qt.MouseButton.LeftButton)
+                assert spin.value() == pytest.approx(before + spin.singleStep())
+                QTest.mouseClick(down, Qt.MouseButton.LeftButton)
+                assert spin.value() == pytest.approx(before)
+        finally:
+            sw.close()
+            sw.deleteLater()
+
+    def test_storage_folder_picker_is_async_and_avoids_windows_shell(
+        self, qapp, tmp_path
+    ):
+        import time
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QFileDialog
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        store.set("models_root", str(tmp_path / "models"))
+        sw = SettingsWindow(store=store)
+        try:
+            started = time.monotonic()
+            sw._choose_models_folder()  # noqa: SLF001
+            assert time.monotonic() - started < 0.2
+            QTest.qWait(10)
+            qapp.processEvents()
+            dialog = sw._storage_dialog  # noqa: SLF001
+            assert dialog is not None
+            assert dialog.isVisible()
+            assert dialog.testOption(QFileDialog.Option.DontUseNativeDialog)
+            assert dialog.fileMode() == QFileDialog.FileMode.Directory
+            dialog.reject()
+            QTest.qWait(10)
+            qapp.processEvents()
+            assert sw._storage_dialog is None  # noqa: SLF001
+            assert sw.change_models_folder_btn.isEnabled()
         finally:
             sw.close()
             sw.deleteLater()
@@ -1118,11 +1157,13 @@ class TestSettingsWindow:
             started = time.monotonic()
             sw._begin_model_migration(destination, switch_default=True)  # noqa: SLF001
             assert time.monotonic() - started < 0.05
+            assert sw.can_close_application() is False
             deadline = time.monotonic() + 2.0
             while sw._storage_worker is not None and time.monotonic() < deadline:  # noqa: SLF001
                 QTest.qWait(10)
                 qapp.processEvents()
             assert sw._storage_worker is None  # noqa: SLF001
+            assert sw.can_close_application() is True
             assert store.get("models_root") == str(destination)
         finally:
             sw.close()

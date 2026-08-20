@@ -64,3 +64,10 @@ def test_installer_preserves_user_model_directory():
     assert "[UninstallDelete]" not in source
     files_section = source.split("[Files]", 1)[-1].split("[Dirs]", 1)[0]
     assert "{app}\\Models" not in files_section
+
+
+def test_packaged_app_includes_diagnostics_module():
+    build_script = Path(__file__).parents[1] / "scripts" / "build.ps1"
+    source = build_script.read_text(encoding="utf-8")
+
+    assert '"--hidden-import", "voxsub.diagnostics"' in source

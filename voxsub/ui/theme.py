@@ -417,6 +417,32 @@ QAbstractSpinBox#inputBox {
 QAbstractSpinBox#inputBox:hover { border: 1px solid @border_strong; }
 QAbstractSpinBox#inputBox:focus { border: 1px solid @accent; }
 QAbstractSpinBox#inputBox:disabled { color: @text_secondary; }
+QToolButton#spinStepButton {
+    min-width: 28px;
+    max-width: 28px;
+    padding: 0;
+    color: @text_secondary;
+    background-color: transparent;
+    border: none;
+}
+QToolButton#spinStepButton[stepDirection="up"] {
+    border-top-right-radius: 7px;
+}
+QToolButton#spinStepButton[stepDirection="down"] {
+    border-bottom-right-radius: 7px;
+}
+QToolButton#spinStepButton:hover {
+    color: @text_primary;
+    background-color: rgba(@accent_rgb, 0.12);
+}
+QToolButton#spinStepButton:pressed {
+    color: @on_accent;
+    background-color: @accent_deep;
+}
+QToolButton#spinStepButton:disabled {
+    color: @text_secondary;
+    background-color: transparent;
+}
 QComboBox#inputBox QAbstractItemView {
     background-color: @surface_2; color: @text_primary;
     border: 1px solid @border; selection-background-color: rgba(@accent_rgb, 0.16);
