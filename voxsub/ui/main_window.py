@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.file_io import write_text_atomically
+from voxsub.model_storage import resolve_models_root
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.file_dialogs import choose_open_file, choose_save_file
 from voxsub.ui.i18n import language_manager, retranslate_widget_tree, tr
@@ -1192,6 +1193,7 @@ class MainWindow(QWidget):
         src, dst = pair.split("-", 1) if "-" in pair else ("zh", "en")
         tier_map = {"fast": "opus-fast", "quality": "qwen-quality", "cloud": "cloud"}
         try:
+            self.pipeline.set_models_dir(resolve_models_root(self._store))
             self.pipeline.set_langs(src, dst)
             self.pipeline.set_tts(bool(cfg.get("tts_enabled", False)))
             self.pipeline.set_audio_devices(

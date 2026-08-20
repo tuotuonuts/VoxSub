@@ -16,6 +16,7 @@ M6 尚未实现：本模块在 import 失败时提供鸭子类型 _PipelineStub�
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 from voxsub.logging_setup import get_logger
@@ -49,6 +50,7 @@ class _PipelineStub:
         self.langs = ("zh", "en")
         self.input_file = ""
         self.tts_enabled = False
+        self.models_dir: Path | None = None
         self.audio_devices = ("", "")
         self.capture_process = (0, "")
         self.stt = ("local", None)
@@ -83,6 +85,11 @@ class _PipelineStub:
 
     def set_tts(self, enabled: bool) -> None:
         self.tts_enabled = bool(enabled)
+
+    def set_models_dir(self, path: str | Path) -> None:
+        if self._running:
+            raise RuntimeError("识别运行中，无法切换模型目录")
+        self.models_dir = Path(path)
 
     def set_audio_devices(self, mic_device_id: str = "", loopback_device_id: str = "") -> None:
         self.audio_devices = (mic_device_id, loopback_device_id)

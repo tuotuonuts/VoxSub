@@ -476,6 +476,7 @@ class TestMainWindow:
     ):
         store = ConfigStore(tmp_path / "config.json")
         store.update({
+            "models_root": str(tmp_path / "models"),
             "stt_provider": stt_provider,
             "translate_tier": translate_tier,
             "stt_api_key": "stt-key",
@@ -489,6 +490,7 @@ class TestMainWindow:
         win = MainWindow(store=store, pipeline=pipeline)
         try:
             win._apply_pipeline_config()  # noqa: SLF001
+            assert pipeline.models_dir == Path(store.get("models_root"))
             assert pipeline.stt[0] == stt_provider
             assert pipeline.translator[0] == expected_translator
             assert pipeline.stt[1]["stt_api_key"] == "stt-key"

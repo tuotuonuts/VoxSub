@@ -4,7 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from voxsub.model_catalog import ModelMarketplace, get_model
-from voxsub.model_storage import initialize_model_storage, migrate_models
+from voxsub.model_storage import (
+    initialize_model_storage,
+    migrate_models,
+    normalize_model_layout,
+)
+from voxsub.models import ModelManager, load_manifest, save_manifest
 from voxsub.ui.config_store import ConfigStore
 
 
@@ -39,6 +44,30 @@ def test_upgrade_keeps_legacy_root_and_reorganizes_known_models(tmp_path, monkey
     assert not old_asr.exists()
 
 
+def test_layout_normalization_rewrites_legacy_manifest_paths(tmp_path):
+    root = tmp_path / "models"
+    old_file = root / "asr" / "64" / "encoder.int8.onnx"
+    old_file.parent.mkdir(parents=True)
+    old_file.write_bytes(b"encoder")
+    save_manifest(root, {
+        "version": 1,
+        "files": {
+            "asr/64/encoder.int8.onnx": {
+                "size": len(b"encoder"),
+                "sha256": "recorded",
+                "status": "ready",
+            },
+        },
+    })
+
+    normalize_model_layout(root)
+
+    files = load_manifest(root)["files"]
+    assert "asr/64/encoder.int8.onnx" not in files
+    assert "stt/zipformer/64/encoder.int8.onnx" in files
+    assert ModelManager(root).verify_all() == []
+
+
 def test_manual_migration_merges_without_overwriting_or_moving_download_cache(tmp_path):
     source = tmp_path / "old-models"
     destination = tmp_path / "new-models"
@@ -57,6 +86,36 @@ def test_manual_migration_merges_without_overwriting_or_moving_download_cache(tm
     assert (destination / "stt" / "zipformer" / "new.onnx").read_bytes() == b"new"
     assert (destination / "stt" / "zipformer" / "same.onnx").read_bytes() == b"destination"
     assert (source / ".downloads" / "unfinished.part").exists()
+
+
+def test_manual_migration_merges_source_and_destination_manifests(tmp_path):
+    source = tmp_path / "old-models"
+    destination = tmp_path / "new-models"
+    source_file = source / "nmt" / "opus_zh_en" / "encoder_model.onnx"
+    target_file = destination / "vad" / "silero.onnx"
+    source_file.parent.mkdir(parents=True)
+    target_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"opus")
+    target_file.write_bytes(b"vad")
+    save_manifest(source, {"version": 1, "files": {
+        "nmt/opus_zh_en/encoder_model.onnx": {
+            "size": 4, "sha256": "source", "status": "ready",
+        },
+    }})
+    save_manifest(destination, {"version": 1, "files": {
+        "vad/silero.onnx": {
+            "size": 3, "sha256": "target", "status": "ready",
+        },
+    }})
+
+    migrate_models(source, destination)
+
+    files = load_manifest(destination)["files"]
+    assert set(files) == {
+        "translate/opus/opus_zh_en/encoder_model.onnx",
+        "vad/silero.onnx",
+    }
+    assert ModelManager(destination).verify_all() == []
 
 
 def test_model_hub_finds_legacy_folder_during_interrupted_migration(tmp_path):

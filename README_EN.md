@@ -19,7 +19,7 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
 - Installer: `VoxSub-Setup-0.4.1-beta.exe` (self-signed by the VoxSub developer; Windows may still show an unknown publisher)
-- SHA256: `4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8` (also in the matching `.sha256` file)
+- SHA256: `F48A304B56C763484A73AB40784255647C84889FCBA387FFDD16B59EA71ACF26` (also in the matching `.sha256` file)
 - Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
 
 ## Available Features
@@ -39,7 +39,7 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 - **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
 - **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
 - **Model storage:** fresh installs use a `Models` folder beside the installed app, organized into purpose folders such as `stt`, `translate`, `vad`, and `tts`. Upgraded installations keep their existing model root until the user changes it. Settings supports changing the location, moving an existing library, and manually importing models; updates do not remove downloaded models.
-- **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree.
+- **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; after a move, the manifest is repaired and the pipeline immediately uses the new root instead of reporting missing files or reopening the old root; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree.
 - **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
 - **Fullscreen behavior:** opening Settings or Model Hub from a fullscreen main window keeps the app fullscreen.
 
@@ -76,7 +76,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,709,141 bytes.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,733,432 bytes.
 
 ## Project Layout
 

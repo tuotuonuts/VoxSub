@@ -182,6 +182,34 @@ class Pipeline:
     def set_tts(self, enabled: bool) -> None:
         self._tts_enabled = enabled
 
+    def set_models_dir(self, path: str | Path) -> None:
+        """Switch model storage between runs and discard path-bound caches."""
+        if self._running:
+            raise RuntimeError("识别运行中，无法切换模型目录")
+        new_root = Path(path)
+        if new_root.resolve() == self._models_dir.resolve():
+            return
+
+        old_root = self._models_dir
+        old_cloud, old_translator = self._cloud_stt, self._translator
+        self._models_dir = new_root
+        self._asr = None
+        self._cloud_stt = None
+        self._vad = None
+        self._seg = None
+        self._translator = None
+        self._trans_kind = None
+        self._is_cloud_stt = False
+        self._is_generative = False
+        for label, component in (("云 STT", old_cloud), ("翻译器", old_translator)):
+            if component is None:
+                continue
+            try:
+                component.close()
+            except Exception:
+                logger.debug("切换模型目录时关闭旧%s失败", label, exc_info=True)
+        logger.info("Pipeline 模型目录已切换: old=%s new=%s", old_root, new_root)
+
     def set_audio_devices(self, mic_device_id: str = "",
                           loopback_device_id: str = "") -> None:
         if self._running:

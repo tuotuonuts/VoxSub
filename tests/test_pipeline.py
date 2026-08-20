@@ -82,6 +82,39 @@ def test_mode_validation() -> None:
     assert p.mode == "c"  # 非法值被忽略
 
 
+def test_models_dir_switch_discards_path_bound_components(tmp_path: Path) -> None:
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    p = Pipeline(models=tmp_path / "old-models")
+    cloud = _Closable()
+    translator = _Closable()
+    p._asr = object()  # noqa: SLF001
+    p._cloud_stt = cloud  # noqa: SLF001
+    p._vad = object()  # noqa: SLF001
+    p._seg = object()  # noqa: SLF001
+    p._translator = translator  # noqa: SLF001
+
+    p.set_models_dir(tmp_path / "new-models")
+
+    assert p._models_dir == tmp_path / "new-models"  # noqa: SLF001
+    assert p._asr is None and p._vad is None and p._seg is None  # noqa: SLF001
+    assert p._cloud_stt is None and p._translator is None  # noqa: SLF001
+    assert cloud.closed and translator.closed
+
+
+def test_models_dir_switch_is_rejected_while_running(tmp_path: Path) -> None:
+    p = Pipeline(models=tmp_path / "old-models")
+    p._running = True  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="无法切换模型目录"):
+        p.set_models_dir(tmp_path / "new-models")
+
+
 def test_start_stop_with_fake_source(monkeypatch) -> None:
     """A 模式伪源启停: 线程不崩, 回调能收到(静音无识别结果, 仅验证生命周期)。"""
     p = Pipeline()

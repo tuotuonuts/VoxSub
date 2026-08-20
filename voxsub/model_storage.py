@@ -10,10 +10,11 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from voxsub.logging_setup import get_logger
+from voxsub.models import MANIFEST_NAME, load_manifest, save_manifest
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static checking
     from voxsub.ui.config_store import ConfigStore
@@ -22,6 +23,17 @@ if TYPE_CHECKING:  # pragma: no cover - import only for static checking
 logger = get_logger("model_storage")
 
 _TRANSIENT_NAMES = {".downloads", ".installing"}
+_MODEL_METADATA_NAMES = {
+    ".fetch.lock",
+    MANIFEST_NAME,
+    f"{MANIFEST_NAME}.tmp",
+    "catalog_installs.json",
+}
+_MIGRATION_SKIP_NAMES = _TRANSIENT_NAMES | {
+    ".fetch.lock",
+    MANIFEST_NAME,
+    f"{MANIFEST_NAME}.tmp",
+}
 
 # Every pair moves an old, product-facing layout into the current purpose based
 # layout.  The operation is repeatable and never overwrites a destination file.
@@ -99,7 +111,7 @@ def has_model_data(root: Path | str) -> bool:
     path = Path(root)
     try:
         return any(
-            child.name not in _TRANSIENT_NAMES and child.name != "catalog_installs.json"
+            child.name not in _TRANSIENT_NAMES and child.name not in _MODEL_METADATA_NAMES
             for child in path.iterdir()
         )
     except OSError:
@@ -177,6 +189,92 @@ def _move_merge(source: Path, destination: Path) -> tuple[int, int]:
     return moved, kept
 
 
+def _mapped_manifest_rel(root: Path, rel: str) -> str:
+    """Return the current-layout key when its relocated file exists."""
+    normalized = PurePosixPath(str(rel).replace("\\", "/"))
+    parts = normalized.parts
+    if normalized.is_absolute() or ".." in parts:
+        return normalized.as_posix()
+    for old_rel, new_rel in _LEGACY_LAYOUT:
+        old_parts = PurePosixPath(old_rel.as_posix()).parts
+        if parts[:len(old_parts)] != old_parts:
+            continue
+        mapped = PurePosixPath(new_rel.as_posix(), *parts[len(old_parts):])
+        if root.joinpath(*mapped.parts).is_file():
+            return mapped.as_posix()
+    return normalized.as_posix()
+
+
+def _normalized_manifest(root: Path, manifest: dict) -> tuple[dict, int]:
+    """Rewrite legacy manifest keys while preserving their recorded metadata."""
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        return manifest, 0
+
+    current: dict[str, object] = {}
+    relocated: list[tuple[str, object]] = []
+    rewrites = 0
+    for rel, entry in files.items():
+        normalized_rel = PurePosixPath(str(rel).replace("\\", "/")).as_posix()
+        mapped_rel = _mapped_manifest_rel(root, normalized_rel)
+        if normalized_rel != str(rel):
+            rewrites += 1
+        if mapped_rel != normalized_rel:
+            relocated.append((mapped_rel, entry))
+            rewrites += 1
+        else:
+            current[normalized_rel] = entry
+
+    # A destination entry contains information about the file that was kept
+    # during a non-overwriting merge, so it takes priority over the old entry.
+    for mapped_rel, entry in relocated:
+        current.setdefault(mapped_rel, entry)
+
+    if current == files:
+        return manifest, 0
+    updated = dict(manifest)
+    updated["files"] = current
+    return updated, rewrites
+
+
+def _rewrite_manifest_layout(root: Path) -> int:
+    manifest_path = root / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return 0
+    manifest, rewrites = _normalized_manifest(root, load_manifest(root))
+    if rewrites:
+        save_manifest(root, manifest)
+        logger.info("模型清单路径已同步整理: root=%s rewritten=%s", root, rewrites)
+    return rewrites
+
+
+def _merge_source_manifest(source_manifest: dict, destination: Path) -> int:
+    """Merge entries for files that really arrived, keeping target entries."""
+    normalized_source, _ = _normalized_manifest(destination, source_manifest)
+    source_files = normalized_source.get("files", {})
+    if not isinstance(source_files, dict) or not source_files:
+        return 0
+    destination_manifest = load_manifest(destination)
+    destination_files = destination_manifest.setdefault("files", {})
+    if not isinstance(destination_files, dict):
+        destination_files = {}
+        destination_manifest["files"] = destination_files
+
+    merged = 0
+    for rel, entry in source_files.items():
+        rel_path = PurePosixPath(str(rel).replace("\\", "/"))
+        if (rel_path.is_absolute() or ".." in rel_path.parts or
+                not destination.joinpath(*rel_path.parts).is_file()):
+            continue
+        if rel_path.as_posix() not in destination_files:
+            destination_files[rel_path.as_posix()] = entry
+            merged += 1
+    if merged:
+        save_manifest(destination, destination_manifest)
+        logger.info("模型清单已合并: root=%s entries=%s", destination, merged)
+    return merged
+
+
 def normalize_model_layout(root: Path | str) -> MigrationResult:
     """Classify known legacy folders under ``root`` by model purpose.
 
@@ -196,10 +294,13 @@ def normalize_model_layout(root: Path | str) -> MigrationResult:
         changed, retained = _move_merge(source, destination)
         moved += changed
         kept += retained
-    if moved:
-        logger.info("模型目录已按用途整理: root=%s moved=%s retained=%s",
-                    base, moved, kept)
-    return MigrationResult(base, base, moved, kept, moved)
+    rewritten = _rewrite_manifest_layout(base)
+    if moved or rewritten:
+        logger.info(
+            "模型目录已按用途整理: root=%s moved=%s retained=%s manifest=%s",
+            base, moved, kept, rewritten,
+        )
+    return MigrationResult(base, base, moved, kept, moved + rewritten)
 
 
 def migrate_models(source: Path | str, destination: Path | str) -> MigrationResult:
@@ -220,21 +321,24 @@ def migrate_models(source: Path | str, destination: Path | str) -> MigrationResu
         destination_root.mkdir(parents=True, exist_ok=True)
         return normalize_model_layout(destination_root)
 
+    source_manifest = load_manifest(source_root)
     destination_root.mkdir(parents=True, exist_ok=True)
     moved = kept = 0
     for child in list(source_root.iterdir()):
-        if child.name in _TRANSIENT_NAMES:
+        if child.name in _MIGRATION_SKIP_NAMES:
             continue
         changed, retained = _move_merge(child, destination_root / child.name)
         moved += changed
         kept += retained
     normalized = normalize_model_layout(destination_root)
+    _merge_source_manifest(source_manifest, destination_root)
+    manifest_rewrites = _rewrite_manifest_layout(destination_root)
     result = MigrationResult(
         source_root,
         destination_root,
         moved + normalized.moved_paths,
         kept + normalized.kept_existing_paths,
-        normalized.normalized_paths,
+        normalized.normalized_paths + manifest_rewrites,
     )
     logger.info("模型迁移完成: source=%s destination=%s moved=%s retained=%s",
                 source_root, destination_root, result.moved_paths,
