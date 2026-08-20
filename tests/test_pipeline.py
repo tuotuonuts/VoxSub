@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import subprocess
 import time
@@ -308,6 +309,34 @@ def test_translation_is_queued_outside_asr_thread() -> None:
     p._translation_input_done.set()  # noqa: SLF001
     p._translation_loop()  # noqa: SLF001
     assert calls == ["原文"]
+
+
+def test_pipeline_rejects_stt_text_in_the_wrong_language() -> None:
+    p = Pipeline()
+    p.set_langs("zh", "en")
+    statuses: list[str] = []
+    p.on_status(statuses.append)
+
+    p._on_sentence("यह एक हिन्दी वाक्य है")  # noqa: SLF001
+
+    with pytest.raises(queue.Empty):
+        p._translation_queue.get_nowait()  # noqa: SLF001
+    assert any("其他语言" in status for status in statuses)
+
+
+def test_pipeline_rejects_translation_in_the_wrong_language() -> None:
+    p = Pipeline()
+    p.set_langs("zh", "en")
+    p._trans_kind = "mock"  # noqa: SLF001
+    p._translator = type("Translator", (), {
+        "translate": lambda self, *_args, **_kwargs: "यह एक हिन्दी वाक्य है",
+    })()  # noqa: SLF001
+    emitted: list[tuple[str, str]] = []
+    p.on_utterance(lambda source, translation: emitted.append((source, translation)))
+
+    p._translate_sentence("这是中文", None)  # noqa: SLF001
+
+    assert emitted == [("这是中文", "这是中文 〔翻译失败〕")]
 
 
 def test_generative_recognition_is_decoupled_from_vad_worker() -> None:

@@ -127,6 +127,32 @@ def test_sensevoice_runtime_uses_catalog_file_layout(tmp_path: Path, monkeypatch
     assert captured["use_itn"] is True
 
 
+def test_funasr_runtime_receives_selected_language_and_prompt(tmp_path: Path, monkeypatch) -> None:
+    import voxsub.asr as asr
+
+    model_dir = tmp_path / "funasr"
+    (model_dir / "Qwen3-0.6B").mkdir(parents=True)
+    for filename in ("encoder_adaptor.int8.onnx", "llm.int8.onnx", "embedding.int8.onnx"):
+        (model_dir / filename).write_bytes(b"model")
+    captured: dict[str, object] = {}
+
+    class _FakeOfflineRecognizer:
+        @staticmethod
+        def from_funasr_nano(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+    monkeypatch.setattr(asr.sherpa_onnx, "OfflineRecognizer", _FakeOfflineRecognizer)
+    asr.OfflineGenerativeASR(
+        model_dir, "sherpa-funasr-nano", provider="cpu", num_threads=3,
+        source_lang="en",
+    )
+
+    assert captured["language"] == "en"
+    assert "English" in str(captured["system_prompt"])
+    assert "English" in str(captured["user_prompt"])
+
+
 def test_recommendation_levels_cover_requested_semantics() -> None:
     hy_small = get_model("mt-hy-mt2-1.8b-q4")
     hy_large = get_model("mt-hy-mt2-7b-q4")

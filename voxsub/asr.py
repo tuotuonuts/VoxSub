@@ -26,6 +26,7 @@ from typing import Callable
 import numpy as np
 import sherpa_onnx
 
+from voxsub.language_guard import language_name, normalize_language
 from voxsub.logging_setup import get_logger
 from voxsub.model_storage import resolve_models_root
 
@@ -87,6 +88,7 @@ class StreamingASR:
                  max_active_paths: int = 4, source_lang: str = "auto"):
         self._model_dir = Path(model_dir)
         self.provider = provider
+        source_lang = normalize_language(source_lang)
         self.runtime = "sherpa-streaming-transducer"
         tokens = self._model_dir / "tokens.txt"
         if not tokens.exists():
@@ -176,6 +178,7 @@ class OfflineGenerativeASR:
         self._model_dir = Path(model_dir)
         self.runtime = runtime
         self.provider = provider
+        source_lang = normalize_language(source_lang)
         threads = max(1, int(num_threads))
         if runtime == "sherpa-qwen3-asr":
             tokenizer = self._model_dir / "tokenizer"
@@ -215,12 +218,20 @@ class OfflineGenerativeASR:
                 tokenizer=str(required["tokenizer"]),
                 num_threads=threads,
                 provider=provider,
-                system_prompt="You are a precise speech transcription engine.",
-                user_prompt="语音转写：",
+                system_prompt=(
+                    f"You are a precise speech transcription engine. "
+                    f"Transcribe only {language_name(source_lang)} speech. "
+                    "Do not translate, paraphrase, or output another language."
+                ),
+                user_prompt=(
+                    f"Transcribe this audio in {language_name(source_lang)} only. "
+                    "Return the spoken words and nothing else."
+                ),
                 max_new_tokens=max(64, min(512, int(max_new_tokens))),
                 temperature=1e-6,
                 top_p=0.8,
-                language="",
+                language=(normalize_language(source_lang)
+                          if normalize_language(source_lang) != "auto" else ""),
                 itn=True,
                 hotwords=str(hotwords or ""),
             )
@@ -241,7 +252,7 @@ class OfflineGenerativeASR:
             )
         else:
             raise ValueError(f"不支持的离线 ASR runtime: {runtime}")
-        self.source_lang = source_lang
+        self.source_lang = normalize_language(source_lang)
         logger.info("生成式 ASR 加载成功 (runtime=%s provider=%s threads=%d 目录=%s)",
                     runtime, provider, threads, self._model_dir.name)
 

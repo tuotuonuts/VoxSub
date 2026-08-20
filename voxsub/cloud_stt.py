@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+from voxsub.language_guard import normalize_language
 from voxsub.logging_setup import get_logger
 from voxsub.translate._http_client import (
     OpenAICompatError,
@@ -98,6 +99,7 @@ class CloudSTT:
         endpoint = self._validate_endpoint()
         effective_timeout = self._timeout if timeout_ms == 12_000 else max(
             1.0, int(timeout_ms) / 1000.0)
+        source_lang = normalize_language(source_lang)
         try:
             return audio_transcription(
                 endpoint,

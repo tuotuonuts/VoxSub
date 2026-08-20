@@ -17,6 +17,7 @@ import threading
 from urllib.parse import urlparse
 
 from voxsub.logging_setup import get_logger
+from voxsub.language_guard import language_name, normalize_language
 
 from ._http_client import OpenAICompatError, chat_completion, normalize_api_base
 from .base import TranslationError, Translator
@@ -122,14 +123,17 @@ class CloudTranslator(Translator):
         else:
             effective_timeout = max(1.0, int(timeout_ms) / 1000.0)
         endpoint = self._validate_endpoint()
-        lang_hint = {
-            ("zh", "en"): "Translate to English.",
-            ("en", "zh"): "Translate to Chinese.",
-        }.get((src_lang, dst_lang), f"Translate from {src_lang} to {dst_lang}.")
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
+        lang_hint = (
+            f"The source text is {language_name(src_lang)}. "
+            f"Translate only from {language_name(src_lang)} to {language_name(dst_lang)}. "
+            "Do not translate into, detect as, or add any other language."
+        )
         messages = [
             {"role": "system",
-             "content": "You are a professional translator. " + lang_hint +
-                        " Reply with only the translation, no explanations."},
+             "content": ("You are a professional translator. " + lang_hint +
+                         " Reply with only the translation, no explanations.")},
             {"role": "user", "content": text},
         ]
         try:

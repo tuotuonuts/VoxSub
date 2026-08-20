@@ -25,6 +25,7 @@ from pathlib import Path
 
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import LlamaRuntime, detect_hardware, select_llama_runtime
+from voxsub.language_guard import normalize_language
 from voxsub.model_storage import resolve_models_root
 
 from ._http_client import OpenAICompatError, chat_completion
@@ -51,7 +52,8 @@ _LANG_NAMES = {
 _SYSTEM_PROMPT = (
     "You are a professional machine-translation engine. Translate faithfully and "
     "concisely. Return only the translated text: no labels, no quotation marks, no "
-    "explanation, no notes, and no discussion of the source. Preserve names and numbers."
+    "explanation, no notes, and no discussion of the source. Preserve names and numbers. "
+    "Never switch to a language that was not requested."
 )
 
 
@@ -417,6 +419,8 @@ class QwenQualityTranslator(Translator):
         text = (text or "").strip()
         if not text:
             return ""
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
@@ -462,13 +466,16 @@ class QwenQualityTranslator(Translator):
         src_name, dst_name = names
         if self._prompt_style == "hy-mt2":
             instruction = (
-                f"Translate the following text into {dst_name}. Only output the translated "
-                f"result and do not add explanations:\n{text}"
+                f"The source text is written in {src_name}. Translate it only into {dst_name}. "
+                "Do not identify, rewrite, or translate it into any other language. "
+                "Only output the translated result and do not add explanations:\n"
+                f"{text}"
             )
             messages = [{"role": "user", "content": instruction}]
         else:
             instruction = (
-                f"Translate the text between <source> tags from {src_name} to {dst_name}. "
+                f"Translate the text between <source> tags from {src_name} to {dst_name} only. "
+                "The source language is fixed; do not use another source or target language. "
                 "Output the translation only.\n<source>\n"
                 f"{text}\n</source>"
             )

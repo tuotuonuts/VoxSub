@@ -46,6 +46,7 @@ from voxsub.asr import (
 from voxsub.bootstrap_models import ensure_bundled_vad
 from voxsub.cloud_stt import CloudSTT
 from voxsub.file_io import write_text_atomically
+from voxsub.language_guard import guard_text, normalize_language
 from voxsub.logging_setup import get_logger
 from voxsub.recording import WaveSessionRecorder
 
@@ -174,7 +175,8 @@ class Pipeline:
             self._mode = mode
 
     def set_langs(self, src: str, dst: str) -> None:
-        self._src_lang, self._dst_lang = src, dst
+        self._src_lang, self._dst_lang = normalize_language(src), normalize_language(dst)
+        logger.info("语言约束更新: source=%s target=%s", self._src_lang, self._dst_lang)
 
     def set_input_file(self, path: str | Path) -> None:
         self._in_path = Path(path)
@@ -352,6 +354,14 @@ class Pipeline:
                 logger.exception("字幕回调异常: %r", cb)
 
     def _emit_partial(self, text: str) -> None:
+        try:
+            text = guard_text(text, self._src_lang, kind="STT partial")
+        except ValueError:
+            logger.debug("临时 STT 结果被语言约束过滤: source=%s text=%r",
+                         self._src_lang, str(text)[:160])
+            return
+        if not text:
+            return
         for cb in self._cb_partial:
             try:
                 cb(text)
@@ -522,6 +532,13 @@ class Pipeline:
         text = str(text or "").strip()
         if not text:
             return
+        try:
+            text = guard_text(text, self._src_lang, kind="STT")
+        except ValueError as exc:
+            logger.warning("STT 结果被语言约束拦截: source=%s text=%r reason=%s",
+                           self._src_lang, text[:160], exc)
+            self._emit_status("识别到其他语言，已忽略当前片段")
+            return
         queued_at = time.monotonic()
         with self._metrics_lock:
             self._translation_times[text].append(queued_at)
@@ -548,6 +565,9 @@ class Pipeline:
                          if queued_at is not None else None)
         try:
             translation = self._translator.translate(text, self._src_lang, self._dst_lang)
+            if self._trans_kind is not None:
+                translation = guard_text(
+                    translation, self._dst_lang, kind="translation")
             request_ms = (time.perf_counter() - started) * 1000.0
             logger.info("翻译完成: src_chars=%d dst_chars=%d queue_wait_ms=%s request_ms=%.1f",
                         len(text), len(translation),
@@ -1004,6 +1024,13 @@ class Pipeline:
                 silence += win
                 if silence >= min_silence:
                     text = asr.decode(stream).strip()
+                    try:
+                        text = guard_text(text, self._src_lang, kind="STT")
+                    except ValueError as exc:
+                        logger.warning(
+                            "文件 STT 结果被语言约束拦截: source=%s text=%r reason=%s",
+                            self._src_lang, text[:160], exc)
+                        text = ""
                     if text:
                         lines.append(SubtitleLine(text=text, ts_ms=int(seg_start_sample * 1000 / SAMPLE_RATE)))
                     asr.reset(stream)
@@ -1013,6 +1040,13 @@ class Pipeline:
         # 尾段
         if seg_start_sample is not None:
             text = asr.decode(stream).strip()
+            try:
+                text = guard_text(text, self._src_lang, kind="STT")
+            except ValueError as exc:
+                logger.warning(
+                    "文件尾段 STT 结果被语言约束拦截: source=%s text=%r reason=%s",
+                    self._src_lang, text[:160], exc)
+                text = ""
             if text:
                 lines.append(SubtitleLine(text=text, ts_ms=int(seg_start_sample * 1000 / SAMPLE_RATE)))
 
@@ -1021,6 +1055,9 @@ class Pipeline:
         for ln in lines:
             try:
                 ln.translation = self._translator.translate(ln.text, self._src_lang, self._dst_lang)
+                if self._trans_kind is not None:
+                    ln.translation = guard_text(
+                        ln.translation, self._dst_lang, kind="translation")
             except Exception:
                 ln.translation = ln.text + " 〔翻译失败〕"
         return lines
@@ -1074,6 +1111,7 @@ class Pipeline:
             try:
                 text = self._cloud_stt.transcribe_samples(
                     audio, source_lang=self._src_lang).strip()
+                text = guard_text(text, self._src_lang, kind="cloud STT")
             except Exception as exc:
                 logger.error("云 STT 文件片段失败: %s", exc, exc_info=True)
                 continue
@@ -1086,6 +1124,9 @@ class Pipeline:
             try:
                 line.translation = self._translator.translate(
                     line.text, self._src_lang, self._dst_lang)
+                if self._trans_kind is not None:
+                    line.translation = guard_text(
+                        line.translation, self._dst_lang, kind="translation")
             except Exception:
                 line.translation = line.text + " 〔翻译失败〕"
         return lines

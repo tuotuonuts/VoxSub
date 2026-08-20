@@ -75,6 +75,7 @@ def test_cloud_stt_posts_audio_with_its_own_model_and_key() -> None:
     assert b'name="model"' in body
     assert b"cloud-stt-model" in body
     assert b'name="language"' in body
+    assert b"zh" in body
     assert b'filename="voxsub.wav"' in body
 
 
