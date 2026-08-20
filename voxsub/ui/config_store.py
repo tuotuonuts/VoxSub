@@ -67,8 +67,11 @@ class ConfigStore:
         "debug_mode": False,         # 内置实时调试日志
         "overlay_font_size": 20,     # 字幕浮窗字号
         "overlay_width": 560,         # 字幕浮窗用户调整后的宽度
-        "overlay_height": 168,        # 字幕浮窗用户调整后的高度
+        "overlay_height": 132,        # 字幕浮窗用户调整后的高度
         "overlay_size_customized": False,
+        "overlay_display_mode": "bilingual", # bilingual | source | translation
+        "overlay_content_padding": 18, # 浮窗边框到字幕内容的间距(px)
+        "overlay_line_gap": 6,        # 原文与译文之间的间距(px)
         "overlay_opacity": 0.92,     # 字幕浮窗透明度
         "overlay_click_through": False, # 锁定浮窗并把鼠标点击穿透到底层窗口
         "record_with_translation": False, # A 模式同时保存麦克风 WAV

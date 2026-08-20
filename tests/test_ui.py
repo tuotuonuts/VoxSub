@@ -823,6 +823,91 @@ class TestSubtitleOverlay:
             ov.close()
             ov.deleteLater()
 
+    def test_display_mode_and_spacing_controls_persist(self, qapp, tmp_path):
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        store = ConfigStore(tmp_path / "config.json")
+        ov = SubtitleOverlay(store=store)
+        try:
+            ov.set_subtitles("Source line", "译文")
+            ov.show()
+            qapp.processEvents()
+
+            ov.set_display_mode("translation")
+            assert ov.display_mode() == "translation"
+            assert ov.src_label.isHidden()
+            assert not ov.dst_label.isHidden()
+            assert store.get("overlay_display_mode") == "translation"
+            assert ov._display_actions["translation"].isChecked()  # noqa: SLF001
+            ov._display_actions["translation"].trigger()  # noqa: SLF001
+            assert ov._display_actions["translation"].isChecked()  # noqa: SLF001
+
+            ov.set_display_mode("source")
+            assert not ov.src_label.isHidden()
+            assert ov.dst_label.isHidden()
+            ov.set_display_mode("bilingual")
+            assert not ov.src_label.isHidden()
+            assert not ov.dst_label.isHidden()
+
+            ov.change_content_padding(-100)
+            assert ov.content_padding() == 8
+            assert ov._box.contentsMargins().left() == 8  # noqa: SLF001
+            assert store.get("overlay_content_padding") == 8
+            ov.change_content_padding(+100)
+            assert ov.content_padding() == 64
+
+            ov.change_line_gap(-100)
+            assert ov.line_gap() == 0
+            assert ov._content_box.spacing() == 0  # noqa: SLF001
+            assert store.get("overlay_line_gap") == 0
+            ov.change_line_gap(+100)
+            assert ov.line_gap() == 40
+            assert ov._content_box.spacing() == 40  # noqa: SLF001
+        finally:
+            ov.close()
+            ov.deleteLater()
+
+    def test_long_subtitles_scroll_without_resizing_overlay(self, qapp, tmp_path):
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        ov = SubtitleOverlay(store=ConfigStore(tmp_path / "config.json"))
+        try:
+            ov.resize(420, 110)
+            ov.show()
+            qapp.processEvents()
+            original_size = ov.size()
+            long_source = "A long source sentence stays inside the chosen window. " * 40
+            long_translation = "很长的译文会在用户指定的浮窗中换行并允许滚动查看。" * 40
+
+            ov.set_subtitles(long_source, long_translation)
+            _wait_until(
+                qapp,
+                lambda: ov._content_scroll.verticalScrollBar().maximum() > 0,  # noqa: SLF001
+            )
+            bar = ov._content_scroll.verticalScrollBar()  # noqa: SLF001
+            assert ov.size() == original_size
+            assert bar.value() == bar.minimum()
+
+            ov.set_partial(long_source * 2, long_translation * 2)
+            _wait_until(qapp, lambda: bar.value() == bar.maximum())
+            assert ov.size() == original_size
+            assert bar.maximum() > 0
+
+            base_top_margin = ov._box.contentsMargins().top()  # noqa: SLF001
+            ov._set_toolbar_visible(True)  # noqa: SLF001
+            assert ov._box.contentsMargins().top() > base_top_margin  # noqa: SLF001
+            ov._spacing_btn.click()  # noqa: SLF001
+            assert ov._spacing_controls.isVisible()  # noqa: SLF001
+            ov.set_click_through(True)
+            assert ov._toolbar.isHidden()  # noqa: SLF001
+            assert ov._box.contentsMargins().top() == ov.content_padding()  # noqa: SLF001
+            ov._poll_locked_hover(ov.frameGeometry().center())  # noqa: SLF001
+            assert ov._locked_panel.isVisible()  # noqa: SLF001
+            assert ov._locked_panel.layout().count() == 1  # noqa: SLF001
+        finally:
+            ov.close()
+            ov.deleteLater()
+
 
 # ===========================================================================
 # 9. 设置页冒烟（offscreen）
@@ -999,9 +1084,15 @@ class TestSettingsWindow:
         overlay = SubtitleOverlay(store=store)
         sw = SettingsWindow(store=store, overlay=overlay)
         try:
+            assert sw.overlay_font_spin.minimum() == 10
+            assert sw.overlay_font_spin.maximum() == 72
             sw.overlay_font_spin.setValue(26)
             assert overlay.font_size() == 26
             assert store.get("overlay_font_size") == 26
+
+            sw.overlay_font_spin.setValue(72)
+            assert overlay.font_size() == 72
+            assert store.get("overlay_font_size") == 72
 
             sw.overlay_opacity_spin.setValue(70)
             assert overlay.windowOpacity() == pytest.approx(0.70, abs=0.01)

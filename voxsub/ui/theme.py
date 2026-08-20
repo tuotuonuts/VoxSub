@@ -630,8 +630,16 @@ QFrame#overlayToolbar QToolButton, QWidget#overlayLockedPanel QToolButton {
 QFrame#overlayToolbar QToolButton:hover, QWidget#overlayLockedPanel QToolButton:hover {
     color: #14B8A6; background: rgba(20,184,166,0.16);
 }
+QFrame#overlayToolbar QToolButton:checked {
+    color: #07110F; background: #5EEAD4;
+}
 QFrame#overlayToolbar QLabel, QWidget#overlayLockedPanel QLabel { color: #9CA3AF; background: transparent; }
-QLabel#overlayFontValue { min-width: 28px; color: #F2F2F2; font-weight: 650; }
+QFrame#overlaySpacingControls {
+    background: rgba(255,255,255,0.055); border: none; border-radius: 9px;
+}
+QLabel#overlayFontValue, QLabel#overlayControlValue {
+    min-width: 24px; color: #F2F2F2; font-weight: 650;
+}
 
 /* ---- 弹窗 / 菜单 ---- */
 QMenu {

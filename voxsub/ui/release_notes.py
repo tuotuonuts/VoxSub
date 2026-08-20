@@ -22,14 +22,16 @@ class ReleaseNote:
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
         "0.4.1-beta",
-        "模型保存更安心",
-        "Your model library stays under your control",
+        "模型保存和字幕浮窗更顺手",
+        "Better model storage and subtitle overlay controls",
         (
             "可以在设置中选择模型保存的位置，也能把已有模型迁移到其他磁盘。",
             "识别、翻译、语音模型会按用途整理，方便查看和管理。",
             "更新软件不会清空已经下载好的模型。",
             "迁移完成后会立即使用新位置，并自动修正旧清单，不再误报模型缺失。",
             "全屏打开设置或模型广场时，应用会继续保持全屏。",
+            "浮窗可以只显示原文、只显示译文或对照翻译，并能调节两种间距。",
+            "长句会在固定大小的浮窗内换行和滚动，不再自动跑到屏幕外。",
         ),
         (
             "Choose where models are stored in Settings, and move existing models to another drive.",
@@ -37,6 +39,8 @@ RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
             "Updating VoxSub no longer clears models you have already downloaded.",
             "After a move, VoxSub uses the new location and repairs old catalog paths instead of reporting missing models.",
             "Opening Settings or Model Hub now keeps VoxSub in fullscreen mode.",
+            "The overlay can show source, translation, or both, with adjustable content and line spacing.",
+            "Long sentences now wrap and scroll inside the chosen overlay size instead of expanding off-screen.",
         ),
     ),
     ReleaseNote(

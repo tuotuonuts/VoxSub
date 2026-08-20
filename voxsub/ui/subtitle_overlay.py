@@ -2,10 +2,11 @@
 
 - 主壳 Double-Bezel 双层：外壳圆角 32px + ring 描边 + 内芯圆角 24px inset 高光
   （DESIGN.md 圆角分级 / 自绘 QPainter 实现，透明背景由 WA_TranslucentBackground 承载）
-- 悬停显示精简工具条：字号 - / + / 锁定穿透 / 关闭；锁定时由
+- 悬停显示精简工具条：字号、显示模式、内容边距、原译间距、锁定和关闭；锁定时由
   独立的悬停控制条只保留解锁入口，其余区域仍可鼠标穿透
 - 右键菜单：字号 + / 字号 - / 字色（白·teal·黑）/ 透明度滑条 / 关闭浮窗
-- 历史：内存 deque(maxlen=200) 滚动，滚轮翻看历史（不改写队列）
+- 内容区保持用户指定尺寸，长句在窗口内换行并滚动，不再把浮窗扩到屏幕外
+- 历史：内存 deque(maxlen=200)，Ctrl + 滚轮翻看历史（不改写队列）
 - 新句入场：240ms OutCubic 透明度脉冲（动效阈值内）
 """
 from __future__ import annotations
@@ -26,8 +27,11 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMenu,
+    QScrollArea,
     QSlider,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -43,9 +47,26 @@ logger = get_logger("ui.subtitle_overlay")
 
 # 历史上限（内存滚动，不落盘 —— DESIGN.md：字幕历史不做自动落盘）
 _HISTORY_MAX = 200
-_MIN_WIDTH = 360
-_MIN_HEIGHT = 132
+_MIN_WIDTH = 400
+_MIN_HEIGHT = 88
 _RESIZE_MARGIN = 12
+_PADDING_MIN = 8
+_PADDING_MAX = 64
+_LINE_GAP_MIN = 0
+_LINE_GAP_MAX = 40
+
+
+class _SubtitleScrollArea(QScrollArea):
+    """Fixed subtitle viewport; normal wheel scrolls, Ctrl-wheel opens history."""
+
+    history_requested = Signal(int)
+
+    def wheelEvent(self, ev) -> None:  # noqa: N802
+        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.history_requested.emit(ev.angleDelta().y())
+            ev.accept()
+            return
+        super().wheelEvent(ev)
 
 
 class _LockedHoverPanel(QWidget):
@@ -119,7 +140,7 @@ class SubtitleOverlay(QWidget):
         self.setObjectName("subtitleOverlay")
         self.setMinimumSize(_MIN_WIDTH, _MIN_HEIGHT)
         saved_width = max(_MIN_WIDTH, int(self._store.get("overlay_width", 560)))
-        saved_height = max(_MIN_HEIGHT, int(self._store.get("overlay_height", 168)))
+        saved_height = max(_MIN_HEIGHT, int(self._store.get("overlay_height", 132)))
         self.resize(saved_width, saved_height)
         self.setMouseTracking(True)
 
@@ -127,6 +148,18 @@ class SubtitleOverlay(QWidget):
         self._font_size = int(self._store.get("overlay_font_size", 20))
         self._opacity = float(self._store.get("overlay_opacity", 0.92))
         self._text_color = "#F2F2F2"  # 字色（右键菜单可改）
+        mode = str(self._store.get("overlay_display_mode", "bilingual"))
+        self._display_mode = (
+            mode if mode in {"bilingual", "source", "translation"} else "bilingual"
+        )
+        self._content_padding = max(
+            _PADDING_MIN,
+            min(_PADDING_MAX, int(self._store.get("overlay_content_padding", 18))),
+        )
+        self._line_gap = max(
+            _LINE_GAP_MIN,
+            min(_LINE_GAP_MAX, int(self._store.get("overlay_line_gap", 6))),
+        )
         self._click_through = bool(self._store.get("overlay_click_through", False))
         self._drag_offset = None
         self._resize_edges: tuple[bool, bool, bool, bool] | None = None
@@ -139,34 +172,73 @@ class SubtitleOverlay(QWidget):
 
         # 内容
         self._box = QVBoxLayout(self)
-        # Reserve a dedicated top lane for the hover toolbar so it never
-        # covers the first subtitle line, even at the minimum overlay height.
-        self._box.setContentsMargins(44, 48, 44, 28)
-        self._box.setSpacing(8)
-        self.src_label = QLabel("", self)
+        self._box.setContentsMargins(
+            self._content_padding,
+            self._content_padding,
+            self._content_padding,
+            self._content_padding,
+        )
+        self._box.setSpacing(0)
+        self._content_scroll = _SubtitleScrollArea(self)
+        self._content_scroll.setObjectName("overlayContentScroll")
+        self._content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._content_scroll.setWidgetResizable(True)
+        self._content_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._content_scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._content_scroll.setStyleSheet(
+            "QScrollArea#overlayContentScroll { background: transparent; border: none; }"
+            "QScrollArea#overlayContentScroll > QWidget > QWidget { background: transparent; }"
+            "QScrollBar:vertical { background: transparent; width: 5px; margin: 1px 0; }"
+            "QScrollBar::handle:vertical { background: rgba(255,255,255,0.24);"
+            " border-radius: 2px; min-height: 18px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+            " background: transparent; }"
+        )
+        self._content_widget = QWidget(self._content_scroll)
+        self._content_widget.setObjectName("overlayContent")
+        self._content_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._content_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._content_box = QVBoxLayout(self._content_widget)
+        self._content_box.setContentsMargins(0, 0, 0, 0)
+        self._content_box.setSpacing(self._line_gap)
+        self._content_box.setSizeConstraint(QLayout.SizeConstraint.SetMinAndMaxSize)
+        self.src_label = QLabel("", self._content_widget)
         self.src_label.setObjectName("overlaySrc")
         self.src_label.setWordWrap(True)
-        self.src_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.src_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.src_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.src_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.src_label.setCursor(Qt.CursorShape.IBeamCursor)
         self.src_label.setMouseTracking(True)
-        self.dst_label = QLabel("", self)
+        self.dst_label = QLabel("", self._content_widget)
         self.dst_label.setObjectName("overlayDst")
         self.dst_label.setWordWrap(True)
-        self.dst_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.dst_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.dst_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.dst_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
             | Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         self.dst_label.setCursor(Qt.CursorShape.IBeamCursor)
         self.dst_label.setMouseTracking(True)
-        self._box.addWidget(self.src_label)
-        self._box.addWidget(self.dst_label)
+        self._content_box.addWidget(self.src_label)
+        self._content_box.addWidget(self.dst_label)
+        self._content_scroll.setWidget(self._content_widget)
+        self._content_scroll.history_requested.connect(self._step_history)
+        self._box.addWidget(self._content_scroll)
         self._apply_typography()
         self._build_hover_toolbar()
+        self._apply_display_mode()
         self._locked_panel = _LockedHoverPanel(self)
         language_manager.language_changed.connect(self._on_language_changed)
         self._locked_hover_timer = QTimer(self)
@@ -193,45 +265,164 @@ class SubtitleOverlay(QWidget):
         """NetEase-style compact controls shown only while the overlay is hovered."""
         self._toolbar = QFrame(self)
         self._toolbar.setObjectName("overlayToolbar")
-        row = QHBoxLayout(self._toolbar)
-        row.setContentsMargins(7, 4, 7, 4)
+        toolbar_box = QVBoxLayout(self._toolbar)
+        toolbar_box.setContentsMargins(6, 4, 6, 4)
+        toolbar_box.setSpacing(2)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
         self._font_down_btn = QToolButton(self._toolbar)
         self._font_down_btn.setObjectName("overlayFontDown")
         self._font_value_label = QLabel(str(self._font_size), self._toolbar)
         self._font_value_label.setObjectName("overlayFontValue")
         self._font_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._font_value_label.setFixedWidth(28)
+        self._font_value_label.setFixedWidth(26)
         self._font_up_btn = QToolButton(self._toolbar)
         self._font_up_btn.setObjectName("overlayFontUp")
+        self._display_btn = QToolButton(self._toolbar)
+        self._display_btn.setObjectName("overlayDisplayMode")
+        self._display_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._display_menu = QMenu(self._display_btn)
+        self._display_menu.setStyleSheet(self._menu_qss())
+        self._display_actions = {}
+        for display_mode in ("source", "translation", "bilingual"):
+            action = self._display_menu.addAction("")
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, selected=display_mode: self.set_display_mode(selected)
+            )
+            self._display_actions[display_mode] = action
+        self._display_btn.setMenu(self._display_menu)
+        self._spacing_btn = QToolButton(self._toolbar)
+        self._spacing_btn.setObjectName("overlaySpacingToggle")
+        self._spacing_btn.setCheckable(True)
         self._lock_btn = QToolButton(self._toolbar)
         self._close_btn = QToolButton(self._toolbar)
         controls = (
-            (self._font_down_btn, "A−", "减小字号", lambda: self.change_font_size(-2), 76),
-            (self._font_up_btn, "A+", "增大字号", lambda: self.change_font_size(+2), 76),
+            (self._font_down_btn, "A−", "减小字号", lambda: self.change_font_size(-2), 60),
+            (self._font_up_btn, "A+", "增大字号", lambda: self.change_font_size(+2), 60),
+            (self._spacing_btn, "间距", "调整内容边距和原译间距",
+             self._toggle_spacing_controls, 56),
             (self._lock_btn, "锁定", "锁定并让鼠标点击穿过浮窗",
-             lambda: self.set_click_through(True), 80),
-            (self._close_btn, "关闭", "暂时关闭字幕浮窗", self.hide, 80),
+             lambda: self.set_click_through(True), 56),
+            (self._close_btn, "×", "暂时关闭字幕浮窗", self.hide, 42),
         )
         row.addWidget(self._font_down_btn)
         row.addWidget(self._font_value_label)
+        row.addWidget(self._font_up_btn)
+        row.addWidget(self._display_btn)
+        row.addWidget(self._spacing_btn)
+        row.addWidget(self._lock_btn)
+        row.addWidget(self._close_btn)
         for button, text, tip, action, width in controls:
-            if button is not self._font_down_btn:
-                row.addWidget(button)
             button.setText(tr(text))
+            button.setStyleSheet("QToolButton { padding: 0; }")
             button.setFixedSize(width, 28)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setToolTip(tr(tip))
             button.clicked.connect(action)
+        self._display_btn.setFixedSize(66, 28)
+        self._display_btn.setStyleSheet("QToolButton { padding: 0 5px; }")
+        self._display_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._spacing_controls = QFrame(self._toolbar)
+        self._spacing_controls.setObjectName("overlaySpacingControls")
+        spacing_row = QHBoxLayout(self._spacing_controls)
+        spacing_row.setContentsMargins(3, 2, 3, 0)
+        spacing_row.setSpacing(2)
+        self._padding_label = QLabel(self._spacing_controls)
+        self._gap_label = QLabel(self._spacing_controls)
+        self._padding_value_label = QLabel(str(self._content_padding), self._spacing_controls)
+        self._padding_value_label.setObjectName("overlayControlValue")
+        self._padding_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._padding_value_label.setFixedWidth(24)
+        self._gap_value_label = QLabel(str(self._line_gap), self._spacing_controls)
+        self._gap_value_label.setObjectName("overlayControlValue")
+        self._gap_value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._gap_value_label.setFixedWidth(24)
+        spacing_row.addWidget(self._padding_label)
+        self._padding_down_btn = self._spacing_button(
+            "−", "减小边框与文字之间的间距", lambda: self.change_content_padding(-2))
+        self._padding_up_btn = self._spacing_button(
+            "+", "增大边框与文字之间的间距", lambda: self.change_content_padding(+2))
+        spacing_row.addWidget(self._padding_down_btn)
+        spacing_row.addWidget(self._padding_value_label)
+        spacing_row.addWidget(self._padding_up_btn)
+        spacing_row.addSpacing(6)
+        spacing_row.addWidget(self._gap_label)
+        self._gap_down_btn = self._spacing_button(
+            "−", "减小原文与译文之间的间距", lambda: self.change_line_gap(-2))
+        self._gap_up_btn = self._spacing_button(
+            "+", "增大原文与译文之间的间距", lambda: self.change_line_gap(+2))
+        spacing_row.addWidget(self._gap_down_btn)
+        spacing_row.addWidget(self._gap_value_label)
+        spacing_row.addWidget(self._gap_up_btn)
+        self._spacing_controls.hide()
+        toolbar_box.addLayout(row)
+        toolbar_box.addWidget(self._spacing_controls)
+        self._update_toolbar_text()
         self._toolbar.adjustSize()
         self._toolbar.hide()
 
+    def _spacing_button(self, text: str, tooltip: str, action) -> QToolButton:
+        button = QToolButton(self._spacing_controls)
+        button.setText(text)
+        button.setToolTip(tr(tooltip))
+        button.setStyleSheet("QToolButton { padding: 0; }")
+        button.setFixedSize(32, 26)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(action)
+        return button
+
+    def _toggle_spacing_controls(self, checked: bool) -> None:
+        self._spacing_controls.setVisible(bool(checked))
+        self._position_toolbar()
+        self._refresh_content_layout()
+
+    def _update_toolbar_text(self) -> None:
+        mode_labels = {
+            "source": tr("原文", "Source"),
+            "translation": tr("译文", "Trans."),
+            "bilingual": tr("对照", "Both"),
+        }
+        self._display_btn.setText(mode_labels[self._display_mode])
+        self._display_btn.setToolTip(tr(
+            "选择仅原文、仅译文或对照翻译", "Show source, translation, or both"))
+        action_labels = {
+            "source": tr("仅原文", "Source only"),
+            "translation": tr("仅译文", "Translation only"),
+            "bilingual": tr("对照翻译", "Source and translation"),
+        }
+        for mode, action in self._display_actions.items():
+            action.setText(action_labels[mode])
+            action.setChecked(mode == self._display_mode)
+        self._spacing_btn.setText(tr("间距", "Gap"))
+        self._spacing_btn.setToolTip(tr(
+            "调整内容边距和原译间距", "Adjust content padding and line gap"))
+        self._lock_btn.setText(tr("锁定", "Lock"))
+        self._lock_btn.setToolTip(tr(
+            "锁定并让鼠标点击穿过浮窗", "Lock and let clicks pass through"))
+        self._close_btn.setToolTip(tr("暂时关闭字幕浮窗", "Hide subtitle overlay"))
+        self._padding_label.setText(tr("边距", "Padding"))
+        self._gap_label.setText(tr("原译", "Lines"))
+
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
+        self._update_toolbar_text()
+        self._position_toolbar()
         self._locked_panel._on_language_changed(_language)
 
     def font_size(self) -> int:
         return self._font_size
+
+    def display_mode(self) -> str:
+        return self._display_mode
+
+    def content_padding(self) -> int:
+        return self._content_padding
+
+    def line_gap(self) -> int:
+        return self._line_gap
 
     def is_click_through(self) -> bool:
         return self._click_through
@@ -265,7 +456,7 @@ class SubtitleOverlay(QWidget):
             # still marked transparent for mouse events.
             self.setAttribute(mouse_transparent, False)
             self.setWindowFlag(transparent, False)
-        self._toolbar.hide()
+        self._set_toolbar_visible(False)
         if not self._click_through:
             self._locked_panel.hide()
         self.move(pos)
@@ -278,8 +469,7 @@ class SubtitleOverlay(QWidget):
     def _show_unlocked_toolbar_if_hovered(self) -> None:
         if (not self._click_through and self.isVisible()
                 and self.frameGeometry().contains(QCursor.pos())):
-            self._toolbar.show()
-            self._toolbar.raise_()
+            self._set_toolbar_visible(True)
 
     def _position_locked_panel(self) -> None:
         geo = self.frameGeometry()
@@ -311,7 +501,115 @@ class SubtitleOverlay(QWidget):
         self._history_pos = 0
         self.src_label.clear()
         self.dst_label.clear()
+        self._refresh_content_layout("top")
         self.hide()
+
+    def set_display_mode(self, mode: str) -> None:
+        """Choose which subtitle lines are visible and persist the choice."""
+        if mode not in {"bilingual", "source", "translation"}:
+            logger.warning("忽略未知浮窗显示模式: %s", mode)
+            return
+        if mode == self._display_mode:
+            self._update_toolbar_text()
+            return
+        self._display_mode = mode
+        self._store.set("overlay_display_mode", mode)
+        self._apply_display_mode()
+        self._update_toolbar_text()
+        self._refresh_content_layout("top")
+
+    def change_content_padding(self, delta: int) -> None:
+        value = max(
+            _PADDING_MIN,
+            min(_PADDING_MAX, self._content_padding + int(delta)),
+        )
+        if value == self._content_padding:
+            return
+        self._content_padding = value
+        self._store.set("overlay_content_padding", value)
+        self._padding_value_label.setText(str(value))
+        self._refresh_content_layout()
+        self.update()
+
+    def change_line_gap(self, delta: int) -> None:
+        value = max(_LINE_GAP_MIN, min(_LINE_GAP_MAX, self._line_gap + int(delta)))
+        if value == self._line_gap:
+            return
+        self._line_gap = value
+        self._store.set("overlay_line_gap", value)
+        self._gap_value_label.setText(str(value))
+        self._refresh_content_layout()
+
+    def _apply_display_mode(self) -> None:
+        self.src_label.setVisible(self._display_mode != "translation")
+        self.dst_label.setVisible(self._display_mode != "source")
+
+    def _visible_subtitle_labels(self) -> list[QLabel]:
+        if self._display_mode == "source":
+            return [self.src_label]
+        if self._display_mode == "translation":
+            return [self.dst_label]
+        return [self.src_label, self.dst_label]
+
+    def _refresh_content_layout(self, scroll_target: str | None = None) -> None:
+        """Reflow wrapped labels inside the current user-selected window size."""
+        if not hasattr(self, "_content_scroll"):
+            return
+        toolbar_offset = 0
+        if hasattr(self, "_toolbar") and self._toolbar.isVisible():
+            toolbar_offset = self._toolbar.height() + 8
+        self._box.setContentsMargins(
+            self._content_padding,
+            self._content_padding + toolbar_offset,
+            self._content_padding,
+            self._content_padding,
+        )
+        self._content_box.setSpacing(self._line_gap)
+
+        # Reserve the slim scrollbar width even before it appears.  This avoids
+        # a second wrap point after a long line first makes the bar visible.
+        available_width = max(1, self._content_scroll.viewport().width() - 8)
+        visible_labels = self._visible_subtitle_labels()
+        content_height = 0
+        for label in visible_labels:
+            wrapped_height = label.heightForWidth(available_width)
+            if wrapped_height < 0:
+                wrapped_height = label.sizeHint().height()
+            label_height = max(label.fontMetrics().height(), wrapped_height)
+            label.setFixedHeight(label_height)
+            content_height += label_height
+        if len(visible_labels) > 1:
+            content_height += self._line_gap
+
+        self._content_widget.setMinimumHeight(max(1, content_height))
+        self._content_box.invalidate()
+        self._content_box.activate()
+        if scroll_target is not None:
+            QTimer.singleShot(0, lambda target=scroll_target: self._set_scroll_target(target))
+
+    def _set_scroll_target(self, target: str) -> None:
+        bar = self._content_scroll.verticalScrollBar()
+        if target == "bottom":
+            bar.setValue(bar.maximum())
+        elif target == "top":
+            bar.setValue(bar.minimum())
+
+    def _position_toolbar(self) -> None:
+        if not hasattr(self, "_toolbar"):
+            return
+        self._toolbar.adjustSize()
+        x = max(6, (self.width() - self._toolbar.width()) // 2)
+        x = min(x, max(6, self.width() - self._toolbar.width() - 6))
+        self._toolbar.move(x, 8)
+        self._toolbar.raise_()
+
+    def _set_toolbar_visible(self, visible: bool) -> None:
+        if not hasattr(self, "_toolbar"):
+            return
+        self._toolbar.setVisible(bool(visible))
+        if visible:
+            self._position_toolbar()
+        self._refresh_content_layout()
 
     # ------------------------------------------------------------------
     # 内容接口
@@ -326,13 +624,13 @@ class SubtitleOverlay(QWidget):
         self._pulse.setStartValue(max(0.35, self._opacity - 0.35))
         self._pulse.setEndValue(self._opacity)
         self._pulse.start()
-        QTimer.singleShot(0, self._fit_height_to_text)
+        QTimer.singleShot(0, lambda: self._refresh_content_layout("top"))
 
     def set_partial(self, src: str, dst: str | None = None) -> None:
         """Update temporary text without polluting the scroll-back history."""
         self.src_label.setText(src)
         self.dst_label.setText(dst if dst is not None else tr("识别中…"))
-        QTimer.singleShot(0, self._fit_height_to_text)
+        QTimer.singleShot(0, lambda: self._refresh_content_layout("bottom"))
 
     def show_subtitles(self, src: str = "", dst: str = "") -> None:
         self.show()
@@ -348,7 +646,7 @@ class SubtitleOverlay(QWidget):
         self._store.set("overlay_font_size", self._font_size)
         self._font_value_label.setText(str(self._font_size))
         self._apply_typography()
-        QTimer.singleShot(0, self._fit_height_to_text)
+        QTimer.singleShot(0, self._refresh_content_layout)
 
     def set_text_color(self, hex_color: str) -> None:
         self._text_color = hex_color
@@ -378,22 +676,15 @@ class SubtitleOverlay(QWidget):
         )
 
     def _fit_height_to_text(self) -> None:
-        self._box.activate()
-        desired = max(_MIN_HEIGHT, min(600, self.sizeHint().height() + 8))
-        if self._manual_size:
-            # Keep a user-selected height stable, but grow when a larger font
-            # would otherwise be clipped.
-            if desired > self.height():
-                self.resize(self.width(), desired)
-            return
-        if abs(self.height() - desired) >= 2:
-            self.resize(self.width(), desired)
+        """Compatibility entry point: text now reflows without resizing the window."""
+        self._refresh_content_layout()
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
         if hasattr(self, "_toolbar"):
-            self._toolbar.adjustSize()
-            self._toolbar.move(max(12, (self.width() - self._toolbar.width()) // 2), 8)
+            self._position_toolbar()
+        if hasattr(self, "_content_scroll"):
+            QTimer.singleShot(0, self._refresh_content_layout)
         if hasattr(self, "_locked_panel") and self._locked_panel.isVisible():
             self._position_locked_panel()
 
@@ -404,15 +695,15 @@ class SubtitleOverlay(QWidget):
 
     def enterEvent(self, ev) -> None:  # noqa: N802
         if not self._click_through:
-            self._toolbar.show()
-            self._toolbar.raise_()
+            self._set_toolbar_visible(True)
         super().enterEvent(ev)
 
     def leaveEvent(self, ev) -> None:  # noqa: N802
-        self._toolbar.hide()
+        self._set_toolbar_visible(False)
         super().leaveEvent(ev)
 
     def hideEvent(self, ev) -> None:  # noqa: N802
+        self._set_toolbar_visible(False)
         if hasattr(self, "_locked_panel"):
             self._locked_panel.hide()
         super().hideEvent(ev)
@@ -441,8 +732,9 @@ class SubtitleOverlay(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(1, 1, w - 2, h - 2, radius_outer, radius_outer)
 
-        # 内芯（inset 24px 高光层）
-        inset = 24
+        # 内芯跟随用户内容边距，紧凑模式下不再浪费大块空白。
+        inset = max(5, min(18, self._content_padding // 2))
+        radius_inner = min(radius_inner, max(8, (min(w, h) - 2 * inset) // 2))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(26, 26, 26, 150))  # surface_2 半透明高光
         p.drawRoundedRect(
@@ -563,6 +855,37 @@ class SubtitleOverlay(QWidget):
 
         menu.addAction(tr("字号 +"), lambda: self.change_font_size(+2))
         menu.addAction(tr("字号 -"), lambda: self.change_font_size(-2))
+        display_menu = menu.addMenu(tr("显示内容", "Display"))
+        display_menu.setStyleSheet(self._menu_qss())
+        for mode, label in (
+            ("source", tr("仅原文", "Source only")),
+            ("translation", tr("仅译文", "Translation only")),
+            ("bilingual", tr("对照翻译", "Source and translation")),
+        ):
+            action = display_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(mode == self._display_mode)
+            action.triggered.connect(
+                lambda _checked=False, selected=mode: self.set_display_mode(selected)
+            )
+        spacing_menu = menu.addMenu(tr("间距", "Spacing"))
+        spacing_menu.setStyleSheet(self._menu_qss())
+        spacing_menu.addAction(
+            tr("减小内容边距", "Decrease content padding"),
+            lambda: self.change_content_padding(-2),
+        )
+        spacing_menu.addAction(
+            tr("增大内容边距", "Increase content padding"),
+            lambda: self.change_content_padding(+2),
+        )
+        spacing_menu.addAction(
+            tr("减小原译间距", "Decrease line gap"),
+            lambda: self.change_line_gap(-2),
+        )
+        spacing_menu.addAction(
+            tr("增大原译间距", "Increase line gap"),
+            lambda: self.change_line_gap(+2),
+        )
         menu.addAction(tr("锁定并允许点击穿透"), lambda: self.set_click_through(True))
         color_menu = menu.addMenu(tr("字色"))
         color_menu.addAction(tr("白"), lambda: self.set_text_color("#F2F2F2"))
@@ -611,10 +934,9 @@ class SubtitleOverlay(QWidget):
     # ------------------------------------------------------------------
     # 历史滚动（滚轮翻看最近 N 条，不落盘）
     # ------------------------------------------------------------------
-    def wheelEvent(self, ev) -> None:  # noqa: N802
+    def _step_history(self, delta: int) -> None:
         if not self._history or self._wheel_locked:
             return
-        delta = ev.angleDelta().y()
         if delta > 0:  # 上滚 → 更早的历史
             self._history_pos = min(len(self._history) - 1, self._history_pos + 1)
         else:  # 下滚 → 回到最新
@@ -623,11 +945,18 @@ class SubtitleOverlay(QWidget):
         src, dst = self._history[idx]
         self.src_label.setText(src)
         self.dst_label.setText(dst)
+        self._refresh_content_layout("top")
         # 边缘阻尼：到底后 160ms 内不再响应，避免误滚
         if (delta > 0 and idx == 0) or (delta < 0 and self._history_pos == 0):
             self._wheel_locked = True
             QTimer.singleShot(160, self._unlock_wheel)
-        ev.accept()
+
+    def wheelEvent(self, ev) -> None:  # noqa: N802
+        if ev.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self._step_history(ev.angleDelta().y())
+            ev.accept()
+            return
+        super().wheelEvent(ev)
 
     def _unlock_wheel(self) -> None:
         self._wheel_locked = False

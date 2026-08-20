@@ -747,7 +747,7 @@ class SettingsWindow(QWidget):
         overlay_form.setVerticalSpacing(10)
         self.overlay_font_spin = QSpinBox(overlay_card)
         self.overlay_font_spin.setObjectName("inputBox")
-        self.overlay_font_spin.setRange(14, 36)
+        self.overlay_font_spin.setRange(10, 72)
         self.overlay_font_spin.setSingleStep(2)
         self.overlay_font_spin.setSuffix(" pt")
         self.overlay_font_spin.valueChanged.connect(self._on_overlay_font_changed)

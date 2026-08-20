@@ -19,7 +19,7 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
 - Installer: `VoxSub-Setup-0.4.1-beta.exe` (self-signed by the VoxSub developer; Windows may still show an unknown publisher)
-- SHA256: `F48A304B56C763484A73AB40784255647C84889FCBA387FFDD16B59EA71ACF26` (also in the matching `.sha256` file)
+- SHA256: `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A` (also in the matching `.sha256` file)
 - Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
 
 ## Available Features
@@ -34,12 +34,13 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 - **New-device base-model repair:** a bundled Silero VAD is restored to the current user's model directory on first use, so an ASR model downloaded from Model Hub can run without a separate hidden VAD download.
 - **Cloud and hybrid pipelines:** choose STT and translation independently. Cloud STT and cloud translation each have their own API key, BaseURL, and model name, supporting cloud STT plus local translation, local STT plus cloud translation, and a fully cloud-based chain. Cloud STT uploads only VAD-finalized speech segments.
 - **Recognition tuning:** use Automatic, Low Latency, Balanced, or Accuracy presets, or adjust sensitivity, pause-based segmentation, maximum utterance length, decoding candidates, maximum text length, and custom vocabulary over broad ranges. Hover over each `i` icon for a plain-language explanation; changes are saved only when explicitly confirmed.
-- **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. When the overlay is locked, hover over it to adjust the font size or unlock it in place.
-- **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports font-size controls, dragging, locking, and click-through mode, and can be unlocked from its hover control island or Settings.
+- **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. The overlay can show source only, translation only, or both, with separate controls for content padding and the gap between lines.
+- **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports a wider font range, free resizing, dragging, locking, and click-through mode. When locked, hovering reveals only the Unlock control.
+- **Fixed-size long subtitles:** long sentences no longer enlarge the overlay or push it beyond the screen. Text wraps inside the chosen dimensions; use the mouse wheel for the current sentence and `Ctrl + wheel` for subtitle history.
 - **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
 - **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
 - **Model storage:** fresh installs use a `Models` folder beside the installed app, organized into purpose folders such as `stt`, `translate`, `vad`, and `tts`. Upgraded installations keep their existing model root until the user changes it. Settings supports changing the location, moving an existing library, and manually importing models; updates do not remove downloaded models.
-- **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; after a move, the manifest is repaired and the pipeline immediately uses the new root instead of reporting missing files or reopening the old root; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree.
+- **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; after a move, the manifest is repaired and the pipeline immediately uses the new root instead of reporting missing files or reopening the old root; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree; long subtitles no longer expand the overlay off-screen.
 - **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
 - **Fullscreen behavior:** opening Settings or Model Hub from a fullscreen main window keeps the app fullscreen.
 
@@ -76,7 +77,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,733,432 bytes.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,738,176 bytes.
 
 ## Project Layout
 

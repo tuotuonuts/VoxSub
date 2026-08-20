@@ -32,7 +32,7 @@ def test_release_notes_are_shown_only_once_for_a_version(qapp, tmp_path: Path):
     assert first is not None
     assert store.get("release_notes_seen_version") == "0.4.1-beta"
     assert show_release_notes_once(parent, store, "0.4.1-beta") is None
-    assert "模型保存更安心" in release_history_text()
+    assert "模型保存和字幕浮窗更顺手" in release_history_text()
 
     first.close()
     first.deleteLater()
