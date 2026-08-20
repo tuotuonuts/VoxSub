@@ -360,6 +360,7 @@ class TestMainWindow:
             win.deleteLater()
 
     def test_secondary_pages_are_embedded_and_navigate_as_a_stack(self, qapp, tmp_path):
+        from PySide6.QtCore import Qt
         from voxsub.model_catalog import ModelMarketplace
         from voxsub.ui.model_hub_window import ModelHubWindow
         from voxsub.ui.settings_window import SettingsWindow
@@ -380,6 +381,13 @@ class TestMainWindow:
             assert not settings.isWindow()
             assert win._page_layer.isVisible()  # noqa: SLF001
             assert win._page_blur.blurRadius() == 12  # noqa: SLF001
+
+            # Embedded navigation must preserve the main window's fullscreen state.
+            win.showFullScreen()
+            qapp.processEvents()
+            win.show_settings_page()
+            qapp.processEvents()
+            assert win.windowState() & Qt.WindowState.WindowFullScreen
 
             settings.model_hub_btn.click()
             qapp.processEvents()
@@ -842,6 +850,7 @@ class TestSettingsWindow:
             assert sw.windowTitle() == "Settings - VoxSub"
             assert sw.tabs.tabText(0) == "Translation"
             assert sw.tabs.tabText(1) == "Recognition tuning"
+            assert sw.tabs.tabText(4) == "Storage & models"
             assert sw.language_combo.currentText() == "Follow system"
             sw.language_combo.setCurrentIndex(2)
             assert store.get("language") == "en"
@@ -929,9 +938,10 @@ class TestSettingsWindow:
         store = ConfigStore(path)
         sw = SettingsWindow(store=store)
         try:
-            assert sw.tabs.count() == 6
+            assert sw.tabs.count() == 7
             assert sw.tabs.tabText(1) == "识别调优"
             assert sw.tabs.tabText(3) == "设备"
+            assert sw.tabs.tabText(4) == "存储与模型"
             # 切换云档 → 输入框可用 + 落盘
             sw.tier_cloud.setChecked(True)
             assert store.get("translate_tier") == "cloud"
@@ -1054,6 +1064,66 @@ class TestSettingsWindow:
             sw.close()
             assert store.get("asr_silence_ms") == 80
             assert sw.silence_spin.value() == 80
+        finally:
+            sw.close()
+            sw.deleteLater()
+
+    def test_asr_tuning_spinbox_up_and_down_arrows_both_step(self, qapp, tmp_path):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QStyle, QStyleOptionSpinBox
+        from voxsub.ui.settings_window import SettingsWindow
+
+        sw = SettingsWindow(store=ConfigStore(tmp_path / "config.json"))
+        try:
+            sw.asr_profile_combo.setCurrentIndex(
+                sw.asr_profile_combo.findData("custom"))
+            spin = sw.silence_spin
+            option = QStyleOptionSpinBox()
+            spin.initStyleOption(option)
+            up = spin.style().subControlRect(
+                QStyle.ComplexControl.CC_SpinBox, option,
+                QStyle.SubControl.SC_SpinBoxUp, spin).center()
+            down = spin.style().subControlRect(
+                QStyle.ComplexControl.CC_SpinBox, option,
+                QStyle.SubControl.SC_SpinBoxDown, spin).center()
+            before = spin.value()
+            QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=up)
+            assert spin.value() == before + spin.singleStep()
+            QTest.mouseClick(spin, Qt.MouseButton.LeftButton, pos=down)
+            assert spin.value() == before
+        finally:
+            sw.close()
+            sw.deleteLater()
+
+    def test_model_migration_result_does_not_wait_in_gui_thread(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        import time
+        from PySide6.QtTest import QTest
+        import voxsub.ui.settings_window as settings_module
+        from voxsub.model_storage import MigrationResult
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        store.set("models_root", str(tmp_path / "old-models"))
+        destination = tmp_path / "new-models"
+        sw = SettingsWindow(store=store)
+        try:
+            def fake_migrate(source, target):
+                time.sleep(0.08)
+                return MigrationResult(source, target, moved_paths=1)
+
+            monkeypatch.setattr(settings_module, "migrate_models", fake_migrate)
+            started = time.monotonic()
+            sw._begin_model_migration(destination, switch_default=True)  # noqa: SLF001
+            assert time.monotonic() - started < 0.05
+            deadline = time.monotonic() + 2.0
+            while sw._storage_worker is not None and time.monotonic() < deadline:  # noqa: SLF001
+                QTest.qWait(10)
+                qapp.processEvents()
+            assert sw._storage_worker is None  # noqa: SLF001
+            assert store.get("models_root") == str(destination)
         finally:
             sw.close()
             sw.deleteLater()

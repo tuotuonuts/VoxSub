@@ -42,6 +42,12 @@ class ConfigStore:
         "asr_hotwords": "",           # 逗号分隔领域词
         "translate_model_id": "mt-opus-fast-builtin",
         "download_source": "auto",  # auto | global | china
+        # Model files are user-owned data.  An empty root means an installation
+        # predates the storage migration and is resolved conservatively.
+        "models_root": "",
+        "models_root_mode": "",      # legacy | install | custom
+        "model_storage_initialized": False,
+        "release_notes_seen_version": "",
         "stt_api_key": "",           # 云 STT 独立 API Key
         "stt_base_url": "https://api.openai.com/v1",  # 云 STT OpenAI 兼容基址
         "stt_model": "whisper-1",    # 云 STT 模型名

@@ -23,6 +23,65 @@ from voxsub.logging_setup import get_logger
 logger = get_logger("process_audio")
 
 
+_TEAMS_PROCESS_NAMES = frozenset({
+    "teams.exe",
+    "msteams.exe",
+    "ms-teams.exe",
+    "msedgewebview2.exe",
+})
+
+
+def _process_family_name(name: str) -> str:
+    return Path(str(name or "")).name.casefold()
+
+
+def _capture_root_pid(pid: int, psutil_module) -> int:
+    """Choose a process-loopback root that includes the selected app audio.
+
+    A visible Teams window is often owned by ``msedgewebview2.exe`` while the
+    meeting renderer is a sibling/child under ``ms-teams.exe``. Windows
+    process-loopback includes a target's descendants, but not its parent or
+    siblings, so selecting the visible child can produce a perfectly healthy
+    capture stream containing silence. Walk only the same executable family;
+    never climb into Explorer or an unrelated launcher.
+    """
+    try:
+        process = psutil_module.Process(int(pid))
+    except Exception:
+        return int(pid)
+
+    current_name = _process_family_name(process.name())
+    is_teams_family = current_name in _TEAMS_PROCESS_NAMES
+    root_pid = int(pid)
+    visited: set[int] = {root_pid}
+    while True:
+        try:
+            parent = process.parent()
+        except Exception:
+            break
+        if parent is None:
+            break
+        try:
+            parent_pid = int(parent.pid)
+            parent_name = _process_family_name(parent.name())
+        except Exception:
+            break
+        if parent_pid <= 0 or parent_pid in visited:
+            break
+        same_family = parent_name == current_name
+        teams_family = is_teams_family and parent_name in _TEAMS_PROCESS_NAMES
+        if not (same_family or teams_family):
+            break
+        root_pid = parent_pid
+        visited.add(parent_pid)
+        process = parent
+        current_name = parent_name
+    if root_pid != int(pid):
+        logger.info("按应用捕获提升到进程族宿主: selected_pid=%d root_pid=%d",
+                    int(pid), root_pid)
+    return root_pid
+
+
 @dataclass(frozen=True)
 class CaptureTarget:
     """一个可选择的可见窗口及其所属进程。"""
@@ -62,11 +121,12 @@ def list_capture_targets() -> list[CaptureTarget]:
                 process_name = psutil.Process(pid).name()
             except (psutil.Error, OSError):
                 pass
-        candidate = CaptureTarget(pid, process_name, title)
-        current = by_pid.get(pid)
+        capture_pid = _capture_root_pid(pid, psutil) if psutil is not None else pid
+        candidate = CaptureTarget(capture_pid, process_name, title)
+        current = by_pid.get(capture_pid)
         # 同进程多个窗口时保留信息量更高的标题；进程树仍只需一个 PID。
         if current is None or len(candidate.window_title) > len(current.window_title):
-            by_pid[pid] = candidate
+            by_pid[capture_pid] = candidate
     return sorted(by_pid.values(), key=lambda x: (x.process_name.casefold(), x.window_title.casefold()))
 
 

@@ -20,7 +20,7 @@ import sys
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile
+from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from voxsub import __version__ as _CORE_VERSION
@@ -44,8 +44,10 @@ from voxsub.ui.main_window import MainWindow  # noqa: E402
 from voxsub.ui.model_hub_window import ModelHubWindow  # noqa: E402
 from voxsub.ui.settings_window import SettingsWindow  # noqa: E402
 from voxsub.ui.subtitle_overlay import SubtitleOverlay  # noqa: E402
+from voxsub.ui.release_notes import show_release_notes_once  # noqa: E402
 from voxsub.ui.theme import AppTheme, load_theme  # noqa: E402
 from voxsub.ui.tray import TrayIcon  # noqa: E402
+from voxsub.model_storage import initialize_model_storage  # noqa: E402
 
 
 def parse_theme(value: str) -> AppTheme:
@@ -63,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("VoxSub")
     store = ConfigStore()
+    initialize_model_storage(store)
     language_manager.set_language(store.get("language", "system"))
     app.setApplicationDisplayName(tr("语幕 VoxSub", "VoxSub"))
     app.setOrganizationName("VoxSub")
@@ -104,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     diagnostics_win = DiagnosticsWindow(store=store)
     model_hub_win = ModelHubWindow(store=store)
     win.install_in_app_pages(settings_win, model_hub_win)
+    settings_win.set_storage_change_guard(model_hub_win.has_active_downloads)
+    settings_win.model_storage_changed.connect(
+        lambda _root: model_hub_win.reload_model_storage())
     logger.info("窗口组件已创建: 主窗 / 浮窗 / 内置模型广场 / 内置设置 / 诊断")
 
     tray = TrayIcon.create(make_app_icon(), win)
@@ -130,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
             win.activateWindow()
 
         def _on_tray_settings() -> None:
-            win.showNormal()
+            if not win.isVisible():
+                win.show()
             win.show_settings_page()
             win.raise_()
             win.activateWindow()
@@ -166,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     win.running_state_changed.connect(lambda _running: _sync_tray_state())
 
     def _show_settings() -> None:
-        win.showNormal()
+        if not win.isVisible():
+            win.show()
         win.show_settings_page()
         win.raise_()
         win.activateWindow()
@@ -177,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         diagnostics_win.activateWindow()
 
     def _show_model_hub() -> None:
-        win.showNormal()
+        if not win.isVisible():
+            win.show()
         win.show_model_hub_page()
         win.raise_()
         win.activateWindow()
@@ -186,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     win.diagnostics_requested.connect(_show_diagnostics)
     win.model_hub_requested.connect(_show_model_hub)
     win.show()
+    QTimer.singleShot(0, lambda: show_release_notes_once(win, store, _UI_VERSION))
     # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
     app.aboutToQuit.connect(model_hub_win.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)

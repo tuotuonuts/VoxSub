@@ -10,7 +10,12 @@ import time
 import numpy as np
 import pytest
 
-from voxsub.process_audio import CaptureTarget, ProcessLoopbackSource, list_capture_targets
+from voxsub.process_audio import (
+    CaptureTarget,
+    ProcessLoopbackSource,
+    _capture_root_pid,
+    list_capture_targets,
+)
 
 
 def test_capture_target_label() -> None:
@@ -21,6 +26,54 @@ def test_capture_target_label() -> None:
 def test_process_source_rejects_invalid_pid() -> None:
     with pytest.raises(ValueError, match="正整数"):
         ProcessLoopbackSource(0)
+
+
+def test_teams_child_window_promotes_to_host_process() -> None:
+    class _Proc:
+        def __init__(self, pid, name, parent=None):
+            self.pid = pid
+            self._name = name
+            self._parent = parent
+
+        def name(self):
+            return self._name
+
+        def parent(self):
+            return self._parent
+
+    host = _Proc(100, "ms-teams.exe")
+    webview = _Proc(200, "msedgewebview2.exe", host)
+
+    class _Psutil:
+        @staticmethod
+        def Process(pid):
+            assert pid == 200
+            return webview
+
+    assert _capture_root_pid(200, _Psutil) == 100
+
+
+def test_same_process_children_promote_to_their_root() -> None:
+    class _Proc:
+        def __init__(self, pid, parent=None):
+            self.pid = pid
+            self._parent = parent
+
+        def name(self):
+            return "chrome.exe"
+
+        def parent(self):
+            return self._parent
+
+    root = _Proc(300)
+    child = _Proc(301, root)
+
+    class _Psutil:
+        @staticmethod
+        def Process(pid):
+            return child
+
+    assert _capture_root_pid(301, _Psutil) == 300
 
 
 def test_list_capture_targets_deduplicates_pid(monkeypatch) -> None:

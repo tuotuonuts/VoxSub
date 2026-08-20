@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 
@@ -23,6 +22,7 @@ import numpy as np
 import onnxruntime as ort
 
 from voxsub.logging_setup import get_logger
+from voxsub.model_storage import model_lookup_roots, resolve_models_root
 
 from .base import TranslationError, Translator
 from .tokenizer import UnigramTokenizer
@@ -31,7 +31,7 @@ logger = get_logger("translate.opus")
 
 
 def _default_models_dir() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    return resolve_models_root()
 
 
 class OpusFastTranslator(Translator):
@@ -49,7 +49,20 @@ class OpusFastTranslator(Translator):
                  opus_map: dict[tuple[str, str], str] | None = None,
                  max_length: int = 128, threads: int = 2,
                  providers: list | None = None):
-        self._base = Path(model_dir) if model_dir else _default_models_dir() / "nmt"
+        # ``nmt`` was the pre-0.4.1 location.  Startup normally moves it to
+        # ``translate/opus``; retaining the fallback means a power loss during
+        # that move cannot make the built-in fast translator disappear.
+        if model_dir is not None:
+            self._bases = (Path(model_dir),)
+        else:
+            # Keep both the active root and any old per-user root visible
+            # while an upgrade is being completed. The active root remains
+            # the only destination for new downloads; this is lookup-only.
+            self._bases = tuple(
+                base
+                for root in model_lookup_roots(_default_models_dir())
+                for base in (root / "translate" / "opus", root / "nmt")
+            )
         self._max_length = max_length
         self._threads = threads
         self._providers = providers or ["CPUExecutionProvider"]
@@ -71,13 +84,14 @@ class OpusFastTranslator(Translator):
         d = self._opus_map.get(pair)
         if not d:
             return None
-        p = self._base / d
         need = ["encoder_model_int8.onnx", "decoder_model_int8.onnx",
                 "config.json", "tokenizer.json"]
-        if all((p / f).exists() for f in need):
-            self._dir_by_pair[pair] = p
-            self._ready_pairs.append(pair)
-            return p
+        for base in self._bases:
+            p = base / d
+            if all((p / f).exists() for f in need):
+                self._dir_by_pair[pair] = p
+                self._ready_pairs.append(pair)
+                return p
         return None
 
     def list_available_pairs(self) -> list[tuple[str, str]]:

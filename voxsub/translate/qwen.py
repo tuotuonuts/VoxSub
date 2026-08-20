@@ -25,6 +25,7 @@ from pathlib import Path
 
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import LlamaRuntime, detect_hardware, select_llama_runtime
+from voxsub.model_storage import resolve_models_root
 
 from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
@@ -33,7 +34,7 @@ logger = get_logger("translate.qwen")
 
 
 def _default_models_dir() -> Path:
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    return resolve_models_root()
 
 
 def _default_tools_dir() -> Path:
@@ -69,7 +70,8 @@ class QwenQualityTranslator(Translator):
                  model_name: str = "本地 GGUF 翻译模型",
                  n_gpu_layers: int | None = None):
         self._model_path = Path(model_path) if model_path else (
-            _default_models_dir() / "llm" / "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+            _default_models_dir() / "translate" / "legacy-llm" /
+            "qwen2.5-1.5b-instruct-q4_k_m.gguf")
         self._explicit_server_exe = Path(server_exe) if server_exe else None
         self._server_exe = (self._explicit_server_exe or
                             (_default_tools_dir() / "llama-server.exe"))

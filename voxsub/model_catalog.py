@@ -7,7 +7,6 @@ treated as a product bug, not as a marketplace feature.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tarfile
 import tempfile
@@ -21,6 +20,7 @@ from urllib import request as urlrequest
 
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import HardwareProfile, detect_hardware, discover_llama_runtimes
+from voxsub.model_storage import model_lookup_roots, resolve_models_root
 from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 
 logger = get_logger("model_catalog")
@@ -30,8 +30,8 @@ CATALOG_UPDATED = "2026-08-20"
 
 
 def default_models_dir() -> Path:
-    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(local) / "VoxSub" / "models"
+    """Return the configured root shared by all model runtimes."""
+    return resolve_models_root()
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,7 @@ class ModelSpec:
     install_rel: str
     required_paths: tuple[str, ...]
     required_patterns: tuple[str, ...] = ()
+    legacy_install_rels: tuple[str, ...] = ()
     sources: tuple[ModelSource, ...] = ()
     asset_name: str = ""
     sha256: str = ""
@@ -131,7 +132,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=995_000_000,
         installed_bytes=1_018_000_000,
-        install_rel="marketplace/asr-funasr-nano-2512-int8",
+        install_rel="stt/funasr-nano-2512-int8",
+        legacy_install_rels=("marketplace/asr-funasr-nano-2512-int8",),
         required_paths=("encoder_adaptor.int8.onnx", "llm.int8.onnx",
                         "embedding.int8.onnx", "Qwen3-0.6B/tokenizer.json"),
         sources=(
@@ -163,7 +165,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=960_000_000,
         installed_bytes=1_005_000_000,
-        install_rel="marketplace/asr-qwen3-0.6b-int8",
+        install_rel="stt/qwen3-asr-0.6b-int8",
+        legacy_install_rels=("marketplace/asr-qwen3-0.6b-int8",),
         required_paths=("conv_frontend.onnx", "encoder.int8.onnx",
                         "decoder.int8.onnx", "tokenizer/vocab.json"),
         sources=(
@@ -221,7 +224,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=245_000_000,
         installed_bytes=270_000_000,
-        install_rel="marketplace/asr-sensevoice-small-int8",
+        install_rel="stt/sensevoice-small-int8",
+        legacy_install_rels=("marketplace/asr-sensevoice-small-int8",),
         required_paths=("model.int8.onnx", "tokens.txt"),
         sources=(
             ModelSource("global", "GitHub 全球源",
@@ -251,9 +255,10 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=0,
         installed_bytes=150_000_000,
-        install_rel="asr",
+        install_rel="stt/zipformer",
         required_paths=("tokens.txt",),
         required_patterns=("*encoder*.onnx", "*decoder*.onnx", "*joiner*.onnx"),
+        legacy_install_rels=("asr",),
         sources=(
             ModelSource(
                 "global", "GitHub 全球源",
@@ -288,7 +293,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=4_624_648_896,
         installed_bytes=4_624_648_896,
-        install_rel="marketplace/mt-hy-mt2-7b-q4",
+        install_rel="translate/hy-mt2-7b-q4",
+        legacy_install_rels=("marketplace/mt-hy-mt2-7b-q4",),
         required_paths=("Hy-MT2-7B-Q4_K_M.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -320,7 +326,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=6_164_482_720,
         installed_bytes=6_164_482_720,
-        install_rel="marketplace/mt-hy-mt2-7b-q6",
+        install_rel="translate/hy-mt2-7b-q6",
+        legacy_install_rels=("marketplace/mt-hy-mt2-7b-q6",),
         required_paths=("HY-MT2-7B-Q6_K.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -352,7 +359,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=7_981_928_896,
         installed_bytes=7_981_928_896,
-        install_rel="marketplace/mt-hy-mt2-7b-q8",
+        install_rel="translate/hy-mt2-7b-q8",
+        legacy_install_rels=("marketplace/mt-hy-mt2-7b-q8",),
         required_paths=("HY-MT2-7B-Q8_0.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -384,7 +392,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=1_133_080_448,
         installed_bytes=1_133_080_448,
-        install_rel="marketplace/mt-hy-mt2-1.8b-q4",
+        install_rel="translate/hy-mt2-1.8b-q4",
+        legacy_install_rels=("marketplace/mt-hy-mt2-1.8b-q4",),
         required_paths=("Hy-MT2-1.8B-Q4_K_M.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -416,7 +425,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=1_474_785_120,
         installed_bytes=1_474_785_120,
-        install_rel="marketplace/mt-hy-mt2-1.8b-q6",
+        install_rel="translate/hy-mt2-1.8b-q6",
+        legacy_install_rels=("marketplace/mt-hy-mt2-1.8b-q6",),
         required_paths=("Hy-MT2-1.8B-Q6_K.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -448,7 +458,8 @@ CATALOG: tuple[ModelSpec, ...] = (
         license="Apache-2.0",
         download_bytes=1_908_528_192,
         installed_bytes=1_908_528_192,
-        install_rel="marketplace/mt-hy-mt2-1.8b-q8",
+        install_rel="translate/hy-mt2-1.8b-q8",
+        legacy_install_rels=("marketplace/mt-hy-mt2-1.8b-q8",),
         required_paths=("Hy-MT2-1.8B-Q8_0.gguf",),
         sources=(
             ModelSource("global", "Hugging Face 全球源",
@@ -479,7 +490,7 @@ CATALOG: tuple[ModelSpec, ...] = (
         languages="中文 / 英语",
         license="Apache-2.0",
         installed_bytes=650_000_000,
-        install_rel="nmt",
+        install_rel="translate/opus",
         required_paths=("opus_zh_en/encoder_model_int8.onnx",
                         "opus_zh_en/decoder_model_int8.onnx",
                         "opus_zh_en/config.json",
@@ -488,6 +499,7 @@ CATALOG: tuple[ModelSpec, ...] = (
                         "opus_en_zh/decoder_model_int8.onnx",
                         "opus_en_zh/config.json",
                         "opus_en_zh/tokenizer.json"),
+        legacy_install_rels=("nmt",),
         sources=(
             ModelSource(
                 "global", "Hugging Face 全球源", f"{_HF}/Xenova/opus-mt-zh-en",
@@ -629,12 +641,37 @@ class ModelMarketplace:
     """Install, verify and remove exact catalog model directories."""
 
     def __init__(self, models_dir: Path | str | None = None) -> None:
+        self._uses_default_root = models_dir is None
         self.models_dir = Path(models_dir) if models_dir else default_models_dir()
+        self._lookup_roots = (
+            model_lookup_roots(self.models_dir)
+            if self._uses_default_root else (self.models_dir.resolve(),)
+        )
         self._downloads = self.models_dir / ".downloads"
         self._state_path = self.models_dir / "catalog_installs.json"
 
     def model_dir(self, model: ModelSpec) -> Path:
+        """Return the canonical destination for new downloads."""
         return self.models_dir / model.install_rel
+
+    def _model_dir_candidates(self, model: ModelSpec) -> tuple[Path, ...]:
+        candidates: list[Path] = []
+        for root in self._lookup_roots:
+            candidates.append(root / model.install_rel)
+            candidates.extend(root / rel for rel in model.legacy_install_rels)
+        return tuple(candidates)
+
+    def available_model_dir(self, model: ModelSpec) -> Path:
+        """Return a complete canonical or legacy directory for ``model``.
+
+        The normalizer upgrades folders at application startup.  This fallback
+        makes an interrupted upgrade safe: a model remains visible and usable
+        until its old folder can be organized on a later launch.
+        """
+        for candidate in self._model_dir_candidates(model):
+            if not self._missing_paths_at(candidate, model):
+                return candidate
+        return self.model_dir(model)
 
     @staticmethod
     def _missing_paths_at(base: Path, model: ModelSpec) -> tuple[str, ...]:
@@ -648,15 +685,20 @@ class ModelMarketplace:
 
     def missing_paths(self, model: ModelSpec) -> tuple[str, ...]:
         """Return the exact required files/patterns absent from a model."""
+        for candidate in self._model_dir_candidates(model):
+            missing = self._missing_paths_at(candidate, model)
+            if not missing:
+                return ()
         return self._missing_paths_at(self.model_dir(model), model)
 
     def is_installed(self, model: ModelSpec) -> bool:
         return not self.missing_paths(model)
 
     def model_file(self, model: ModelSpec) -> Path:
+        directory = self.available_model_dir(model)
         if not model.required_paths:
-            return self.model_dir(model)
-        return self.model_dir(model) / model.required_paths[0]
+            return directory
+        return directory / model.required_paths[0]
 
     @staticmethod
     def _probe(source: ModelSource) -> float:
@@ -695,7 +737,7 @@ class ModelMarketplace:
                 cancelled: Callable[[], bool] | None = None) -> Path:
         missing = self.missing_paths(model)
         if not missing:
-            return self.model_dir(model)
+            return self.available_model_dir(model)
         sources = self.ordered_sources(model, preference)
         if not sources:
             if model.builtin:
@@ -844,12 +886,12 @@ class ModelMarketplace:
             raise RuntimeError("内置兼容模型随应用管理，不能在模型广场卸载")
         if in_use:
             raise RuntimeError("该模型正在使用；请先切换到其他模型")
-        root = self.models_dir.resolve()
-        target = self.model_dir(model).resolve()
-        if root not in target.parents or target == root:
+        roots = {root.resolve() for root in self._lookup_roots}
+        target = self.available_model_dir(model).resolve()
+        if not any(root in target.parents and target != root for root in roots):
             raise RuntimeError("拒绝卸载模型目录之外的路径")
-        expected = (self.models_dir / model.install_rel).resolve()
-        if target != expected:
+        expected = {path.resolve() for path in self._model_dir_candidates(model)}
+        if target not in expected:
             raise RuntimeError("模型卸载目标与目录清单不一致")
         if target.exists():
             shutil.rmtree(target)

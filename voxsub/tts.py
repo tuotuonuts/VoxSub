@@ -22,13 +22,13 @@ sherpa-onnx 1.13.5 API 事实 (实测, 与旧文档不同):
 """
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 
 import numpy as np
 
 from voxsub.logging_setup import get_logger
+from voxsub.model_storage import resolve_models_root
 
 logger = get_logger("tts")
 
@@ -39,8 +39,8 @@ _CANDIDATE_LANGS = ("zh", "en")
 
 
 def models_dir() -> Path:
-    """返回本地模型根目录 %LOCALAPPDATA%/VoxSub/models (DESIGN.md 约定)。"""
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    """Return VoxSub's configured, upgrade-safe model root."""
+    return resolve_models_root()
 
 
 def _resample_to_16k(pcm: np.ndarray, src_rate: int) -> np.ndarray:

@@ -33,6 +33,7 @@ TRANSLATIONS: dict[str, str] = {
     "语幕": "VoxSub",
     "语幕 VoxSub": "VoxSub",
     "设置": "Settings",
+    "存储与模型": "Storage & models",
     "设置 — 语幕 VoxSub": "Settings - VoxSub",
     "显示主窗": "Show main window",
     "诊断与实时日志": "Diagnostics & live logs",
@@ -339,6 +340,27 @@ TRANSLATIONS: dict[str, str] = {
     "技术栈": "Technology",
     "隐私": "Privacy",
     "开发与排障": "Development and troubleshooting",
+    "模型保存位置": "Model storage location",
+    "识别、翻译、语音模型会按用途整理在这里。更新软件不会清空这个文件夹。":
+        "Speech, translation, and voice models are organized here. Updating VoxSub will not clear this folder.",
+    "当前位置": "Current location",
+    "打开文件夹": "Open folder",
+    "更改保存位置": "Change location",
+    "迁移已有模型": "Move existing models",
+    "如果以前把模型放在其他磁盘或手动复制过模型，可从这里把它们并入当前位置。同名文件会保留，避免覆盖已有下载。":
+        "If models were stored on another drive or copied manually, move them into the current location here. Existing same-name files are kept to avoid overwriting downloads.",
+    "已保留你升级前使用的位置；需要时可迁移到其他磁盘。":
+        "Your existing model location was kept; move it to another drive whenever you need.",
+    "新安装默认保存到软件目录下的 Models 文件夹。":
+        "New installations save models in the app's Models folder by default.",
+    "使用你自己选择的模型保存位置。": "Models are stored in the location you selected.",
+    "模型位置会在更新后保持不变，直到你主动更改。":
+        "The model location stays unchanged across updates until you change it.",
+    "迁移失败": "Move failed",
+    "模型迁移完成": "Model move complete",
+    "更新日志": "What's new",
+    "每次更新后，首次打开应用会看到一次简短说明。这里可以随时回看最近版本的变化。":
+        "After an update, the first app launch shows a brief summary. Revisit recent changes here anytime.",
     "启用内置调试模式（实时显示详细日志）":
         "Enable built-in debug mode (show detailed live logs)",
     "版本": "Version",

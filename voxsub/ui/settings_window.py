@@ -12,11 +12,16 @@
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
+from typing import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -26,6 +31,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QScrollArea,
     QSpinBox,
+    QStyle,
+    QStyleOptionSpinBox,
     QTabWidget,
     QToolButton,
     QToolTip,
@@ -48,8 +55,67 @@ from voxsub.ui.theme import AppTheme, DESIGN_TOKENS, load_theme
 from voxsub import __version__ as _PKG_VERSION
 from voxsub.logging_setup import get_logger
 from voxsub.logging_setup import set_debug_mode
+from voxsub.model_storage import migrate_models, resolve_models_root
+from voxsub.ui.release_notes import release_history_text
 
 logger = get_logger("ui.settings_window")
+
+
+class _ReliableSpinButtonMixin:
+    """Keep native spin arrows usable with Fluent's custom Qt style.
+
+    Some Windows style combinations paint the upper arrow correctly but do
+    not deliver its mouse release to QAbstractSpinBox. Let the native widget
+    handle the event first, then perform one explicit step only when the value
+    did not change. This preserves native pressed/repeat behavior where it
+    works and repairs the silent upper-arrow failure where it does not.
+    """
+
+    def _spin_subcontrol_at(self, pos):
+        option = QStyleOptionSpinBox()
+        self.initStyleOption(option)
+        style = self.style()
+        for subcontrol, direction in (
+            (QStyle.SubControl.SC_SpinBoxUp, 1),
+            (QStyle.SubControl.SC_SpinBoxDown, -1),
+        ):
+            rect = style.subControlRect(
+                QStyle.ComplexControl.CC_SpinBox, option, subcontrol, self)
+            if rect.contains(pos):
+                return direction
+        return 0
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._voxsub_spin_press = (
+            self._spin_subcontrol_at(event.position().toPoint())
+            if event.button() == Qt.MouseButton.LeftButton else 0,
+            self.value(),
+        )
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        super().mouseReleaseEvent(event)
+        direction, before = getattr(self, "_voxsub_spin_press", (0, self.value()))
+        self._voxsub_spin_press = (0, self.value())
+        if not direction or event.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.value() == before:
+            if direction > 0:
+                self.stepUp()
+            else:
+                self.stepDown()
+
+
+class _ReliableSpinBox(_ReliableSpinButtonMixin, QSpinBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
+
+
+class _ReliableDoubleSpinBox(_ReliableSpinButtonMixin, QDoubleSpinBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
 
 
 class _InfoButton(QToolButton):
@@ -104,11 +170,36 @@ class _InfoButton(QToolButton):
         super().leaveEvent(event)
 
 
+class _ModelMigrationWorker(QThread):
+    """Move a potentially multi-gigabyte model library off the Qt UI thread."""
+
+    completed = Signal(bool, str)
+
+    def __init__(self, source: Path, destination: Path, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.source = source
+        self.destination = destination
+
+    def run(self) -> None:
+        try:
+            result = migrate_models(self.source, self.destination)
+        except Exception as exc:  # noqa: BLE001 - shown as an in-page status
+            logger.exception("模型迁移失败: source=%s destination=%s",
+                             self.source, self.destination)
+            self.completed.emit(False, str(exc))
+            return
+        self.completed.emit(
+            True,
+            f"{result.moved_paths} 个项目已迁移，{result.kept_existing_paths} 个同名项目已保留",
+        )
+
+
 class SettingsWindow(QWidget):
-    """语幕设置页（可独立构造，也可嵌入主窗，QTabWidget 六页）。"""
+    """语幕设置页（可独立构造，也可嵌入主窗，QTabWidget 七页）。"""
 
     model_hub_requested = Signal()
     overlay_changed = Signal(dict)
+    model_storage_changed = Signal(str)
 
     def __init__(
         self,
@@ -123,6 +214,9 @@ class SettingsWindow(QWidget):
         self._tuning_snapshot: dict[str, object] = {}
         self._tuning_dirty = False
         self._embedded = False
+        self._storage_worker: _ModelMigrationWorker | None = None
+        self._storage_change_guard: Callable[[], bool] | None = None
+        self._storage_switch_destination: Path | None = None
         self.setObjectName("settingsWindow")
         self.setWindowTitle("设置 — 语幕 VoxSub")
         self.setMinimumSize(640, 520)
@@ -154,6 +248,7 @@ class SettingsWindow(QWidget):
         self.tabs.addTab(self._build_recognition_tab(), "识别调优")
         self.tabs.addTab(self._build_voice_tab(), "语音")
         self.tabs.addTab(self._build_device_tab(), "设备")
+        self.tabs.addTab(self._build_storage_tab(), "存储与模型")
         self.tabs.addTab(self._build_appearance_tab(), "外观")
         self.tabs.addTab(self._build_about_tab(), "关于")
         root.addWidget(self.tabs, 1)
@@ -351,7 +446,7 @@ class SettingsWindow(QWidget):
             "但更容易把一句话切碎；准确优先会多等一会儿，通常上下文更完整。",
         )
 
-        self.vad_threshold_spin = QDoubleSpinBox(intro_card)
+        self.vad_threshold_spin = _ReliableDoubleSpinBox(intro_card)
         self.vad_threshold_spin.setRange(0.01, 0.99)
         self.vad_threshold_spin.setSingleStep(0.01)
         self.vad_threshold_spin.setDecimals(2)
@@ -362,7 +457,7 @@ class SettingsWindow(QWidget):
             "数值越高，环境噪声更少，但小声说话可能漏掉。普通室内建议 0.30–0.50。",
         )
 
-        self.silence_spin = QSpinBox(intro_card)
+        self.silence_spin = _ReliableSpinBox(intro_card)
         self.silence_spin.setRange(50, 5000)
         self.silence_spin.setSingleStep(10)
         self.silence_spin.setSuffix(" ms")
@@ -374,7 +469,7 @@ class SettingsWindow(QWidget):
             "调大会保留更多上下文，但字幕会晚一些。",
         )
 
-        self.max_segment_spin = QDoubleSpinBox(intro_card)
+        self.max_segment_spin = _ReliableDoubleSpinBox(intro_card)
         self.max_segment_spin.setRange(1.0, 120.0)
         self.max_segment_spin.setSingleStep(0.5)
         self.max_segment_spin.setDecimals(1)
@@ -386,7 +481,7 @@ class SettingsWindow(QWidget):
             "太短会从句子中间截断；太长会增加等待时间和内存占用。Qwen3-ASR 建议 10–20 秒。",
         )
 
-        self.beam_paths_spin = QSpinBox(intro_card)
+        self.beam_paths_spin = _ReliableSpinBox(intro_card)
         self.beam_paths_spin.setRange(1, 16)
         self.beam_paths_spin.setObjectName("inputBox")
         self._tuning_row(
@@ -395,7 +490,7 @@ class SettingsWindow(QWidget):
             "但会更耗 CPU；Qwen3-ASR 当前使用自己的生成方式，这一项对它不生效。",
         )
 
-        self.max_tokens_spin = QSpinBox(intro_card)
+        self.max_tokens_spin = _ReliableSpinBox(intro_card)
         self.max_tokens_spin.setRange(32, 4096)
         self.max_tokens_spin.setSingleStep(32)
         self.max_tokens_spin.setObjectName("inputBox")
@@ -507,6 +602,75 @@ class SettingsWindow(QWidget):
         self.mic_combo.currentIndexChanged.connect(self._on_devices_changed)
         self.output_combo.currentIndexChanged.connect(self._on_devices_changed)
         self.process_combo.currentIndexChanged.connect(self._on_devices_changed)
+        return self._scroll_page(page)
+
+    def _build_storage_tab(self) -> QWidget:
+        """Let users relocate downloaded models without reinstalling them."""
+        page = QWidget(self)
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(4, 12, 4, 4)
+        lay.setSpacing(12)
+
+        card, box = self._card("模型保存位置")
+        note = QLabel(
+            "识别、翻译、语音模型会按用途整理在这里。更新软件不会清空这个文件夹。",
+            card,
+        )
+        note.setObjectName("cardCaption")
+        note.setWordWrap(True)
+        box.addWidget(note)
+
+        path_row = QHBoxLayout()
+        path_label = QLabel("当前位置", card)
+        path_label.setObjectName("fieldLabel")
+        self.models_path_value = QLabel(card)
+        self.models_path_value.setObjectName("modelStoragePath")
+        self.models_path_value.setWordWrap(True)
+        self.models_path_value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        path_row.addWidget(path_label, 0, Qt.AlignmentFlag.AlignTop)
+        path_row.addWidget(self.models_path_value, 1)
+        box.addLayout(path_row)
+
+        self.models_path_mode = QLabel(card)
+        self.models_path_mode.setObjectName("cardCaption")
+        self.models_path_mode.setWordWrap(True)
+        box.addWidget(self.models_path_mode)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.open_models_folder_btn = QPushButton("打开文件夹", card)
+        self.open_models_folder_btn.setObjectName("secondaryButton")
+        self.open_models_folder_btn.clicked.connect(self._open_models_folder)
+        self.change_models_folder_btn = QPushButton("更改保存位置", card)
+        self.change_models_folder_btn.setObjectName("primaryButton")
+        self.change_models_folder_btn.clicked.connect(self._choose_models_folder)
+        actions.addWidget(self.open_models_folder_btn)
+        actions.addWidget(self.change_models_folder_btn)
+        actions.addStretch(1)
+        box.addLayout(actions)
+        lay.addWidget(card)
+
+        import_card, import_box = self._card("迁移已有模型")
+        import_note = QLabel(
+            "如果以前把模型放在其他磁盘或手动复制过模型，可从这里把它们并入当前位置。"
+            "同名文件会保留，避免覆盖已有下载。",
+            import_card,
+        )
+        import_note.setObjectName("cardCaption")
+        import_note.setWordWrap(True)
+        import_box.addWidget(import_note)
+        self.import_models_btn = QPushButton("迁移已有模型", import_card)
+        self.import_models_btn.setObjectName("secondaryButton")
+        self.import_models_btn.clicked.connect(self._choose_models_to_import)
+        import_box.addWidget(self.import_models_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(import_card)
+
+        self.model_storage_status = QLabel(card)
+        self.model_storage_status.setObjectName("secondaryLabel")
+        self.model_storage_status.setWordWrap(True)
+        lay.addWidget(self.model_storage_status)
+        lay.addStretch(1)
         return self._scroll_page(page)
 
     def _build_appearance_tab(self) -> QWidget:
@@ -637,6 +801,22 @@ class SettingsWindow(QWidget):
         box.addWidget(debug_label)
         box.addWidget(self.debug_switch)
         lay.addWidget(card)
+
+        history_card, history_box = self._card("更新日志")
+        history_note = QLabel(
+            "每次更新后，首次打开应用会看到一次简短说明。这里可以随时回看最近版本的变化。",
+            history_card,
+        )
+        history_note.setObjectName("cardCaption")
+        history_note.setWordWrap(True)
+        history_box.addWidget(history_note)
+        self.release_history_label = QLabel(history_card)
+        self.release_history_label.setObjectName("releaseHistory")
+        self.release_history_label.setWordWrap(True)
+        self.release_history_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        history_box.addWidget(self.release_history_label)
+        lay.addWidget(history_card)
         lay.addStretch(1)
         return self._scroll_page(page)
 
@@ -677,6 +857,9 @@ class SettingsWindow(QWidget):
         self.overlay_opacity_spin.setValue(
             int(round(float(cfg.get("overlay_opacity", 0.92)) * 100)))
         self.overlay_lock_switch.setChecked(bool(cfg.get("overlay_click_through", False)))
+        self._refresh_model_storage()
+        if hasattr(self, "release_history_label"):
+            self.release_history_label.setText(release_history_text())
 
         self.refresh_devices()
 
@@ -910,6 +1093,126 @@ class SettingsWindow(QWidget):
         self._store.set("debug_mode", bool(checked))
         set_debug_mode(bool(checked))
 
+    # ------------------------------------------------------------------
+    # 模型存储
+    # ------------------------------------------------------------------
+    def set_storage_change_guard(self, guard: Callable[[], bool] | None) -> None:
+        """Install a guard that reports active Model Hub downloads."""
+        self._storage_change_guard = guard
+
+    def _refresh_model_storage(self) -> None:
+        root = resolve_models_root(self._store)
+        self.models_path_value.setText(str(root))
+        mode = str(self._store.get("models_root_mode", "") or "")
+        mode_text = {
+            "legacy": tr("已保留你升级前使用的位置；需要时可迁移到其他磁盘。",
+                         "Your existing model location was kept; move it to another drive whenever you need."),
+            "install": tr("新安装默认保存到软件目录下的 Models 文件夹。",
+                          "New installations save models in the app's Models folder by default."),
+            "custom": tr("使用你自己选择的模型保存位置。",
+                         "Models are stored in the location you selected."),
+        }.get(mode, tr("模型位置会在更新后保持不变，直到你主动更改。",
+                       "The model location stays unchanged across updates until you change it."))
+        self.models_path_mode.setText(mode_text)
+
+    def _set_storage_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.open_models_folder_btn,
+            self.change_models_folder_btn,
+            self.import_models_btn,
+        ):
+            control.setEnabled(enabled)
+
+    def _open_models_folder(self) -> None:
+        root = resolve_models_root(self._store)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.model_storage_status.setText(
+                tr(f"无法打开模型文件夹：{exc}", f"Could not open the model folder: {exc}"))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def _choose_models_folder(self) -> None:
+        current = resolve_models_root(self._store)
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            tr("选择新的模型保存位置", "Choose a new model storage folder"),
+            str(current.parent if current.parent.exists() else current),
+        )
+        if not selected:
+            return
+        self._begin_model_migration(Path(selected), switch_default=True)
+
+    def _choose_models_to_import(self) -> None:
+        current = resolve_models_root(self._store)
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            tr("选择已有模型文件夹", "Choose an existing model folder"),
+            str(current.parent if current.parent.exists() else current),
+        )
+        if not selected:
+            return
+        self._begin_model_migration(Path(selected), switch_default=False)
+
+    def _begin_model_migration(self, selected: Path, *, switch_default: bool) -> None:
+        if self._storage_worker is not None:
+            return
+        if self._storage_change_guard is not None and self._storage_change_guard():
+            self.model_storage_status.setText(
+                tr("请先等待模型广场中的下载完成或取消下载，再迁移模型。",
+                   "Wait for or cancel active Model Hub downloads before moving models."))
+            return
+
+        active_root = resolve_models_root(self._store)
+        source, destination = (active_root, selected) if switch_default else (selected, active_root)
+        if source.resolve() == destination.resolve():
+            self.model_storage_status.setText(tr("选择的位置已经是当前模型位置。",
+                                                  "That folder is already the current model location."))
+            return
+
+        self._storage_switch_destination = destination if switch_default else None
+        self._set_storage_controls_enabled(False)
+        self.model_storage_status.setText(
+            tr("正在后台迁移模型，请保持应用打开…",
+               "Moving models in the background. Keep VoxSub open…"))
+        worker = _ModelMigrationWorker(source, destination, self)
+        worker.completed.connect(self._on_model_migration_completed)
+        worker.finished.connect(self._on_model_migration_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._storage_worker = worker
+        worker.start()
+
+    def _on_model_migration_completed(self, success: bool, detail: str) -> None:
+        # The result signal is queued to the GUI thread. Waiting here would
+        # block the settings page while QThread is still unwinding, especially
+        # for a cross-drive multi-gigabyte move. The finished signal clears the
+        # reference after run() has returned.
+        self._set_storage_controls_enabled(True)
+        switch_to, self._storage_switch_destination = self._storage_switch_destination, None
+        if not success:
+            self.model_storage_status.setText(
+                f"{tr('迁移失败', 'Move failed')}: {detail}")
+            return
+        if switch_to is not None:
+            self._store.update({
+                "models_root": str(switch_to),
+                "models_root_mode": "custom",
+                "model_storage_initialized": True,
+            })
+        self._refresh_model_storage()
+        self.model_storage_status.setText(
+            f"{tr('模型迁移完成', 'Model move complete')}: {detail}")
+        self.model_storage_changed.emit(str(resolve_models_root(self._store)))
+
+    def _on_model_migration_finished(self) -> None:
+        worker = self.sender()
+        if worker is self._storage_worker:
+            self._storage_worker = None
+
+    def _storage_worker_is_running(self) -> bool:
+        return self._storage_worker is not None and self._storage_worker.isRunning()
+
     @staticmethod
     def _select_data(combo: QComboBox, value) -> None:
         for i in range(combo.count()):
@@ -991,6 +1294,9 @@ class SettingsWindow(QWidget):
         retranslate_widget_tree(self)
         self._update_cloud_mode_summary()
         self._set_tuning_dirty(self._tuning_dirty)
+        self._refresh_model_storage()
+        if hasattr(self, "release_history_label"):
+            self.release_history_label.setText(release_history_text())
 
     def set_embedded(self, embedded: bool = True) -> None:
         """Switch between the legacy top-level presentation and page embedding."""
@@ -1038,6 +1344,15 @@ class SettingsWindow(QWidget):
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._storage_worker_is_running():
+            # Never let Qt destroy a live QThread. The move cannot be safely
+            # interrupted in the middle of a file operation, so keep this
+            # page alive until it reports completion instead of aborting.
+            self.model_storage_status.setText(
+                tr("模型仍在后台迁移，完成后才可以关闭此页面。",
+                   "Model migration is still running; this page will close when it finishes."))
+            event.ignore()
+            return
         # Recognition tuning is transactional: X/Alt+F4 always abandons the
         # draft unless the explicit Save button was used.
         self.prepare_for_page_leave()

@@ -164,6 +164,15 @@ QFrame#inAppPageSurface {
     border: 1px solid @border_strong;
     border-radius: @radius_card;
 }
+QDialog#releaseNotesDialog { background-color: @bg_base; }
+QFrame#releaseNotesSurface {
+    background-color: @surface_1;
+    border: 1px solid @border_strong;
+    border-radius: @radius_dialog;
+}
+QLabel#releaseNotesTitle { color: @text_primary; font-size: 22px; font-weight: 650; }
+QLabel#releaseNotesItems, QLabel#releaseHistory { color: @text_primary; font-size: 14px; line-height: 1.5; }
+QLabel#modelStoragePath { color: @text_primary; font-family: @font_mono; font-size: 12px; }
 QStackedWidget#inAppPageStack { background: transparent; }
 QWidget#settingsWindow, QWidget#diagnosticsWindow {
     background-color: @bg_base;

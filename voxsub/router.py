@@ -21,7 +21,6 @@ score_ms 用实际推理冒烟计时填充:
 """
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -30,6 +29,8 @@ import numpy as np
 
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import detect_hardware
+from voxsub.model_catalog import ModelMarketplace, get_model
+from voxsub.model_storage import resolve_models_root
 
 logger = get_logger("router")
 
@@ -58,8 +59,8 @@ class DeviceInfo(NamedTuple):
 
 
 def models_dir() -> Path:
-    """本地模型根目录 %LOCALAPPDATA%/VoxSub/models (与 voxsub.asr 约定一致)。"""
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    """Return VoxSub's configured, upgrade-safe model root."""
+    return resolve_models_root()
 
 
 def _norm_provider(raw: str) -> str:
@@ -201,14 +202,24 @@ def _find_first(directory: Path, pattern: str) -> Path | None:
     return hits[0] if hits else None
 
 
+def _bundled_model_dir(model_id: str) -> Path:
+    """Find a built-in model in its current or pre-migration folder."""
+    root = models_dir()
+    model = get_model(model_id)
+    if model is None:  # pragma: no cover - a catalog programming error
+        return root
+    return ModelMarketplace(root).available_model_dir(model)
+
+
 def _task_model_ready(task: str) -> bool:
     """任务所需模型是否就位 (决定能否走 GPU/DML 冒烟)。"""
     root = models_dir()
     if task == "asr":
-        asr_dir = root / "asr"
+        asr_dir = _bundled_model_dir("asr-zipformer-bilingual-fast")
         return (asr_dir / "tokens.txt").exists() and _find_first(asr_dir, "*encoder*.onnx") is not None
     if task == "translate":
-        return _find_first(root / "nmt", "**/*encoder*.onnx") is not None
+        opus_dir = _bundled_model_dir("mt-opus-fast-builtin")
+        return _find_first(opus_dir, "**/*encoder*.onnx") is not None
     if task == "tts":
         tts_dir = root / "tts"
         return tts_dir.exists() and _find_first(tts_dir, "**/model.onnx") is not None
@@ -234,7 +245,7 @@ def _smoke_score_asr(provider: str) -> float | None:
         from voxsub.asr import StreamingASR
 
         sherpa_provider = "cpu" if provider == "DmlExecutionProvider" else provider
-        asr_dir = models_dir() / "asr"
+        asr_dir = _bundled_model_dir("asr-zipformer-bilingual-fast")
         recognizer = StreamingASR(asr_dir, provider=sherpa_provider, num_threads=2)
 
         wav = _load_smoke_wav()
@@ -254,7 +265,8 @@ def _smoke_score_asr(provider: str) -> float | None:
 def _load_smoke_wav() -> np.ndarray:
     """取一段短音频用于 ASR 冒烟: 优先真实语音, 否则合成 静音+正弦。"""
     sr = 16000
-    wav = _find_first(models_dir() / "asr" / "test_wavs", "*.wav")
+    wav = _find_first(
+        _bundled_model_dir("asr-zipformer-bilingual-fast") / "test_wavs", "*.wav")
     if wav is not None:
         try:
             import wave
@@ -281,7 +293,7 @@ def _smoke_score_translate(provider) -> float | None:
     只验证"模型可加载、可推理"这条链路 (完整 seq2seq 解码在 M4 translate 模块,
     此处不做); 模型缺失或加载失败 -> None。
     """
-    enc = _find_first(models_dir() / "nmt", "**/*encoder*.onnx")
+    enc = _find_first(_bundled_model_dir("mt-opus-fast-builtin"), "**/*encoder*.onnx")
     if enc is None:
         return None
     try:

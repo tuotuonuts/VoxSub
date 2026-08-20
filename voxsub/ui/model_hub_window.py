@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.logging_setup import get_logger
+from voxsub.model_storage import resolve_models_root
 from voxsub.model_catalog import (
     CATALOG_UPDATED,
     HardwareProfile,
@@ -567,6 +568,20 @@ class ModelHubWindow(QWidget):
             worker.cancel()
         for worker in workers:
             worker.wait(5000)
+
+    def has_active_downloads(self) -> bool:
+        """Whether a storage migration must wait for a download to finish."""
+        return bool(self._workers)
+
+    def reload_model_storage(self) -> bool:
+        """Point cards and future downloads at the newly selected model root."""
+        if self.has_active_downloads():
+            logger.warning("模型目录已变化，但仍有下载任务，暂不重载模型广场")
+            return False
+        self.marketplace = ModelMarketplace(resolve_models_root(self._store))
+        self._rebuild_cards()
+        logger.info("模型广场已重载模型目录: %s", self.marketplace.models_dir)
+        return True
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)

@@ -7,20 +7,20 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The `0.4.0-beta` installer uses a developer self-signed certificate. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** This local `0.4.1-beta` installer is unsigned. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.4.0-beta`. The complete installer has been generated, and this remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
+Source version: `0.4.1-beta`. This remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
 
-> **Intel NPU support remains limited.** `0.4.0-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
+> **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
 ## Download
 
 - [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
-- Installer: `VoxSub-Setup-0.4.0-beta.exe` (204.73 MiB, developer self-signed)
-- SHA256: `408AE75789EDDD880BF1A50976363CA27564C80D27988382EA6B5AE887BDDFCA` (the matching `.sha256` file has been generated)
-- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.0-beta.exe`
+- Installer: `VoxSub-Setup-0.4.1-beta.exe` (this local build is unsigned)
+- SHA256: `22484B064FC427F62763EF3D6045F9A837F04877613CC7971C54A19DB1C4493E` (also in the matching `.sha256` file)
+- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
 
 ## Available Features
 
@@ -38,6 +38,10 @@ Source version: `0.4.0-beta`. The complete installer has been generated, and thi
 - **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports font-size controls, dragging, locking, and click-through mode, and can be unlocked from its hover control island or Settings.
 - **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
 - **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
+- **Model storage:** fresh installs use a `Models` folder beside the installed app, organized into purpose folders such as `stt`, `translate`, `vad`, and `tts`. Upgraded installations keep their existing model root until the user changes it. Settings supports changing the location, moving an existing library, and manually importing models; updates do not remove downloaded models.
+- **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree.
+- **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
+- **Fullscreen behavior:** opening Settings or Model Hub from a fullscreen main window keeps the app fullscreen.
 
 The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off: Fun-ASR-Nano, Qwen3-ASR, SenseVoice Small, and Hy-MT2 1.8B/7B in Q4/Q6/Q8 variants. Built-in Zipformer and OPUS models remain only as very-low-resource fallbacks. Every model card shows an explicit NPU availability label; “NPU available” is reserved for exact model files that pass both forced-NPU inference and VoxSub's automatic application route.
 
@@ -72,7 +76,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Downloaded models remain under `%LOCALAPPDATA%\VoxSub\models` and are not bundled repeatedly into the installer.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,709,141 bytes.
 
 ## Project Layout
 

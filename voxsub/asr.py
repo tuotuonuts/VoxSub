@@ -19,7 +19,6 @@ asr 目录内多精度 (int8/fp32) 并存时优先选 *int8*.onnx。
 """
 from __future__ import annotations
 
-import os
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -28,6 +27,7 @@ import numpy as np
 import sherpa_onnx
 
 from voxsub.logging_setup import get_logger
+from voxsub.model_storage import resolve_models_root
 
 logger = get_logger("asr")
 
@@ -41,8 +41,8 @@ _VAD_WINDOW_SIZE = 512
 
 
 def models_dir() -> Path:
-    """返回本地模型根目录 %LOCALAPPDATA%/VoxSub/models (DESIGN.md 约定)。"""
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    """Return VoxSub's configured, upgrade-safe model root."""
+    return resolve_models_root()
 
 
 def _find_onnx(model_dir: Path, pattern: str, prefer_int8: bool = True) -> Path:
@@ -291,7 +291,7 @@ def create_asr(model_id: str, models_root: Path, provider: str = "cpu",
                num_threads: int = 4, source_lang: str = "auto",
                tuning: dict | None = None):
     """Create the runtime adapter for a selected catalog model."""
-    from voxsub.model_catalog import get_model
+    from voxsub.model_catalog import ModelMarketplace, get_model
 
     model = get_model(model_id)
     if model is None or model.task != "asr":
@@ -299,7 +299,7 @@ def create_asr(model_id: str, models_root: Path, provider: str = "cpu",
         model = get_model("asr-zipformer-bilingual-fast")
     assert model is not None
     tuning = tuning or {}
-    model_dir = Path(models_root) / model.install_rel
+    model_dir = ModelMarketplace(models_root).available_model_dir(model)
     if model.runtime == "sherpa-streaming-transducer":
         return StreamingASR(
             model_dir, provider=provider, num_threads=num_threads,

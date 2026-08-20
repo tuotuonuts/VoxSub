@@ -15,7 +15,6 @@
 """
 from __future__ import annotations
 
-import os
 import shutil
 import time
 from datetime import datetime
@@ -24,6 +23,8 @@ from pathlib import Path
 import numpy as np
 
 from voxsub import __version__
+from voxsub.model_catalog import ModelMarketplace, get_model
+from voxsub.model_storage import resolve_models_root
 from voxsub.models import ModelManager
 from voxsub.logging_setup import get_logger
 
@@ -35,8 +36,15 @@ MEM_WARN_PCT = 15.0
 
 
 def models_dir() -> Path:
-    """本地模型根目录 %LOCALAPPDATA%/VoxSub/models (与 voxsub.asr 约定一致)。"""
-    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "models"
+    """Return VoxSub's configured, upgrade-safe model root."""
+    return resolve_models_root()
+
+
+def _zipformer_dir() -> Path:
+    """Locate the bundled recognizer before or after the storage upgrade."""
+    root = models_dir()
+    model = get_model("asr-zipformer-bilingual-fast")
+    return ModelMarketplace(root).available_model_dir(model) if model else root
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +101,12 @@ def _check_ort_providers() -> dict:
 
 
 def _load_smoke_wav(max_sec: float = 2.0) -> np.ndarray | None:
-    """取一段用于冒烟的真实语音 (models/asr/test_wavs/*.wav, 截取前 max_sec 秒)。
+    """取一段用于冒烟的真实语音 (Zipformer/test_wavs/*.wav, 截取前 max_sec 秒)。
 
     真实语音缺失时返回 None, 由调用方决定退化策略。
     """
     sr = 16000
-    hits = sorted((models_dir() / "asr" / "test_wavs").glob("*.wav"))
+    hits = sorted((_zipformer_dir() / "test_wavs").glob("*.wav"))
     for wav in hits:
         try:
             import wave
@@ -127,7 +135,7 @@ def _synthetic_tone() -> np.ndarray:
 
 def _check_asr_smoke() -> dict:
     """加载流式 ASR, 对短音频做一次完整 decode (参考 spike_m1.py 方法)。"""
-    asr_dir = models_dir() / "asr"
+    asr_dir = _zipformer_dir()
     if not (asr_dir / "tokens.txt").exists() or not list(asr_dir.glob("*encoder*.onnx")):
         logger.warning("自检[ASR 冒烟] ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): %s",
                        asr_dir.name)

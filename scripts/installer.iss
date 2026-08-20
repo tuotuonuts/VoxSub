@@ -1,15 +1,15 @@
 ; VoxSub installer script (Inno Setup 6+)
 ; 语幕 VoxSub - 大众实时翻译安装包
-; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.4.0-beta.exe
+; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.4.1-beta.exe
 ;   iscc scripts\installer.iss
 ; 说明: 大型模型不打包进安装包, 首次运行经模型广场下载(断点续传+SHA256)。
 ;       2.3MB 的基础 VAD 随程序分发，首次启动会自动修复到
-;       %LOCALAPPDATA%\VoxSub\models\vad，确保新设备下载 ASR 后能直接运行。
+;       用户模型默认保存到安装目录的 Models\vad，确保新设备下载 ASR 后能直接运行。
 ;       自签版发布物附 SHA256 + 解除 SmartScreen 指引。正式 OV 证书后签名由
 ;       build.ps1 的 osslsigncode 统一处理(SignedSetup)。
 
 #define MyAppName "VoxSub"
-#define MyAppVersion "0.4.0-beta"
+#define MyAppVersion "0.4.1-beta"
 #define MyAppPublisher "VoxSub"
 #define MyAppExeName "VoxSub.exe"
 #define MyAppId "{{7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001}"
@@ -27,7 +27,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ; 正式版发布物统一输出到 D:\OneDrive\app_dve\Release (用户约定 2026-08-17)
 OutputDir=..\..\Release
-OutputBaseFilename=VoxSub-Setup-0.4.0-beta
+OutputBaseFilename=VoxSub-Setup-0.4.1-beta
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -65,6 +65,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription
 [Files]
 ; VoxSub 主程序 + 全部运行时 (PyInstaller onedir 输出)
 Source: "..\dist\VoxSub\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Dirs]
+; 模型是用户数据，不随升级/卸载删除。只让普通用户写 Models，程序文件仍受保护。
+Name: "{app}\Models"; Permissions: users-modify
 
 [Icons]
 Name: "{group}\{cm:MyAppName}"; Filename: "{app}\{#MyAppExeName}"

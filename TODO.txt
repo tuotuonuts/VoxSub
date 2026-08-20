@@ -1,3 +1,5 @@
+[x] 2026-08-21 v0.4.1-beta 修复：调优按钮、后台模型迁移、升级翻译模型兼容发现、Teams 宿主进程捕获；全量 190 passed / 8 skipped；安装包 204.76 MiB（未签名），SHA256 22484B064FC427F62763EF3D6045F9A837F04877613CC7971C54A19DB1C4493E
+
 === 2026-08-17 (立项) ===
 [x] REQUIREMENTS / PLAN / DESIGN / README / .gitignore 落盘
 [x] git init (main) + 初始 commit 4421e64

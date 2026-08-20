@@ -26,7 +26,16 @@ MODELS_DIR = Path(os.environ.get("LOCALAPPDATA", ".")) / "VoxSub" / "models"
 
 
 def _has_real_models() -> bool:
-    return (MODELS_DIR / "manifest.json").exists()
+    # A stale manifest is common after an interrupted download or an upgrade.
+    # Only run the expensive all-assets assertion when the local cache is
+    # already complete; missing/corrupt-cache behavior is covered by the
+    # isolated integrity tests below.
+    if not (MODELS_DIR / "manifest.json").exists():
+        return False
+    try:
+        return ModelManager(MODELS_DIR).verify_all() == []
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
