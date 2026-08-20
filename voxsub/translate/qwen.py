@@ -8,13 +8,14 @@
   OpenAI 兼容 /v1/chat/completions 端点, 解析 choices[0].message.content。
 
 进程管理:
-- lazy 启动: 首次 translate 时 spawn; 端口 8080 起, 占用则试 8081-8089。
+- lazy 启动: 首次 translate 时 spawn; 每次从非热门动态端口区随机选择端口。
 - close(): terminate 子进程 (幂等)。
-- 启动失败 (exe 缺失 / 端口全占 / 起不来) → 抛清晰 TranslationError。
+- 启动失败 (exe 缺失 / 随机端口竞争 / 起不来) → 抛清晰 TranslationError。
 """
 from __future__ import annotations
 
 import os
+import secrets
 import signal
 import socket
 import subprocess
@@ -32,6 +33,12 @@ from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
 
 logger = get_logger("translate.qwen")
+
+_DYNAMIC_PORT_MIN = 49_152
+_DYNAMIC_PORT_MAX = 65_535
+_POPULAR_PORTS = frozenset({
+    80, 443, 3000, 5000, 8000, 8080, 8081, 8088, 8888, 9000,
+})
 
 
 def _default_models_dir() -> Path:
@@ -97,7 +104,15 @@ class QwenQualityTranslator(Translator):
 
     # ------------------------------------------------------------------
     def _pick_free_port(self) -> int:
-        for port in range(self._start_port, self._start_port + 10):
+        # Do not make local translation depend on a small, predictable port
+        # range. Browser tools, dev servers, or an orphaned llama-server often
+        # occupy 8080. Random dynamic ports also reduce collisions between
+        # parallel VoxSub test/app instances.
+        span = _DYNAMIC_PORT_MAX - _DYNAMIC_PORT_MIN + 1
+        for _ in range(64):
+            port = _DYNAMIC_PORT_MIN + secrets.randbelow(span)
+            if port in _POPULAR_PORTS:
+                continue
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
@@ -105,9 +120,18 @@ class QwenQualityTranslator(Translator):
                     return port
                 except OSError:
                     continue
-        logger.warning("端口 %s-%s 全被占用, 无法启动新 llama-server",
-                       self._start_port, self._start_port + 9)
-        raise TranslationError(f"端口 {self._start_port}-{self._start_port + 9} 全被占用")
+        # If random candidates all lost a race, let the OS select one from its
+        # dynamic range as a final fallback.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", 0))
+                port = int(s.getsockname()[1])
+            except OSError as exc:
+                raise TranslationError("无法为 llama-server 分配本地端口") from exc
+        if port in _POPULAR_PORTS or not (_DYNAMIC_PORT_MIN <= port <= _DYNAMIC_PORT_MAX):
+            raise TranslationError(f"系统分配了不适合的本地端口: {port}")
+        return port
 
     @staticmethod
     def _runtime_key(runtime: LlamaRuntime | None) -> tuple[str, str] | None:
@@ -159,6 +183,30 @@ class QwenQualityTranslator(Translator):
                              getattr(proc, "pid", "?"), port)
 
     def _spawn(self) -> None:
+        """Start the server, retrying only when the selected port raced."""
+        for attempt in range(4):
+            try:
+                self._spawn_once()
+                return
+            except TranslationError as exc:
+                detail = " ".join(self._server_output_tail)
+                haystack = f"{exc} {detail}".casefold()
+                port_conflict = any(marker in haystack for marker in (
+                    "address already in use",
+                    "only one usage",
+                    "failed to bind",
+                    "cannot bind",
+                    "bind failed",
+                    "端口",
+                ))
+                if not port_conflict or attempt >= 3:
+                    raise
+                logger.warning(
+                    "llama-server 端口竞争，重新随机端口重试 (%s/3): %s",
+                    attempt + 1, exc,
+                )
+
+    def _spawn_once(self) -> None:
         if self._model_path is None or not self._model_path.exists():
             logger.warning("质量档模型缺失, 拒绝 spawn: %s (请用 scripts/model_fetch.py 下载)",
                            self._model_path)

@@ -626,6 +626,11 @@ class MainWindow(QWidget):
         self.model_hub_btn.setObjectName("secondaryButton")
         self.model_hub_btn.setMinimumHeight(44)
         self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
+        self.overlay_open_btn = QPushButton("打开浮窗", self)
+        self.overlay_open_btn.setObjectName("secondaryButton")
+        self.overlay_open_btn.setMinimumHeight(44)
+        self.overlay_open_btn.setToolTip("打开字幕浮窗")
+        self.overlay_open_btn.clicked.connect(self._open_overlay)
         self.settings_btn = QPushButton("设置", self)
         self.settings_btn.setObjectName("ghostButton")
         self.settings_btn.setMinimumHeight(44)
@@ -635,6 +640,7 @@ class MainWindow(QWidget):
         self.diagnostics_btn.setMinimumHeight(44)
         self.diagnostics_btn.clicked.connect(self.diagnostics_requested.emit)
         title_row.addWidget(self.model_hub_btn)
+        title_row.addWidget(self.overlay_open_btn)
         title_row.addWidget(self.settings_btn)
         title_row.addWidget(self.diagnostics_btn)
         root.addLayout(title_row)
@@ -1170,6 +1176,23 @@ class MainWindow(QWidget):
             self._overlay.raise_()
         except AttributeError:
             logger.debug("字幕浮窗缺少字号接口")
+
+    def _open_overlay(self) -> None:
+        """Show the one app-owned overlay; repeated clicks are silent no-ops."""
+        overlay = self._overlay
+        if overlay is None:
+            return
+        try:
+            if overlay.isVisible():
+                return
+            show_subtitles = getattr(overlay, "show_subtitles", None)
+            if callable(show_subtitles):
+                show_subtitles()
+            else:
+                overlay.show()
+                overlay.raise_()
+        except AttributeError:
+            return
 
     def _toggle_overlay_lock(self) -> None:
         if self._overlay is None:

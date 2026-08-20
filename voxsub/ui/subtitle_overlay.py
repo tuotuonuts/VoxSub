@@ -15,6 +15,7 @@ import math
 from collections import deque
 
 from PySide6.QtCore import (
+    QEvent,
     QEasingCurve,
     QPropertyAnimation,
     QRect,
@@ -240,6 +241,10 @@ class SubtitleOverlay(QWidget):
         self._build_hover_toolbar()
         self._apply_display_mode()
         self._locked_panel = _LockedHoverPanel(self)
+        self._toolbar_hide_timer = QTimer(self)
+        self._toolbar_hide_timer.setSingleShot(True)
+        self._toolbar_hide_timer.setInterval(260)
+        self._toolbar_hide_timer.timeout.connect(self._hide_toolbar_if_cursor_left)
         language_manager.language_changed.connect(self._on_language_changed)
         self._locked_hover_timer = QTimer(self)
         self._locked_hover_timer.setInterval(90)
@@ -263,7 +268,21 @@ class SubtitleOverlay(QWidget):
 
     def _build_hover_toolbar(self) -> None:
         """NetEase-style compact controls shown only while the overlay is hovered."""
-        self._toolbar = QFrame(self)
+        # Keep controls outside the subtitle surface.  This prevents the
+        # toolbar from consuming subtitle height and matches desktop lyric
+        # overlays: hovering the content reveals a small control island above.
+        self._toolbar = QFrame(None)
+        self._toolbar.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self._toolbar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self._toolbar.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._toolbar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self._toolbar.setMouseTracking(True)
+        self._toolbar.installEventFilter(self)
         self._toolbar.setObjectName("overlayToolbar")
         toolbar_box = QVBoxLayout(self._toolbar)
         toolbar_box.setContentsMargins(6, 4, 6, 4)
@@ -408,6 +427,8 @@ class SubtitleOverlay(QWidget):
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
+        if hasattr(self, "_toolbar"):
+            retranslate_widget_tree(self._toolbar)
         self._update_toolbar_text()
         self._position_toolbar()
         self._locked_panel._on_language_changed(_language)
@@ -519,15 +540,28 @@ class SubtitleOverlay(QWidget):
         self._refresh_content_layout("top")
 
     def change_content_padding(self, delta: int) -> None:
+        old_padding = self._content_padding
+        old_gap = self._line_gap
         value = max(
             _PADDING_MIN,
             min(_PADDING_MAX, self._content_padding + int(delta)),
         )
-        if value == self._content_padding:
+        if value == old_padding:
             return
         self._content_padding = value
+        # Treat this control as an overall spacing scale.  Keep the current
+        # padding-to-line-gap ratio, so top/bottom insets and the source/
+        # translation gap grow and shrink together instead of only resizing
+        # the text viewport.
+        ratio = old_gap / max(1, old_padding)
+        self._line_gap = max(
+            _LINE_GAP_MIN,
+            min(_LINE_GAP_MAX, int(round(value * ratio))),
+        )
         self._store.set("overlay_content_padding", value)
+        self._store.set("overlay_line_gap", self._line_gap)
         self._padding_value_label.setText(str(value))
+        self._gap_value_label.setText(str(self._line_gap))
         self._refresh_content_layout()
         self.update()
 
@@ -555,12 +589,9 @@ class SubtitleOverlay(QWidget):
         """Reflow wrapped labels inside the current user-selected window size."""
         if not hasattr(self, "_content_scroll"):
             return
-        toolbar_offset = 0
-        if hasattr(self, "_toolbar") and self._toolbar.isVisible():
-            toolbar_offset = self._toolbar.height() + 8
         self._box.setContentsMargins(
             self._content_padding,
-            self._content_padding + toolbar_offset,
+            self._content_padding,
             self._content_padding,
             self._content_padding,
         )
@@ -598,18 +629,54 @@ class SubtitleOverlay(QWidget):
         if not hasattr(self, "_toolbar"):
             return
         self._toolbar.adjustSize()
-        x = max(6, (self.width() - self._toolbar.width()) // 2)
-        x = min(x, max(6, self.width() - self._toolbar.width() - 6))
-        self._toolbar.move(x, 8)
+        geo = self.frameGeometry()
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else None
+        if available is None:
+            x = geo.left() + max(6, (geo.width() - self._toolbar.width()) // 2)
+            y = geo.top() - self._toolbar.height() - 8
+        else:
+            x = geo.left() + max(6, (geo.width() - self._toolbar.width()) // 2)
+            x = min(x, available.right() - self._toolbar.width() - 6)
+            x = max(available.left() + 6, x)
+            y = geo.top() - self._toolbar.height() - 8
+            # At the very top of a monitor, keep the controls visible below
+            # the overlay because there is no space above it.
+            if y < available.top() + 6:
+                y = min(available.bottom() - self._toolbar.height() - 6,
+                        geo.bottom() + 8)
+        self._toolbar.move(x, y)
         self._toolbar.raise_()
 
     def _set_toolbar_visible(self, visible: bool) -> None:
         if not hasattr(self, "_toolbar"):
             return
-        self._toolbar.setVisible(bool(visible))
+        visible = bool(visible) and not self._click_through and self.isVisible()
+        self._toolbar.setVisible(visible)
         if visible:
             self._position_toolbar()
-        self._refresh_content_layout()
+
+    def _cursor_over_toolbar_or_overlay(self) -> bool:
+        cursor = QCursor.pos()
+        return (self.frameGeometry().contains(cursor)
+                or (self._toolbar.isVisible()
+                    and self._toolbar.frameGeometry().contains(cursor)))
+
+    def _schedule_toolbar_hide(self) -> None:
+        if hasattr(self, "_toolbar_hide_timer"):
+            self._toolbar_hide_timer.start()
+
+    def _hide_toolbar_if_cursor_left(self) -> None:
+        if not self._cursor_over_toolbar_or_overlay():
+            self._set_toolbar_visible(False)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if hasattr(self, "_toolbar") and watched is self._toolbar:
+            if event.type() == QEvent.Type.Enter:
+                self._toolbar_hide_timer.stop()
+            elif event.type() == QEvent.Type.Leave:
+                self._schedule_toolbar_hide()
+        return super().eventFilter(watched, event)
 
     # ------------------------------------------------------------------
     # 内容接口
@@ -681,7 +748,7 @@ class SubtitleOverlay(QWidget):
 
     def resizeEvent(self, ev) -> None:  # noqa: N802
         super().resizeEvent(ev)
-        if hasattr(self, "_toolbar"):
+        if hasattr(self, "_toolbar") and self._toolbar.isVisible():
             self._position_toolbar()
         if hasattr(self, "_content_scroll"):
             QTimer.singleShot(0, self._refresh_content_layout)
@@ -690,6 +757,8 @@ class SubtitleOverlay(QWidget):
 
     def moveEvent(self, ev) -> None:  # noqa: N802
         super().moveEvent(ev)
+        if hasattr(self, "_toolbar") and self._toolbar.isVisible():
+            self._position_toolbar()
         if hasattr(self, "_locked_panel") and self._locked_panel.isVisible():
             self._position_locked_panel()
 
@@ -699,7 +768,7 @@ class SubtitleOverlay(QWidget):
         super().enterEvent(ev)
 
     def leaveEvent(self, ev) -> None:  # noqa: N802
-        self._set_toolbar_visible(False)
+        self._schedule_toolbar_hide()
         super().leaveEvent(ev)
 
     def hideEvent(self, ev) -> None:  # noqa: N802
@@ -709,6 +778,8 @@ class SubtitleOverlay(QWidget):
         super().hideEvent(ev)
 
     def closeEvent(self, ev) -> None:  # noqa: N802
+        if hasattr(self, "_toolbar"):
+            self._toolbar.close()
         if hasattr(self, "_locked_panel"):
             self._locked_panel.close()
         super().closeEvent(ev)

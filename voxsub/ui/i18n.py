@@ -41,6 +41,8 @@ TRANSLATIONS: dict[str, str] = {
     "诊断与日志": "Diagnostics & Logs",
     "诊断 — 语幕 VoxSub": "Diagnostics - VoxSub",
     "模型广场": "Model Hub",
+    "打开浮窗": "Open overlay",
+    "打开字幕浮窗": "Open the subtitle overlay",
     "模型广场 · 语幕 VoxSub": "Model Hub - VoxSub",
     "返回": "Back",
     "VOXSUB  /  PREFERENCES": "VOXSUB  /  PREFERENCES",

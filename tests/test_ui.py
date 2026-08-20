@@ -555,6 +555,31 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    def test_open_overlay_button_is_single_instance_and_silent_when_visible(
+            self, qapp, tmp_path):
+        from voxsub.ui.subtitle_overlay import SubtitleOverlay
+
+        store = ConfigStore(tmp_path / "config.json")
+        win = MainWindow(store=store, pipeline=_PipelineStub())
+        overlay = SubtitleOverlay(store=store)
+        win.attach_overlay(overlay)
+        try:
+            assert win.overlay_open_btn.text() == "打开浮窗"
+            assert overlay.isHidden()
+            win.overlay_open_btn.click()
+            qapp.processEvents()
+            assert overlay.isVisible()
+            first_overlay = win._overlay  # noqa: SLF001
+            win.overlay_open_btn.click()
+            win.overlay_open_btn.click()
+            assert win._overlay is first_overlay  # noqa: SLF001
+            assert overlay.isVisible()
+        finally:
+            overlay.close()
+            overlay.deleteLater()
+            win.close()
+            win.deleteLater()
+
     def test_file_picker_persists_and_updates_pipeline(self, qapp, tmp_path, monkeypatch):
         import voxsub.ui.main_window as main_window
 
@@ -849,6 +874,16 @@ class TestSubtitleOverlay:
             assert not ov.src_label.isHidden()
             assert not ov.dst_label.isHidden()
 
+            original_padding = ov.content_padding()
+            original_gap = ov.line_gap()
+            ov.change_content_padding(+2)
+            assert ov.content_padding() == original_padding + 2
+            assert ov.line_gap() == round(
+                original_gap / original_padding * ov.content_padding())
+            assert ov._box.contentsMargins().top() == ov.content_padding()  # noqa: SLF001
+            assert ov._box.contentsMargins().bottom() == ov.content_padding()  # noqa: SLF001
+            assert ov._content_box.spacing() == ov.line_gap()  # noqa: SLF001
+
             ov.change_content_padding(-100)
             assert ov.content_padding() == 8
             assert ov._box.contentsMargins().left() == 8  # noqa: SLF001
@@ -893,9 +928,12 @@ class TestSubtitleOverlay:
             assert ov.size() == original_size
             assert bar.maximum() > 0
 
+            ov.move(300, 300)
             base_top_margin = ov._box.contentsMargins().top()  # noqa: SLF001
             ov._set_toolbar_visible(True)  # noqa: SLF001
-            assert ov._box.contentsMargins().top() > base_top_margin  # noqa: SLF001
+            assert ov._toolbar.parent() is None  # noqa: SLF001
+            assert ov._box.contentsMargins().top() == base_top_margin  # noqa: SLF001
+            assert ov._toolbar.frameGeometry().bottom() <= ov.frameGeometry().top()  # noqa: SLF001
             ov._spacing_btn.click()  # noqa: SLF001
             assert ov._spacing_controls.isVisible()  # noqa: SLF001
             ov.set_click_through(True)

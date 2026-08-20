@@ -21,6 +21,7 @@ from voxsub.translate._http_client import OpenAICompatError  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
 from voxsub.translate.qwen import _invalid_translation  # noqa: E402
+from voxsub.translate import qwen as qwen_module  # noqa: E402
 
 
 class _FakeProc:
@@ -134,6 +135,88 @@ def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> Non
     endpoint = q._ensure()
     assert endpoint == "http://127.0.0.1:9999/v1/chat/completions"
     assert spawned["n"] == 1
+
+
+def test_port_picker_falls_back_when_preferred_range_is_busy(
+        tmp_path: Path, monkeypatch) -> None:
+    """All 8080-8089 ports being busy must not disable local translation."""
+    q = _make_qwen(tmp_path)
+
+    class _FakeSocket:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._port = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, *_args) -> None:
+            pass
+
+        def bind(self, address) -> None:
+            if address[1] != 0:
+                raise OSError("preferred port occupied")
+            self._port = 49152
+
+        def getsockname(self):
+            return ("127.0.0.1", self._port)
+
+    monkeypatch.setattr(qwen_module.socket, "socket", _FakeSocket)
+    assert q._pick_free_port() == 49152
+
+
+def test_port_picker_changes_random_port_after_collision(
+        tmp_path: Path, monkeypatch) -> None:
+    """A busy random candidate is skipped instead of reused."""
+    q = _make_qwen(tmp_path)
+    candidates = iter([848, 849])  # 50000, then 50001
+
+    class _FakeSocket:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self._port = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, *_args) -> None:
+            pass
+
+        def bind(self, address) -> None:
+            if address[1] == 50000:
+                raise OSError("random candidate occupied")
+            self._port = address[1]
+
+        def getsockname(self):
+            return ("127.0.0.1", self._port)
+
+    monkeypatch.setattr(qwen_module.secrets, "randbelow", lambda _span: next(candidates))
+    monkeypatch.setattr(qwen_module.socket, "socket", _FakeSocket)
+    assert q._pick_free_port() == 50001
+
+
+def test_spawn_retries_after_port_race(tmp_path: Path, monkeypatch) -> None:
+    """A bind race after selection gets a new port before backend fallback."""
+    q = _make_qwen(tmp_path)
+    attempts = {"count": 0}
+
+    def fake_spawn_once(self) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            self._server_output_tail.append("bind failed: Address already in use")
+            raise TranslationError("llama-server 端口启动失败")
+        self._proc = _FakeProc(42)
+        self._port = 50001
+        self._endpoint = "http://127.0.0.1:50001/v1/chat/completions"
+
+    monkeypatch.setattr(QwenQualityTranslator, "_spawn_once", fake_spawn_once)
+    q._spawn()
+    assert attempts["count"] == 2
+    assert q._endpoint.endswith("50001/v1/chat/completions")
 
 
 def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None:
