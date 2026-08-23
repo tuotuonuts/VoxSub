@@ -74,6 +74,30 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"(?<=[\u3400-\u9fff]) (?=[\u3400-\u9fff])", "", value)
 
 
+def format_partial_for_display(text: str, source_lang: str) -> str:
+    """Make all-caps English decoder drafts readable without changing evidence.
+
+    Some streaming transducer token tables expose interim English hypotheses in
+    uppercase even though the authoritative final recognizer restores casing.
+    This is a presentation-only transform: mixed/proper casing is preserved,
+    and final transcripts continue through the original recognition path.
+    """
+    value = _normalize_text(text)
+    if not str(source_lang or "").lower().startswith("en"):
+        return value
+    letters = [char for char in value if char.isascii() and char.isalpha()]
+    if not letters or any(char.islower() for char in letters):
+        return value
+    lowered = value.lower()
+    lowered = re.sub(r"\bi\b", "I", lowered)
+    return re.sub(
+        r"(^|[.!?]\s+)([\"'“‘(\[]*)([a-z])",
+        lambda match: (
+            match.group(1) + match.group(2) + match.group(3).upper()),
+        lowered,
+    )
+
+
 def _join_fragments(left: str, right: str) -> str:
     left, right = left.rstrip(), right.lstrip()
     if not left:
@@ -230,7 +254,7 @@ class ContextualTextProcessor:
 
     def preview(self, partial: str) -> str:
         with self._lock:
-            normalized = _normalize_text(partial)
+            normalized = format_partial_for_display(partial, self._source_lang)
             corrected, _changes = self._correct(normalized)
             cleaned, _fillers = _clean_fillers(corrected, self._filler_mode)
             return _join_fragments(self._pending_text, cleaned)
@@ -376,4 +400,9 @@ def _latin_term_match(text: str, canonical: str, max_distance: int) -> tuple[int
     return best
 
 
-__all__ = ["ContextualSegment", "ContextualTextProcessor", "looks_incomplete"]
+__all__ = [
+    "ContextualSegment",
+    "ContextualTextProcessor",
+    "format_partial_for_display",
+    "looks_incomplete",
+]

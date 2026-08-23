@@ -21,6 +21,23 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.7.1-beta",
+        "实时双语草稿更易读也更跟手",
+        "More readable and responsive live bilingual drafts",
+        (
+            "英文草稿不再长时间保持全大写；显示层会使用更易读的句子式大小写，不改变最终识别原文。",
+            "修复连续说话时新识别词反复重置计时，译文长期停在“生成中”的问题。",
+            "草稿翻译现在会定期合并最新原文并追赶识别；完整句的最终翻译仍然始终优先。",
+            "原文继续向后增长时，已生成的译文会保留到新译文接替，减少长时间只显示占位提示。",
+        ),
+        (
+            "All-caps interim English is rendered in readable sentence case without changing the finalized source transcript.",
+            "Continuous recognition updates no longer reset the timer forever and leave translation stuck on its generating placeholder.",
+            "Draft translation periodically coalesces the newest source and catches up, while finalized sentence translation always retains priority.",
+            "As the source grows, the last completed translation remains visible until a newer revision replaces it, reducing placeholder-only time.",
+        ),
+    ),
+    ReleaseNote(
         "0.7.0-beta",
         "可下载和切换中英朗读模型",
         "Downloadable and selectable Chinese and English voices",

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from voxsub.contextual_text import ContextualTextProcessor, looks_incomplete
+from voxsub.contextual_text import (
+    ContextualTextProcessor,
+    format_partial_for_display,
+    looks_incomplete,
+)
 
 
 def test_semantic_boundary_recognizes_incomplete_and_complete_phrases() -> None:
@@ -101,3 +105,23 @@ def test_preview_applies_the_same_conservative_correction_and_filler_cleanup() -
     )
 
     assert processor.preview("嗯，我们讨论磨鞋迁移。") == "我们讨论模型迁移。"
+
+
+def test_all_caps_english_partial_is_sentence_cased_for_display_only() -> None:
+    assert format_partial_for_display(
+        "I THINK THIS IS EASIER TO READ. IT IS LIVE", "en"
+    ) == "I think this is easier to read. It is live"
+    assert format_partial_for_display("NASA uses GPT-4", "en") == "NASA uses GPT-4"
+    assert format_partial_for_display("这是中文", "zh") == "这是中文"
+
+
+def test_english_context_preview_formats_uppercase_decoder_tokens() -> None:
+    processor = ContextualTextProcessor(
+        source_lang="en",
+        filler_mode="off",
+        correction_enabled=False,
+    )
+
+    assert processor.preview("THIS IS A LIVE ENGLISH DRAFT") == (
+        "This is a live english draft"
+    )

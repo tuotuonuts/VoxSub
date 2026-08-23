@@ -453,6 +453,22 @@ def test_context_mode_translates_live_draft_and_emits_bilingual_revision() -> No
     ]
 
 
+def test_context_mode_formats_uppercase_english_partial_before_display() -> None:
+    p = Pipeline()
+    p._src_lang = "en"  # noqa: SLF001
+    p._context_processor = ContextualTextProcessor(  # noqa: SLF001
+        source_lang="en",
+        filler_mode="off",
+        correction_enabled=False,
+    )
+    drafts: list[tuple[str, str]] = []
+    p.on_draft(lambda source, translation: drafts.append((source, translation)))
+
+    p._on_asr_partial("THIS IS A LIVE DRAFT")  # noqa: SLF001
+
+    assert drafts == [("This is a live draft", "")]
+
+
 def test_recognition_backpressure_stops_instead_of_growing_unbounded() -> None:
     p = Pipeline()
     p._recognition_queue = queue.Queue(maxsize=1)  # noqa: SLF001

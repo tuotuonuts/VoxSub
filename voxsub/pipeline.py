@@ -849,7 +849,7 @@ class Pipeline:
             )
 
     def _translate_draft(self, request: DraftTranslationRequest) -> None:
-        """Translate an interim revision; silently discard stale completions."""
+        """Translate a revision and retain compatible lagging results."""
         try:
             translation = self._translator.translate(
                 request.source, self._src_lang, self._dst_lang)
