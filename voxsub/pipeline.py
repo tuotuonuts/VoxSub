@@ -42,6 +42,7 @@ from voxsub.cloud_stt import CloudSTT
 from voxsub.contextual_text import ContextualSegment, ContextualTextProcessor
 from voxsub.file_transcriber import FileAudioDecoder, FileRecognizer
 from voxsub.language_guard import guard_text, normalize_language
+from voxsub.live_draft import DraftTranslationRequest, DraftView, LiveDraftState
 from voxsub.logging_setup import get_logger
 from voxsub.recording import WaveSessionRecorder
 from voxsub.realtime_builder import RealtimeBuildSpec, build_realtime_components
@@ -172,7 +173,9 @@ class Pipeline:
 
         self._cb_utterance: list[Callable[[str, str], None]] = []
         self._cb_partial: list[Callable[[str], None]] = []
+        self._cb_draft: list[Callable[[str, str], None]] = []
         self._cb_status: list[Callable[[str], None]] = []
+        self._live_draft = LiveDraftState()
 
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
         self._is_generative = False
@@ -411,6 +414,10 @@ class Pipeline:
     def on_partial(self, cb: Callable[[str], None]) -> None:
         self._cb_partial.append(cb)
 
+    def on_draft(self, cb: Callable[[str, str], None]) -> None:
+        """Subscribe to one replaceable interim ``(source, translation)`` row."""
+        self._cb_draft.append(cb)
+
     def _emit_status(self, msg: str) -> None:
         logger.info("Pipeline 状态: %s", msg)
         for cb in self._cb_status:
@@ -441,6 +448,23 @@ class Pipeline:
                 cb(text)
             except Exception:
                 logger.exception("临时字幕回调异常: %r", cb)
+        view = self._live_draft.update_source(text)
+        if view is not None:
+            self._emit_draft(view)
+
+    def _emit_draft(self, view: DraftView) -> None:
+        for cb in self._cb_draft:
+            try:
+                cb(view.source, view.translation)
+            except Exception:
+                logger.exception("实时字幕草稿回调异常: %r", cb)
+
+    def _clear_draft(self) -> None:
+        for cb in self._cb_draft:
+            try:
+                cb("", "")
+            except Exception:
+                logger.exception("清理实时字幕草稿回调异常: %r", cb)
 
     def _on_asr_partial(self, text: str) -> None:
         processor = self._context_processor
@@ -521,6 +545,10 @@ class Pipeline:
                 self._asr_tuning.get("max_new_tokens", 512)))),
             "hotwords": str(self._asr_tuning.get("hotwords", "")).strip(),
             "context_enabled": profile == "context",
+            # Reading the already-decoded Zipformer hypothesis is cheap.  The
+            # context profile samples it near word cadence; legacy profiles
+            # retain their existing update frequency.
+            "partial_interval_ms": 140 if profile == "context" else 360,
             "context_hold_ms": max(200, min(4000, int(
                 self._asr_tuning.get("context_hold_ms", 1800)))),
             "context_correction": bool(
@@ -652,6 +680,7 @@ class Pipeline:
         self._queue_translation(text, queued_at)
 
     def _queue_translation(self, text: str, queued_at: float) -> None:
+        self._live_draft.begin_final()
         with self._metrics_lock:
             self._translation_times[text].append(queued_at)
         logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s queue=%d",
@@ -664,6 +693,9 @@ class Pipeline:
                 "翻译后端持续落后，字幕缓存已满；任务已停止，请切换更轻量的翻译模型",
             )
         except RuntimeError:
+            view = self._live_draft.finish_final()
+            if view is not None:
+                self._emit_draft(view)
             with self._metrics_lock:
                 timestamps = self._translation_times.get(text)
                 if timestamps:
@@ -776,6 +808,9 @@ class Pipeline:
             translation = text + " 〔翻译失败〕"
             self._emit_status("翻译失败(已保留原文)")
         self._emit_utterance(text, translation)
+        view = self._live_draft.finish_final()
+        if view is not None:
+            self._emit_draft(view)
         worker = self._tts_worker
         if can_speak and worker is not None:
             worker.submit(translation, self._dst_lang)
@@ -785,15 +820,53 @@ class Pipeline:
                 if self._pause_evt.is_set() else "拾音中"
             )
 
+    def _translate_draft(self, request: DraftTranslationRequest) -> None:
+        """Translate an interim revision; silently discard stale completions."""
+        try:
+            translation = self._translator.translate(
+                request.source, self._src_lang, self._dst_lang)
+            if self._trans_kind is not None:
+                translation = guard_text(
+                    translation, self._dst_lang, kind="draft translation")
+        except Exception:
+            logger.debug("实时草稿翻译失败: source=%r", request.source[:160],
+                         exc_info=True)
+            return
+        view = self._live_draft.accept_translation(request, translation)
+        if view is not None:
+            self._emit_draft(view)
+
+    def _live_draft_translation_enabled(self) -> bool:
+        return (
+            bool(self._cb_draft)
+            and str(self._asr_tuning.get("profile", "auto")) == "context"
+        )
+
     def _translation_loop(self) -> None:
-        """翻译与 ASR 解码解耦，慢模型不得堵住音频/VAD 线程。"""
+        """Prioritize final sentences, then translate only the latest live draft."""
         warmup = getattr(self._translator, "warmup", None)
         if callable(warmup):
             logger.info("翻译工作线程开始预热")
             warmup()
-        while not self._translation_input_done.is_set() or not self._translation_queue.empty():
+        while True:
             try:
-                text = self._translation_queue.get(timeout=0.2)
+                text = self._translation_queue.get_nowait()
+            except queue.Empty:
+                text = None
+            if text is not None:
+                self._translate_sentence(text, self._take_translation_timestamp(text))
+                continue
+            if self._translation_input_done.is_set():
+                break
+            request = (
+                self._live_draft.take_translation_request()
+                if self._live_draft_translation_enabled() else None
+            )
+            if request is not None:
+                self._translate_draft(request)
+                continue
+            try:
+                text = self._translation_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
             self._translate_sentence(text, self._take_translation_timestamp(text))
@@ -889,6 +962,8 @@ class Pipeline:
         self._drain_queue(self._recognition_queue)
         self._drain_queue(self._context_queue)
         self._drain_queue(self._translation_queue)
+        self._live_draft.reset()
+        self._clear_draft()
         with self._metrics_lock:
             self._translation_times.clear()
         self._stop_evt.clear()
@@ -971,6 +1046,8 @@ class Pipeline:
                 t.join(timeout=8.0)
         self._threads = [t for t in self._threads if t.is_alive()]
         self._set_state(PipelineState.IDLE)
+        self._live_draft.reset()
+        self._clear_draft()
         self._stop_tts_worker()
         if self._last_recording_path is not None and self._recording_enabled:
             self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")

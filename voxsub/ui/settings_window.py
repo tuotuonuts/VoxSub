@@ -468,7 +468,8 @@ class SettingsWindow(QWidget):
         self._tuning_row(
             form, "调优预设", self.asr_profile_combo,
             "自动会根据 Zipformer 或 Qwen3-ASR 选择合适参数。响应优先出字更快，"
-            "但更容易把一句话切碎；准确优先会多等一会儿，通常上下文更完整。",
+            "但更容易把一句话切碎；准确优先会多等一会儿。智能上下文会持续更新"
+            "当前句及其译文，完整后再提交。",
         )
 
         self.vad_threshold_spin = _ReliableDoubleSpinBox(intro_card)

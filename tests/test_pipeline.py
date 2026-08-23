@@ -314,6 +314,31 @@ def test_translation_is_queued_outside_asr_thread() -> None:
     assert calls == ["原文"]
 
 
+def test_context_mode_translates_live_draft_and_emits_bilingual_revision() -> None:
+    from voxsub.live_draft import LiveDraftState
+
+    p = Pipeline()
+    p.set_asr_tuning({"profile": "context"})
+    p._translator = type("Translator", (), {  # noqa: SLF001
+        "translate": lambda self, text, *_args: f"translated:{text}"
+    })()
+    p._live_draft = LiveDraftState(  # noqa: SLF001
+        debounce_seconds=0.0, min_interval_seconds=0.0
+    )
+    drafts: list[tuple[str, str]] = []
+    p.on_draft(lambda source, translation: drafts.append((source, translation)))
+
+    p._emit_partial("逐词更新")  # noqa: SLF001
+    request = p._live_draft.take_translation_request()  # noqa: SLF001
+    assert request is not None
+    p._translate_draft(request)  # noqa: SLF001
+
+    assert drafts == [
+        ("逐词更新", ""),
+        ("逐词更新", "translated:逐词更新"),
+    ]
+
+
 def test_recognition_backpressure_stops_instead_of_growing_unbounded() -> None:
     p = Pipeline()
     p._recognition_queue = queue.Queue(maxsize=1)  # noqa: SLF001
@@ -401,6 +426,10 @@ def test_asr_tuning_presets_keep_generative_context_longer() -> None:
     assert auto_qwen["max_utterance_ms"] == 12_000
     assert auto_qwen["silence_ms"] == 700
     assert auto_zip["max_utterance_ms"] == 4_500
+    assert auto_zip["partial_interval_ms"] == 360
+    p.set_asr_tuning({"profile": "context"})
+    context_zip = p._effective_asr_tuning(generative=False)  # noqa: SLF001
+    assert context_zip["partial_interval_ms"] == 140
     p.set_asr_tuning({"profile": "custom", "vad_threshold": 0.2,
                       "silence_ms": 850, "max_utterance_ms": 18_000,
                       "beam_paths": 8, "max_new_tokens": 256,

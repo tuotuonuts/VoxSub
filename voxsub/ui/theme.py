@@ -377,6 +377,13 @@ QFrame#subRow[newest="true"] {
     background-color: rgba(@accent_rgb, 0.10);
     border: 1px solid rgba(@accent_rgb, 0.25);
 }
+QFrame#subRow[partial="true"] {
+    background-color: rgba(@accent_rgb, 0.07);
+    border: 1px solid rgba(@accent_rgb, 0.18);
+}
+QFrame#subRow[partial="true"] QLabel#dstText {
+    color: @accent;
+}
 QLabel#srcText {
     color: @text_secondary;
     font-size: 14px;

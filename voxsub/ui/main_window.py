@@ -256,6 +256,7 @@ class SubtitleList(QScrollArea):
         self._rows: list[QFrame] = []
         self._partial_row: QFrame | None = None
         self._partial_src: QLabel | None = None
+        self._partial_dst: QLabel | None = None
         self._empty_hint = QLabel("字幕将显示在这里 —— 选择模式后点击「开始」", self._container)
         self._empty_hint.setObjectName("emptyHint")
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -309,8 +310,8 @@ class SubtitleList(QScrollArea):
         # 自动滚底
         QTimer.singleShot(0, self._scroll_to_bottom)
 
-    def set_partial(self, src: str) -> None:
-        """显示/更新一条不进入历史记录的临时识别结果。"""
+    def set_partial(self, src: str, dst: str | None = None) -> None:
+        """原位更新一条双语草稿，不写入会话历史。"""
         src = src.strip()
         if not src:
             self.clear_partial()
@@ -331,20 +332,30 @@ class SubtitleList(QScrollArea):
                 | Qt.TextInteractionFlag.TextSelectableByKeyboard
             )
             src_label.setCursor(Qt.CursorShape.IBeamCursor)
-            hint = QLabel(tr("识别中…"), row)
-            hint.setObjectName("secondaryLabel")
+            hint = QLabel(dst or tr("识别中…"), row)
+            hint.setObjectName("dstText")
+            hint.setWordWrap(True)
+            hint.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+                | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            hint.setCursor(Qt.CursorShape.IBeamCursor)
             box.addWidget(src_label)
             box.addWidget(hint)
             self._vbox.insertWidget(self._vbox.count() - 1, row)
             self._partial_row = row
             self._partial_src = src_label
+            self._partial_dst = hint
         elif self._partial_src is not None:
             self._partial_src.setText(src)
+            if self._partial_dst is not None:
+                self._partial_dst.setText(dst or tr("识别中…"))
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def clear_partial(self) -> None:
         row, self._partial_row = self._partial_row, None
         self._partial_src = None
+        self._partial_dst = None
         if row is not None:
             row.setParent(None)
             row.deleteLater()
@@ -518,6 +529,7 @@ class _PipelineBridge(QObject):
 
     utterance = Signal(str, str)
     partial = Signal(str)
+    draft = Signal(str, str)
     status = Signal(str)
     operation_done = Signal(str, bool, str, bool)
     export_done = Signal(str, bool, str)
@@ -939,11 +951,16 @@ class MainWindow(QWidget):
             # 同线程 emit 直接调用，工作线程 emit 自动排队到 Qt 主线程。
             self._bridge.utterance.connect(self._on_utterance)
             self._bridge.partial.connect(self._on_partial)
+            self._bridge.draft.connect(self._on_draft)
             self._bridge.status.connect(self._on_status)
             self._bridge.operation_done.connect(self._on_pipeline_operation_done)
             self._bridge.export_done.connect(self._on_export_done)
             self.pipeline.on_utterance(self._bridge.utterance.emit)
-            self.pipeline.on_partial(self._bridge.partial.emit)
+            on_draft = getattr(self.pipeline, "on_draft", None)
+            if callable(on_draft):
+                on_draft(self._bridge.draft.emit)
+            else:
+                self.pipeline.on_partial(self._bridge.partial.emit)
             self.pipeline.on_status(self._bridge.status.emit)
         except AttributeError:
             # 鸭子类型兜底：对象缺方法也不崩壳（设计内行为 → debug）
@@ -1352,14 +1369,28 @@ class MainWindow(QWidget):
                 logger.debug("字幕浮窗缺少 set_subtitles, 跳过")
 
     def _on_partial(self, src: str) -> None:
-        """流式临时原文直接更新浮窗，不等待切句和翻译完成。"""
-        self.subtitle_list.set_partial(src)
+        """兼容旧 Pipeline 的单字段 partial 回调。"""
+        self._on_draft(src, "")
+
+    def _on_draft(self, src: str, dst: str) -> None:
+        """原位替换当前句的识别和译文草稿。"""
+        src = src.strip()
+        if not src:
+            self.subtitle_list.clear_partial()
+            return
+        placeholder = (
+            tr("译文生成中…", "Translating…")
+            if self._store.get("asr_tuning_profile", "auto") == "context"
+            else tr("识别中…", "Recognizing…")
+        )
+        visible_dst = dst.strip() or placeholder
+        self.subtitle_list.set_partial(src, visible_dst)
         if self._overlay is not None:
             try:
                 if hasattr(self._overlay, "set_partial"):
-                    self._overlay.set_partial(src, tr("识别中…"))
+                    self._overlay.set_partial(src, visible_dst)
                 else:
-                    self._overlay.set_subtitles(src, tr("识别中…"))
+                    self._overlay.set_subtitles(src, visible_dst)
                 if self._mode in ("a", "b") and not self._overlay.isVisible():
                     self._overlay.show()
             except AttributeError:

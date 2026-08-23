@@ -113,7 +113,8 @@ def build_realtime_components(
             asr, vad, on_sentence,
             min_silence_ms=spec.tuning["silence_ms"],
             max_utterance_ms=spec.tuning["max_utterance_ms"],
-            on_partial=on_partial, partial_interval_ms=360,
+            on_partial=on_partial,
+            partial_interval_ms=spec.tuning.get("partial_interval_ms", 360),
             boundary_decider=semantic_boundary,
             semantic_hold_ms=(
                 spec.tuning["context_hold_ms"] if semantic_boundary else 0),

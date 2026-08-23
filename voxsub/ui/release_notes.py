@@ -21,6 +21,25 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.6.0-beta",
+        "当前句会随识别与翻译实时更新",
+        "Live recognition and translation drafts",
+        (
+            "智能上下文模式会在同一条草稿中持续追加和纠正当前句，整句稳定后才写入字幕历史。",
+            "流式 Zipformer 更接近逐词刷新；识别假设改变时，主窗口与浮窗会原位替换，不重复堆积临时行。",
+            "译文会跟随当前原文更新；只处理最新草稿，较慢返回的旧译文不会覆盖新内容。",
+            "终句翻译始终优先，下一句话即使已经开始识别，也不会与上一句发生错位。",
+            "生成式本地 ASR 与当前云 STT 接口仍按完整声学片段更新，避免高频重复推理。",
+        ),
+        (
+            "Smart Context continuously extends and corrects one draft row, committing it to history only after the sentence stabilizes.",
+            "Streaming Zipformer refreshes closer to word cadence, replacing the main-window and overlay draft in place.",
+            "Translation follows the changing source; only the newest draft is processed and stale completions cannot overwrite it.",
+            "Final sentence translation has priority, so the following sentence cannot be paired with the wrong result.",
+            "Generative local ASR and the current cloud STT API still update per complete acoustic segment to avoid repeated expensive inference.",
+        ),
+    ),
+    ReleaseNote(
         "0.5.0-beta",
         "新增智能上下文断句与保守纠偏",
         "Smart context segmentation and conservative correction",

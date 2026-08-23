@@ -47,6 +47,7 @@ class _PipelineStub:
         self._utterance_cb: Callable[[str, str], None] | None = None
         self._status_cb: Callable[[str], None] | None = None
         self._partial_cb: Callable[[str], None] | None = None
+        self._draft_cb: Callable[[str, str], None] | None = None
         self.langs = ("zh", "en")
         self.input_file = ""
         self.tts_enabled = False
@@ -134,6 +135,9 @@ class _PipelineStub:
     def on_partial(self, cb: Callable[[str], None]) -> None:
         self._partial_cb = cb
 
+    def on_draft(self, cb: Callable[[str, str], None]) -> None:
+        self._draft_cb = cb
+
     def is_running(self) -> bool:
         return self._running
 
@@ -141,6 +145,12 @@ class _PipelineStub:
     def _emit_utterance(self, src: str, dst: str) -> None:
         if self._utterance_cb is not None:
             self._utterance_cb(src, dst)
+
+    def _emit_partial(self, src: str, dst: str = "") -> None:
+        if self._partial_cb is not None:
+            self._partial_cb(src)
+        if self._draft_cb is not None:
+            self._draft_cb(src, dst)
 
     def _emit_status(self, text: str) -> None:
         if self._status_cb is not None:

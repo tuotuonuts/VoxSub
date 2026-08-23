@@ -93,3 +93,11 @@ def test_preview_combines_pending_context_and_flush_preserves_raw_text() -> None
     segment = processor.flush()[0]
     assert segment.text == "如果测试通过"
     assert segment.raw_text == "如果测试通过"
+
+
+def test_preview_applies_the_same_conservative_correction_and_filler_cleanup() -> None:
+    processor = ContextualTextProcessor(
+        source_lang="zh", hotwords="模型迁移", defer_incomplete=False
+    )
+
+    assert processor.preview("嗯，我们讨论磨鞋迁移。") == "我们讨论模型迁移。"

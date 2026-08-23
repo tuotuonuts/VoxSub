@@ -230,7 +230,10 @@ class ContextualTextProcessor:
 
     def preview(self, partial: str) -> str:
         with self._lock:
-            return _join_fragments(self._pending_text, _normalize_text(partial))
+            normalized = _normalize_text(partial)
+            corrected, _changes = self._correct(normalized)
+            cleaned, _fillers = _clean_fillers(corrected, self._filler_mode)
+            return _join_fragments(self._pending_text, cleaned)
 
     def submit(self, text: str, *, now: float | None = None) -> list[ContextualSegment]:
         received_at = self._clock() if now is None else float(now)

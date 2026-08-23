@@ -27,6 +27,7 @@ voxsub/
   asr/        sherpa-onnx Zipformer / Fun-ASR-Nano / Qwen3-ASR 适配，句子回调
   cloud_stt/  OpenAI 兼容 /v1/audio/transcriptions 客户端，WAV 分段上传
   contextual_text.py  可选语义断句、保守纠偏与轻度语气词清理
+  live_draft.py  当前句 revision、动态译文节流与过期结果淘汰
   translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
   tts.py      piper 合成封装
   tts_worker.py  有界异步合成/播放队列，失败降级为仅字幕
@@ -241,6 +242,10 @@ class Pipeline:
 - 语义等待从首个待定片段开始计时，后续片段不得重置截止时间；上下文队列固定容量，结束顺序为识别 → 上下文 flush → 翻译。
 - 纠偏仅使用用户 hotword 和近期多次稳定出现的词，保留 `raw_text` 与修改记录；不得借上下文自由补写数字、人名、否定词或未识别内容。
 - 轻度语气词清理只处理独立填充词并可关闭；原始识别文本不覆盖、不落盘，除现有诊断日志外不新增隐私数据。
+- UI 只维护一条不进入历史的当前句草稿；`on_draft(source, translation)` 原位替换，`on_utterance` 才提交稳定终句。
+- `LiveDraftState` 用单调递增 revision 隔离识别线程与翻译线程；临时译文只接受仍为最新 source/revision 的结果，终句队列有更高优先级。
+- 智能上下文下 Zipformer 每 140ms 读取一次已解码 partial（文本未变化不回调）；临时翻译 180ms 防抖且最短间隔 450ms。其他调优方式不发送临时翻译请求。
+- 生成式本地 ASR 与当前云 STT 是整段解码能力，保持片段级更新；不得用高频全量重推理伪装流式识别。
 
 ### 三模式组装
 

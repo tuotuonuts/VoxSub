@@ -503,6 +503,31 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    def test_live_draft_replaces_one_bilingual_row_before_final_commit(
+        self, qapp, tmp_path
+    ):
+        from PySide6.QtWidgets import QLabel
+
+        win = self._make_win(tmp_path)
+        try:
+            win._on_draft("欢迎", "Welcome")  # noqa: SLF001
+            partial_row = win.subtitle_list._partial_row  # noqa: SLF001
+            win._on_draft("欢迎使用", "Welcome to")  # noqa: SLF001
+
+            assert win.subtitle_list.count() == 0
+            assert win.subtitle_list._partial_row is partial_row  # noqa: SLF001
+            assert win.subtitle_list._partial_src.text() == "欢迎使用"  # noqa: SLF001
+            assert win.subtitle_list._partial_dst.text() == "Welcome to"  # noqa: SLF001
+
+            win._on_utterance("欢迎使用 VoxSub。", "Welcome to VoxSub.")  # noqa: SLF001
+            assert win.subtitle_list.count() == 1
+            assert win.subtitle_list._partial_row is None  # noqa: SLF001
+            rows = win.subtitle_list.findChildren(QLabel, "dstText")
+            assert any(label.text() == "Welcome to VoxSub." for label in rows)
+        finally:
+            win.close()
+            win.deleteLater()
+
     def test_lang_pair(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:
