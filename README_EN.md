@@ -7,19 +7,18 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.4.2-beta` installer and the unreleased local `0.5.0-beta` candidate are unsigned because the current certificate is unavailable. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.5.0-beta` installer is unsigned because the current certificate is unavailable. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.5.0-beta`. Its candidate installer has been built and passed an isolated startup check, and is awaiting user validation. The public download is now `0.4.2-beta`; no `0.5.0-beta` Release has been created. This is still a development build.
+Current source and public download: `0.5.0-beta`. The installer passed its build, isolated startup check, and GitHub asset digest verification. This is still a development build.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
 ## Downloads and candidate build
 
-- Published build: `VoxSub-Setup-0.4.2-beta.exe` on [VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta) (unsigned); SHA256 `9B691BF2FE6B5F9F3AD7C0B53CB936547D38550CC894BDC8FAA43684770E99D6`.
-- Local test candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.5.0-beta.exe`, 214,795,950 bytes (204.85 MiB), unsigned; SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`.
-- `0.5.0-beta` will not be uploaded or published as a new Release until user validation is complete.
+- Published build: `VoxSub-Setup-0.5.0-beta.exe` on [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) (unsigned), 214,795,950 bytes (204.85 MiB); SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`.
+- Previous build: [VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta).
 
 ## Available Features
 
