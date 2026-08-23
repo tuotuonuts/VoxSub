@@ -614,6 +614,15 @@ QPlainTextEdit#logView {
     font-size: 12px;
     selection-background-color: rgba(@accent_rgb, 0.25);
 }
+
+QPlainTextEdit#ocrTextResult {
+    background-color: @surface_2;
+    color: @text_primary;
+    border: 1px solid @border;
+    border-radius: @radius_input;
+    padding: 10px;
+    selection-background-color: @accent_deep;
+}
 QFrame#diagnosticToolbar { background: @surface_1; border: 1px solid @border; border-radius: @radius_card_compact; }
 QFrame#diagnosticCard {
     background-color: @surface_1; border: 1px solid @border; border-radius: @radius_card_compact;

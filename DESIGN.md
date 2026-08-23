@@ -28,6 +28,7 @@ voxsub/
   cloud_stt/  OpenAI 兼容 /v1/audio/transcriptions 客户端，WAV 分段上传
   contextual_text.py  可选语义断句、保守纠偏与轻度语气词清理
   live_draft.py  当前句 revision、动态译文节流与过期结果淘汰
+  ocr.py      Qt 无关的 OCR 几何、RapidOCR 适配、画面指纹与行翻译缓存
   translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
   tts.py      piper 合成封装
   tts_worker.py  有界异步合成/播放队列，失败降级为仅字幕
@@ -54,6 +55,28 @@ voxsub/
   断电留下半个 JSON/字幕文件。
 - 上述第一条由 `tests/test_architecture.py` 自动守卫；新增核心模块时不得通过
   延迟导入绕过依赖方向。
+
+### OCR 屏幕翻译边界（v0.8）
+
+```
+[多屏框选] -> [QScreen 内存截图] -> [有界单所有者 OCR worker]
+                                      | RapidOCR -> OcrFrame(文字+坐标)
+                                      v
+                         [现有 TranslatorFactory + 行级 LRU]
+                                      |
+               ┌─ 截图页：预览、原文、译文
+               └─ 实时页：透明穿透覆盖窗 + 独立控制条
+```
+
+- `ocr.py` 不依赖 Qt，只输出不可变的行坐标与文本对象；以后替换为手写体或艺术字
+  后端时，不修改框选、页面和覆盖层。
+- `screen_capture.py` 只负责多显示器框选、高 DPI 截图和 Windows 捕获排除；
+  `ocr_overlay.py` 只负责把译文映射回屏幕坐标；`ocr_workspace.py` 只编排 UI 状态。
+- 原生模型和翻译器由 `ocr_worker.py` 的单一后台线程拥有，队列容量为 1；慢任务期间
+  丢弃重复帧，不让实时采集积压。翻译失败返回 OCR-only 结果，OCR 失败才标记整帧失败。
+- 实时轮询间隔为 700ms，先比较低成本画面指纹，变化不足 3.5% 不运行 OCR。
+  覆盖窗通过 `WDA_EXCLUDEFROMCAPTURE` 排除；旧系统失败时，截图前短暂隐藏覆盖窗。
+- 截图像素只存在进程内存；现有云翻译被选择时，只将已识别文字交给相应服务。
 
 ## 核心接口契约
 

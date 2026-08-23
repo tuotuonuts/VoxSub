@@ -1,6 +1,6 @@
 ; VoxSub installer script (Inno Setup 6+)
 ; 语幕 VoxSub - 大众实时翻译安装包
-; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.7.2-beta.exe
+; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.8.0-beta.exe
 ;   iscc scripts\installer.iss
 ; 说明: 大型模型不打包进安装包, 首次运行经模型广场下载(断点续传+SHA256)。
 ;       2.3MB 的基础 VAD 随程序分发，首次启动会自动修复到
@@ -9,7 +9,7 @@
 ;       build.ps1 的 osslsigncode 统一处理(SignedSetup)。
 
 #define MyAppName "VoxSub"
-#define MyAppVersion "0.7.2-beta"
+#define MyAppVersion "0.8.0-beta"
 #define MyAppPublisher "VoxSub"
 #define MyAppExeName "VoxSub.exe"
 #define MyAppId "{{7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001}"
@@ -29,7 +29,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ; 正式版发布物统一输出到 D:\OneDrive\app_dve\Release (用户约定 2026-08-17)
 OutputDir=..\..\Release
-OutputBaseFilename=VoxSub-Setup-0.7.2-beta
+OutputBaseFilename=VoxSub-Setup-0.8.0-beta
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

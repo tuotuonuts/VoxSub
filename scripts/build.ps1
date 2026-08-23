@@ -9,7 +9,7 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Version = "0.7.2-beta"
+$Version = "0.8.0-beta"
 $LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 
@@ -68,13 +68,17 @@ if (-not $SkipPyInstaller) {
             "--collect-all", "comtypes",
             "--collect-all", "psutil",
             "--collect-all", "onnxruntime",
+            "--collect-all", "rapidocr",
+            "--collect-all", "cv2",
             "--collect-all", "qfluentwidgets",
             "--hidden-import", "voxsub.pipeline",
             "--hidden-import", "voxsub.diagnostics",
             "--hidden-import", "voxsub.process_audio",
             "--hidden-import", "voxsub.model_catalog",
+            "--hidden-import", "voxsub.ocr",
             "--hidden-import", "voxsub.translate.factory",
             "--hidden-import", "voxsub.ui.model_hub_window",
+            "--hidden-import", "voxsub.ui.ocr_workspace",
             "run_app.py"
         )
     }

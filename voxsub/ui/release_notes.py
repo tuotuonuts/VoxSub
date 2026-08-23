@@ -21,6 +21,27 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.8.0-beta",
+        "新增截图与实时区域 OCR 翻译",
+        "Screenshot and live-region OCR translation",
+        (
+            "主窗口新增 OCR 翻译工作区，可框选一次截图，离线识别文字并使用当前翻译设置生成译文。",
+            "实时区域模式只在画面发生明显变化时重新识别，适合游戏、视频、网页和无法复制文字的应用。",
+            "译文会按 OCR 返回的文字坐标覆盖原文；覆盖层不接收鼠标输入，也不会被下一轮截图再次识别。",
+            "独立控制条支持暂停、临时显示原文、重选区域和结束，不需要反复切回主窗口。",
+            "截图像素只在本机内存中处理；只有选择云翻译时，识别出的文字才会发送到对应服务。",
+            "当前内置模型优先覆盖中英文常见印刷体；手写体、艺术体与更多语种将通过可替换 OCR 后端继续增强。",
+        ),
+        (
+            "The main window adds an OCR workspace for selecting one screenshot, recognizing it offline, and translating it with the current translation settings.",
+            "Live Region reruns OCR only after a meaningful visual change, fitting games, video, webpages, and apps whose text cannot be copied.",
+            "Translations cover the source at OCR-provided coordinates; the click-through overlay is excluded from later captures to prevent self-recognition.",
+            "A separate control bar can pause, reveal the source temporarily, reselect the area, or stop without returning to the main window.",
+            "Screenshot pixels stay in local memory. Only recognized text is sent out when cloud translation is selected.",
+            "The bundled model currently prioritizes common printed Chinese and English; handwriting, stylized text, and more languages can be added through the replaceable OCR backend.",
+        ),
+    ),
+    ReleaseNote(
         "0.7.2-beta",
         "安装更新不再长时间假死",
         "Installer updates no longer appear frozen",

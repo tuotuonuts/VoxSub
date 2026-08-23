@@ -14,6 +14,7 @@
 - v0.7.0-beta TTS 模型广场合入后验收：构建门禁 256 passed，7 skipped；模型元数据仍集中在 `model_catalog.py`，设置只发送模型 ID，Pipeline/worker/engine 分层负责热切换、队列和惰性加载。
 - v0.7.1-beta 草稿调度修复后验收：构建门禁 262 passed，7 skipped；大小写整理仅在 context partial 显示路径，终句证据不变；合并节流和过期译文接纳策略仍封装在 `live_draft.py`。
 - v0.7.2-beta 安装升级收尾修复后验收：构建门禁 265 passed，7 skipped；安装器与应用通过独立命名事件协作，旧版兼容回退严格限定为 VoxSub 进程树；Pipeline 所有工作线程共享单一退出截止时间。
+- v0.8.0-beta OCR 候选：构建门禁 276 passed，8 skipped；识别/翻译数据与 RapidOCR 适配在 Qt 无关的 `ocr.py`，屏幕采集、覆盖绘制、页面编排和有界 worker 分属独立模块；实时帧只保留一个在途任务，译文覆盖窗和控制条都有自采集防回路，翻译失败降级为保留原文；打包入口提供不创建 GUI 的 OCR 成品自检。
 - `compileall` 全包编译通过，`git diff --check` 通过。
 - 生产代码中没有估算分支复杂度达到 15 的函数。
 - 生产代码中没有使用默认容量的无界 `queue.Queue()`。
@@ -67,6 +68,8 @@
 - `SettingsWindow`、`MainWindow`、`SubtitleOverlay` 仍是较长的视图壳，但其长方法
   主要是低分支的声明式布局，业务状态和外部 I/O 已移出。后续新增页面应增加独立
   pane/controller，不再向这些窗口加入新的业务生命周期。
+- OCR 页面没有把原生模型或翻译器放进 QWidget：`OcrWorkspace` 只持有选择、计时器和
+  revision；`OcrWorker` 串行拥有模型与翻译器；覆盖层仅消费不可变帧和截图副本。
 
 ## 新功能合入守则
 

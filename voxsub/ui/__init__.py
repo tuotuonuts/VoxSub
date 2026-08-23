@@ -9,7 +9,8 @@
 - tray.py             系统托盘（模式快捷切换 / 显示主窗 / 退出）
 - settings_window.py  设置页（翻译 / 语音 / 设备 / 外观 / 关于）
 - diagnostics_window.py 诊断与应用内实时日志
+- ocr_workspace.py    截图 OCR / 实时区域 OCR 与原位译文覆盖
 - app.py              入口：python -m voxsub.ui.app
 """
 
-__version__ = "0.7.2-beta"
+__version__ = "0.8.0-beta"

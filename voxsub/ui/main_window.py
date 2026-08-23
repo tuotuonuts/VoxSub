@@ -544,6 +544,7 @@ class MainWindow(QWidget):
     settings_requested = Signal()
     diagnostics_requested = Signal()
     model_hub_requested = Signal()
+    ocr_requested = Signal()
     running_state_changed = Signal(bool)
 
     def __init__(
@@ -714,10 +715,17 @@ class MainWindow(QWidget):
         outer.addWidget(scene, 1)
 
     # -- 内置页面导航 -------------------------------------------------------
-    def install_in_app_pages(self, settings_page: QWidget, model_hub_page: QWidget) -> None:
+    def install_in_app_pages(
+        self,
+        settings_page: QWidget,
+        model_hub_page: QWidget,
+        ocr_page: QWidget | None = None,
+    ) -> None:
         """Install the regular secondary pages into the main-window shell."""
         self._register_embedded_page("settings", settings_page, "设置")
         self._register_embedded_page("model_hub", model_hub_page, "模型广场")
+        if ocr_page is not None:
+            self._register_embedded_page("ocr", ocr_page, "OCR 屏幕翻译")
         signal = getattr(settings_page, "model_hub_requested", None)
         if signal is not None:
             signal.connect(self.show_model_hub_page)
@@ -776,6 +784,9 @@ class MainWindow(QWidget):
     def show_model_hub_page(self) -> None:
         self._open_in_app_page("model_hub")
 
+    def show_ocr_page(self) -> None:
+        self._open_in_app_page("ocr")
+
     def close_in_app_page(self) -> None:
         if not self._page_layer.isVisible():
             return
@@ -823,6 +834,13 @@ class MainWindow(QWidget):
             card.clicked.connect(self.set_mode)
             self.mode_cards[m] = card
             lay.addWidget(card)
+
+        self.ocr_btn = QPushButton("OCR 屏幕翻译", panel)
+        self.ocr_btn.setObjectName("secondaryButton")
+        self.ocr_btn.setMinimumHeight(44)
+        self.ocr_btn.setToolTip("截图 OCR 或选定屏幕范围实时翻译")
+        self.ocr_btn.clicked.connect(self.ocr_requested.emit)
+        lay.addWidget(self.ocr_btn)
 
         lay.addSpacing(4)
         pair_label = QLabel("语言对", panel)

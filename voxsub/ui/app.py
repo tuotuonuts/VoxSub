@@ -48,6 +48,7 @@ from voxsub.ui.installer_shutdown import (  # noqa: E402
 )
 from voxsub.ui.main_window import MainWindow  # noqa: E402
 from voxsub.ui.model_hub_window import ModelHubWindow  # noqa: E402
+from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
 from voxsub.ui.settings_window import SettingsWindow  # noqa: E402
 from voxsub.ui.subtitle_overlay import SubtitleOverlay  # noqa: E402
 from voxsub.ui.release_notes import show_release_notes_once  # noqa: E402
@@ -113,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     diagnostics_win = DiagnosticsWindow(
         store=store, diagnostics_module=diagnostics_module)
     model_hub_win = ModelHubWindow(store=store)
-    win.install_in_app_pages(settings_win, model_hub_win)
+    ocr_workspace = OcrWorkspace(store=store)
+    win.install_in_app_pages(settings_win, model_hub_win, ocr_workspace)
     settings_win.set_storage_change_guard(model_hub_win.has_active_downloads)
     settings_win.model_storage_changed.connect(
         lambda _root: model_hub_win.reload_model_storage())
@@ -124,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
             settings_win.refresh_tts_model_choices() if task == "tts" else None
         )
     )
-    logger.info("窗口组件已创建: 主窗 / 浮窗 / 内置模型广场 / 内置设置 / 诊断")
+    logger.info(
+        "窗口组件已创建: 主窗 / 浮窗 / 内置模型广场 / 内置设置 / OCR / 诊断"
+    )
 
     tray = TrayIcon.create(make_app_icon(), win)
 
@@ -231,13 +235,22 @@ def main(argv: list[str] | None = None) -> int:
         win.raise_()
         win.activateWindow()
 
+    def _show_ocr() -> None:
+        if not win.isVisible():
+            win.show()
+        win.show_ocr_page()
+        win.raise_()
+        win.activateWindow()
+
     win.settings_requested.connect(_show_settings)
     win.diagnostics_requested.connect(_show_diagnostics)
     win.model_hub_requested.connect(_show_model_hub)
+    win.ocr_requested.connect(_show_ocr)
     win.show()
     QTimer.singleShot(0, lambda: show_release_notes_once(win, store, _UI_VERSION))
     # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
     app.aboutToQuit.connect(model_hub_win.shutdown)
+    app.aboutToQuit.connect(ocr_workspace.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
     app.aboutToQuit.connect(installer_shutdown.close)
     app.aboutToQuit.connect(lambda: logger.info("应用退出"))

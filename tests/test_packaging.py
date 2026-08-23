@@ -56,3 +56,15 @@ def test_release_build_requires_the_validated_no_npuw_runtime():
     assert "NPU_USE_NPUW" in builder
     assert "A private NPUW compile option remains" in builder
     assert "openvino_intel_npu_plugin.dll" in builder
+
+
+def test_release_build_collects_the_offline_ocr_runtime():
+    build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    entrypoint = (ROOT / "run_app.py").read_text(encoding="utf-8")
+
+    assert "rapidocr==3.9.2" in requirements
+    assert '"--collect-all", "rapidocr"' in build
+    assert '"--collect-all", "cv2"' in build
+    assert '"--hidden-import", "voxsub.ui.ocr_workspace"' in build
+    assert '"--ocr-smoke"' in entrypoint
