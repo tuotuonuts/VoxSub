@@ -18,7 +18,7 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 
 ## 下载与候选包
 
-- 本地候选包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.6.0-beta.exe`（未签名），214,803,769 字节（204.85 MiB）；SHA256 `8E2463AB10D6357E404B9AE47109A6EF5D0353D2DCD3D80851580A569D9CD84D`。请先本地验证，尚未创建 GitHub Release。
+- 本地候选包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.6.0-beta.exe`（未签名），214,819,528 字节（204.87 MiB）；SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`。请先本地验证，尚未创建 GitHub Release。
 - 已发布版本：[VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) 中的 `VoxSub-Setup-0.5.0-beta.exe`（未签名），214,795,950 字节（204.85 MiB）；SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`。
 - 上一个版本：[VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta)。
 
@@ -76,7 +76,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.6.0-beta` 本地候选安装包为 214,803,769 字节，SHA256 `8E2463AB10D6357E404B9AE47109A6EF5D0353D2DCD3D80851580A569D9CD84D`。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.6.0-beta` 本地候选安装包为 214,819,528 字节，SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`。
 
 ## 目录结构
 

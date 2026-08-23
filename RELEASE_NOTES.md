@@ -26,10 +26,11 @@
 ### 验证
 
 - 新增独立 `LiveDraftState` 状态模型和 stale-result、终句优先、双语草稿 UI、partial 纠偏测试。
-- 源码与正式构建门禁均为 `248 passed, 8 skipped`；唯一 warning 是声卡闭环测试报告的一次录音数据 discontinuity，测试本身通过。
-- 候选安装包 `VoxSub-Setup-0.6.0-beta.exe` 为 214,803,769 字节（204.85 MiB），SHA256 `8E2463AB10D6357E404B9AE47109A6EF5D0353D2DCD3D80851580A569D9CD84D`；当前证书库无可用 VoxSub 代码签名证书，因此成品未签名。
+- 源码与正式构建门禁均为 `251 passed, 8 skipped`；唯一 warning 是声卡闭环测试报告的一次录音数据 discontinuity，测试本身通过。
+- 真实 Qwen3 ASR + Zipformer 旁路 + VAD 音频链路产生 7 次草稿更新后正常提交终句；开关开启、关闭以及非智能上下文旁路均有自动化覆盖。
+- 候选安装包 `VoxSub-Setup-0.6.0-beta.exe` 为 214,819,528 字节（204.87 MiB），SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`；当前证书库无可用 VoxSub 代码签名证书，因此成品未签名。
 - 打包目录使用全新隔离配置启动 12 秒未提前退出；日志确认 `ui=0.6.0-beta core=0.6.0-beta`、窗口组件创建完成并进入事件循环。
-- 源码提交 `5105abe` 已推送 GitHub `main`；本版本不会在用户验证前创建 GitHub Release。
+- 修复提交 `a7c29f3` 与开关提交 `0e26367` 已推送 GitHub `main`；本版本不会在用户验证前创建 GitHub Release。
 
 ## 版本: v0.5.0-beta（2026-08-24，已发布）
 
