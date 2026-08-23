@@ -37,7 +37,7 @@ logger = get_logger("ui.app")
 
 from voxsub.ui import __version__ as _UI_VERSION  # noqa: E402
 from voxsub import diagnostics as diagnostics_module  # noqa: E402
-from voxsub.ui.config_store import ConfigStore  # noqa: E402
+from voxsub.config_store import ConfigStore  # noqa: E402
 from voxsub.ui.diagnostics_window import DiagnosticsWindow  # noqa: E402
 from voxsub.ui.icons import make_app_icon  # noqa: E402
 from voxsub.ui.i18n import language_manager, tr  # noqa: E402

@@ -13,6 +13,7 @@ import pytest
 from voxsub.process_audio import (
     CaptureTarget,
     ProcessLoopbackSource,
+    _PROCESS_CAPTURE_QUEUE_MAX,
     _capture_root_pid,
     list_capture_targets,
 )
@@ -26,6 +27,12 @@ def test_capture_target_label() -> None:
 def test_process_source_rejects_invalid_pid() -> None:
     with pytest.raises(ValueError, match="正整数"):
         ProcessLoopbackSource(0)
+
+
+def test_process_source_callback_queue_is_bounded() -> None:
+    source = ProcessLoopbackSource(42)
+
+    assert source._queue.maxsize == _PROCESS_CAPTURE_QUEUE_MAX  # noqa: SLF001
 
 
 def test_teams_child_window_promotes_to_host_process() -> None:

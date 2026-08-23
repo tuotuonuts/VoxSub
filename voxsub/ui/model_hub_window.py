@@ -32,7 +32,7 @@ from voxsub.model_catalog import (
 )
 from voxsub.models import DownloadCancelled
 from voxsub.npu_validation import npu_compatibility
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 from voxsub.ui.i18n import (
     language_manager,
     retranslate_widget_tree,

@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from voxsub.pipeline import Pipeline, SubtitleLine
+from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine
 
 
 # ---------- 工具 ----------
@@ -124,9 +124,11 @@ def test_start_stop_with_fake_source(monkeypatch) -> None:
     monkeypatch.setattr(p, "_make_source", lambda: FakeSource())
     p.start()
     assert p.is_running()
+    assert p.state is PipelineState.RUNNING
     time.sleep(1.0)
     p.stop()
     assert not p.is_running()
+    assert p.state is PipelineState.IDLE
     assert any("启动" in m or "运行" in m or "停止" in m for m in msgs)
 
 
@@ -309,6 +311,29 @@ def test_translation_is_queued_outside_asr_thread() -> None:
     p._translation_input_done.set()  # noqa: SLF001
     p._translation_loop()  # noqa: SLF001
     assert calls == ["原文"]
+
+
+def test_recognition_backpressure_stops_instead_of_growing_unbounded() -> None:
+    p = Pipeline()
+    p._recognition_queue = queue.Queue(maxsize=1)  # noqa: SLF001
+    p._recognition_queue.put(object())  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="识别后端持续落后"):
+        p._queue_generative_audio(np.ones(320, dtype=np.float32))  # noqa: SLF001
+
+    assert p._stop_evt.is_set()  # noqa: SLF001
+
+
+def test_translation_backpressure_stops_instead_of_growing_unbounded() -> None:
+    p = Pipeline()
+    p._translation_queue = queue.Queue(maxsize=1)  # noqa: SLF001
+    p._translation_queue.put("已有字幕")  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="翻译后端持续落后"):
+        p._on_sentence("新的字幕")  # noqa: SLF001
+
+    assert p._stop_evt.is_set()  # noqa: SLF001
+    assert "新的字幕" not in p._translation_times  # noqa: SLF001
 
 
 def test_pipeline_rejects_stt_text_in_the_wrong_language() -> None:

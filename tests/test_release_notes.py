@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
+from voxsub import __version__
 from voxsub.ui.config_store import ConfigStore
 from voxsub.ui.i18n import language_manager
 from voxsub.ui.release_notes import release_history_text, show_release_notes_once
@@ -26,13 +27,13 @@ def test_release_notes_are_shown_only_once_for_a_version(qapp, tmp_path: Path):
     store = ConfigStore(tmp_path / "config.json")
     parent = QWidget()
 
-    first = show_release_notes_once(parent, store, "0.4.1-beta")
+    first = show_release_notes_once(parent, store, __version__)
     qapp.processEvents()
 
     assert first is not None
-    assert store.get("release_notes_seen_version") == "0.4.1-beta"
-    assert show_release_notes_once(parent, store, "0.4.1-beta") is None
-    assert "模型保存和字幕浮窗更顺手" in release_history_text()
+    assert store.get("release_notes_seen_version") == __version__
+    assert show_release_notes_once(parent, store, __version__) is None
+    assert "更稳定的长时间同传与模型管理" in release_history_text()
 
     first.close()
     first.deleteLater()
@@ -45,10 +46,10 @@ def test_release_notes_can_be_shown_for_a_newer_version(qapp, tmp_path: Path):
     store.set("release_notes_seen_version", "0.4.0-beta")
     parent = QWidget()
 
-    dialog = show_release_notes_once(parent, store, "0.4.1-beta")
+    dialog = show_release_notes_once(parent, store, __version__)
 
     assert dialog is not None
-    assert store.get("release_notes_seen_version") == "0.4.1-beta"
+    assert store.get("release_notes_seen_version") == __version__
     dialog.close()
     dialog.deleteLater()
     parent.deleteLater()

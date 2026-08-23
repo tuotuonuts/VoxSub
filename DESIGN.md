@@ -27,15 +27,31 @@ voxsub/
   asr/        sherpa-onnx Zipformer / Fun-ASR-Nano / Qwen3-ASR 适配，句子回调
   cloud_stt/  OpenAI 兼容 /v1/audio/transcriptions 客户端，WAV 分段上传
   translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
-  tts/        piper 合成封装
+  tts.py      piper 合成封装
+  tts_worker.py  有界异步合成/播放队列，失败降级为仅字幕
   router/     设备枚举（CPU/GPU/NPU）+ 按任务实测计分 + 降级链
   diagnostics/ 自检中心、模型完整性、冒烟测试
-  models/     通用下载器（镜像/断点/SHA256）、本地缓存管理
+  downloader.py  镜像/断点/尺寸/SHA256/原子完成提交
+  models.py   本地模型清单与缓存管理
   model_catalog/ 精选模型目录、硬件推荐、双源安装/切换/卸载
-  config/     config.json 读写（语言对/档位/设备/UI 偏好）
-  ui/         PySide6：主窗、托盘、悬浮字幕窗、设置页
-  pipeline/   三模式编排（A/B/C）
+  config_store.py  带 schema/版本迁移的 config.json 原子读写
+  file_transcriber.py  C 模式文件解码、识别与翻译
+  realtime_builder.py  A/B 模式识别组件的事务式构建
+  subtitles.py  SRT/VTT/TXT 格式化与原子导出
+  ui/         PySide6 视图 + Qt 无关会话/字幕/调优状态模型
+  pipeline.py 三模式生命周期与线程编排
 ```
+
+### 依赖方向
+
+- `voxsub.ui` 可以依赖包根的业务与基础设施模块；包根模块不得反向导入
+  `voxsub.ui`，保证诊断、模型管理和命令行工具无需加载 Qt 即可运行。
+- 通用配置入口是 `voxsub.config_store.ConfigStore`；
+  `voxsub.ui.config_store` 仅保留为旧调用方的兼容导入。
+- 跨模块共享的文件写入必须使用 `voxsub.file_io` 的原子写工具，避免崩溃或
+  断电留下半个 JSON/字幕文件。
+- 上述第一条由 `tests/test_architecture.py` 自动守卫；新增核心模块时不得通过
+  延迟导入绕过依赖方向。
 
 ## 核心接口契约
 

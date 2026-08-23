@@ -41,14 +41,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from voxsub.file_io import write_text_atomically
-from voxsub.model_storage import resolve_models_root
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
+from voxsub.ui.conversation_export import write_conversation_snapshot
 from voxsub.ui.file_dialogs import choose_open_file, choose_save_file
 from voxsub.ui.i18n import language_manager, retranslate_widget_tree, tr
 from voxsub.ui.pipeline_client import get_pipeline
+from voxsub.ui.pipeline_configurator import apply_pipeline_config
 from voxsub.ui.selection_controls import ToggleSwitch
 from voxsub.ui.theme import DESIGN_TOKENS
+from voxsub.ui.view_models import ConversationSession
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("ui.main_window")
@@ -552,8 +553,9 @@ class MainWindow(QWidget):
         self._mode = self._store.get("mode", "a")
         self._lang_pair = self._store.get("lang_pair", "zh-en")
         self._overlay = None  # 由 app.py 注入（避免硬依赖，保持可单测）
-        self._conversation: list[tuple[str, str, int]] = []
-        self._session_started_at: float | None = None
+        self._conversation_session = ConversationSession()
+        # Compatibility view retained for integrations that inspect the list.
+        self._conversation = self._conversation_session.entries
         self._bridge = _PipelineBridge(self)
         self._pipeline_busy = False
         self._pipeline_worker: threading.Thread | None = None
@@ -1073,26 +1075,7 @@ class MainWindow(QWidget):
     def _write_conversation_snapshot(
         conversation: tuple[tuple[str, str, int], ...], path: Path
     ) -> Path:
-        """Write an immutable conversation snapshot without touching Qt widgets."""
-        from voxsub.pipeline import Pipeline, SubtitleLine
-
-        lines = [SubtitleLine(text=src, translation=dst, ts_ms=ts)
-                 for src, dst, ts in conversation]
-        out = Path(path)
-        suffix = out.suffix.lower()
-        if suffix == ".srt":
-            Pipeline.write_srt(lines, out)
-        elif suffix == ".vtt":
-            Pipeline.write_vtt(lines, out)
-        else:
-            if suffix != ".txt":
-                out = out.with_suffix(".txt")
-            write_text_atomically(
-                out,
-                "\n\n".join(f"{line.text}\n{line.translation}" for line in lines),
-                encoding="utf-8",
-            )
-        return out
+        return write_conversation_snapshot(conversation, path)
 
     def _begin_save_conversation(self) -> bool:
         """Choose a destination, then export from a worker thread."""
@@ -1123,7 +1106,7 @@ class MainWindow(QWidget):
                 ".srt" if "SRT" in chosen_filter else
                 ".vtt" if "WebVTT" in chosen_filter else ".txt"
             )
-        snapshot = tuple(self._conversation)
+        snapshot = self._conversation_session.snapshot()
         self._session_export_busy = True
         self.save_conversation_btn.setEnabled(False)
         self.save_conversation_btn.setText(tr("正在保存…"))
@@ -1157,8 +1140,7 @@ class MainWindow(QWidget):
             self._on_status(f"{tr('保存失败')}: {detail}")
 
     def clear_conversation(self) -> None:
-        self._conversation.clear()
-        self._session_started_at = None
+        self._conversation_session.clear()
         self.subtitle_list.clear()
         if self._overlay is not None:
             try:
@@ -1212,41 +1194,13 @@ class MainWindow(QWidget):
     def _apply_pipeline_config(self) -> None:
         """每次启动前从设置读取完整配置，避免设置窗口与 Pipeline 脱节。"""
         cfg = self._store.load()
-        pair = str(cfg.get("lang_pair", "zh-en"))
-        src, dst = pair.split("-", 1) if "-" in pair else ("zh", "en")
-        tier_map = {"fast": "opus-fast", "quality": "qwen-quality", "cloud": "cloud"}
         try:
-            self.pipeline.set_models_dir(resolve_models_root(self._store))
-            self.pipeline.set_langs(src, dst)
-            self.pipeline.set_tts(bool(cfg.get("tts_enabled", False)))
-            self.pipeline.set_audio_devices(
-                str(cfg.get("mic_device_id", "")),
-                str(cfg.get("loopback_device_id", "")),
+            apply_pipeline_config(
+                self.pipeline,
+                cfg,
+                mode=self._mode,
+                store=self._store,
             )
-            self.pipeline.set_capture_process(
-                int(cfg.get("capture_process_id", 0) or 0),
-                str(cfg.get("capture_window_title", "")),
-            )
-            self.pipeline.set_stt(
-                str(cfg.get("stt_provider", "local")), cfg)
-            self.pipeline.set_asr_model(str(cfg.get(
-                "asr_model_id", "asr-zipformer-bilingual-fast")))
-            self.pipeline.set_asr_tuning({
-                "profile": str(cfg.get("asr_tuning_profile", "auto")),
-                "vad_threshold": float(cfg.get("asr_vad_threshold", 0.35)),
-                "silence_ms": int(cfg.get("asr_silence_ms", 650)),
-                "max_utterance_ms": int(cfg.get("asr_max_utterance_ms", 12000)),
-                "beam_paths": int(cfg.get("asr_beam_paths", 4)),
-                "max_new_tokens": int(cfg.get("asr_max_new_tokens", 512)),
-                "hotwords": str(cfg.get("asr_hotwords", "")),
-            })
-            self.pipeline.set_recording(
-                self._mode == "a" and bool(cfg.get("record_with_translation", False)))
-            self.pipeline.set_translator(
-                tier_map.get(str(cfg.get("translate_tier", "fast")), "opus-fast"), cfg)
-            input_file = str(cfg.get("last_input_file", ""))
-            if input_file:
-                self.pipeline.set_input_file(input_file)
         except AttributeError:
             logger.debug("Pipeline 为旧契约，部分配置未接入", exc_info=True)
 
@@ -1387,10 +1341,7 @@ class MainWindow(QWidget):
 
     def _on_utterance(self, src: str, dst: str) -> None:
         """(原文, 译文) → 字幕流 + 悬浮窗（若注入）。"""
-        now = time.monotonic()
-        if self._session_started_at is None:
-            self._session_started_at = now
-        self._conversation.append((src, dst, int((now - self._session_started_at) * 1000)))
+        self._conversation_session.append(src, dst)
         self.subtitle_list.add_subtitle(src, dst)
         if self._overlay is not None:
             try:

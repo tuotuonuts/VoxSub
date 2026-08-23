@@ -21,6 +21,7 @@ from voxsub.audio import AudioSource, CHUNK_FRAMES, SAMPLE_RATE, resample_16k
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("process_audio")
+_PROCESS_CAPTURE_QUEUE_MAX = 400  # 约 12 秒（30 ms/chunk）的突发余量
 
 
 _TEAMS_PROCESS_NAMES = frozenset({
@@ -130,79 +131,90 @@ def list_capture_targets() -> list[CaptureTarget]:
     return sorted(by_pid.values(), key=lambda x: (x.process_name.casefold(), x.window_title.casefold()))
 
 
+class _StreamingCaptureMixin:
+    """recap callback implementation kept separate from its optional base."""
+
+    _voxsub_process_id: int
+    _voxsub_output: "queue.Queue[np.ndarray]"
+
+    def _capture_loop(self) -> None:
+        try:
+            self._capture_loop_impl()
+        except Exception as exc:  # 在线程内保存，start() 在调用线程上报告
+            self.capture_error = exc
+            logger.exception("按应用音频捕获线程失败: pid=%d", self._voxsub_process_id)
+            self._format_event.set()
+            self._started_event.set()
+        finally:
+            self._running = False
+
+    def _packet_mono(self, data_ptr: int, num_frames: int,
+                     bytes_per_frame: int, flags: int) -> np.ndarray:
+        if flags & 0x2:  # AUDCLNT_BUFFERFLAGS_SILENT
+            return np.zeros(num_frames, dtype=np.float32)
+        import ctypes
+
+        size = num_frames * bytes_per_frame
+        raw = bytes((ctypes.c_char * size).from_address(data_ptr))
+        if self._is_float:
+            samples = np.frombuffer(raw, dtype="<f4").astype(np.float32)
+        elif self._bits_per_sample == 16:
+            samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+        elif self._bits_per_sample == 32:
+            samples = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+        else:
+            raise RuntimeError(f"不支持的进程音频位深: {self._bits_per_sample}")
+        channels = max(1, int(self._channels))
+        return (samples.reshape(-1, channels).mean(axis=1)
+                if channels > 1 else samples.reshape(-1))
+
+    def _publish_chunks(self, mono: np.ndarray) -> None:
+        mono = resample_16k(mono, int(self._sample_rate))
+        data = (np.concatenate([self._mono_buffer, mono])
+                if self._mono_buffer.size else mono)
+        full = (data.size // CHUNK_FRAMES) * CHUNK_FRAMES
+        for offset in range(0, full, CHUNK_FRAMES):
+            chunk = data[offset:offset + CHUNK_FRAMES].astype(np.float32, copy=True)
+            try:
+                self._voxsub_output.put_nowait(chunk)
+            except queue.Full:
+                try:
+                    self._voxsub_output.get_nowait()
+                    self._voxsub_output.put_nowait(chunk)
+                except (queue.Empty, queue.Full):
+                    logger.debug("进程音频回调队列竞争，丢弃一个过期块")
+        self._mono_buffer = data[full:].copy()
+
+    def _drain_packets(self, capture_client, bytes_per_frame: int) -> None:
+        while True:
+            packet_size = capture_client.GetNextPacketSize()
+            if packet_size == 0:
+                return
+            data_ptr, num_frames, flags, _, _ = capture_client.GetBuffer()
+            try:
+                if num_frames > 0:
+                    self._publish_chunks(self._packet_mono(
+                        data_ptr, num_frames, bytes_per_frame, flags))
+            finally:
+                capture_client.ReleaseBuffer(num_frames)
+
+
 class _StreamingRecapCapture:
     """把 recap 的 process-loopback 捕获器改造成内存 PCM 队列。"""
 
     def __init__(self, process_id: int, output: "queue.Queue[np.ndarray]") -> None:
         from recap.audio import AudioCapture
 
-        owner = self
-
-        class _Capture(AudioCapture):
+        class _Capture(_StreamingCaptureMixin, AudioCapture):
             def __init__(self) -> None:
                 fd, path = tempfile.mkstemp(prefix="voxsub-process-", suffix=".wav")
                 os.close(fd)
                 self._voxsub_temp = Path(path)
                 self.capture_error: Exception | None = None
                 self._mono_buffer = np.zeros(0, dtype=np.float32)
+                self._voxsub_process_id = process_id
+                self._voxsub_output = output
                 super().__init__(self._voxsub_temp, process_id=process_id)
-
-            def _capture_loop(self) -> None:
-                try:
-                    self._capture_loop_impl()
-                except Exception as exc:  # 在线程内保存，start() 在调用线程上报告
-                    self.capture_error = exc
-                    logger.exception("按应用音频捕获线程失败: pid=%d", process_id)
-                    self._format_event.set()
-                    self._started_event.set()
-                finally:
-                    self._running = False
-
-            def _drain_packets(self, capture_client, bytes_per_frame: int) -> None:
-                silent_flag = 0x2
-                while True:
-                    packet_size = capture_client.GetNextPacketSize()
-                    if packet_size == 0:
-                        break
-                    data_ptr, num_frames, flags, _, _ = capture_client.GetBuffer()
-                    try:
-                        if num_frames <= 0:
-                            continue
-                        if flags & silent_flag:
-                            mono = np.zeros(num_frames, dtype=np.float32)
-                        else:
-                            import ctypes
-
-                            size = num_frames * bytes_per_frame
-                            raw = bytes((ctypes.c_char * size).from_address(data_ptr))
-                            if self._is_float:
-                                samples = np.frombuffer(raw, dtype="<f4").astype(np.float32)
-                            elif self._bits_per_sample == 16:
-                                samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                            elif self._bits_per_sample == 32:
-                                samples = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-                            else:
-                                raise RuntimeError(f"不支持的进程音频位深: {self._bits_per_sample}")
-                            channels = max(1, int(self._channels))
-                            mono = (samples.reshape(-1, channels).mean(axis=1)
-                                    if channels > 1 else samples.reshape(-1))
-                        mono = resample_16k(mono, int(self._sample_rate))
-                        data = (np.concatenate([self._mono_buffer, mono])
-                                if self._mono_buffer.size else mono)
-                        full = (data.size // CHUNK_FRAMES) * CHUNK_FRAMES
-                        for i in range(0, full, CHUNK_FRAMES):
-                            chunk = data[i:i + CHUNK_FRAMES].astype(np.float32, copy=True)
-                            try:
-                                output.put_nowait(chunk)
-                            except queue.Full:
-                                try:
-                                    output.get_nowait()
-                                    output.put_nowait(chunk)
-                                except queue.Empty:
-                                    pass
-                        self._mono_buffer = data[full:].copy()
-                    finally:
-                        capture_client.ReleaseBuffer(num_frames)
 
         self.capture = _Capture()
 
@@ -221,11 +233,12 @@ class ProcessLoopbackSource(AudioSource):
             raise ValueError("process_id 必须为正整数")
         self.process_id = int(process_id)
         self._chunk_frames = int(chunk_frames)
-        # The Pipeline capture thread continuously drains this queue, including
-        # while the user pauses.  Keep it unbounded so COM callback bursts never
-        # discard the beginning of a word; the downstream pipeline owns the
-        # explicit 10-minute memory safety cap.
-        self._queue: "queue.Queue[np.ndarray]" = queue.Queue()
+        # COM callbacks can briefly outrun the Python consumer.  Bound the
+        # hand-off queue as well as Pipeline's queues so a stalled consumer
+        # cannot grow memory forever.  The callback keeps the newest audio by
+        # evicting one oldest chunk on overload (implemented above).
+        self._queue: "queue.Queue[np.ndarray]" = queue.Queue(
+            maxsize=_PROCESS_CAPTURE_QUEUE_MAX)
         self._backend: Optional[_StreamingRecapCapture] = None
         self._running = False
         self._lock = threading.Lock()

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from voxsub.file_io import write_text_atomically
 from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 from voxsub.ui.file_dialogs import choose_save_file
 from voxsub.ui.i18n import (
     language_manager,

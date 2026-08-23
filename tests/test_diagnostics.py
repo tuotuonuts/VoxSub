@@ -215,6 +215,20 @@ def test_fetch_server_ignores_range_200(http_server, tmp_path) -> None:
     assert sha256_of(dest) == expected
 
 
+def test_fetch_does_not_promote_unverified_part_file(http_server, tmp_path) -> None:
+    """A .part file needs size/hash evidence before it can become final."""
+    url, handler = http_server
+    data = _payload(96000)
+    handler.payload = data
+    dest = tmp_path / "unconstrained.bin"
+    dest.with_name(dest.name + ".part").write_bytes(data[:16000])
+
+    assert fetch_file(url, dest) is True
+
+    assert dest.read_bytes() == data
+    assert handler.seen_ranges[0] == "bytes=16000-"
+
+
 def test_fetch_resumes_after_cdn_early_eof(http_server, tmp_path) -> None:
     """CDN 静默提前 EOF 时保留断点，下一请求必须 Range 续传。"""
     url, handler = http_server
@@ -271,3 +285,34 @@ def test_fetch_sha_mismatch_returns_false(http_server, tmp_path) -> None:
     assert mgr.fetch("bad.bin", url, sha256=bogus) is False
     entry = mgr.load_manifest()["files"]["bad.bin"]
     assert entry["status"] == "partial"
+
+
+@pytest.mark.parametrize("rel", ["../outside.bin", "..\\outside.bin"])
+def test_model_manager_rejects_download_path_outside_root(tmp_path: Path, rel: str) -> None:
+    """A damaged catalog path must fail before any network or disk operation."""
+    mgr = ModelManager(tmp_path / "models")
+
+    with pytest.raises(ValueError, match="模型路径"):
+        mgr.fetch(rel, "https://example.invalid/model.bin")
+
+    assert not (tmp_path / "outside.bin").exists()
+
+
+def test_model_manager_reports_unsafe_manifest_path(tmp_path: Path) -> None:
+    """Integrity checks must not follow hand-edited manifest paths elsewhere."""
+    mgr = ModelManager(tmp_path / "models")
+    mgr.save_manifest({
+        "version": 1,
+        "files": {
+            "../outside.bin": {
+                "size": 1,
+                "sha256": "",
+                "status": "ready",
+            },
+        },
+    })
+
+    problems = mgr.verify_all()
+
+    assert problems[0]["rel"] == "../outside.bin"
+    assert problems[0]["status"] == "invalid"

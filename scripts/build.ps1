@@ -9,7 +9,7 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Version = "0.4.1-beta"
+$Version = "0.4.2-beta"
 $LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 

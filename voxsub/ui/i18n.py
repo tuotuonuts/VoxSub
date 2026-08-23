@@ -568,6 +568,32 @@ def translate_dynamic(text: str) -> str:
     return translated
 
 
+def _translate_combo(widget: QComboBox) -> None:
+    current = widget.currentData()
+    for index in range(widget.count()):
+        widget.setItemText(index, translate_existing(widget.itemText(index)))
+    if current is None:
+        return
+    selected = next(
+        (index for index in range(widget.count())
+         if widget.itemData(index) == current),
+        None,
+    )
+    if selected is not None:
+        widget.setCurrentIndex(selected)
+
+
+def _translate_metadata(widget: QObject) -> None:
+    if hasattr(widget, "windowTitle") and hasattr(widget, "setWindowTitle"):
+        title = widget.windowTitle()
+        if title:
+            widget.setWindowTitle(translate_existing(title))
+    if hasattr(widget, "toolTip") and hasattr(widget, "setToolTip"):
+        tooltip = widget.toolTip()
+        if tooltip and "<div" not in tooltip:
+            widget.setToolTip(translate_existing(tooltip))
+
+
 def _translate_widget(widget: QObject) -> None:
     object_name = str(getattr(widget, "objectName", lambda: "")())
     if object_name in {"srcText", "dstText", "overlaySrc", "overlayDst"}:
@@ -577,14 +603,7 @@ def _translate_widget(widget: QObject) -> None:
     if isinstance(widget, QLineEdit):
         widget.setPlaceholderText(translate_existing(widget.placeholderText()))
     if isinstance(widget, QComboBox):
-        current = widget.currentData()
-        for index in range(widget.count()):
-            widget.setItemText(index, translate_existing(widget.itemText(index)))
-        if current is not None:
-            for index in range(widget.count()):
-                if widget.itemData(index) == current:
-                    widget.setCurrentIndex(index)
-                    break
+        _translate_combo(widget)
     if isinstance(widget, QTabWidget):
         for index in range(widget.count()):
             widget.setTabText(index, translate_existing(widget.tabText(index)))
@@ -592,14 +611,7 @@ def _translate_widget(widget: QObject) -> None:
         widget.setTitle(translate_existing(widget.title()))
     if isinstance(widget, QMenu):
         widget.setTitle(translate_existing(widget.title()))
-    if hasattr(widget, "windowTitle") and hasattr(widget, "setWindowTitle"):
-        title = widget.windowTitle()
-        if title:
-            widget.setWindowTitle(translate_existing(title))
-    if hasattr(widget, "toolTip") and hasattr(widget, "setToolTip"):
-        tooltip = widget.toolTip()
-        if tooltip and "<div" not in tooltip:
-            widget.setToolTip(translate_existing(tooltip))
+    _translate_metadata(widget)
     if isinstance(widget, QAction):
         widget.setText(translate_existing(widget.text()))
 

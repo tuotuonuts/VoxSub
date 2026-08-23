@@ -17,7 +17,7 @@ from voxsub.logging_setup import get_logger
 from voxsub.models import MANIFEST_NAME, load_manifest, save_manifest
 
 if TYPE_CHECKING:  # pragma: no cover - import only for static checking
-    from voxsub.ui.config_store import ConfigStore
+    from voxsub.config_store import ConfigStore
 
 
 logger = get_logger("model_storage")
@@ -120,7 +120,7 @@ def has_model_data(root: Path | str) -> bool:
 
 def _configured_root(store: "ConfigStore | None" = None) -> Path | None:
     if store is None:
-        from voxsub.ui.config_store import ConfigStore
+        from voxsub.config_store import ConfigStore
 
         store = ConfigStore()
     value = str(store.get("models_root", "") or "").strip()

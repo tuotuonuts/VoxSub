@@ -19,6 +19,7 @@ from typing import Callable, Iterable
 from urllib import request as urlrequest
 
 from voxsub.logging_setup import get_logger
+from voxsub.file_io import copy_file_atomically, write_text_atomically
 from voxsub.hardware import HardwareProfile, detect_hardware, discover_llama_runtimes
 from voxsub.model_storage import model_lookup_roots, resolve_models_root
 from voxsub.models import DownloadCancelled, fetch_file, sha256_of
@@ -556,25 +557,29 @@ RECOMMENDATION_COLORS = {
 }
 
 
+def _llama_capacity(profile: HardwareProfile, model: ModelSpec,
+                    cpu: float) -> tuple[float, str]:
+    required_gb = model.installed_bytes / GIB * 1.18 + 0.5
+    if (model.gpu_supported and profile.has_discrete_gpu and
+            profile.vram_gb >= required_gb):
+        return max(cpu, 115.0 + profile.vram_gb * 7.0), "独立显卡"
+    bundled_openvino = any(
+        runtime.backend == "openvino" for runtime in discover_llama_runtimes())
+    ort_openvino = (profile.has_npu_runtime and
+                    "openvino" in profile.npu_provider.casefold())
+    if (model.npu_supported and (bundled_openvino or ort_openvino) and
+            profile.has_llama_npu and profile.ram_gb >= required_gb + 4.0):
+        return max(cpu, 132.0), "NPU"
+    if (model.igpu_supported and profile.has_integrated_gpu and
+            profile.ram_gb >= required_gb + 4.0):
+        return max(cpu, 82.0), "核显"
+    return cpu, "CPU"
+
+
 def _capacity(profile: HardwareProfile, model: ModelSpec) -> tuple[float, str]:
     cpu = max(24.0, profile.physical_cores * 12.0 + profile.logical_cores * 2.0)
     if model.runtime == "llama-hy-mt2":
-        required_gb = model.installed_bytes / GIB * 1.18 + 0.5
-        if (model.gpu_supported and profile.has_discrete_gpu and
-                profile.vram_gb >= required_gb):
-            return max(cpu, 115.0 + profile.vram_gb * 7.0), "独立显卡"
-        bundled_openvino = any(
-            runtime.backend == "openvino" for runtime in discover_llama_runtimes())
-        ort_openvino = (profile.has_npu_runtime and
-                        "openvino" in profile.npu_provider.casefold())
-        if (model.npu_supported and (bundled_openvino or ort_openvino) and
-                profile.has_llama_npu and
-                profile.ram_gb >= required_gb + 4.0):
-            return max(cpu, 132.0), "NPU"
-        if (model.igpu_supported and profile.has_integrated_gpu and
-                profile.ram_gb >= required_gb + 4.0):
-            return max(cpu, 82.0), "核显"
-        return cpu, "CPU"
+        return _llama_capacity(profile, model, cpu)
     if model.gpu_supported and profile.has_discrete_gpu and profile.gpu_provider:
         return max(cpu, 115.0 + profile.vram_gb * 7.0), "独立显卡"
     if model.npu_supported and profile.has_npu_runtime:
@@ -810,48 +815,67 @@ class ModelMarketplace:
         total = sum(item.size for item in source.files) or model.download_bytes
         completed = 0
         for item in source.files:
-            destination = download_root / item.install_rel
-
             target_file = self.model_dir(model) / item.install_rel
-            if target_file.is_file() and (
-                not item.sha256 or sha256_of(target_file) == item.sha256
-            ):
+            destination = download_root / item.install_rel
+            if self._remote_file_valid(target_file, item):
                 completed += item.size or target_file.stat().st_size
                 if progress:
                     progress(completed, total, source.label)
                 continue
-            if destination.is_file() and (
-                not item.sha256 or sha256_of(destination) == item.sha256
-            ):
+            if self._remote_file_valid(destination, item):
                 completed += item.size or destination.stat().st_size
                 if progress:
                     progress(completed, total, source.label)
                 continue
-
-            def _progress(done: int, _file_total: int, _url: str,
-                          base: int = completed) -> None:
-                if progress:
-                    progress(base + done, total, source.label)
-
-            ok = fetch_file(item.url, destination, expected_sha=item.sha256 or None,
-                            expected_size=item.size or None,
-                            progress=_progress, cancelled=cancelled)
-            if not ok:
-                raise RuntimeError(f"文件下载失败: {item.install_rel}")
+            self._download_remote_file(
+                item, destination, completed, total, source.label,
+                progress, cancelled)
             completed += item.size or destination.stat().st_size
-
         target = self.model_dir(model)
+        self._commit_remote_files(source.files, download_root, target)
+        return target
+
+    @staticmethod
+    def _remote_file_valid(path: Path, item: RemoteFile) -> bool:
+        if not path.is_file():
+            return False
+        if item.size and path.stat().st_size != item.size:
+            return False
+        return not item.sha256 or sha256_of(path) == item.sha256
+
+    @staticmethod
+    def _download_remote_file(
+        item: RemoteFile,
+        destination: Path,
+        completed: int,
+        total: int,
+        source_label: str,
+        progress: Callable[[int, int, str], None] | None,
+        cancelled: Callable[[], bool] | None,
+    ) -> None:
+        def report(done: int, _file_total: int, _url: str) -> None:
+            if progress:
+                progress(completed + done, total, source_label)
+
+        ok = fetch_file(
+            item.url, destination, expected_sha=item.sha256 or None,
+            expected_size=item.size or None, progress=report, cancelled=cancelled,
+        )
+        if not ok:
+            raise RuntimeError(f"文件下载失败: {item.install_rel}")
+
+    @staticmethod
+    def _commit_remote_files(files: tuple[RemoteFile, ...], download_root: Path,
+                             target: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        for item in source.files:
+        for item in files:
             staged = download_root / item.install_rel
             if not staged.is_file():
                 continue
             destination = target / item.install_rel
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(staged, destination)
+            copy_file_atomically(staged, destination)
         if download_root.exists():
             shutil.rmtree(download_root)
-        return target
 
     def _install_archive(self, model: ModelSpec, archive: Path, target: Path) -> None:
         staging_parent = self.models_dir / ".installing"
@@ -913,9 +937,11 @@ class ModelMarketplace:
 
     def _write_state(self, state: dict) -> None:
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._state_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self._state_path)
+        write_text_atomically(
+            self._state_path,
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def _record(self, model: ModelSpec, source_id: str) -> None:
         state = self._read_state()

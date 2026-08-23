@@ -4,10 +4,17 @@ __pycache__/
 .venv/
 *.egg-info/
 .pytest_cache/
+/.pytest-*/
+
+# 本地硬件探针 / 冒烟测试临时目录
+/.npu-probe/
+/.npu-run-*/
+/.smoke-*/
 
 # 构建产物
 build/
 dist/
+/Release/
 *.spec
 
 # 运行时数据（模型/下载缓存不入库）

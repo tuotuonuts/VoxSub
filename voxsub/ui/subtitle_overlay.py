@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import math
-from collections import deque
 
 from PySide6.QtCore import (
     QEvent,
@@ -39,9 +38,10 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 from voxsub.ui.i18n import language_manager, retranslate_widget_tree, tr
 from voxsub.ui.theme import DESIGN_TOKENS
+from voxsub.ui.view_models import SubtitleHistory
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("ui.subtitle_overlay")
@@ -168,8 +168,8 @@ class SubtitleOverlay(QWidget):
         self._resize_start_pos = None
         self._manual_size = bool(self._store.get("overlay_size_customized", False))
         self._wheel_locked = False
-        self._history: deque[tuple[str, str]] = deque(maxlen=_HISTORY_MAX)
-        self._history_pos = 0
+        self._history_model = SubtitleHistory(_HISTORY_MAX)
+        self._history = self._history_model.items
 
         # 内容
         self._box = QVBoxLayout(self)
@@ -518,8 +518,7 @@ class SubtitleOverlay(QWidget):
             self._locked_panel.hide()
 
     def clear_history(self) -> None:
-        self._history.clear()
-        self._history_pos = 0
+        self._history_model.clear()
         self.src_label.clear()
         self.dst_label.clear()
         self._refresh_content_layout("top")
@@ -685,8 +684,7 @@ class SubtitleOverlay(QWidget):
         """更新双语字幕并滚动历史。"""
         self.src_label.setText(src)
         self.dst_label.setText(dst)
-        self._history.append((src, dst))
-        self._history_pos = 0
+        self._history_model.append(src, dst)
         self._pulse.stop()
         self._pulse.setStartValue(max(0.35, self._opacity - 0.35))
         self._pulse.setEndValue(self._opacity)
@@ -1008,17 +1006,15 @@ class SubtitleOverlay(QWidget):
     def _step_history(self, delta: int) -> None:
         if not self._history or self._wheel_locked:
             return
-        if delta > 0:  # 上滚 → 更早的历史
-            self._history_pos = min(len(self._history) - 1, self._history_pos + 1)
-        else:  # 下滚 → 回到最新
-            self._history_pos = max(0, self._history_pos - 1)
-        idx = len(self._history) - 1 - self._history_pos
-        src, dst = self._history[idx]
+        item, hit_edge = self._history_model.step(delta)
+        if item is None:
+            return
+        src, dst = item
         self.src_label.setText(src)
         self.dst_label.setText(dst)
         self._refresh_content_layout("top")
         # 边缘阻尼：到底后 160ms 内不再响应，避免误滚
-        if (delta > 0 and idx == 0) or (delta < 0 and self._history_pos == 0):
+        if hit_edge:
             self._wheel_locked = True
             QTimer.singleShot(160, self._unlock_wheel)
 

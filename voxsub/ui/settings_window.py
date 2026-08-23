@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 from voxsub.ui.i18n import (
     LANGUAGE_EN,
     LANGUAGE_SYSTEM,
@@ -50,6 +50,7 @@ from voxsub.ui.i18n import (
 )
 from voxsub.ui.selection_controls import RoundRadioButton, ToggleSwitch
 from voxsub.ui.theme import AppTheme, DESIGN_TOKENS, load_theme
+from voxsub.ui.view_models import RecognitionTuningDraft
 from voxsub import __version__ as _PKG_VERSION
 from voxsub.logging_setup import get_logger
 from voxsub.logging_setup import set_debug_mode
@@ -212,6 +213,15 @@ class SettingsWindow(QWidget):
     overlay_changed = Signal(dict)
     model_storage_changed = Signal(str)
 
+    @property
+    def _tuning_dirty(self) -> bool:
+        """Compatibility view for existing UI tests and integrations."""
+        return self._tuning_draft.dirty
+
+    @_tuning_dirty.setter
+    def _tuning_dirty(self, value: bool) -> None:
+        self._tuning_draft.dirty = bool(value)
+
     def __init__(
         self,
         store: ConfigStore | None = None,
@@ -222,8 +232,7 @@ class SettingsWindow(QWidget):
         self._store = store or ConfigStore()
         self._overlay = overlay
         self._loading = True
-        self._tuning_snapshot: dict[str, object] = {}
-        self._tuning_dirty = False
+        self._tuning_draft = RecognitionTuningDraft()
         self._embedded = False
         self._storage_worker: _ModelMigrationWorker | None = None
         self._storage_dialog: QFileDialog | None = None
@@ -860,7 +869,7 @@ class SettingsWindow(QWidget):
 
         tuning = self._tuning_from_config(cfg)
         self._apply_tuning_to_controls(tuning)
-        self._tuning_snapshot = dict(tuning)
+        self._tuning_draft.load(tuning)
         self._set_tuning_dirty(False)
 
         self.tts_switch.setChecked(bool(cfg.get("tts_enabled", True)))
@@ -1035,7 +1044,7 @@ class SettingsWindow(QWidget):
             self._loading = was_loading
 
     def _set_tuning_dirty(self, dirty: bool) -> None:
-        self._tuning_dirty = bool(dirty)
+        self._tuning_draft.dirty = bool(dirty)
         if not hasattr(self, "tuning_state_label"):
             return
         self.tuning_state_label.setText(
@@ -1045,7 +1054,8 @@ class SettingsWindow(QWidget):
 
     def _mark_asr_tuning_dirty(self, *_args) -> None:
         if not self._loading:
-            self._set_tuning_dirty(self._collect_asr_tuning() != self._tuning_snapshot)
+            self._set_tuning_dirty(
+                self._tuning_draft.compare(self._collect_asr_tuning()))
 
     def _on_asr_profile_changed(self, _index: int) -> None:
         profile = str(self.asr_profile_combo.currentData() or "auto")
@@ -1074,14 +1084,14 @@ class SettingsWindow(QWidget):
             return
         values = self._collect_asr_tuning()
         self._store.update(values)
-        self._tuning_snapshot = dict(values)
+        self._tuning_draft.commit(values)
         self._set_tuning_dirty(False)
         self.tuning_state_label.setText(tr("已保存 · 下次开始时生效"))
 
     def _discard_asr_tuning(self) -> None:
         values = self._tuning_from_config(self._store.load())
         self._apply_tuning_to_controls(values)
-        self._tuning_snapshot = dict(values)
+        self._tuning_draft.load(values)
         self._set_tuning_dirty(False)
 
     def _reset_asr_tuning(self) -> None:

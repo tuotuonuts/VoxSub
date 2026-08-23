@@ -11,7 +11,7 @@
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.4.1-beta`. This remains a development build. Testing and feedback are welcome, but please expect possible issues with recognition quality, audio-device compatibility, performance, crashes, and UI interactions.
+Source version: `0.4.2-beta`. This candidate is not released yet and its installer is being validated; the public download remains `0.4.1-beta`. This is still a development build.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
@@ -40,6 +40,7 @@ Source version: `0.4.1-beta`. This remains a development build. Testing and feed
 - **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
 - **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
 - **Model storage:** fresh installs use a `Models` folder beside the installed app, organized into purpose folders such as `stt`, `translate`, `vad`, and `tts`. Upgraded installations keep their existing model root until the user changes it. Settings supports changing the location, moving an existing library, and manually importing models; updates do not remove downloaded models.
+- **0.4.2-beta candidate fixes:** centralized config validation and migration; bounded capture, recognition, translation, and TTS queues; a working independent TTS playback worker; integrity checks and atomic writes for downloads, model commits, and subtitle exports; and responsibility-based splits for Pipeline, hardware probing, and llama startup.
 - **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; after a move, the manifest is repaired and the pipeline immediately uses the new root instead of reporting missing files or reopening the old root; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree; long subtitles no longer expand the overlay off-screen.
 - **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
 - **Fullscreen behavior:** opening Settings or Model Hub from a fullscreen main window keeps the app fullscreen.

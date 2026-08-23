@@ -25,12 +25,18 @@ from collections import deque
 from pathlib import Path
 
 from voxsub.logging_setup import get_logger
-from voxsub.hardware import LlamaRuntime, detect_hardware, select_llama_runtime
+from voxsub.hardware import (
+    HardwareProfile,
+    LlamaRuntime,
+    detect_hardware,
+    select_llama_runtime,
+)
 from voxsub.language_guard import normalize_language
 from voxsub.model_storage import resolve_models_root
 
 from ._http_client import OpenAICompatError, chat_completion
 from .base import TranslationError, Translator
+from .llama_launch import build_llama_launch_plan
 
 logger = get_logger("translate.qwen")
 
@@ -206,7 +212,7 @@ class QwenQualityTranslator(Translator):
                     attempt + 1, exc,
                 )
 
-    def _spawn_once(self) -> None:
+    def _select_runtime(self) -> tuple[HardwareProfile, LlamaRuntime | None]:
         if self._model_path is None or not self._model_path.exists():
             logger.warning("质量档模型缺失, 拒绝 spawn: %s (请用 scripts/model_fetch.py 下载)",
                            self._model_path)
@@ -227,73 +233,22 @@ class QwenQualityTranslator(Translator):
                            self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
-        port = self._pick_free_port()
-        gpu_layers = self._n_gpu_layers
-        if gpu_layers is None:
-            gpu_layers = self._auto_gpu_layers(profile, runtime)
-        effective_ctx = self._n_ctx
-        if runtime is not None and runtime.backend == "openvino" and runtime.target == "NPU":
-            # OpenVINO NPU uses a static graph.  The official backend guidance
-            # recommends an explicit small context because a model's large
-            # training context can otherwise cause compile-time OOM. Subtitle
-            # translation does not need more than 1024 tokens of context.
-            effective_ctx = min(effective_ctx, 1024)
-        cmd = [str(self._server_exe),
-               "--model", str(self._model_path),
-               "--host", "127.0.0.1",
-               "--port", str(port),
-               "--ctx-size", str(effective_ctx),
-               "--n-gpu-layers", str(gpu_layers),
-               "--threads", str(self._n_threads),
-               ]
-        if runtime is not None and runtime.backend == "openvino" and runtime.target == "NPU":
-            # llama.cpp's OpenVINO NPU backend accepts only one sequence.
-            # Make this explicit so a server-default change cannot cause an
-            # opaque NPU startup failure.
-            cmd.extend(["--parallel", "1"])
-        # 隐藏子进程控制台窗口, 避免抢占用户
-        flags = 0
+        return profile, runtime
+
+    def _start_server_process(self, cmd: list[str], child_env: dict[str, str]) -> None:
         try:
-            import subprocess as sp
-            flags = getattr(sp, "CREATE_NO_WINDOW", 0)
-        except Exception:
-            pass
-        try:
-            child_env = os.environ.copy()
-            if runtime is not None and runtime.backend == "openvino":
-                # llama.cpp exposes its OpenVINO backend as OPENVINO0. Without
-                # this explicit device selection, the server can start on a
-                # different backend while the UI still reports the requested
-                # NPU target.
-                cmd[1:1] = ["--device", "OPENVINO0"]
-                child_env["GGML_OPENVINO_DEVICE"] = runtime.target or "CPU"
-                if runtime.target in {"GPU", "NPU"}:
-                    # Never silently report an accelerator when OpenVINO had
-                    # to fall back to CPU. A startup failure is handled by
-                    # the existing runtime downgrade chain.
-                    child_env["GGML_OPENVINO_ENABLE_FALLBACK"] = "0"
-                if runtime.target == "GPU":
-                    child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "1"
-                elif runtime.target == "NPU":
-                    # NPU supports stateless execution only.  Streaming weight
-                    # conversion lowers peak host-memory pressure for 7B
-                    # candidates, and the compiled-model cache avoids repeating
-                    # that work on later launches when the backend can reuse it.
-                    child_env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "0"
-                    child_env["GGML_OPENVINO_MEMORY_OPTIMIZE"] = "1"
-                    cache_dir = (
-                        Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-                        / "VoxSub" / "cache" / "openvino-compiled"
-                    )
-                    cache_dir.mkdir(parents=True, exist_ok=True)
-                    child_env["GGML_OPENVINO_COMPILED_MODEL_CACHE_DIR"] = str(cache_dir)
             self._proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1,
-                creationflags=flags, env=child_env)
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=child_env)
         except OSError as exc:
             logger.exception("llama-server 进程启动失败 (exe=%s)", self._server_exe)
             raise TranslationError(f"llama-server 启动失败: {exc}") from exc
+
+    def _activate_server(self, port: int, runtime: LlamaRuntime | None,
+                         gpu_layers: int, effective_ctx: int) -> None:
+        if self._proc is None:
+            raise TranslationError("llama-server 进程创建后未返回句柄")
         self._port = port
         self._endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
         self._server_output_tail.clear()
@@ -306,6 +261,9 @@ class QwenQualityTranslator(Translator):
                     runtime.target if runtime else "CPU", port, self._proc.pid,
                     gpu_layers, effective_ctx,
                     runtime.selection_reason if runtime else "CPU fallback")
+
+    def _validate_server_startup(self, port: int,
+                                 runtime: LlamaRuntime | None) -> None:
         try:
             startup_timeout = 600.0 if (
                 runtime is not None and
@@ -333,6 +291,24 @@ class QwenQualityTranslator(Translator):
             proc, failed_port = self._clear_server_state()
             self._terminate_process(proc, failed_port)
             raise
+
+    def _spawn_once(self) -> None:
+        profile, runtime = self._select_runtime()
+        port = self._pick_free_port()
+        gpu_layers = (self._n_gpu_layers if self._n_gpu_layers is not None else
+                      self._auto_gpu_layers(profile, runtime))
+        plan = build_llama_launch_plan(
+            server_exe=self._server_exe,
+            model_path=self._model_path,
+            port=port,
+            context_size=self._n_ctx,
+            threads=self._n_threads,
+            gpu_layers=gpu_layers,
+            runtime=runtime,
+        )
+        self._start_server_process(list(plan.command), plan.environment)
+        self._activate_server(port, runtime, plan.gpu_layers, plan.context_size)
+        self._validate_server_startup(port, runtime)
 
     def _probe_runtime_inference(self, timeout_sec: float = 180.0) -> None:
         """Require one real completion before accepting a candidate NPU route."""
@@ -579,7 +555,10 @@ class QwenQualityTranslator(Translator):
 
     def __del__(self):
         try:
-            self.close()
+            # Logging/capture streams may already be closed during interpreter
+            # shutdown, so finalization performs only the idempotent cleanup.
+            proc, port = self._clear_server_state()
+            self._terminate_process(proc, port)
         except Exception:
             pass
 

@@ -19,32 +19,48 @@ scripts/model_fetch.py 保留为薄 CLI 壳, 直接调用本模块 (不重复代
 """
 from __future__ import annotations
 
-import hashlib
-import http.client
 import json
 import time
-from pathlib import Path
-from typing import Any, Callable, Iterable
-from urllib import error as urlerror
-from urllib import request as urlrequest
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
+from voxsub.downloader import CHUNK, DownloadCancelled, fetch_file, sha256_of
+from voxsub.file_io import write_text_atomically
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("models")
 
 MANIFEST_NAME = "manifest.json"
-CHUNK = 1 << 20  # 1MB 分块读写
-DOWNLOAD_ATTEMPTS_PER_SOURCE = 3
-
-
-class DownloadCancelled(RuntimeError):
-    """Raised when a marketplace download is cancelled by the user."""
-
-
 def _is_internal_artifact(rel: str) -> bool:
     """返回是否为模型管理器自己的锁/临时文件，而非模型资产。"""
     name = Path(rel).name
     return name in {MANIFEST_NAME, ".fetch.lock", f"{MANIFEST_NAME}.tmp"} or name.endswith(".part")
+
+
+def _safe_model_path(models_dir: Path, rel: str) -> tuple[str, Path]:
+    """Normalize a manifest key and keep it strictly below ``models_dir``.
+
+    Manifest data can survive upgrades and may also be edited by hand.  Treat
+    its relative paths as untrusted so a damaged entry can never make verify or
+    download operations inspect or overwrite an unrelated user file.
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        raise ValueError("模型相对路径不能为空")
+    portable = rel.replace("\\", "/")
+    posix_path = PurePosixPath(portable)
+    windows_path = PureWindowsPath(rel)
+    if (posix_path.is_absolute() or windows_path.is_absolute() or
+            windows_path.drive or ".." in posix_path.parts or
+            posix_path.as_posix() in {"", "."}):
+        raise ValueError(f"模型路径必须位于模型目录内: {rel!r}")
+
+    root = models_dir.resolve()
+    normalized = posix_path.as_posix()
+    candidate = models_dir.joinpath(*posix_path.parts)
+    resolved = candidate.resolve()
+    if resolved == root or root not in resolved.parents:
+        raise ValueError(f"模型路径越过模型目录边界: {rel!r}")
+    return normalized, candidate
 
 
 # ---------------------------------------------------------------------------
@@ -79,185 +95,8 @@ def save_manifest(models_dir: Path | str, manifest: dict) -> None:
     """原子写回 manifest (先写 .tmp 再 replace, 防中断损坏清单)。"""
     p = _manifest_path(Path(models_dir))
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
-
-
-def sha256_of(path: Path | str) -> str:
-    """计算文件 sha256 (1MB 分块, 内存友好)。"""
-    h = hashlib.sha256()
-    with Path(path).open("rb") as f:
-        while True:
-            block = f.read(CHUNK)
-            if not block:
-                break
-            h.update(block)
-    return h.hexdigest()
-
-
-def fetch_file(url: str, dest: Path | str, expected_sha: str | None = None,
-               mirror: str | None = None, *,
-               mirrors: Iterable[str] | None = None,
-               expected_size: int | None = None,
-               progress: Callable[[int, int, str], None] | None = None,
-               cancelled: Callable[[], bool] | None = None) -> bool:
-    """下载单个文件(断点续传), sha256 校验; 主 URL 失败自动切镜像。
-
-    续传细节:
-    - 已有 ``<name>.part`` 时带 ``Range: bytes=<已有大小>-`` 请求;
-    - 服务器忽略 Range 返回 200 全量时, 必须清空重写 (否则与旧 .part
-      重复拼接损坏文件) —— 由 ``resp.status == 206`` 分支决定写模式;
-    - CDN 提前 EOF 时按预期大小识别为未完成，保留 .part 并自动续传；
-    - 每个源最多重试三次，仍失败才切换备用源；
-    - 大小和 SHA256 均通过后才把 .part 提升为最终文件。
-    """
-    dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    part = dest.with_name(dest.name + ".part")
-    sources = [url]
-    if mirror:
-        sources.append(mirror)
-    if mirrors:
-        sources.extend(u for u in mirrors if u)
-    # 保留顺序去重，自动测速可能把同一源作为回退重复传入。
-    sources = list(dict.fromkeys(sources))
-    logger.info("开始下载 %s (候选源 %d 个)", dest.name, len(sources))
-
-    expected_size = expected_size if expected_size and expected_size > 0 else None
-
-    def _matches_expected(path: Path) -> bool:
-        if not path.is_file():
-            return False
-        if expected_size is not None and path.stat().st_size != expected_size:
-            return False
-        if expected_sha and sha256_of(path) != expected_sha:
-            return False
-        return True
-
-    def _finish() -> bool:
-        if expected_size is not None and part.stat().st_size != expected_size:
-            return False
-        if expected_sha:
-            actual = sha256_of(part)
-            if actual != expected_sha:
-                print(f"  [错误] SHA256 不匹配: 期望 {expected_sha}, 实际 {actual}")
-                logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
-                             dest.name, expected_sha, actual)
-                part.unlink(missing_ok=True)
-                return False
-            print("  SHA256 校验通过")
-        part.replace(dest)
-        size_mb = dest.stat().st_size / 1e6
-        print(f"  下载完成: {dest.name} ({size_mb:.1f} MB)")
-        logger.info("下载完成: %s (%.1f MB)", dest.name, size_mb)
-        return True
-
-    # 旧下载器会在提前 EOF 后把不完整文件从 .part 提升为 dest。升级后
-    # 将它恢复成断点文件，避免用户重新下载数 GB 已有数据。
-    if dest.is_file():
-        if _matches_expected(dest):
-            logger.info("复用已完成下载: %s", dest)
-            return True
-        if (not part.exists() and expected_size is not None
-                and dest.stat().st_size < expected_size):
-            dest.replace(part)
-            logger.info("恢复旧版未完成下载为断点文件: %s (%d/%d)",
-                        part, part.stat().st_size, expected_size)
-        else:
-            dest.unlink(missing_ok=True)
-    if (part.is_file() and expected_size is not None
-            and part.stat().st_size > expected_size):
-        logger.warning("断点文件超过预期大小，重新下载: %s actual=%d expected=%d",
-                       part, part.stat().st_size, expected_size)
-        part.unlink(missing_ok=True)
-
-    for src in sources:
-        for attempt in range(1, DOWNLOAD_ATTEMPTS_PER_SOURCE + 1):
-            try:
-                if cancelled and cancelled():
-                    raise DownloadCancelled("下载已取消")
-                if part.is_file() and _matches_expected(part):
-                    return _finish()
-
-                existing = part.stat().st_size if part.exists() else 0
-                headers = {"Range": f"bytes={existing}-"} if existing else {}
-                headers["User-Agent"] = "VoxSub/0.3"
-                req = urlrequest.Request(src, headers=headers)
-                with urlrequest.urlopen(req, timeout=60) as resp:
-                    status = getattr(resp, "status", resp.getcode())
-                    resumed = existing if status == 206 else 0
-                    content_range = resp.headers.get("Content-Range", "")
-                    reported_total = 0
-                    if "/" in content_range:
-                        try:
-                            reported_total = int(content_range.rsplit("/", 1)[1])
-                        except ValueError:
-                            reported_total = 0
-                    try:
-                        response_bytes = int(resp.headers.get("Content-Length", "0"))
-                    except ValueError:
-                        response_bytes = 0
-                    total = expected_size or reported_total or (
-                        resumed + response_bytes if response_bytes else 0)
-                    if (expected_size is not None and reported_total
-                            and reported_total != expected_size):
-                        raise OSError(
-                            f"服务器总大小异常: {reported_total}, 预期 {expected_size}")
-
-                    received = 0
-                    with part.open("ab" if status == 206 else "wb") as out:
-                        written = resumed
-                        if progress:
-                            progress(written, total, src)
-                        while True:
-                            if cancelled and cancelled():
-                                raise DownloadCancelled("下载已取消")
-                            block = resp.read(CHUNK)
-                            if not block:
-                                break
-                            out.write(block)
-                            received += len(block)
-                            written += len(block)
-                            if progress:
-                                progress(written, total, src)
-
-                actual_size = part.stat().st_size
-                if response_bytes and received < response_bytes:
-                    raise OSError(
-                        f"CDN 提前断流: 本次收到 {received}/{response_bytes} 字节")
-                if total and actual_size < total:
-                    raise OSError(
-                        f"下载未完成: 当前 {actual_size}/{total} 字节")
-                if total and actual_size > total:
-                    part.unlink(missing_ok=True)
-                    raise OSError(
-                        f"下载大小超出预期: 当前 {actual_size}/{total} 字节")
-                if _finish():
-                    return True
-                # 完整大小但哈希错误时不能继续拼接；换源从零重下。
-                break
-            except DownloadCancelled:
-                logger.info("下载已取消，保留断点文件: %s", part)
-                raise
-            except (urlerror.URLError, OSError, TimeoutError,
-                    http.client.HTTPException) as exc:
-                print(
-                    f"  源 {src} 第 {attempt}/{DOWNLOAD_ATTEMPTS_PER_SOURCE} 次失败: {exc}")
-                logger.warning(
-                    "下载源失败: 目标=%s 源=%s attempt=%d/%d 已有字节=%d 错误=%s",
-                    dest.name, src, attempt, DOWNLOAD_ATTEMPTS_PER_SOURCE,
-                    part.stat().st_size if part.exists() else 0, exc,
-                )
-                if isinstance(exc, urlerror.HTTPError):
-                    if exc.code == 416:
-                        part.unlink(missing_ok=True)
-                    elif exc.code in {400, 401, 403, 404, 410}:
-                        break
-                continue
-    print("  [错误] 所有源均失败")
-    logger.error("所有下载源均失败: %s", dest.name)
-    return False
+    write_text_atomically(
+        p, json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +143,8 @@ class ModelManager:
             size = p.stat().st_size
             total_bytes += size
             entry = files.get(rel, {})
+            if not isinstance(entry, dict):
+                entry = {}
             if entry.get("size") != size:  # 大小变化视为新文件, 重算哈希
                 sha = sha256_of(p)
                 entry.update({"size": size, "sha256": sha,
@@ -318,8 +159,17 @@ class ModelManager:
 
         # 从清单移除磁盘上已消失的文件, 标记为 missing(不删除记录, 便于排查)
         for rel in list(files):
-            if not (self.models_dir / rel).exists():
-                files[rel]["status"] = "missing"
+            entry = files[rel]
+            if not isinstance(entry, dict):
+                files[rel] = {"status": "invalid"}
+                continue
+            try:
+                _, path = _safe_model_path(self.models_dir, rel)
+            except ValueError:
+                entry["status"] = "invalid"
+                continue
+            if not path.exists():
+                entry["status"] = "missing"
 
         self.save_manifest(manifest)
         n = sum(1 for e in files.values() if e.get("status") == "ready")
@@ -345,8 +195,7 @@ class ModelManager:
         开两个窗口)必触发, 故锁为硬要求。非 Windows 平台降级为无锁。
         """
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        rel = rel.replace("\\", "/")
-        dest = self.models_dir / rel
+        rel, dest = _safe_model_path(self.models_dir, rel)
 
         try:
             import msvcrt
@@ -409,7 +258,16 @@ class ModelManager:
         problems: list[dict[str, Any]] = []
         files = self.load_manifest().get("files", {})
         for rel, entry in sorted(files.items()):
-            path = self.models_dir / rel
+            if not isinstance(entry, dict):
+                problems.append({"rel": rel, "status": "invalid",
+                                 "reason": "清单条目不是对象"})
+                continue
+            try:
+                _, path = _safe_model_path(self.models_dir, rel)
+            except ValueError as exc:
+                problems.append({"rel": rel, "status": "invalid",
+                                 "reason": str(exc)})
+                continue
             if entry.get("status") != "ready":
                 problems.append({"rel": rel, "status": entry.get("status"),
                                  "reason": f"清单状态非 ready: {entry.get('status')}"})

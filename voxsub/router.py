@@ -28,7 +28,7 @@ from typing import NamedTuple
 import numpy as np
 
 from voxsub.logging_setup import get_logger
-from voxsub.hardware import detect_hardware
+from voxsub.hardware import HardwareProfile, detect_hardware
 from voxsub.model_catalog import ModelMarketplace, get_model
 from voxsub.model_storage import resolve_models_root
 
@@ -83,6 +83,67 @@ def _display_name(raw: str) -> str:
     return _PROVIDER_NAMES.get(raw, raw)
 
 
+def _device_kind(raw: str, profile: HardwareProfile,
+                 hardware_type: str = "") -> str:
+    """Normalize ORT's provider/device metadata to a physical device class."""
+    if hardware_type == "gpu":
+        return "gpu" if profile.has_discrete_gpu else "igpu"
+    if hardware_type == "npu":
+        return "npu"
+    if hardware_type:
+        return "cpu"
+    if raw in {"CUDAExecutionProvider", "TensorrtExecutionProvider"}:
+        return "gpu"
+    if raw in {"QNNExecutionProvider", "VitisAIExecutionProvider",
+               "NPUExecutionProvider"}:
+        return "npu"
+    if raw == "OpenVINOExecutionProvider":
+        if profile.has_npu_runtime and "openvino" in profile.npu_provider.casefold():
+            return "npu"
+        return "igpu" if profile.has_integrated_gpu else "cpu"
+    if raw == "DmlExecutionProvider":
+        return "gpu" if profile.has_discrete_gpu else "igpu"
+    return "cpu"
+
+
+def _ep_device_details(ort, profile: HardwareProfile) -> list[DeviceInfo]:
+    get_ep_devices = getattr(ort, "get_ep_devices", None)
+    if not get_ep_devices:
+        return []
+    devices: list[DeviceInfo] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        for item in get_ep_devices():
+            raw = str(item.ep_name)
+            hardware_type = str(item.device.type).rsplit(".", 1)[-1].lower()
+            kind = _device_kind(raw, profile, hardware_type)
+            key = (raw, kind)
+            if key in seen:
+                continue
+            seen.add(key)
+            vendor = str(getattr(item.device, "vendor", "") or "").strip()
+            short = "npu" if kind == "npu" else _norm_provider(raw)
+            label = f"{vendor + ' ' if vendor else ''}{_display_name(raw)}"
+            devices.append(DeviceInfo(short, label, None, kind, raw))
+    except Exception:
+        logger.debug("ORT EP 设备明细读取失败，改用 provider 列表", exc_info=True)
+        return []
+    return devices
+
+
+def _provider_devices(providers: list[str], profile: HardwareProfile,
+                      detailed: list[DeviceInfo]) -> list[DeviceInfo]:
+    devices = list(detailed)
+    detailed_providers = {device.raw_provider for device in detailed}
+    for raw in providers:
+        if raw in detailed_providers:
+            continue
+        kind = _device_kind(raw, profile)
+        short = "npu" if kind == "npu" else _norm_provider(raw)
+        devices.append(DeviceInfo(short, _display_name(raw), None, kind, raw))
+    return devices
+
+
 def enumerate_devices() -> list[DeviceInfo]:
     """Enumerate registered ORT EP devices and classify their hardware."""
     import onnxruntime as ort
@@ -90,48 +151,8 @@ def enumerate_devices() -> list[DeviceInfo]:
     providers = ort.get_available_providers()
     logger.info("枚举 ORT 执行提供器: %s", ", ".join(providers) if providers else "(无)")
     profile = detect_hardware()
-    devices: list[DeviceInfo] = []
-    seen: set[tuple[str, str]] = set()
-    get_ep_devices = getattr(ort, "get_ep_devices", None)
-    if get_ep_devices:
-        try:
-            for item in get_ep_devices():
-                raw = str(item.ep_name)
-                hw_type = str(item.device.type).rsplit(".", 1)[-1].lower()
-                if hw_type == "gpu":
-                    kind = "gpu" if profile.has_discrete_gpu else "igpu"
-                elif hw_type == "npu":
-                    kind = "npu"
-                else:
-                    kind = "cpu"
-                key = (raw, kind)
-                if key in seen:
-                    continue
-                seen.add(key)
-                vendor = str(getattr(item.device, "vendor", "") or "").strip()
-                short = "npu" if kind == "npu" else _norm_provider(raw)
-                label = f"{vendor + ' ' if vendor else ''}{_display_name(raw)}"
-                devices.append(DeviceInfo(short, label, None, kind, raw))
-        except Exception:
-            logger.debug("ORT EP 设备明细读取失败，改用 provider 列表", exc_info=True)
-    for raw in providers:
-        if any(device.raw_provider == raw for device in devices):
-            continue
-        if raw in {"CUDAExecutionProvider", "TensorrtExecutionProvider"}:
-            kind = "gpu"
-        elif raw in {"QNNExecutionProvider", "VitisAIExecutionProvider",
-                     "NPUExecutionProvider"}:
-            kind = "npu"
-        elif raw == "OpenVINOExecutionProvider":
-            kind = ("npu" if profile.has_npu_runtime and
-                    "openvino" in profile.npu_provider.casefold() else
-                "igpu" if profile.has_integrated_gpu else "cpu")
-        elif raw == "DmlExecutionProvider":
-            kind = "gpu" if profile.has_discrete_gpu else "igpu"
-        else:
-            kind = "cpu"
-        short = "npu" if kind == "npu" else _norm_provider(raw)
-        devices.append(DeviceInfo(short, _display_name(raw), None, kind, raw))
+    details = _ep_device_details(ort, profile)
+    devices = _provider_devices(providers, profile, details)
     return sorted(devices, key=_device_priority)
 
 

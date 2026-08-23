@@ -232,6 +232,11 @@ class TestCycleMode:
 # 5. ConfigStore 读写（tmp 路径）
 # ===========================================================================
 class TestConfigStore:
+    def test_ui_import_is_compatibility_alias(self):
+        from voxsub.config_store import ConfigStore as CoreConfigStore
+
+        assert ConfigStore is CoreConfigStore
+
     def test_defaults_when_missing(self, tmp_path):
         store = ConfigStore(tmp_path / "cfg" / "config.json")
         data = store.load()
@@ -281,10 +286,44 @@ class TestConfigStore:
         assert data["mode"] == "a"
         assert data["theme"] == "system"
 
+    def test_invalid_types_and_ranges_are_safely_normalized(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(
+            '{"theme":"neon","overlay_font_size":"huge",'
+            '"overlay_opacity":9,"capture_process_id":-3}',
+            encoding="utf-8",
+        )
+
+        data = ConfigStore(path).load()
+
+        assert data["theme"] == "system"
+        assert data["overlay_font_size"] == 20
+        assert data["overlay_opacity"] == 1.0
+        assert data["capture_process_id"] == 0
+
+    def test_unknown_keys_are_rejected(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+
+        with pytest.raises(KeyError, match="未知配置键"):
+            store.set("temporary_feature_flag", True)
+
+    def test_non_finite_numbers_and_malformed_urls_fall_back(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+
+        store.update({
+            "overlay_opacity": float("nan"),
+            "stt_base_url": "not a URL",
+        })
+
+        data = store.load()
+        assert data["overlay_opacity"] == ConfigStore.DEFAULTS["overlay_opacity"]
+        assert data["stt_base_url"] == ConfigStore.DEFAULTS["stt_base_url"]
+
     def test_save_creates_parent_dirs(self, tmp_path):
         store = ConfigStore(tmp_path / "deep" / "nested" / "config.json")
         store.set("mode", "b")
         assert config_store.ConfigStore(tmp_path / "deep" / "nested" / "config.json").get("mode") == "b"
+        assert not list(store.path.parent.glob(f".{store.path.name}.*.part"))
 
 
 # ===========================================================================

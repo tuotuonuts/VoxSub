@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 from voxsub.ui.i18n import LANGUAGE_EN, language_manager, tr
 
 
@@ -20,6 +20,23 @@ class ReleaseNote:
 
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
+    ReleaseNote(
+        "0.4.2-beta",
+        "更稳定的长时间同传与模型管理",
+        "More reliable long-running translation and model management",
+        (
+            "识别、翻译和语音播放积压时会受到明确限制，不再无限占用内存。",
+            "语音朗读已接入独立后台播放；失败时字幕仍可继续工作。",
+            "下载和模型写入增加完整性检查与中断保护，旧文件不容易被半成品覆盖。",
+            "配置升级与异常值处理集中完成，旧设置会继续兼容。",
+        ),
+        (
+            "Recognition, translation, and speech backlogs are bounded instead of growing memory indefinitely.",
+            "Speech playback now runs independently in the background; subtitles continue if it fails.",
+            "Downloads and model writes have stronger integrity checks and interruption protection.",
+            "Config upgrades and invalid values are handled centrally while preserving old settings.",
+        ),
+    ),
     ReleaseNote(
         "0.4.1-beta",
         "模型保存和字幕浮窗更顺手",
