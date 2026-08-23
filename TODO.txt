@@ -194,3 +194,4 @@
 [x] v0.4.0-beta 已构建并完成隔离配置启动冒烟；Release 安装包 204.73 MiB；SHA256 408AE75789EDDD880BF1A50976363CA27564C80D27988382EA6B5AE887BDDFCA
 [ ] Hy-MT2 7B Q4/Q6/Q8 精确模型文件仍需在 Intel NPU 真机逐项验证并更新模型卡标签
 [x] 2026-08-24 v0.7.0-beta 候选：模型广场新增中文、英文和中英双语 TTS 模型；语音朗读可分别选择中英音色并热切换；修复 TTS 开关只保存不即时生效；实时双语草稿只朗读终句；旧模型目录、安装后惰性发现和诊断冒烟已接通；构建门禁 256 passed / 7 skipped；安装包 214,865,840 字节，SHA256 252DE9C8881D1E268DA6053158F01368539B56D7A86902DDAE30D0E089F46D20；隔离启动通过；用户验证前不发布 Release
+[x] 2026-08-24 v0.7.2-beta：安装器改用专用退出事件，新版安全收尾、旧版快速关闭 VoxSub 进程树；禁用 Restart Manager 的长等待，Pipeline 多线程共享 8 秒截止时间；正式构建 265 passed / 7 skipped；安装包 214,817,504 字节，SHA256 313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211；打包程序退出协议冒烟通过；发布 GitHub 预发布 Release

@@ -74,6 +74,7 @@
 - [x] v0.6.0-beta 候选：智能上下文新增单行双语动态草稿、Zipformer 140ms partial、partial 保守纠偏、最新 revision 临时翻译和终句优先策略；Qwen3/生成式/云 STT 由 Zipformer 流式旁路提供草稿，所选模型负责最终定稿；新增默认开启、仅智能上下文可调的“实时双语草稿”开关，关闭后不加载旁路且不影响智能断句、纠偏和语气词清理；旧模式不发送临时翻译请求；真实 Qwen3 + 旁路链路产生 7 次草稿更新；全量与构建门禁均为 251 passed / 8 skipped；安装包 214,819,528 字节，SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`；隔离启动通过；未签名、未发布 Release
 - [x] v0.7.0-beta 候选：模型广场新增 MeloTTS 中英双语、AISHELL3 中文轻量和 LJSpeech 英文轻量 TTS；语音朗读设置可按中英语种选择已安装模型，开关和切换可在当前 Pipeline 立即生效；实时双语草稿只朗读定稿译文；兼容旧 `tts/zh` 与 `tts/en`，支持运行中安装后惰性发现；诊断按当前选择做冒烟；构建门禁 `256 passed / 7 skipped`；安装包 214,865,840 字节，SHA256 `252DE9C8881D1E268DA6053158F01368539B56D7A86902DDAE30D0E089F46D20`；隔离启动通过；开发者自签名，未发布 Release
 - [x] v0.7.1-beta 候选：英文全大写 partial 在显示层转为句子式大小写；草稿翻译由可被连续 partial 持续推迟的防抖改为合并节流，兼容的已完成译文保留至新版接替，终句仍优先；构建门禁 `262 passed / 7 skipped`；安装包 214,877,960 字节，SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`；隔离启动通过；开发者自签名，未发布 Release
+- [x] v0.7.2-beta 已发布：安装器改用有界的专用退出协议并为旧版保留快速进程树回退，消除约 30 秒假死和最终关闭失败；Pipeline 工作线程共享 8 秒退出截止时间；构建门禁 `265 passed / 7 skipped`；安装包 214,817,504 字节（204.87 MiB），SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`；打包程序退出协议冒烟通过；开发者自签名；安装包与 `.sha256` 已上传 GitHub 预发布 Release
 - [ ] M9 发布候选：完成更多真实推理与无独显 NPU 轻薄本验收
 
 ## 环境事实（接手必知）
@@ -81,7 +82,7 @@
 - 项目根：`D:\OneDrive\app_dve\VoxSub`（OneDrive 同步盘——**偶发文件锁，报 os error 5 时等 1-2s 重试**）
 - venv：`.venv`（uv 创建，2026-08-17 因 argostranslate 冲突重建过一次）。装依赖：`uv pip install --python .venv/Scripts/python.exe <pkg>`
 - **关键坑：本机 Hermes 向终端注入 PYTHONPATH 指向 hermes-agent venv——所有 python 命令必须前缀 `unset PYTHONPATH PYTHONHOME` 再调 `.venv/Scripts/python.exe`，否则 import 会错位加载 hermes 的包**
-- git：main 分支；身份 `DeepFirstLoaf <rzha0212@student.monash.edu>`；未添加远端
+- git：main 分支；身份 `DeepFirstLoaf <rzha0212@student.monash.edu>`；远端 `origin` 为 `https://github.com/tuotuonuts/VoxSub.git`
 - 开发机：Win11 专业版 / i5-13600KF（无核显）/ RTX 4060 8GB / 32GB RAM —— **仅开发验证用，产品按大众 CPU 基准**
 - 本机无 NPU；存在大量虚拟声卡（远程控制/变声软件），loopback 兼容性是重点验证对象
 
@@ -104,7 +105,7 @@
 
 1. 从模型广场分别下载 Fun-ASR-Nano/Qwen3-ASR 与 Hy-MT2，做真实中文、混合语言、噪声素材 A/B 对比
 2. 继续验证 Hy-MT2 7B Q4/Q6/Q8 的 Intel NPU 内存与算子兼容性；Intel 1.8B 已完成 OpenVINO 真机验证，AMD/Qualcomm 仍需记录兼容性边界
-3. 使用 v0.7.1-beta 候选包对会议、网课和中英混合素材 A/B 验证当前句逐步更新、英文大小写、动态译文追赶、断句、TTS 和长时间运行稳定性；用户验证通过前不发布新 Release
+3. 使用已发布的 v0.7.2-beta 对会议、网课和中英混合素材 A/B 验证当前句逐步更新、英文大小写、动态译文追赶、断句、TTS、安装升级和长时间运行稳定性；发现问题按复现素材继续修复
 
 ## 发布约定（2026-08-17 用户指定）
 

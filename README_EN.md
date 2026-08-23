@@ -7,19 +7,19 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.5.0-beta` installer is unsigned because the current certificate is unavailable. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** `0.7.2-beta` is developer-signed with `CN=VoxSub Dev (self-signed)`, but that certificate is not trusted by the public Windows trust chain. Windows may still show a risk warning and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Current source: `0.7.2-beta` (candidate, not released). Current public download: `0.5.0-beta`. The public installer passed its build, isolated startup check, and GitHub asset digest verification. Both remain development builds.
+Current source and public download: `0.7.2-beta`. The installer passed the formal build, isolated startup check, and installer-shutdown protocol check. It remains a development build.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
-## Downloads and candidate build
+## Downloads
 
-- Previous completed local candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.7.1-beta.exe`, 214,877,960 bytes (204.92 MiB); SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`. The `0.7.2-beta` package is being built; no GitHub Release has been created.
-- Published build: `VoxSub-Setup-0.5.0-beta.exe` on [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) (unsigned), 214,795,950 bytes (204.85 MiB); SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`.
-- Previous build: [VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta).
+- Latest prerelease: [VoxSub v0.7.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.7.2-beta). `VoxSub-Setup-0.7.2-beta.exe` is 214,817,504 bytes (204.87 MiB); SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`.
+- [Download the installer](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe) · [Download the SHA256 file](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe.sha256)
+- Previous public build: [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta).
 
 ## Available Features
 
@@ -36,7 +36,7 @@ Current source: `0.7.2-beta` (candidate, not released). Current public download:
 - **0.6.0-beta candidate feature:** Smart Context now keeps one replaceable current-sentence draft that updates near word cadence and can revise earlier text. Its translation follows the changing source and accepts only the newest request result; the row enters history only when the sentence is final. When Qwen3, Fun-ASR, SenseVoice, or cloud STT is selected, the bundled Zipformer runs as a lightweight streaming draft sidecar while the selected high-quality recognizer remains authoritative for the corrected final, avoiding repeated large-model inference or audio uploads. A separate Live bilingual draft switch can disable this work while preserving Smart Context segmentation, correction, and filler cleanup.
 - **0.7.0-beta candidate feature:** Model Hub can download a bilingual MeloTTS voice plus lightweight Chinese AISHELL3 and English LJSpeech voices. Settings -> Text-to-speech selects Chinese and English voices independently and switches them during a live session. The TTS toggle now applies immediately; live bilingual draft mode reads finalized translations without repeatedly speaking every draft revision. Existing `models/tts/zh` and `models/tts/en` installations remain compatible.
 - **0.7.1-beta candidate fix:** all-caps interim English is now rendered in readable sentence case without changing final recognition evidence. Continuous partials no longer reset the translation debounce forever, so dynamic translation catches up at a throttled rate while finalized sentences retain priority.
-- **0.7.2-beta candidate fix:** setup no longer depends on Windows Restart Manager, which interpreted VoxSub's close-to-tray behavior as a refusal to exit. New builds receive a dedicated shutdown signal, while older builds use a fast VoxSub process-tree fallback, eliminating the roughly thirty-second freeze and close failure.
+- **0.7.2-beta fix:** setup no longer depends on Windows Restart Manager, which interpreted VoxSub's close-to-tray behavior as a refusal to exit. New builds receive a dedicated shutdown signal, while older builds use a fast VoxSub process-tree fallback, eliminating the roughly thirty-second freeze and close failure.
 - **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. The overlay can show source only, translation only, or both, with separate controls for content padding and the gap between lines.
 - **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports a wider font range, free resizing, dragging, locking, and click-through mode. When locked, hovering reveals only the Unlock control.
 - **Fixed-size long subtitles:** long sentences no longer enlarge the overlay or push it beyond the screen. Text wraps inside the chosen dimensions; use the mouse wheel for the current sentence and `Ctrl + wheel` for subtitle history.
@@ -82,7 +82,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current `0.7.1-beta` local candidate is 214,877,960 bytes with SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`.
 
 ## Project Layout
 

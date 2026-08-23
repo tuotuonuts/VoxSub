@@ -8,19 +8,19 @@
 # 语幕 VoxSub
 
 > [!WARNING]
-> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** Releases 中的 `0.5.0-beta` 因当前证书不可用而未签名。Windows 可能显示“未知发布者”，安全软件也可能误报。请在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
+> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** `0.7.2-beta` 使用 `CN=VoxSub Dev (self-signed)` 开发者自签名，但该证书不受 Windows 公共信任链信任，系统仍可能显示风险提示，安全软件也可能误报。请在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，云 STT 与云翻译可独立配置并混合使用。
 
-当前源码版本：`0.7.2-beta`（候选，未发布）；当前公开下载版本：`0.5.0-beta`。公开安装包已经完成构建、隔离启动检查和 GitHub 资产摘要复核，两者仍都属于开发测试版本。
+当前源码与公开下载版本：`0.7.2-beta`。安装包已经完成正式构建、隔离启动与安装器退出协议检查；它仍属于开发测试版本。
 
 > **Intel NPU 支持仍有限。** `0.4.1-beta` 已在 Intel AI Boost 真机验证 Hy-MT2 1.8B Q4/Q6/Q8：VoxSub 自动调度和禁止 CPU 回退的强制 NPU 推理均通过。Hy-MT2 7B Q4/Q6/Q8 仅依据 llama.cpp OpenVINO 公开兼容资料列为“NPU 待验证”，启动真实翻译探针失败时会自动改用核显或 CPU；现有 sherpa-onnx ASR 和 OPUS 运行时不支持 NPU。
 
-## 下载与候选包
+## 下载
 
-- 上一个已完成的本地候选包：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.7.1-beta.exe`，214,877,960 字节（204.92 MiB）；SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`。`0.7.2-beta` 正在构建，尚未创建 GitHub Release。
-- 已发布版本：[VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) 中的 `VoxSub-Setup-0.5.0-beta.exe`（未签名），214,795,950 字节（204.85 MiB）；SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`。
-- 上一个版本：[VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta)。
+- 最新预发布版本：[VoxSub v0.7.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.7.2-beta)。安装包 `VoxSub-Setup-0.7.2-beta.exe` 为 214,817,504 字节（204.87 MiB）；SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。
+- [直接下载安装包](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe) · [下载 SHA256 文件](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe.sha256)
+- 上一个公开版本：[VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta)。
 
 ## 当前可用功能
 
@@ -37,7 +37,7 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 - 0.6.0-beta 候选新增：智能上下文的当前句会在同一条草稿中接近逐词更新，后续识别可纠正前文；译文随原文动态替换，只接受最新请求结果；整句稳定后才进入历史并开始呈现下一句。选择 Qwen3/Fun-ASR/SenseVoice 等生成式本地 ASR 或云 STT 时，内置 Zipformer 会作为轻量草稿旁路连续出字，当前高质量模型仍负责最终纠偏定稿，不会高频重跑大模型或重复上传音频。“实时双语草稿”可独立关闭，关闭后仍保留智能断句、纠偏和语气词清理。
 - 0.7.0-beta 候选新增：模型广场可下载 MeloTTS 中英双语、AISHELL3 中文轻量和 LJSpeech 英文轻量音色；设置 → 语音朗读可分别选择中英模型并在运行中立即切换。修复 TTS 开关只保存但当前会话不生效；实时双语草稿模式下会朗读定稿译文，不会反复抢读每一次草稿修订。旧版 `models/tts/zh` 和 `models/tts/en` 自动兼容。
 - 0.7.1-beta 候选修复：英文实时草稿的全大写中间结果改为只读性更好的句子式显示；连续 partial 不再无限重置翻译防抖，动态译文会按节流频率追赶原文，同时保留终句翻译优先级。
-- 0.7.2-beta 候选修复：安装器不再依赖会把主窗关闭误解为托盘隐藏的 Windows Restart Manager；新版使用专用退出信号，旧版则快速关闭 VoxSub 进程树，消除约半分钟假死与最终关闭失败。
+- 0.7.2-beta 修复：安装器不再依赖会把主窗关闭误解为托盘隐藏的 Windows Restart Manager；新版使用专用退出信号，旧版则快速关闭 VoxSub 进程树，消除约半分钟假死与最终关闭失败。
 - 字幕会话：主窗与浮窗文字可复制，当前会话可清空或保存为 TXT/SRT/VTT；浮窗可选仅原文、仅译文或对照翻译，并可分别调节内容边距和原译间距
 - Soft Premium UI：深色 / 浅色 / 跟随系统；设置、模型广场和诊断页统一视觉；字幕浮窗支持更宽字号范围、自由缩放、拖动、锁定与鼠标穿透，锁定后悬停只显示“解锁”
 - 固定尺寸长字幕：翻译到长句时不再自动扩大浮窗，内容会在用户设定的宽高内换行；普通滚轮查看当前长句，`Ctrl + 滚轮`翻看字幕历史
@@ -79,7 +79,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.7.1-beta` 本地候选包为 214,877,960 字节，SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。
 
 ## 目录结构
 
