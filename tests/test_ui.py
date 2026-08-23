@@ -301,6 +301,24 @@ class TestConfigStore:
         assert data["overlay_opacity"] == 1.0
         assert data["capture_process_id"] == 0
 
+    def test_context_tuning_schema_accepts_new_mode_and_normalizes_values(
+        self, tmp_path
+    ):
+        store = ConfigStore(tmp_path / "config.json")
+        store.update({
+            "asr_tuning_profile": "context",
+            "asr_context_hold_ms": 9999,
+            "asr_context_correction": False,
+            "asr_filler_mode": "aggressive",
+        })
+
+        data = store.load()
+
+        assert data["asr_tuning_profile"] == "context"
+        assert data["asr_context_hold_ms"] == 4000
+        assert data["asr_context_correction"] is False
+        assert data["asr_filler_mode"] == "light"
+
     def test_unknown_keys_are_rejected(self, tmp_path):
         store = ConfigStore(tmp_path / "config.json")
 
@@ -534,6 +552,9 @@ class TestMainWindow:
             assert pipeline.translator[0] == expected_translator
             assert pipeline.stt[1]["stt_api_key"] == "stt-key"
             assert pipeline.translator[1]["translate_api_key"] == "translate-key"
+            assert pipeline.asr_tuning["context_hold_ms"] == 1800
+            assert pipeline.asr_tuning["context_correction"] is True
+            assert pipeline.asr_tuning["filler_mode"] == "light"
         finally:
             win.close()
             win.deleteLater()
@@ -1228,7 +1249,7 @@ class TestSettingsWindow:
         sw = SettingsWindow(store=store)
         try:
             info = [b for b in sw.findChildren(QToolButton) if b.text() == "i"]
-            assert len(info) == 7
+            assert len(info) == 10
             assert all(len(button.toolTip()) >= 20 for button in info)
             shown: list[tuple] = []
 
@@ -1269,6 +1290,42 @@ class TestSettingsWindow:
             sw.close()
             sw.deleteLater()
 
+    def test_smart_context_mode_is_additive_and_saves_its_own_controls(
+        self, qapp, tmp_path
+    ):
+        from voxsub.ui.settings_window import SettingsWindow
+
+        store = ConfigStore(tmp_path / "config.json")
+        sw = SettingsWindow(store=store)
+        try:
+            context_index = sw.asr_profile_combo.findData("context")
+            assert context_index >= 0
+            sw.asr_profile_combo.setCurrentIndex(context_index)
+            assert not sw.silence_spin.isEnabled()
+            assert sw.context_hold_spin.isEnabled()
+            assert sw.context_correction_switch.isEnabled()
+            assert sw.filler_mode_combo.isEnabled()
+
+            sw.context_hold_spin.setValue(2200)
+            sw.context_correction_switch.setChecked(False)
+            sw.filler_mode_combo.setCurrentIndex(
+                sw.filler_mode_combo.findData("off"))
+            sw.tuning_save_btn.click()
+            assert store.get("asr_tuning_profile") == "context"
+            assert store.get("asr_context_hold_ms") == 2200
+            assert store.get("asr_context_correction") is False
+            assert store.get("asr_filler_mode") == "off"
+
+            # Existing presets remain selectable and do not expose context-only knobs.
+            sw.asr_profile_combo.setCurrentIndex(
+                sw.asr_profile_combo.findData("balanced"))
+            assert not sw.context_hold_spin.isEnabled()
+            assert not sw.context_correction_switch.isEnabled()
+            assert not sw.filler_mode_combo.isEnabled()
+        finally:
+            sw.close()
+            sw.deleteLater()
+
     def test_asr_tuning_spinbox_up_and_down_arrows_both_step(self, qapp, tmp_path):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
@@ -1301,6 +1358,18 @@ class TestSettingsWindow:
                 assert spin.value() == pytest.approx(before + spin.singleStep())
                 QTest.mouseClick(down, Qt.MouseButton.LeftButton)
                 assert spin.value() == pytest.approx(before)
+
+            sw.asr_profile_combo.setCurrentIndex(
+                sw.asr_profile_combo.findData("context"))
+            spin = sw.context_hold_spin
+            assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+            before = spin.value()
+            QTest.mouseClick(
+                spin._voxsub_step_up_btn, Qt.MouseButton.LeftButton)  # noqa: SLF001
+            assert spin.value() == before + spin.singleStep()
+            QTest.mouseClick(
+                spin._voxsub_step_down_btn, Qt.MouseButton.LeftButton)  # noqa: SLF001
+            assert spin.value() == before
         finally:
             sw.close()
             sw.deleteLater()

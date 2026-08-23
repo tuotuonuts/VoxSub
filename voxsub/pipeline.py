@@ -39,6 +39,7 @@ from voxsub.asr import (
 )
 from voxsub.bootstrap_models import ensure_bundled_vad
 from voxsub.cloud_stt import CloudSTT
+from voxsub.contextual_text import ContextualSegment, ContextualTextProcessor
 from voxsub.file_transcriber import FileAudioDecoder, FileRecognizer
 from voxsub.language_guard import guard_text, normalize_language
 from voxsub.logging_setup import get_logger
@@ -52,6 +53,7 @@ logger = get_logger("pipeline")
 _PAUSE_MARKER = object()
 _CAPTURE_QUEUE_MAX = 20_000       # 10 minutes at 30 ms/chunk
 _RECOGNITION_QUEUE_MAX = 16       # complete utterance waveforms can be large
+_CONTEXT_QUEUE_MAX = 128          # decoded acoustic fragments awaiting semantics
 _TRANSLATION_QUEUE_MAX = 128      # text only, but must never grow forever
 
 
@@ -59,6 +61,13 @@ _TRANSLATION_QUEUE_MAX = 128      # text only, but must never grow forever
 class _QueuedAudio:
     """A VAD-complete waveform plus its enqueue timestamp for diagnostics."""
     audio: np.ndarray
+    queued_at: float
+
+
+@dataclass(frozen=True)
+class _QueuedText:
+    """A recognized acoustic fragment plus its first-ready timestamp."""
+    text: str
     queued_at: float
 
 
@@ -147,11 +156,14 @@ class Pipeline:
         self._queue: queue.Queue = queue.Queue(maxsize=_CAPTURE_QUEUE_MAX)
         self._recognition_queue: queue.Queue = queue.Queue(
             maxsize=_RECOGNITION_QUEUE_MAX)
+        self._context_queue: queue.Queue[_QueuedText] = queue.Queue(
+            maxsize=_CONTEXT_QUEUE_MAX)
         self._translation_queue: queue.Queue[str] = queue.Queue(
             maxsize=_TRANSLATION_QUEUE_MAX)
         self._translation_times: dict[str, deque[float]] = defaultdict(deque)
         self._metrics_lock = threading.Lock()
         self._recognition_input_done = threading.Event()
+        self._context_input_done = threading.Event()
         self._translation_input_done = threading.Event()
         self._stop_evt = threading.Event()
         self._pause_evt = threading.Event()
@@ -165,6 +177,7 @@ class Pipeline:
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
         self._is_generative = False
         self._is_cloud_stt = False
+        self._context_processor: ContextualTextProcessor | None = None
         self._recording_enabled = False
         self._recordings_dir: Path | None = None
         self._recorder: WaveSessionRecorder | None = None
@@ -209,7 +222,13 @@ class Pipeline:
             self._mode = mode
 
     def set_langs(self, src: str, dst: str) -> None:
-        self._src_lang, self._dst_lang = normalize_language(src), normalize_language(dst)
+        normalized = (normalize_language(src), normalize_language(dst))
+        changed = normalized != (self._src_lang, self._dst_lang)
+        self._src_lang, self._dst_lang = normalized
+        if changed and not self._running:
+            self._asr = None
+            self._seg = None
+            self._context_processor = None
         logger.info("语言约束更新: source=%s target=%s", self._src_lang, self._dst_lang)
 
     def set_input_file(self, path: str | Path) -> None:
@@ -242,6 +261,7 @@ class Pipeline:
         self._cloud_stt = None
         self._vad = None
         self._seg = None
+        self._context_processor = None
         self._translator = None
         self._trans_kind = None
         self._is_cloud_stt = False
@@ -288,6 +308,7 @@ class Pipeline:
         self._asr = None
         self._vad = None
         self._seg = None
+        self._context_processor = None
         self._is_cloud_stt = False
         self._is_generative = False
 
@@ -319,6 +340,7 @@ class Pipeline:
         self._asr = None
         self._vad = None
         self._seg = None
+        self._context_processor = None
 
     def set_asr_tuning(self, tuning: dict | None = None) -> None:
         """Apply inference/segmentation tuning on the next run.
@@ -335,6 +357,7 @@ class Pipeline:
         self._asr = None
         self._vad = None
         self._seg = None
+        self._context_processor = None
 
     def set_recording(self, enabled: bool, directory: str | Path | None = None) -> None:
         """Enable microphone recording alongside translation for the next run."""
@@ -419,6 +442,10 @@ class Pipeline:
             except Exception:
                 logger.exception("临时字幕回调异常: %r", cb)
 
+    def _on_asr_partial(self, text: str) -> None:
+        processor = self._context_processor
+        self._emit_partial(processor.preview(text) if processor is not None else text)
+
     # ---- 组件构造 ----
     def _ensure_translator(self) -> None:
         if self._translator is None:
@@ -467,6 +494,8 @@ class Pipeline:
                          "max_utterance_ms": 12000, "beam_paths": 4},
             "accuracy": {"vad_threshold": 0.25, "silence_ms": 900,
                          "max_utterance_ms": 20000, "beam_paths": 6},
+            "context": {"vad_threshold": 0.32, "silence_ms": 500,
+                        "max_utterance_ms": 18000, "beam_paths": 6},
         }
         if profile == "auto":
             values = ({"vad_threshold": 0.35, "silence_ms": 700,
@@ -491,6 +520,16 @@ class Pipeline:
             "max_new_tokens": max(32, min(4096, int(
                 self._asr_tuning.get("max_new_tokens", 512)))),
             "hotwords": str(self._asr_tuning.get("hotwords", "")).strip(),
+            "context_enabled": profile == "context",
+            "context_hold_ms": max(200, min(4000, int(
+                self._asr_tuning.get("context_hold_ms", 1800)))),
+            "context_correction": bool(
+                self._asr_tuning.get("context_correction", True)),
+            "filler_mode": (
+                str(self._asr_tuning.get("filler_mode", "light"))
+                if str(self._asr_tuning.get("filler_mode", "light")) in
+                {"off", "light"} else "light"
+            ),
         })
         return values
 
@@ -514,6 +553,7 @@ class Pipeline:
         self._cloud_stt = None
         self._vad = None
         self._seg = None
+        self._context_processor = None
         self._is_generative = False
         self._is_cloud_stt = False
         cloud_stt = self._requested_stt_provider == "cloud"
@@ -525,6 +565,17 @@ class Pipeline:
             generative_model and
             generative_model.runtime != "sherpa-streaming-transducer")
         tuning = self._effective_asr_tuning(generative)
+        context_processor = (
+            ContextualTextProcessor(
+                source_lang=self._src_lang,
+                hotwords=tuning["hotwords"],
+                filler_mode=tuning["filler_mode"],
+                correction_enabled=tuning["context_correction"],
+                hold_ms=tuning["context_hold_ms"],
+                defer_incomplete=generative,
+            )
+            if tuning["context_enabled"] else None
+        )
         components = build_realtime_components(
             RealtimeBuildSpec(
                 self._models_dir, self._requested_stt_provider, self._stt_config,
@@ -533,7 +584,7 @@ class Pipeline:
             ),
             queue_audio=self._queue_generative_audio,
             on_sentence=self._on_sentence,
-            on_partial=self._emit_partial,
+            on_partial=self._on_asr_partial,
             ensure_vad=ensure_bundled_vad,
             vad_factory=WindowVAD,
             asr_factory=create_asr,
@@ -541,19 +592,24 @@ class Pipeline:
             audio_segmenter_factory=AudioUtteranceSegmenter,
             streaming_segmenter_factory=UtteranceSegmenter,
             select_device=select_device,
+            semantic_boundary=(
+                context_processor.should_defer_endpoint
+                if context_processor is not None and not generative else None),
         )
         self._asr = components.asr
         self._cloud_stt = components.cloud_stt
         self._vad = components.vad
         self._seg = components.segmenter
+        self._context_processor = context_processor
         self._is_generative = components.generative
         self._is_cloud_stt = components.cloud
         logger.info(
-            "STT 调优生效: provider=%s profile=%s generative=%s vad=%.2f silence=%dms max=%dms beam=%d",
+            "STT 调优生效: provider=%s profile=%s generative=%s vad=%.2f silence=%dms max=%dms beam=%d context=%s",
             "cloud" if components.cloud else "local",
             self._asr_tuning.get("profile", "auto"), components.generative,
             tuning["vad_threshold"], tuning["silence_ms"],
             tuning["max_utterance_ms"], tuning["beam_paths"],
+            tuning["context_enabled"],
         )
         self._ensure_translator()
 
@@ -570,7 +626,7 @@ class Pipeline:
         )
 
     def _on_sentence(self, text: str) -> None:
-        """Recognition callback: queue every sentence for translation."""
+        """Recognition callback: validate and route an acoustic fragment."""
         text = str(text or "").strip()
         if not text:
             return
@@ -582,6 +638,20 @@ class Pipeline:
             self._emit_status("识别到其他语言，已忽略当前片段")
             return
         queued_at = time.monotonic()
+        if self._context_processor is not None:
+            logger.info(
+                "STT 片段入上下文队列: chars=%d queue=%d",
+                len(text), self._context_queue.qsize() + 1,
+            )
+            self._put_or_stop(
+                self._context_queue,
+                _QueuedText(text, queued_at),
+                "上下文处理持续积压，字幕缓存已满；任务已停止",
+            )
+            return
+        self._queue_translation(text, queued_at)
+
+    def _queue_translation(self, text: str, queued_at: float) -> None:
         with self._metrics_lock:
             self._translation_times[text].append(queued_at)
         logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s queue=%d",
@@ -601,6 +671,73 @@ class Pipeline:
                     if not timestamps:
                         self._translation_times.pop(text, None)
             raise
+
+    def _context_loop(self) -> None:
+        """Stabilize semantic fragments before the translation worker sees them."""
+        processor = self._context_processor
+        if processor is None:
+            self._translation_input_done.set()
+            return
+        pending_since: float | None = None
+        try:
+            while (not self._context_input_done.is_set() or
+                   not self._context_queue.empty()):
+                try:
+                    item = self._context_queue.get(timeout=0.1)
+                except queue.Empty:
+                    segments = processor.poll()
+                else:
+                    segments, pending_since = self._consume_context_item(
+                        processor, item, pending_since)
+                if segments:
+                    self._commit_context_segments(
+                        segments, pending_since or time.monotonic())
+                    pending_since = None
+            trailing = processor.flush()
+            if trailing:
+                self._commit_context_segments(
+                    trailing, pending_since or time.monotonic())
+        except Exception as exc:
+            logger.exception("智能上下文处理线程失败")
+            self._emit_status(f"上下文处理错误: {exc}")
+            self._set_state(PipelineState.FAILED)
+            self._stop_evt.set()
+        finally:
+            self._translation_input_done.set()
+
+    def _consume_context_item(
+        self,
+        processor: ContextualTextProcessor,
+        item: _QueuedText,
+        pending_since: float | None,
+    ) -> tuple[list[ContextualSegment], float | None]:
+        expired = processor.poll(now=item.queued_at)
+        if expired:
+            self._commit_context_segments(
+                expired, pending_since or item.queued_at)
+            pending_since = None
+        if not processor.pending_text:
+            pending_since = item.queued_at
+        segments = processor.submit(item.text, now=item.queued_at)
+        if not segments and processor.pending_text:
+            self._emit_partial(processor.pending_text)
+        if not segments and not processor.pending_text:
+            pending_since = None
+        return segments, pending_since
+
+    def _commit_context_segments(
+        self,
+        segments: list[ContextualSegment],
+        queued_at: float,
+    ) -> None:
+        for segment in segments:
+            if segment.corrections or segment.fillers_removed:
+                logger.info(
+                    "上下文文本已稳定: raw=%r final=%r corrections=%s fillers=%d",
+                    segment.raw_text[:160], segment.text[:160],
+                    segment.corrections, segment.fillers_removed,
+                )
+            self._queue_translation(segment.text, queued_at)
 
     def _take_translation_timestamp(self, text: str) -> float | None:
         with self._metrics_lock:
@@ -690,7 +827,10 @@ class Pipeline:
             self._set_state(PipelineState.FAILED)
             self._stop_evt.set()
         finally:
-            self._translation_input_done.set()
+            if self._context_processor is not None:
+                self._context_input_done.set()
+            else:
+                self._translation_input_done.set()
 
     @staticmethod
     def _recognition_item(item) -> tuple[np.ndarray, float | None]:
@@ -747,42 +887,20 @@ class Pipeline:
             raise RuntimeError(f"上一任务仍在安全收尾（{names}），请稍后再开始")
         self._drain_queue(self._queue)
         self._drain_queue(self._recognition_queue)
+        self._drain_queue(self._context_queue)
         self._drain_queue(self._translation_queue)
         with self._metrics_lock:
             self._translation_times.clear()
         self._stop_evt.clear()
         self._pause_evt.clear()
         self._recognition_input_done.clear()
+        self._context_input_done.clear()
         self._translation_input_done.clear()
         self._set_state(PipelineState.STARTING)
         self._emit_status("启动中…")
         try:
-            if self._mode == "c":
-                if self._in_path is None or not self._in_path.exists():
-                    raise FileNotFoundError("请先选择要处理的音频或视频文件")
-                new_threads = [threading.Thread(
-                    target=self._run_file_mode, name="pipeline-file", daemon=True)]
-            else:
-                self._build_real_time()
-                self._start_tts_worker()
-                if self._mode == "a" and self._recording_enabled:
-                    self._recorder = WaveSessionRecorder(self._recordings_dir)
-                    self._last_recording_path = self._recorder.path
-                new_threads = [
-                    threading.Thread(target=self._capture_loop,
-                                     name="pipeline-capture", daemon=True),
-                    threading.Thread(target=self._process_loop,
-                                     name="pipeline-process", daemon=True),
-                ]
-                if self._is_generative:
-                    new_threads.append(threading.Thread(
-                        target=self._recognition_loop,
-                        name="pipeline-recognize", daemon=True,
-                    ))
-                new_threads.append(threading.Thread(
-                    target=self._translation_loop,
-                    name="pipeline-translate", daemon=True,
-                ))
+            new_threads = (self._new_file_threads() if self._mode == "c"
+                           else self._new_realtime_threads())
             self._set_state(PipelineState.RUNNING)
             self._threads.extend(new_threads)
             for thread in new_threads:
@@ -798,6 +916,42 @@ class Pipeline:
             logger.exception("Pipeline 启动失败: mode=%s", self._mode)
             self._emit_status(f"启动失败: {exc}")
             raise
+
+    def _new_file_threads(self) -> list[threading.Thread]:
+        if self._in_path is None or not self._in_path.exists():
+            raise FileNotFoundError("请先选择要处理的音频或视频文件")
+        return [threading.Thread(
+            target=self._run_file_mode, name="pipeline-file", daemon=True)]
+
+    def _new_realtime_threads(self) -> list[threading.Thread]:
+        self._build_real_time()
+        if self._context_processor is not None:
+            self._context_processor.reset()
+        self._start_tts_worker()
+        if self._mode == "a" and self._recording_enabled:
+            self._recorder = WaveSessionRecorder(self._recordings_dir)
+            self._last_recording_path = self._recorder.path
+        threads = [
+            threading.Thread(target=self._capture_loop,
+                             name="pipeline-capture", daemon=True),
+            threading.Thread(target=self._process_loop,
+                             name="pipeline-process", daemon=True),
+        ]
+        if self._is_generative:
+            threads.append(threading.Thread(
+                target=self._recognition_loop,
+                name="pipeline-recognize", daemon=True,
+            ))
+        if self._context_processor is not None:
+            threads.append(threading.Thread(
+                target=self._context_loop,
+                name="pipeline-context", daemon=True,
+            ))
+        threads.append(threading.Thread(
+            target=self._translation_loop,
+            name="pipeline-translate", daemon=True,
+        ))
+        return threads
 
     def stop(self) -> None:
         if not self.is_running() and not any(t.is_alive() for t in self._threads):
@@ -947,6 +1101,8 @@ class Pipeline:
             finally:
                 if self._is_generative:
                     self._recognition_input_done.set()
+                elif self._context_processor is not None:
+                    self._context_input_done.set()
                 else:
                     self._translation_input_done.set()
 

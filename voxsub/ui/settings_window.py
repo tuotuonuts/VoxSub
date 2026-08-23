@@ -153,6 +153,9 @@ class _InfoButton(QToolButton):
                 "调优预设": "Automatic chooses suitable values for Zipformer or Qwen3-ASR. Low latency shows text sooner but may split one sentence; Accuracy waits longer for more context.",
                 "语音灵敏度": "Lower values catch quiet or distant speech more easily but may mistake keyboard or fan noise for speech. Higher values reject more noise but may miss quiet speech.",
                 "停顿多久断句": "After speech has been quiet for this long, the current sentence is sent for recognition. Lower values reduce latency; higher values preserve more context.",
+                "上下文最长等待": "In Smart Context mode, an incomplete phrase can wait this much longer for the speaker to continue. A hard limit always commits the text.",
+                "上下文保守纠偏": "Uses your common words and repeatedly established recent terms for small auditable corrections. It never freely rewrites or invents content.",
+                "语气词清理": "Light cleanup removes only isolated fillers such as um or uh. Meaningful sentence-final particles and the raw recognized text are preserved.",
                 "单句最长时长": "If someone speaks without pausing, this limit forces a split so subtitles keep moving. Too short can cut a sentence; too long increases delay and memory use.",
                 "识别候选数": "Mainly affects Zipformer. More candidates can improve accuracy but use more CPU. Qwen3-ASR uses its own generation path, so this setting does not affect it.",
                 "单句最大文字量": "Mainly affects Qwen3-ASR and Fun-ASR. A value that is too small can truncate long speech; a larger value only permits longer output and may slow abnormal segments.",
@@ -458,6 +461,7 @@ class SettingsWindow(QWidget):
             ("响应优先", "responsive"),
             ("均衡", "balanced"),
             ("准确优先", "accuracy"),
+            ("智能上下文（动态断句）", "context"),
             ("自定义", "custom"),
         ):
             self.asr_profile_combo.addItem(label, value)
@@ -488,6 +492,17 @@ class SettingsWindow(QWidget):
             "说话停顿达到这个时间后，当前一句才会送去识别。调小会更快出字幕，"
             "适合语速快、照稿念的视频；但 50–150ms 很容易把换气切成碎句。"
             "调大会保留更多上下文，但字幕会晚一些。",
+        )
+
+        self.context_hold_spin = _ReliableSpinBox(intro_card)
+        self.context_hold_spin.setRange(200, 4000)
+        self.context_hold_spin.setSingleStep(100)
+        self.context_hold_spin.setSuffix(" ms")
+        self.context_hold_spin.setObjectName("inputBox")
+        self._tuning_row(
+            form, "上下文最长等待", self.context_hold_spin,
+            "仅智能上下文模式生效。检测到句子可能没说完时，允许额外等待这段时间；"
+            "到达上限一定会提交，不会无限等待。会议建议 1200–2200ms。",
         )
 
         self.max_segment_spin = _ReliableDoubleSpinBox(intro_card)
@@ -529,6 +544,24 @@ class SettingsWindow(QWidget):
             "把人名、产品名、医学或游戏术语用英文逗号分开。模型会更留意这些读音相近的词。"
             "不要粘贴整段文章，词太多反而可能干扰普通内容。",
         )
+
+        self.context_correction_switch = ToggleSwitch(
+            "启用保守纠偏（不自由改写）", intro_card)
+        self._tuning_row(
+            form, "上下文保守纠偏", self.context_correction_switch,
+            "只根据常用词和最近多次出现的词做小范围、可记录的替换；"
+            "不会凭空补充数字、人名、否定词或没有听到的内容。",
+        )
+
+        self.filler_mode_combo = QComboBox(intro_card)
+        self.filler_mode_combo.setObjectName("inputBox")
+        self.filler_mode_combo.setMinimumHeight(42)
+        self.filler_mode_combo.addItem("关闭（保留原话）", "off")
+        self.filler_mode_combo.addItem("轻度（仅独立语气词）", "light")
+        self._tuning_row(
+            form, "语气词清理", self.filler_mode_combo,
+            "轻度只清理独立的“嗯、啊、呃、额、唔”等填充词；句尾语气、疑问和原始识别文本会保留。",
+        )
         intro.addLayout(form)
 
         action_row = QHBoxLayout()
@@ -555,10 +588,13 @@ class SettingsWindow(QWidget):
 
         self.asr_profile_combo.currentIndexChanged.connect(self._on_asr_profile_changed)
         for spin in (self.vad_threshold_spin, self.silence_spin,
-                     self.max_segment_spin, self.beam_paths_spin,
+                     self.context_hold_spin, self.max_segment_spin, self.beam_paths_spin,
                      self.max_tokens_spin):
             spin.valueChanged.connect(self._mark_asr_tuning_dirty)
         self.hotwords_edit.textChanged.connect(self._mark_asr_tuning_dirty)
+        self.context_correction_switch.toggled.connect(self._mark_asr_tuning_dirty)
+        self.filler_mode_combo.currentIndexChanged.connect(
+            self._mark_asr_tuning_dirty)
         return self._scroll_page(page)
 
     def _build_voice_tab(self) -> QWidget:
@@ -1000,6 +1036,8 @@ class SettingsWindow(QWidget):
                          "beam": 4, "tokens": 512},
             "accuracy": {"vad": 0.25, "silence": 900, "max_s": 20.0,
                          "beam": 6, "tokens": 512},
+            "context": {"vad": 0.32, "silence": 500, "max_s": 18.0,
+                        "beam": 6, "tokens": 768},
         }.get(profile)
 
     @staticmethod
@@ -1012,6 +1050,10 @@ class SettingsWindow(QWidget):
             "asr_beam_paths": int(cfg.get("asr_beam_paths", 4)),
             "asr_max_new_tokens": int(cfg.get("asr_max_new_tokens", 512)),
             "asr_hotwords": str(cfg.get("asr_hotwords", "")),
+            "asr_context_hold_ms": int(cfg.get("asr_context_hold_ms", 1800)),
+            "asr_context_correction": bool(
+                cfg.get("asr_context_correction", True)),
+            "asr_filler_mode": str(cfg.get("asr_filler_mode", "light")),
         }
 
     def _collect_asr_tuning(self) -> dict[str, object]:
@@ -1023,6 +1065,11 @@ class SettingsWindow(QWidget):
             "asr_beam_paths": int(self.beam_paths_spin.value()),
             "asr_max_new_tokens": int(self.max_tokens_spin.value()),
             "asr_hotwords": self.hotwords_edit.text().strip(),
+            "asr_context_hold_ms": int(self.context_hold_spin.value()),
+            "asr_context_correction": bool(
+                self.context_correction_switch.isChecked()),
+            "asr_filler_mode": str(
+                self.filler_mode_combo.currentData() or "light"),
         }
 
     def _apply_tuning_to_controls(self, values: dict[str, object]) -> None:
@@ -1039,6 +1086,13 @@ class SettingsWindow(QWidget):
             self.beam_paths_spin.setValue(int(values.get("asr_beam_paths", 4)))
             self.max_tokens_spin.setValue(int(values.get("asr_max_new_tokens", 512)))
             self.hotwords_edit.setText(str(values.get("asr_hotwords", "")))
+            self.context_hold_spin.setValue(int(
+                values.get("asr_context_hold_ms", 1800)))
+            self.context_correction_switch.setChecked(bool(
+                values.get("asr_context_correction", True)))
+            filler_mode = str(values.get("asr_filler_mode", "light"))
+            self.filler_mode_combo.setCurrentIndex(max(
+                0, self.filler_mode_combo.findData(filler_mode)))
             self._on_asr_profile_changed(self.asr_profile_combo.currentIndex())
         finally:
             self._loading = was_loading
@@ -1077,6 +1131,10 @@ class SettingsWindow(QWidget):
                         self.max_segment_spin, self.beam_paths_spin,
                         self.max_tokens_spin):
             control.setEnabled(custom)
+        context = profile == "context"
+        self.context_hold_spin.setEnabled(context)
+        self.context_correction_switch.setEnabled(context)
+        self.filler_mode_combo.setEnabled(context)
         self._mark_asr_tuning_dirty()
 
     def _save_asr_tuning(self, *_args) -> None:
@@ -1102,11 +1160,15 @@ class SettingsWindow(QWidget):
             (self.max_segment_spin, 12.0),
             (self.beam_paths_spin, 4),
             (self.max_tokens_spin, 512),
+            (self.context_hold_spin, 1800),
         ):
             control.blockSignals(True)
             control.setValue(value)
             control.blockSignals(False)
         self.hotwords_edit.clear()
+        self.context_correction_switch.setChecked(True)
+        self.filler_mode_combo.setCurrentIndex(
+            self.filler_mode_combo.findData("light"))
         self._mark_asr_tuning_dirty()
 
     def _on_debug_toggled(self, checked: bool) -> None:

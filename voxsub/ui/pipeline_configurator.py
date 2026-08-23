@@ -43,6 +43,9 @@ def apply_pipeline_config(
         "beam_paths": int(config.get("asr_beam_paths", 4)),
         "max_new_tokens": int(config.get("asr_max_new_tokens", 512)),
         "hotwords": str(config.get("asr_hotwords", "")),
+        "context_hold_ms": int(config.get("asr_context_hold_ms", 1800)),
+        "context_correction": bool(config.get("asr_context_correction", True)),
+        "filler_mode": str(config.get("asr_filler_mode", "light")),
     })
     pipeline.set_recording(
         mode == "a" and bool(config.get("record_with_translation", False)))

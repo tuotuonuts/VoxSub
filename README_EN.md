@@ -7,19 +7,19 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.4.1-beta` installer uses a VoxSub developer self-signed certificate. The unreleased local `0.4.2-beta` candidate is unsigned because the current certificate is unavailable. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.4.1-beta` installer uses a VoxSub developer self-signed certificate; a new candidate remains unsigned when no suitable certificate is available. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.4.2-beta`. Its candidate installer has been built and passed an isolated startup check, and is awaiting user validation. The public download remains `0.4.1-beta`; no `0.4.2-beta` Release has been created. This is still a development build.
+Source version: `0.5.0-beta`. Smart Context and the full regression suite are complete, and the installer will be built after this source push. The public download remains `0.4.1-beta`; no `0.5.0-beta` Release has been created. This is still a development build.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
 ## Downloads and candidate build
 
 - Published build: `VoxSub-Setup-0.4.1-beta.exe` on [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases) (developer self-signed); SHA256 `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A`.
-- Local test candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`, 214,762,511 bytes (204.81 MiB), unsigned; SHA256 `9B691BF2FE6B5F9F3AD7C0B53CB936547D38550CC894BDC8FAA43684770E99D6`.
-- `0.4.2-beta` will not be uploaded or published as a new Release until user validation is complete.
+- New candidate: `VoxSub-Setup-0.5.0-beta.exe` will be built after the source push and its SHA256 will then be recorded; it supersedes the local `0.4.2-beta` candidate.
+- `0.5.0-beta` will not be uploaded or published as a new Release until user validation is complete.
 
 ## Available Features
 
@@ -32,13 +32,14 @@ Source version: `0.4.2-beta`. Its candidate installer has been built and passed 
 - **Built-in diagnostics and live logs:** view logs without opening or locking the log file, switch DEBUG logging on inside the app, and export logs, reports, and sessions through an in-app save dialog with background writing.
 - **New-device base-model repair:** a bundled Silero VAD is restored to the current user's model directory on first use, so an ASR model downloaded from Model Hub can run without a separate hidden VAD download.
 - **Cloud and hybrid pipelines:** choose STT and translation independently. Cloud STT and cloud translation each have their own API key, BaseURL, and model name, supporting cloud STT plus local translation, local STT plus cloud translation, and a fully cloud-based chain. Cloud STT uploads only VAD-finalized speech segments.
-- **Recognition tuning:** use Automatic, Low Latency, Balanced, or Accuracy presets, or adjust sensitivity, pause-based segmentation, maximum utterance length, decoding candidates, maximum text length, and custom vocabulary over broad ranges. Hover over each `i` icon for a plain-language explanation; changes are saved only when explicitly confirmed.
+- **Recognition tuning:** the existing Automatic, Low Latency, Balanced, Accuracy, and Custom behaviors remain unchanged. The new Smart Context mode can extend pauses based on sentence completeness, merge fragments within a hard wait limit, conservatively correct from custom vocabulary and repeated recent context, and optionally apply light isolated-filler cleanup. Hover over each `i` icon for a plain-language explanation; changes are saved only when explicitly confirmed.
 - **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. The overlay can show source only, translation only, or both, with separate controls for content padding and the gap between lines.
 - **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports a wider font range, free resizing, dragging, locking, and click-through mode. When locked, hovering reveals only the Unlock control.
 - **Fixed-size long subtitles:** long sentences no longer enlarge the overlay or push it beyond the screen. Text wraps inside the chosen dimensions; use the mouse wheel for the current sentence and `Ctrl + wheel` for subtitle history.
 - **Unified choice controls:** settings radio choices stay circular, binary settings use rounded switches, and Model Hub filters remain capsule-shaped instead of changing geometry when selected.
 - **Installer language:** the setup wizard automatically follows the Windows UI language for Simplified Chinese, Traditional Chinese, or English, with English as the fallback.
 - **Model storage:** fresh installs use a `Models` folder beside the installed app, organized into purpose folders such as `stt`, `translate`, `vad`, and `tts`. Upgraded installations keep their existing model root until the user changes it. Settings supports changing the location, moving an existing library, and manually importing models; updates do not remove downloaded models.
+- **0.5.0-beta candidate feature:** an independent bounded context stage lets generative/cloud STT merge incomplete fragments before translation and lets streaming Zipformer extend a pause when the sentence appears incomplete. Waiting always has a hard cap, corrections are small and auditable, and existing tuning modes bypass the stage entirely.
 - **0.4.2-beta candidate fixes:** centralized config validation and migration; bounded capture, recognition, translation, and TTS queues; a working independent TTS playback worker; integrity checks and atomic writes for downloads, model commits, and subtitle exports; responsibility-based splits for Pipeline, hardware probing, and llama startup; and reliable matching up/down controls for translation font size and overlay opacity in Appearance settings.
 - **0.4.1-beta fixes:** both recognition-tuning spin arrows are clickable; model moves run in the background without freezing or crashing when the page closes; after a move, the manifest is repaired and the pipeline immediately uses the new root instead of reporting missing files or reopening the old root; upgrades keep finding translation models in the previous model root; newer Teams windows are captured through their host process and child process tree; long subtitles no longer expand the overlay off-screen.
 - **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
@@ -77,7 +78,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current local `0.4.2-beta` candidate installer is 214,762,511 bytes.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The `0.5.0-beta` installer size and SHA256 will be added after this build completes.
 
 ## Project Layout
 

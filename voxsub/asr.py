@@ -504,7 +504,9 @@ class UtteranceSegmenter:
                  on_utterance: Callable[[str], None], min_silence_ms: int = 350,
                  max_utterance_ms: int = 4500,
                  on_partial: Callable[[str], None] | None = None,
-                 partial_interval_ms: int = 360):
+                 partial_interval_ms: int = 360,
+                 boundary_decider: Callable[[str], bool] | None = None,
+                 semantic_hold_ms: int = 0):
         self._asr = asr
         self._vad = vad
         self._on_utterance = on_utterance
@@ -512,12 +514,16 @@ class UtteranceSegmenter:
         self._min_silence_samples = int(SAMPLE_RATE * min_silence_ms / 1000.0)
         self._max_utterance_samples = int(SAMPLE_RATE * max_utterance_ms / 1000.0)
         self._partial_interval_samples = int(SAMPLE_RATE * partial_interval_ms / 1000.0)
+        self._boundary_decider = boundary_decider
+        self._max_semantic_silence_samples = self._min_silence_samples + int(
+            SAMPLE_RATE * max(0, semantic_hold_ms) / 1000.0)
         self._stream = None                       # 当前活跃解码流; None = 静音态
         self._buffer = np.zeros(0, dtype=np.float32)  # 不足一窗的剩余样本
         self._silence_samples = 0                 # 当前段尾部累计静音样本数
         self._utterance_samples = 0
         self._since_partial_samples = 0
         self._last_partial = ""
+        self._defer_endpoint = False
 
     def feed(self, samples: np.ndarray) -> None:
         """送入任意长度音频块 (float32 mono 16k)。"""
@@ -539,14 +545,21 @@ class UtteranceSegmenter:
         if self._vad.is_speech(chunk):
             # 语音: 清零静音计数, 需要时新建流, 累积识别
             self._silence_samples = 0
+            self._defer_endpoint = False
             if self._stream is None:
                 self._stream = self._asr.create_stream()
             self._asr.feed(self._stream, chunk)
         elif self._stream is not None:
             # 静音且段活跃: 仍送入 ASR (帮助解码收敛), 累计静音判定句边界
             self._asr.feed(self._stream, chunk)
+            previous_silence = self._silence_samples
             self._silence_samples += len(chunk)
-            if self._silence_samples >= self._min_silence_samples:
+            if (previous_silence < self._min_silence_samples <=
+                    self._silence_samples):
+                self._defer_endpoint = self._should_defer_endpoint()
+            if (self._silence_samples >= self._min_silence_samples and
+                    (not self._defer_endpoint or
+                     self._silence_samples >= self._max_semantic_silence_samples)):
                 self._end_utterance()
 
         if self._stream is not None:
@@ -571,6 +584,25 @@ class UtteranceSegmenter:
             self._last_partial = text
             self._on_partial(text)
 
+    def _should_defer_endpoint(self) -> bool:
+        if self._boundary_decider is None or self._stream is None:
+            return False
+        text = self._asr.get_result(self._stream).strip()
+        if not text:
+            return False
+        try:
+            defer = bool(self._boundary_decider(text))
+        except Exception:
+            logger.exception("语义断句判断失败，回落到固定静音边界")
+            return False
+        if defer:
+            logger.debug(
+                "语义判断句子未完成，静音边界延长: text=%r max_silence_ms=%.0f",
+                text[:120],
+                self._max_semantic_silence_samples * 1000.0 / SAMPLE_RATE,
+            )
+        return defer
+
     def _end_utterance(self) -> None:
         """结束当前段: 取最终文本回调, 复位 ASR 流与 VAD。"""
         if self._stream is None:
@@ -584,6 +616,7 @@ class UtteranceSegmenter:
         self._utterance_samples = 0
         self._since_partial_samples = 0
         self._last_partial = ""
+        self._defer_endpoint = False
         self._vad.reset()  # 清 VAD 状态, 避免上句尾部状态压低下句起检灵敏度
 
     def flush(self) -> None:

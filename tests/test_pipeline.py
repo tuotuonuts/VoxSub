@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from voxsub.contextual_text import ContextualTextProcessor
 from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine
 
 
@@ -418,6 +419,55 @@ def test_asr_tuning_presets_keep_generative_context_longer() -> None:
     assert wide["max_utterance_ms"] == 120_000
     assert wide["beam_paths"] == 16
     assert wide["max_new_tokens"] == 4096
+
+
+def test_smart_context_preset_enables_bounded_semantic_processing() -> None:
+    p = Pipeline()
+    p.set_asr_tuning({
+        "profile": "context",
+        "context_hold_ms": 2200,
+        "context_correction": False,
+        "filler_mode": "off",
+    })
+
+    tuning = p._effective_asr_tuning(generative=True)  # noqa: SLF001
+
+    assert tuning["context_enabled"] is True
+    assert tuning["context_hold_ms"] == 2200
+    assert tuning["context_correction"] is False
+    assert tuning["filler_mode"] == "off"
+    assert tuning["silence_ms"] == 500
+    assert tuning["max_utterance_ms"] == 18_000
+
+
+def test_context_stage_merges_fragments_before_translation_queue() -> None:
+    p = Pipeline()
+    p._context_processor = ContextualTextProcessor(  # noqa: SLF001
+        source_lang="zh", hold_ms=1800, defer_incomplete=True,
+    )
+    p._on_sentence("因为目前成本比较低")  # noqa: SLF001
+    p._on_sentence("所以我们下周开始执行。")  # noqa: SLF001
+    p._context_input_done.set()  # noqa: SLF001
+
+    p._context_loop()  # noqa: SLF001
+
+    assert p._translation_queue.get_nowait() == (  # noqa: SLF001
+        "因为目前成本比较低所以我们下周开始执行。"
+    )
+    assert p._translation_input_done.is_set()  # noqa: SLF001
+
+
+def test_existing_modes_bypass_context_stage() -> None:
+    p = Pipeline()
+    p.set_asr_tuning({"profile": "balanced"})
+    assert p._effective_asr_tuning(generative=True)[  # noqa: SLF001
+        "context_enabled"
+    ] is False
+
+    p._on_sentence("原有路径保持不变。")  # noqa: SLF001
+
+    assert p._context_queue.empty()  # noqa: SLF001
+    assert p._translation_queue.get_nowait() == "原有路径保持不变。"  # noqa: SLF001
 
 
 # ---------- C 模式 (真实模型) ----------

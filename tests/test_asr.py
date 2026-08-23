@@ -173,6 +173,67 @@ def test_segmenter_hard_cuts_continuous_speech_and_emits_partials() -> None:
     assert partials
 
 
+def test_segmenter_context_boundary_extends_only_incomplete_pause() -> None:
+    class _EnergyVad:
+        window_size = 160
+
+        @staticmethod
+        def is_speech(chunk):
+            return bool(np.mean(chunk) > 0.5)
+
+        @staticmethod
+        def reset():
+            pass
+
+    class _TextAsr:
+        def __init__(self, text):
+            self.text = text
+
+        @staticmethod
+        def create_stream():
+            return {}
+
+        @staticmethod
+        def feed(_stream, _chunk):
+            pass
+
+        def get_result(self, _stream):
+            return self.text
+
+        def decode(self, _stream):
+            return self.text
+
+        @staticmethod
+        def reset(_stream):
+            pass
+
+    incomplete: list[str] = []
+    deferred = UtteranceSegmenter(
+        _TextAsr("因为目前成本较低"), _EnergyVad(), incomplete.append,
+        min_silence_ms=20, semantic_hold_ms=30,
+        boundary_decider=lambda text: text.startswith("因为"),
+    )
+    deferred.feed(np.concatenate((
+        np.ones(160 * 2, dtype=np.float32),
+        np.zeros(160 * 2, dtype=np.float32),
+    )))
+    assert incomplete == []
+    deferred.feed(np.zeros(160 * 3, dtype=np.float32))
+    assert incomplete == ["因为目前成本较低"]
+
+    complete: list[str] = []
+    immediate = UtteranceSegmenter(
+        _TextAsr("这个方案完成了"), _EnergyVad(), complete.append,
+        min_silence_ms=20, semantic_hold_ms=30,
+        boundary_decider=lambda _text: False,
+    )
+    immediate.feed(np.concatenate((
+        np.ones(160 * 2, dtype=np.float32),
+        np.zeros(160 * 2, dtype=np.float32),
+    )))
+    assert complete == ["这个方案完成了"]
+
+
 # ---------------------------------------------------------------------------
 # UtteranceSegmenter
 # ---------------------------------------------------------------------------

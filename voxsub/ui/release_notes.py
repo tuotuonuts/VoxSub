@@ -21,6 +21,25 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.5.0-beta",
+        "新增智能上下文断句与保守纠偏",
+        "Smart context segmentation and conservative correction",
+        (
+            "识别调优新增“智能上下文”模式；原有自动、响应优先、均衡、准确优先和自定义模式保持不变。",
+            "句子可能没说完时会结合上下文短暂等待，到达可调上限后一定提交，不会无限拖延。",
+            "翻译前可根据常用词和最近重复出现的词做小范围纠偏，不会自由改写或补写内容。",
+            "可选轻度清理独立的嗯、啊、呃等语气词；关闭后完整保留原话。",
+            "外观与识别调优的数值控件继续使用上下均可点击的统一箭头。",
+        ),
+        (
+            "Recognition tuning adds Smart Context while every existing preset and custom mode keeps its previous behavior.",
+            "Possibly incomplete sentences wait briefly for context, with a configurable hard deadline that always commits.",
+            "Before translation, small corrections can use custom vocabulary and repeatedly established recent terms without free rewriting.",
+            "Optional light cleanup removes isolated fillers such as um or uh; turning it off preserves the original wording.",
+            "Appearance and recognition tuning continue to use matching, reliable up/down controls.",
+        ),
+    ),
+    ReleaseNote(
         "0.4.2-beta",
         "更稳定的长时间同传与模型管理",
         "More reliable long-running translation and model management",

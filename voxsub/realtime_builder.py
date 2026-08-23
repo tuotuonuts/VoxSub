@@ -70,6 +70,7 @@ def build_realtime_components(
     audio_segmenter_factory: Callable,
     streaming_segmenter_factory: Callable,
     select_device: Callable,
+    semantic_boundary: Callable[[str], bool] | None,
 ) -> RealtimeComponents:
     """Build every dependency locally and return it only when all are ready."""
     cloud = spec.stt_provider == "cloud"
@@ -113,5 +114,8 @@ def build_realtime_components(
             min_silence_ms=spec.tuning["silence_ms"],
             max_utterance_ms=spec.tuning["max_utterance_ms"],
             on_partial=on_partial, partial_interval_ms=360,
+            boundary_decider=semantic_boundary,
+            semantic_hold_ms=(
+                spec.tuning["context_hold_ms"] if semantic_boundary else 0),
         )
     return RealtimeComponents(asr, None, vad, segmenter, generative, False)

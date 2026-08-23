@@ -9,7 +9,7 @@
              ffmpeg 提轨 ────────────────────────┘                        │
                                                                     on_utterance(text)
                                                                           ▼
-[model_catalog] ── 硬件检测/推荐/双源下载 ────────▶ [translate] ◀── 独立队列+缓存
+[model_catalog] ── 硬件检测/推荐/双源下载 ────────▶ [translate] ◀── [可选 context] ◀── 有界队列
                                                      │ opus 兜底 / Hy-MT2 / cloud
                                                      ▼
                                    [tts piper] ──▶ UI 悬浮字幕窗 (双语滚动/历史)
@@ -26,6 +26,7 @@ voxsub/
   vad/        silero 风格 VAD 封装（sherpa 内置模型）
   asr/        sherpa-onnx Zipformer / Fun-ASR-Nano / Qwen3-ASR 适配，句子回调
   cloud_stt/  OpenAI 兼容 /v1/audio/transcriptions 客户端，WAV 分段上传
+  contextual_text.py  可选语义断句、保守纠偏与轻度语气词清理
   translate/  Translator 基类 + OPUS / Hy-MT2(llama.cpp) / cloud 三实现
   tts.py      piper 合成封装
   tts_worker.py  有界异步合成/播放队列，失败降级为仅字幕
@@ -226,11 +227,20 @@ class Pipeline:
 
 ```
 [采集线程] audio.read_chunk() 循环 ──队列──▶ [处理线程] segmenter.feed() → asr
-        ──on_utterance(原文)──▶ 翻译(预取/缓存/降级) ──▶ UI 回调(线程安全: queue.Queue + Qt 信号桥)
+        ──on_utterance(原文)──▶ [可选上下文线程] ──▶ 翻译(预取/缓存/降级)
+        ──▶ UI 回调(线程安全: queue.Queue + Qt 信号桥)
 ```
 
 - audio/asr/translate/tts 各在自己的线程/调用链中; UI 回调经 `queue.Queue` 桥接, 绝不在推理线程碰 Qt 控件
 - 停止语义: stop() 置停止标志 → 采集线程退出 → segmenter.flush() 处理尾句 → 线程 join(超时 3s)
+
+### 智能上下文调优（可选）
+
+- 只有 `context` 调优模式启用 `ContextualTextProcessor`；自动、响应优先、均衡、准确优先和自定义模式直接旁路，保持原行为。
+- 流式 Zipformer 在普通静音阈值处用当前 partial 判断是否未完，只把未完句延长到“普通静音 + 语义等待”硬上限；生成式/云 STT 仍按 VAD 解码片段，再由独立上下文线程合并。
+- 语义等待从首个待定片段开始计时，后续片段不得重置截止时间；上下文队列固定容量，结束顺序为识别 → 上下文 flush → 翻译。
+- 纠偏仅使用用户 hotword 和近期多次稳定出现的词，保留 `raw_text` 与修改记录；不得借上下文自由补写数字、人名、否定词或未识别内容。
+- 轻度语气词清理只处理独立填充词并可关闭；原始识别文本不覆盖、不落盘，除现有诊断日志外不新增隐私数据。
 
 ### 三模式组装
 

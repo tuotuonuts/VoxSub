@@ -19,7 +19,7 @@ from voxsub.file_io import write_text_atomically
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("config_store")
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 _CONFIG_LOCK = threading.RLock()
 _URL_KEYS = frozenset({"stt_base_url", "translate_base_url", "base_url"})
 
@@ -67,6 +67,9 @@ _DEFAULTS: dict[str, Any] = {
     "asr_beam_paths": 4,
     "asr_max_new_tokens": 512,
     "asr_hotwords": "",
+    "asr_context_hold_ms": 1800,
+    "asr_context_correction": True,
+    "asr_filler_mode": "light",
     "translate_model_id": "mt-opus-fast-builtin",
     "download_source": "auto",
     # Model files are user-owned data.  An empty root means an installation
@@ -153,7 +156,8 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "translate_tier": frozenset({"fast", "quality", "cloud"}),
         "stt_provider": frozenset({"local", "cloud"}),
         "asr_tuning_profile": frozenset(
-            {"auto", "responsive", "balanced", "accuracy", "custom"}),
+            {"auto", "responsive", "balanced", "accuracy", "context", "custom"}),
+        "asr_filler_mode": frozenset({"off", "light"}),
         "download_source": frozenset({"auto", "global", "china"}),
         "models_root_mode": frozenset({"", "legacy", "install", "custom"}),
         "overlay_display_mode": frozenset({"bilingual", "source", "translation"}),
@@ -164,6 +168,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "asr_max_utterance_ms": (1000, 120000),
         "asr_beam_paths": (1, 16),
         "asr_max_new_tokens": (32, 4096),
+        "asr_context_hold_ms": (200, 4000),
         "capture_process_id": (0, 2_147_483_647),
         "overlay_font_size": (10, 72),
         "overlay_width": (400, 4000),
