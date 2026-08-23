@@ -20,12 +20,12 @@
 
 ### 候选验证状态
 
-- 源码全量回归：`228 passed, 8 skipped`。
+- 源码全量回归：`229 passed, 8 skipped`。
 - `compileall` 与 `git diff --check` 通过。
-- 本地候选安装包：`VoxSub-Setup-0.4.2-beta.exe`，204.81 MiB；SHA256 `187C75E2B494C6BF4A00671571174D0E71398BD9EBAD45B43172CE5BB91976AC`。
+- 本地候选安装包：`VoxSub-Setup-0.4.2-beta.exe`，214,762,511 字节（204.81 MiB）；SHA256 `9B691BF2FE6B5F9F3AD7C0B53CB936547D38550CC894BDC8FAA43684770E99D6`。
 - 当前用户证书库没有可用的 VoxSub 代码签名证书，因此本次候选安装包和主程序未签名；未擅自生成新证书或更换开发者身份。
 - 打包成品使用隔离配置启动 12 秒未提前退出；日志确认 `ui=0.4.2-beta core=0.4.2-beta`、窗口组件创建完成并进入事件循环。
-- 源码提交 `32070aa` 已推送到 GitHub `main`；用户验证前不创建 GitHub Release。
+- 箭头修复提交 `d2147da` 已推送到 GitHub `main`；用户验证前不创建 GitHub Release。
 
 ## 版本: v0.4.1-beta（2026-08-21 重打包）
 

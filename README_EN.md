@@ -18,7 +18,7 @@ Source version: `0.4.2-beta`. Its candidate installer has been built and passed 
 ## Downloads and candidate build
 
 - Published build: `VoxSub-Setup-0.4.1-beta.exe` on [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases) (developer self-signed); SHA256 `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A`.
-- Local test candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`, 214,760,057 bytes (204.81 MiB), unsigned; SHA256 `187C75E2B494C6BF4A00671571174D0E71398BD9EBAD45B43172CE5BB91976AC`.
+- Local test candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`, 214,762,511 bytes (204.81 MiB), unsigned; SHA256 `9B691BF2FE6B5F9F3AD7C0B53CB936547D38550CC894BDC8FAA43684770E99D6`.
 - `0.4.2-beta` will not be uploaded or published as a new Release until user validation is complete.
 
 ## Available Features
@@ -77,7 +77,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current local `0.4.2-beta` candidate installer is 214,760,057 bytes.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current local `0.4.2-beta` candidate installer is 214,762,511 bytes.
 
 ## Project Layout
 

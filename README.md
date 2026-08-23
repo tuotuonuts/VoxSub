@@ -19,7 +19,7 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 ## 下载与候选包
 
 - 已发布版本：[GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases) 中的 `VoxSub-Setup-0.4.1-beta.exe`（开发者自签名）；SHA256 `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A`。
-- 本地测试候选：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`，214,760,057 字节（204.81 MiB），未签名；SHA256 `187C75E2B494C6BF4A00671571174D0E71398BD9EBAD45B43172CE5BB91976AC`。
+- 本地测试候选：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`，214,762,511 字节（204.81 MiB），未签名；SHA256 `9B691BF2FE6B5F9F3AD7C0B53CB936547D38550CC894BDC8FAA43684770E99D6`。
 - `0.4.2-beta` 通过用户验证前不会上传到 Releases，也不会创建新 Release。
 
 ## 当前可用功能
@@ -74,7 +74,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.4.2-beta` 本地候选安装包大小为 214,760,057 字节。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.4.2-beta` 本地候选安装包大小为 214,762,511 字节。
 
 ## 目录结构
 
