@@ -7,20 +7,19 @@
 # VoxSub
 
 > [!WARNING]
-> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** This local `0.4.1-beta` installer uses a VoxSub developer self-signed certificate. Windows may still show an “unknown publisher” warning, and antivirus products may produce a false positive. Download VoxSub only from this repository's Releases page and verify the SHA256 checksum before installation. Do not disable security software blindly just to run the installer.
+> **VoxSub is still in early development. Its features, model compatibility, and stability are not yet mature, so it is not recommended for production or other critical use cases.** The published `0.4.1-beta` installer uses a VoxSub developer self-signed certificate. The unreleased local `0.4.2-beta` candidate is unsigned because the current certificate is unavailable. Windows may show an “unknown publisher” warning, and antivirus products may produce a false positive. Verify the SHA256 checksum before installation, and do not disable security software blindly just to run the installer.
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Source version: `0.4.2-beta`. This candidate is not released yet and its installer is being validated; the public download remains `0.4.1-beta`. This is still a development build.
+Source version: `0.4.2-beta`. Its candidate installer has been built and passed an isolated startup check, and is awaiting user validation. The public download remains `0.4.1-beta`; no `0.4.2-beta` Release has been created. This is still a development build.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
-## Download
+## Downloads and candidate build
 
-- [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases)
-- Installer: `VoxSub-Setup-0.4.1-beta.exe` (self-signed by the VoxSub developer; Windows may still show an unknown publisher)
-- SHA256: `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A` (also in the matching `.sha256` file)
-- Local build path: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.1-beta.exe`
+- Published build: `VoxSub-Setup-0.4.1-beta.exe` on [GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases) (developer self-signed); SHA256 `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A`.
+- Local test candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.4.2-beta.exe`, 214,760,057 bytes (204.81 MiB), unsigned; SHA256 `187C75E2B494C6BF4A00671571174D0E71398BD9EBAD45B43172CE5BB91976AC`.
+- `0.4.2-beta` will not be uploaded or published as a new Release until user validation is complete.
 
 ## Available Features
 
@@ -78,7 +77,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. This local installer is 214,738,176 bytes.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current local `0.4.2-beta` candidate installer is 214,760,057 bytes.
 
 ## Project Layout
 
