@@ -24,7 +24,10 @@
 ### 验证
 
 - 新增独立 `LiveDraftState` 状态模型和 stale-result、终句优先、双语草稿 UI、partial 纠偏测试。
-- 本轮完整测试、安装包大小、SHA256 和隔离启动结果将在构建完成后补充；本版本不会在用户验证前创建 GitHub Release。
+- 源码与正式构建门禁均为 `248 passed, 8 skipped`；唯一 warning 是声卡闭环测试报告的一次录音数据 discontinuity，测试本身通过。
+- 候选安装包 `VoxSub-Setup-0.6.0-beta.exe` 为 214,803,769 字节（204.85 MiB），SHA256 `8E2463AB10D6357E404B9AE47109A6EF5D0353D2DCD3D80851580A569D9CD84D`；当前证书库无可用 VoxSub 代码签名证书，因此成品未签名。
+- 打包目录使用全新隔离配置启动 12 秒未提前退出；日志确认 `ui=0.6.0-beta core=0.6.0-beta`、窗口组件创建完成并进入事件循环。
+- 源码提交 `5105abe` 已推送 GitHub `main`；本版本不会在用户验证前创建 GitHub Release。
 
 ## 版本: v0.5.0-beta（2026-08-24，已发布）
 

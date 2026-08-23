@@ -10,6 +10,7 @@
 
 - 修改前基线：210 passed，8 skipped。
 - v0.5.0-beta 智能上下文合入后验收：243 passed，8 skipped。
+- v0.6.0-beta 实时双语草稿合入后验收：248 passed，8 skipped；状态并发策略独立在 `live_draft.py`，UI 不管理 revision 或过期翻译结果。
 - `compileall` 全包编译通过，`git diff --check` 通过。
 - 生产代码中没有估算分支复杂度达到 15 的函数。
 - 生产代码中没有使用默认容量的无界 `queue.Queue()`。
