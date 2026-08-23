@@ -8,18 +8,18 @@
 # 语幕 VoxSub
 
 > [!WARNING]
-> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** Releases 中的 `0.4.1-beta` 使用 VoxSub 开发者自签名证书；新候选包若没有可用证书将保持未签名。Windows 可能显示“未知发布者”，安全软件也可能误报。请在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
+> **本项目仍处于早期开发阶段，功能、模型兼容性和稳定性尚不成熟，不建议用于生产环境或关键场景。** Releases 中的 `0.4.1-beta` 使用 VoxSub 开发者自签名证书；尚未发布的本地 `0.5.0-beta` 候选包因当前证书不可用而未签名。Windows 可能显示“未知发布者”，安全软件也可能误报。请在安装前核对 SHA256；不要为了安装而盲目关闭安全软件。
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，云 STT 与云翻译可独立配置并混合使用。
 
-当前源码版本：`0.5.0-beta`。智能上下文功能和全量回归已经完成，安装包将在本次源码推送后构建；公开下载区仍提供已发布的 `0.4.1-beta`，尚未创建 `0.5.0-beta` Release。本版仍属于开发测试版本。
+当前源码版本：`0.5.0-beta`。候选安装包已经完成构建和隔离启动检查，正在等待用户验证；公开下载区仍提供已发布的 `0.4.1-beta`，尚未创建 `0.5.0-beta` Release。本版仍属于开发测试版本。
 
 > **Intel NPU 支持仍有限。** `0.4.1-beta` 已在 Intel AI Boost 真机验证 Hy-MT2 1.8B Q4/Q6/Q8：VoxSub 自动调度和禁止 CPU 回退的强制 NPU 推理均通过。Hy-MT2 7B Q4/Q6/Q8 仅依据 llama.cpp OpenVINO 公开兼容资料列为“NPU 待验证”，启动真实翻译探针失败时会自动改用核显或 CPU；现有 sherpa-onnx ASR 和 OPUS 运行时不支持 NPU。
 
 ## 下载与候选包
 
 - 已发布版本：[GitHub Releases](https://github.com/tuotuonuts/VoxSub/releases) 中的 `VoxSub-Setup-0.4.1-beta.exe`（开发者自签名）；SHA256 `D1244780331B124381E4BBB354983B2A287D522060699DC9D24D26E3CF63CC1A`。
-- 新候选：`VoxSub-Setup-0.5.0-beta.exe` 将在源码推送后构建并补充 SHA256；旧的 `0.4.2-beta` 本地候选已被本版取代。
+- 本地测试候选：`D:\OneDrive\app_dve\Release\VoxSub-Setup-0.5.0-beta.exe`，214,795,950 字节（204.85 MiB），未签名；SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`。旧的 `0.4.2-beta` 本地候选已被本版取代。
 - `0.5.0-beta` 通过用户验证前不会上传到 Releases，也不会创建新 Release。
 
 ## 当前可用功能
@@ -75,7 +75,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。`0.5.0-beta` 的安装包大小和 SHA256 将在本次构建完成后补充。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前 `0.5.0-beta` 本地候选安装包大小为 214,795,950 字节。
 
 ## 目录结构
 
