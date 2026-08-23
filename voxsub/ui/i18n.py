@@ -320,6 +320,9 @@ TRANSLATIONS: dict[str, str] = {
     "识别候选数": "Recognition candidates",
     "单句最大文字量": "Maximum text per sentence",
     "常用词 / 专有名词": "Common / technical words",
+    "实时双语草稿": "Live bilingual draft",
+    "启用当前句原文与译文动态更新":
+        "Continuously update the current source and translation",
     "上下文保守纠偏": "Conservative context correction",
     "启用保守纠偏（不自由改写）":
         "Enable conservative correction (no free rewriting)",

@@ -68,6 +68,7 @@ _DEFAULTS: dict[str, Any] = {
     "asr_max_new_tokens": 512,
     "asr_hotwords": "",
     "asr_context_hold_ms": 1800,
+    "asr_live_draft_enabled": True,
     "asr_context_correction": True,
     "asr_filler_mode": "light",
     "translate_model_id": "mt-opus-fast-builtin",

@@ -154,6 +154,7 @@ class _InfoButton(QToolButton):
                 "语音灵敏度": "Lower values catch quiet or distant speech more easily but may mistake keyboard or fan noise for speech. Higher values reject more noise but may miss quiet speech.",
                 "停顿多久断句": "After speech has been quiet for this long, the current sentence is sent for recognition. Lower values reduce latency; higher values preserve more context.",
                 "上下文最长等待": "In Smart Context mode, an incomplete phrase can wait this much longer for the speaker to continue. A hard limit always commits the text.",
+                "实时双语草稿": "Continuously updates the current source and translation before the selected recognizer commits its corrected final. Turn it off to reduce CPU and memory use while keeping Smart Context segmentation and correction.",
                 "上下文保守纠偏": "Uses your common words and repeatedly established recent terms for small auditable corrections. It never freely rewrites or invents content.",
                 "语气词清理": "Light cleanup removes only isolated fillers such as um or uh. Meaningful sentence-final particles and the raw recognized text are preserved.",
                 "单句最长时长": "If someone speaks without pausing, this limit forces a split so subtitles keep moving. Too short can cut a sentence; too long increases delay and memory use.",
@@ -546,6 +547,14 @@ class SettingsWindow(QWidget):
             "不要粘贴整段文章，词太多反而可能干扰普通内容。",
         )
 
+        self.live_draft_switch = ToggleSwitch(
+            "启用当前句原文与译文动态更新", intro_card)
+        self._tuning_row(
+            form, "实时双语草稿", self.live_draft_switch,
+            "仅智能上下文模式生效。开启后当前句原文和译文会持续更新；"
+            "关闭可减少 CPU 和内存占用，但智能断句、上下文纠偏和语气词清理仍然保留。",
+        )
+
         self.context_correction_switch = ToggleSwitch(
             "启用保守纠偏（不自由改写）", intro_card)
         self._tuning_row(
@@ -593,6 +602,7 @@ class SettingsWindow(QWidget):
                      self.max_tokens_spin):
             spin.valueChanged.connect(self._mark_asr_tuning_dirty)
         self.hotwords_edit.textChanged.connect(self._mark_asr_tuning_dirty)
+        self.live_draft_switch.toggled.connect(self._mark_asr_tuning_dirty)
         self.context_correction_switch.toggled.connect(self._mark_asr_tuning_dirty)
         self.filler_mode_combo.currentIndexChanged.connect(
             self._mark_asr_tuning_dirty)
@@ -1052,6 +1062,8 @@ class SettingsWindow(QWidget):
             "asr_max_new_tokens": int(cfg.get("asr_max_new_tokens", 512)),
             "asr_hotwords": str(cfg.get("asr_hotwords", "")),
             "asr_context_hold_ms": int(cfg.get("asr_context_hold_ms", 1800)),
+            "asr_live_draft_enabled": bool(
+                cfg.get("asr_live_draft_enabled", True)),
             "asr_context_correction": bool(
                 cfg.get("asr_context_correction", True)),
             "asr_filler_mode": str(cfg.get("asr_filler_mode", "light")),
@@ -1067,6 +1079,8 @@ class SettingsWindow(QWidget):
             "asr_max_new_tokens": int(self.max_tokens_spin.value()),
             "asr_hotwords": self.hotwords_edit.text().strip(),
             "asr_context_hold_ms": int(self.context_hold_spin.value()),
+            "asr_live_draft_enabled": bool(
+                self.live_draft_switch.isChecked()),
             "asr_context_correction": bool(
                 self.context_correction_switch.isChecked()),
             "asr_filler_mode": str(
@@ -1089,6 +1103,8 @@ class SettingsWindow(QWidget):
             self.hotwords_edit.setText(str(values.get("asr_hotwords", "")))
             self.context_hold_spin.setValue(int(
                 values.get("asr_context_hold_ms", 1800)))
+            self.live_draft_switch.setChecked(bool(
+                values.get("asr_live_draft_enabled", True)))
             self.context_correction_switch.setChecked(bool(
                 values.get("asr_context_correction", True)))
             filler_mode = str(values.get("asr_filler_mode", "light"))
@@ -1134,6 +1150,7 @@ class SettingsWindow(QWidget):
             control.setEnabled(custom)
         context = profile == "context"
         self.context_hold_spin.setEnabled(context)
+        self.live_draft_switch.setEnabled(context)
         self.context_correction_switch.setEnabled(context)
         self.filler_mode_combo.setEnabled(context)
         self._mark_asr_tuning_dirty()
@@ -1167,6 +1184,7 @@ class SettingsWindow(QWidget):
             control.setValue(value)
             control.blockSignals(False)
         self.hotwords_edit.clear()
+        self.live_draft_switch.setChecked(True)
         self.context_correction_switch.setChecked(True)
         self.filler_mode_combo.setCurrentIndex(
             self.filler_mode_combo.findData("light"))

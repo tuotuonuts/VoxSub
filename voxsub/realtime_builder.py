@@ -70,7 +70,8 @@ def _build_draft_asr(
     Zipformer only supplies replaceable Smart Context drafts.  Missing or
     damaged optional draft files must not make the main recognizer unusable.
     """
-    if not spec.tuning.get("context_enabled", False):
+    if (not spec.tuning.get("context_enabled", False) or
+            not spec.tuning.get("live_draft_enabled", True)):
         return None
     tuning = dict(spec.tuning)
     tuning["beam_paths"] = min(2, max(1, int(tuning.get("beam_paths", 2))))
@@ -167,11 +168,15 @@ def build_realtime_components(
             partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
         )
     else:
+        expose_partial = (
+            not spec.tuning.get("context_enabled", False)
+            or spec.tuning.get("live_draft_enabled", True)
+        )
         segmenter = streaming_segmenter_factory(
             asr, vad, on_sentence,
             min_silence_ms=spec.tuning["silence_ms"],
             max_utterance_ms=spec.tuning["max_utterance_ms"],
-            on_partial=on_partial,
+            on_partial=on_partial if expose_partial else None,
             partial_interval_ms=spec.tuning.get("partial_interval_ms", 360),
             boundary_decider=semantic_boundary,
             semantic_hold_ms=(

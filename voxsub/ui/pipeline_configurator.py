@@ -44,6 +44,7 @@ def apply_pipeline_config(
         "max_new_tokens": int(config.get("asr_max_new_tokens", 512)),
         "hotwords": str(config.get("asr_hotwords", "")),
         "context_hold_ms": int(config.get("asr_context_hold_ms", 1800)),
+        "live_draft_enabled": bool(config.get("asr_live_draft_enabled", True)),
         "context_correction": bool(config.get("asr_context_correction", True)),
         "filler_mode": str(config.get("asr_filler_mode", "light")),
     })

@@ -308,6 +308,7 @@ class TestConfigStore:
         store.update({
             "asr_tuning_profile": "context",
             "asr_context_hold_ms": 9999,
+            "asr_live_draft_enabled": False,
             "asr_context_correction": False,
             "asr_filler_mode": "aggressive",
         })
@@ -316,6 +317,7 @@ class TestConfigStore:
 
         assert data["asr_tuning_profile"] == "context"
         assert data["asr_context_hold_ms"] == 4000
+        assert data["asr_live_draft_enabled"] is False
         assert data["asr_context_correction"] is False
         assert data["asr_filler_mode"] == "light"
 
@@ -578,6 +580,7 @@ class TestMainWindow:
             assert pipeline.stt[1]["stt_api_key"] == "stt-key"
             assert pipeline.translator[1]["translate_api_key"] == "translate-key"
             assert pipeline.asr_tuning["context_hold_ms"] == 1800
+            assert pipeline.asr_tuning["live_draft_enabled"] is True
             assert pipeline.asr_tuning["context_correction"] is True
             assert pipeline.asr_tuning["filler_mode"] == "light"
         finally:
@@ -1274,7 +1277,7 @@ class TestSettingsWindow:
         sw = SettingsWindow(store=store)
         try:
             info = [b for b in sw.findChildren(QToolButton) if b.text() == "i"]
-            assert len(info) == 10
+            assert len(info) == 11
             assert all(len(button.toolTip()) >= 20 for button in info)
             shown: list[tuple] = []
 
@@ -1328,16 +1331,20 @@ class TestSettingsWindow:
             sw.asr_profile_combo.setCurrentIndex(context_index)
             assert not sw.silence_spin.isEnabled()
             assert sw.context_hold_spin.isEnabled()
+            assert sw.live_draft_switch.isEnabled()
+            assert sw.live_draft_switch.isChecked()
             assert sw.context_correction_switch.isEnabled()
             assert sw.filler_mode_combo.isEnabled()
 
             sw.context_hold_spin.setValue(2200)
+            sw.live_draft_switch.setChecked(False)
             sw.context_correction_switch.setChecked(False)
             sw.filler_mode_combo.setCurrentIndex(
                 sw.filler_mode_combo.findData("off"))
             sw.tuning_save_btn.click()
             assert store.get("asr_tuning_profile") == "context"
             assert store.get("asr_context_hold_ms") == 2200
+            assert store.get("asr_live_draft_enabled") is False
             assert store.get("asr_context_correction") is False
             assert store.get("asr_filler_mode") == "off"
 
@@ -1346,6 +1353,7 @@ class TestSettingsWindow:
                 sw.asr_profile_combo.findData("balanced"))
             assert not sw.context_hold_spin.isEnabled()
             assert not sw.context_correction_switch.isEnabled()
+            assert not sw.live_draft_switch.isEnabled()
             assert not sw.filler_mode_combo.isEnabled()
         finally:
             sw.close()

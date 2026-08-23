@@ -334,6 +334,52 @@ def test_context_qwen_uses_zipformer_sidecar_for_live_drafts(
     assert captured["partial_interval_ms"] == 140
 
 
+def test_context_live_draft_switch_disables_sidecar_and_draft_translation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import voxsub.pipeline as pl
+
+    p = Pipeline(provider="cpu", models=tmp_path / "models")
+    p.set_asr_model("asr-qwen3-0.6b-int8")
+    p.set_asr_tuning({"profile": "context", "live_draft_enabled": False})
+    p.on_draft(lambda _source, _translation: None)
+    monkeypatch.setattr(p, "_ensure_translator", lambda: None)
+    vad_path = tmp_path / "models" / "vad" / "silero_vad_v5.onnx"
+    vad_path.parent.mkdir(parents=True)
+    vad_path.write_bytes(b"vad")
+    monkeypatch.setattr(pl, "ensure_bundled_vad", lambda _root: vad_path)
+
+    created: list[str] = []
+
+    class _ASR:
+        runtime = "sherpa-qwen3-asr"
+        provider = "cpu"
+
+    def _create(model_id, *_args, **_kwargs):
+        created.append(model_id)
+        return _ASR()
+
+    captured: dict[str, object] = {}
+
+    class _Vad:
+        window_size = 512
+
+    class _Segmenter:
+        def __init__(self, *_args, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(pl, "create_asr", _create)
+    monkeypatch.setattr(pl, "WindowVAD", lambda *_a, **_kw: _Vad())
+    monkeypatch.setattr(pl, "AudioUtteranceSegmenter", _Segmenter)
+
+    p._build_real_time()  # noqa: SLF001
+
+    assert created == ["asr-qwen3-0.6b-int8"]
+    assert captured["draft_asr"] is None
+    assert captured["on_partial"] is None
+    assert p._live_draft_translation_enabled() is False  # noqa: SLF001
+
+
 def test_cloud_stt_recognition_feeds_the_independent_translation_queue() -> None:
     p = Pipeline()
     p._is_cloud_stt = True  # noqa: SLF001
@@ -517,6 +563,7 @@ def test_smart_context_preset_enables_bounded_semantic_processing() -> None:
     tuning = p._effective_asr_tuning(generative=True)  # noqa: SLF001
 
     assert tuning["context_enabled"] is True
+    assert tuning["live_draft_enabled"] is True
     assert tuning["context_hold_ms"] == 2200
     assert tuning["context_correction"] is False
     assert tuning["filler_mode"] == "off"

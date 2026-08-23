@@ -545,6 +545,8 @@ class Pipeline:
                 self._asr_tuning.get("max_new_tokens", 512)))),
             "hotwords": str(self._asr_tuning.get("hotwords", "")).strip(),
             "context_enabled": profile == "context",
+            "live_draft_enabled": bool(
+                self._asr_tuning.get("live_draft_enabled", True)),
             # Reading the already-decoded Zipformer hypothesis is cheap.  The
             # context profile samples it near word cadence; legacy profiles
             # retain their existing update frequency.
@@ -751,7 +753,8 @@ class Pipeline:
         if not processor.pending_text:
             pending_since = item.queued_at
         segments = processor.submit(item.text, now=item.queued_at)
-        if not segments and processor.pending_text:
+        if (not segments and processor.pending_text and
+                self._live_draft_enabled()):
             self._emit_partial(processor.pending_text)
         if not segments and not processor.pending_text:
             pending_since = None
@@ -836,10 +839,16 @@ class Pipeline:
         if view is not None:
             self._emit_draft(view)
 
+    def _live_draft_enabled(self) -> bool:
+        return (
+            str(self._asr_tuning.get("profile", "auto")) == "context"
+            and bool(self._asr_tuning.get("live_draft_enabled", True))
+        )
+
     def _live_draft_translation_enabled(self) -> bool:
         return (
             bool(self._cb_draft)
-            and str(self._asr_tuning.get("profile", "auto")) == "context"
+            and self._live_draft_enabled()
         )
 
     def _translation_loop(self) -> None:
