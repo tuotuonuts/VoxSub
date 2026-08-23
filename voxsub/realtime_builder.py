@@ -57,6 +57,48 @@ def _asr_runtime_provider(requested: str,
     return provider
 
 
+def _build_draft_asr(
+    spec: RealtimeBuildSpec,
+    *,
+    provider: str,
+    threads: int,
+    asr_factory: Callable,
+) -> Any | None:
+    """Build the bundled streaming sidecar used by sentence-level ASR.
+
+    The selected generative/cloud recognizer remains authoritative for finals;
+    Zipformer only supplies replaceable Smart Context drafts.  Missing or
+    damaged optional draft files must not make the main recognizer unusable.
+    """
+    if not spec.tuning.get("context_enabled", False):
+        return None
+    tuning = dict(spec.tuning)
+    tuning["beam_paths"] = min(2, max(1, int(tuning.get("beam_paths", 2))))
+    try:
+        draft_asr = asr_factory(
+            "asr-zipformer-bilingual-fast",
+            spec.models_dir,
+            provider=provider,
+            num_threads=threads,
+            source_lang=spec.source_lang,
+            tuning=tuning,
+        )
+    except Exception:
+        logger.warning(
+            "内置 Zipformer 草稿旁路不可用；高质量终句识别仍会继续",
+            exc_info=True,
+        )
+        return None
+    if getattr(draft_asr, "runtime", "") != "sherpa-streaming-transducer":
+        logger.warning("实时草稿旁路不是流式识别器，已禁用: %s",
+                       getattr(draft_asr, "runtime", type(draft_asr).__name__))
+        return None
+    logger.info("实时草稿旁路已启用: runtime=%s provider=%s paths=%d",
+                draft_asr.runtime, getattr(draft_asr, "provider", provider),
+                tuning["beam_paths"])
+    return draft_asr
+
+
 def build_realtime_components(
     spec: RealtimeBuildSpec,
     *,
@@ -84,10 +126,19 @@ def build_realtime_components(
         if not cloud_client.ready():
             raise RuntimeError(
                 "云 STT 尚未就绪，请填写独立的 STT API Key、BaseURL 和模型名")
+        draft_provider = _asr_runtime_provider(spec.asr_provider, select_device)
+        threads = min(2, max(1, os.cpu_count() or 1))
+        draft_asr = _build_draft_asr(
+            spec, provider=draft_provider, threads=threads,
+            asr_factory=asr_factory,
+        )
         segmenter = audio_segmenter_factory(
             vad, queue_audio,
             min_silence_ms=spec.tuning["silence_ms"],
             max_utterance_ms=spec.tuning["max_utterance_ms"],
+            draft_asr=draft_asr,
+            on_partial=on_partial if draft_asr is not None else None,
+            partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
         )
         return RealtimeComponents(None, cloud_client, vad, segmenter, True, True)
 
@@ -103,10 +154,17 @@ def build_realtime_components(
         getattr(asr, "provider", provider), threads,
     )
     if generative:
+        draft_asr = _build_draft_asr(
+            spec, provider=provider, threads=min(2, threads),
+            asr_factory=asr_factory,
+        )
         segmenter = audio_segmenter_factory(
             vad, queue_audio,
             min_silence_ms=spec.tuning["silence_ms"],
             max_utterance_ms=spec.tuning["max_utterance_ms"],
+            draft_asr=draft_asr,
+            on_partial=on_partial if draft_asr is not None else None,
+            partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
         )
     else:
         segmenter = streaming_segmenter_factory(

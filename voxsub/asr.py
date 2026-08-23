@@ -398,7 +398,10 @@ class AudioUtteranceSegmenter:
 
     def __init__(self, vad: WindowVAD, on_audio: Callable[[np.ndarray], None], *,
                  min_silence_ms: int = 700, max_utterance_ms: int = 12000,
-                 min_speech_ms: int = 250, pre_roll_ms: int = 240) -> None:
+                 min_speech_ms: int = 250, pre_roll_ms: int = 240,
+                 draft_asr: object | None = None,
+                 on_partial: Callable[[str], None] | None = None,
+                 partial_interval_ms: int = 140) -> None:
         self._vad = vad
         self._on_audio = on_audio
         self._min_silence_samples = int(SAMPLE_RATE * min_silence_ms / 1000.0)
@@ -413,6 +416,17 @@ class AudioUtteranceSegmenter:
         self._silence_samples = 0
         self._speech_samples = 0
         self._utterance_samples = 0
+        # Sentence-level recognizers cannot expose interim hypotheses.  Smart
+        # Context can therefore attach the bundled streaming Zipformer as a
+        # lightweight draft sidecar while this segmenter continues to queue the
+        # complete waveform for the selected high-quality final recognizer.
+        self._draft_asr = draft_asr
+        self._on_partial = on_partial
+        self._partial_interval_samples = max(
+            1, int(SAMPLE_RATE * partial_interval_ms / 1000.0))
+        self._draft_stream = None
+        self._draft_since_partial_samples = 0
+        self._last_partial = ""
 
     def feed(self, samples: np.ndarray) -> None:
         samples = np.asarray(samples, dtype=np.float32).reshape(-1)
@@ -438,10 +452,12 @@ class AudioUtteranceSegmenter:
             self._speech_samples = len(chunk)
             self._utterance_samples = sum(len(part) for part in self._chunks)
             self._silence_samples = 0
+            self._start_draft_stream(self._chunks)
             return
 
         self._chunks.append(chunk.copy())
         self._utterance_samples += len(chunk)
+        self._feed_draft(chunk)
         if speech:
             self._speech_samples += len(chunk)
             self._silence_samples = 0
@@ -455,6 +471,61 @@ class AudioUtteranceSegmenter:
                          self._utterance_samples / SAMPLE_RATE)
             self._end_utterance("limit")
 
+    def _start_draft_stream(self, chunks: list[np.ndarray]) -> None:
+        if self._draft_asr is None or self._on_partial is None:
+            return
+        try:
+            self._draft_stream = self._draft_asr.create_stream()
+            for chunk in chunks:
+                self._draft_asr.feed(self._draft_stream, chunk)
+                self._draft_since_partial_samples += len(chunk)
+            self._emit_draft_if_due()
+        except Exception:
+            # Draft recognition is optional.  A sidecar failure must never stop
+            # recording or prevent the selected final recognizer from running.
+            logger.warning("实时草稿识别旁路启动失败，本句回落到终句显示", exc_info=True)
+            self._disable_draft_sidecar()
+
+    def _feed_draft(self, chunk: np.ndarray) -> None:
+        if self._draft_asr is None or self._draft_stream is None:
+            return
+        try:
+            self._draft_asr.feed(self._draft_stream, chunk)
+            self._draft_since_partial_samples += len(chunk)
+            self._emit_draft_if_due()
+        except Exception:
+            logger.warning("实时草稿识别旁路运行失败，继续使用终句识别", exc_info=True)
+            self._disable_draft_sidecar()
+
+    def _emit_draft_if_due(self) -> None:
+        if (
+            self._draft_asr is None
+            or self._draft_stream is None
+            or self._on_partial is None
+            or self._speech_samples < self._min_speech_samples
+            or self._draft_since_partial_samples < self._partial_interval_samples
+        ):
+            return
+        self._draft_since_partial_samples = 0
+        text = str(self._draft_asr.get_result(self._draft_stream) or "").strip()
+        if text and text != self._last_partial:
+            self._last_partial = text
+            self._on_partial(text)
+
+    def _reset_draft_stream(self) -> None:
+        stream, self._draft_stream = self._draft_stream, None
+        if stream is not None and self._draft_asr is not None:
+            try:
+                self._draft_asr.reset(stream)
+            except Exception:
+                logger.debug("复位实时草稿识别流失败", exc_info=True)
+        self._draft_since_partial_samples = 0
+        self._last_partial = ""
+
+    def _disable_draft_sidecar(self) -> None:
+        self._reset_draft_stream()
+        self._draft_asr = None
+
     def _end_utterance(self, reason: str) -> None:
         if not self._chunks:
             return
@@ -466,13 +537,17 @@ class AudioUtteranceSegmenter:
         self._pre_roll.clear()
         self._vad.reset()
         if speech_samples < self._min_speech_samples:
+            self._reset_draft_stream()
             logger.debug("忽略过短语音片段: %.0fms",
                          speech_samples * 1000.0 / SAMPLE_RATE)
             return
         audio = np.concatenate(chunks).astype(np.float32, copy=False)
         logger.debug("生成式 ASR 自然分段: reason=%s duration=%.2fs",
                      reason, audio.size / SAMPLE_RATE)
-        self._on_audio(audio)
+        try:
+            self._on_audio(audio)
+        finally:
+            self._reset_draft_stream()
 
     def flush(self) -> None:
         if self._buffer.size:

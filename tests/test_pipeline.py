@@ -279,6 +279,61 @@ def test_cloud_stt_builds_without_loading_local_asr(tmp_path: Path, monkeypatch)
     assert p._is_generative is True  # noqa: SLF001
 
 
+def test_context_qwen_uses_zipformer_sidecar_for_live_drafts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import voxsub.pipeline as pl
+
+    p = Pipeline(provider="cpu", models=tmp_path / "models")
+    p.set_asr_model("asr-qwen3-0.6b-int8")
+    p.set_asr_tuning({"profile": "context"})
+    monkeypatch.setattr(p, "_ensure_translator", lambda: None)
+    vad_path = tmp_path / "models" / "vad" / "silero_vad_v5.onnx"
+    vad_path.parent.mkdir(parents=True)
+    vad_path.write_bytes(b"vad")
+    monkeypatch.setattr(pl, "ensure_bundled_vad", lambda _root: vad_path)
+
+    created: list[tuple[str, object]] = []
+
+    class _ASR:
+        def __init__(self, runtime: str) -> None:
+            self.runtime = runtime
+            self.provider = "cpu"
+
+    def _create(model_id, *_args, **_kwargs):
+        runtime = (
+            "sherpa-streaming-transducer"
+            if model_id == "asr-zipformer-bilingual-fast"
+            else "sherpa-qwen3-asr"
+        )
+        asr = _ASR(runtime)
+        created.append((model_id, asr))
+        return asr
+
+    captured: dict[str, object] = {}
+
+    class _Vad:
+        window_size = 512
+
+    class _Segmenter:
+        def __init__(self, *_args, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(pl, "create_asr", _create)
+    monkeypatch.setattr(pl, "WindowVAD", lambda *_a, **_kw: _Vad())
+    monkeypatch.setattr(pl, "AudioUtteranceSegmenter", _Segmenter)
+
+    p._build_real_time()  # noqa: SLF001
+
+    assert [model_id for model_id, _asr in created] == [
+        "asr-qwen3-0.6b-int8",
+        "asr-zipformer-bilingual-fast",
+    ]
+    assert captured["draft_asr"] is created[1][1]
+    assert captured["on_partial"] == p._on_asr_partial  # noqa: SLF001
+    assert captured["partial_interval_ms"] == 140
+
+
 def test_cloud_stt_recognition_feeds_the_independent_translation_queue() -> None:
     p = Pipeline()
     p._is_cloud_stt = True  # noqa: SLF001

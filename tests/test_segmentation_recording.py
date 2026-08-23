@@ -22,6 +22,30 @@ class _EnergyVAD:
         self.resets += 1
 
 
+class _StreamingDraftASR:
+    runtime = "sherpa-streaming-transducer"
+
+    def __init__(self) -> None:
+        self.resets = 0
+
+    @staticmethod
+    def create_stream() -> dict[str, int]:
+        return {"speech_windows": 0}
+
+    @staticmethod
+    def feed(stream: dict[str, int], chunk: np.ndarray) -> None:
+        if float(np.mean(chunk)) > 0.5:
+            stream["speech_windows"] += 1
+
+    @staticmethod
+    def get_result(stream: dict[str, int]) -> str:
+        return f"draft-{stream['speech_windows']}"
+
+    def reset(self, stream: dict[str, int]) -> None:
+        stream.clear()
+        self.resets += 1
+
+
 def test_generative_segmenter_uses_natural_pause_and_accepts_arbitrary_blocks() -> None:
     vad = _EnergyVAD()
     emitted: list[np.ndarray] = []
@@ -61,6 +85,31 @@ def test_generative_segmenter_flushes_tail_without_padding_in_output() -> None:
     # One full VAD window plus the padded tail is expected internally; the
     # important contract is that the actual 200 samples are all retained.
     assert emitted[0].size >= 200
+
+
+def test_generative_segmenter_streams_sidecar_drafts_before_final_audio() -> None:
+    emitted: list[np.ndarray] = []
+    partials: list[str] = []
+    draft_asr = _StreamingDraftASR()
+    seg = AudioUtteranceSegmenter(
+        _EnergyVAD(), emitted.append,
+        min_silence_ms=20,
+        max_utterance_ms=10_000,
+        min_speech_ms=10,
+        pre_roll_ms=10,
+        draft_asr=draft_asr,
+        on_partial=partials.append,
+        partial_interval_ms=20,
+    )
+
+    seg.feed(np.ones(160 * 8, dtype=np.float32))
+    assert len(partials) >= 3
+    assert len(set(partials)) >= 3
+    assert emitted == []
+
+    seg.feed(np.zeros(160 * 2, dtype=np.float32))
+    assert len(emitted) == 1
+    assert draft_asr.resets == 1
 
 
 def test_wave_session_recorder_writes_valid_pcm_and_close_is_idempotent(tmp_path) -> None:
