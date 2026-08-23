@@ -54,6 +54,7 @@ from voxsub.ui.view_models import RecognitionTuningDraft
 from voxsub import __version__ as _PKG_VERSION
 from voxsub.logging_setup import get_logger
 from voxsub.logging_setup import set_debug_mode
+from voxsub.model_catalog import ModelMarketplace, get_model, models_for_task
 from voxsub.model_storage import migrate_models, resolve_models_root
 from voxsub.ui.release_notes import release_history_text
 
@@ -216,6 +217,7 @@ class SettingsWindow(QWidget):
     model_hub_requested = Signal()
     overlay_changed = Signal(dict)
     model_storage_changed = Signal(str)
+    tts_settings_changed = Signal(bool, str, str)
 
     @property
     def _tuning_dirty(self) -> bool:
@@ -615,10 +617,45 @@ class SettingsWindow(QWidget):
         lay.setSpacing(12)
 
         card, box = self._card("语音朗读")
+        note = QLabel(
+            "智能上下文和实时双语草稿均可使用朗读；为避免反复抢读，只朗读已经定稿的译文。",
+            card,
+        )
+        note.setObjectName("secondaryLabel")
+        note.setWordWrap(True)
+        box.addWidget(note)
         self.tts_switch = ToggleSwitch("朗读译文（本地 TTS；失败自动降级为仅字幕）", card)
         self.tts_switch.setMinimumHeight(44)
         box.addWidget(self.tts_switch)
         self.tts_switch.toggled.connect(self._on_tts_toggled)
+
+        zh_label = QLabel("中文朗读模型", card)
+        zh_label.setObjectName("fieldLabel")
+        self.tts_zh_model_combo = QComboBox(card)
+        self.tts_zh_model_combo.setObjectName("inputBox")
+        self.tts_zh_model_combo.setMinimumHeight(44)
+        en_label = QLabel("英文朗读模型", card)
+        en_label.setObjectName("fieldLabel")
+        self.tts_en_model_combo = QComboBox(card)
+        self.tts_en_model_combo.setObjectName("inputBox")
+        self.tts_en_model_combo.setMinimumHeight(44)
+        box.addWidget(zh_label)
+        box.addWidget(self.tts_zh_model_combo)
+        box.addWidget(en_label)
+        box.addWidget(self.tts_en_model_combo)
+        self.tts_zh_model_combo.currentIndexChanged.connect(
+            lambda index: self._on_tts_model_changed("zh", index))
+        self.tts_en_model_combo.currentIndexChanged.connect(
+            lambda index: self._on_tts_model_changed("en", index))
+
+        self.tts_model_hub_btn = QPushButton("打开模型广场管理朗读模型", card)
+        self.tts_model_hub_btn.setObjectName("secondaryButton")
+        self.tts_model_hub_btn.clicked.connect(self.model_hub_requested.emit)
+        box.addWidget(self.tts_model_hub_btn)
+        self.tts_status_label = QLabel("", card)
+        self.tts_status_label.setObjectName("secondaryLabel")
+        self.tts_status_label.setWordWrap(True)
+        box.addWidget(self.tts_status_label)
         lay.addWidget(card)
         lay.addStretch(1)
         return self._scroll_page(page)
@@ -919,7 +956,10 @@ class SettingsWindow(QWidget):
         self._tuning_draft.load(tuning)
         self._set_tuning_dirty(False)
 
+        self._refresh_tts_model_choices(cfg)
         self.tts_switch.setChecked(bool(cfg.get("tts_enabled", True)))
+        self.tts_switch.setEnabled(True)
+        self._update_tts_status()
         self.debug_switch.setChecked(bool(cfg.get("debug_mode", False)))
         self.overlay_font_spin.setValue(int(cfg.get("overlay_font_size", 20)))
         self.overlay_opacity_spin.setValue(
@@ -996,7 +1036,114 @@ class SettingsWindow(QWidget):
         )
 
     def _on_tts_toggled(self, checked: bool) -> None:
+        if self._loading:
+            return
         self._store.set("tts_enabled", bool(checked))
+        self._update_tts_status()
+        self._emit_tts_settings()
+
+    def _refresh_tts_model_choices(self, cfg: dict | None = None) -> None:
+        """Show installed catalog voices while preserving a missing selection."""
+        config = dict(cfg or self._store.load())
+        marketplace = ModelMarketplace(resolve_models_root(self._store))
+        was_loading = self._loading
+        self._loading = True
+        try:
+            for lang, combo in (
+                ("zh", self.tts_zh_model_combo),
+                ("en", self.tts_en_model_combo),
+            ):
+                combo.blockSignals(True)
+                combo.clear()
+                current = str(config.get(
+                    f"tts_model_id_{lang}",
+                    "tts-icefall-zh-aishell3" if lang == "zh"
+                    else "tts-icefall-en-ljspeech-low",
+                ))
+                compatible = [
+                    model for model in models_for_task("tts")
+                    if lang in model.tts_languages
+                ]
+                installed = [
+                    model for model in compatible
+                    if marketplace.is_installed(model)
+                ]
+                current_model = get_model(current)
+                if current_model in compatible and current_model not in installed:
+                    combo.addItem(f"{current_model.name}{tr('（未安装）')}", current)
+                    item = getattr(combo.model(), "item", lambda _index: None)(0)
+                    if item is not None:
+                        item.setEnabled(False)
+                for model in installed:
+                    combo.addItem(model.name, model.id)
+                if not compatible:
+                    combo.addItem("没有兼容的朗读模型", "")
+                elif combo.count() == 0:
+                    combo.addItem("尚未安装朗读模型", "")
+                selected = combo.findData(current)
+                if selected < 0 and installed:
+                    selected = combo.findData(installed[0].id)
+                combo.setCurrentIndex(max(0, selected))
+                combo.setEnabled(bool(installed))
+                combo.blockSignals(False)
+        finally:
+            self._loading = was_loading
+
+    def refresh_tts_model_choices(self) -> None:
+        """Public hook used after a Model Hub install or selection change."""
+        self._refresh_tts_model_choices()
+        self._update_tts_status()
+        if not self._loading:
+            self._emit_tts_settings()
+
+    def _on_tts_model_changed(self, lang: str, _index: int) -> None:
+        if self._loading:
+            return
+        combo = self.tts_zh_model_combo if lang == "zh" else self.tts_en_model_combo
+        model_id = str(combo.currentData() or "")
+        model = get_model(model_id)
+        if model is None or model.task != "tts" or lang not in model.tts_languages:
+            return
+        marketplace = ModelMarketplace(resolve_models_root(self._store))
+        if not marketplace.is_installed(model):
+            return
+        self._store.set(f"tts_model_id_{lang}", model.id)
+        self._update_tts_status()
+        self._emit_tts_settings()
+
+    def _emit_tts_settings(self) -> None:
+        cfg = self._store.load()
+        self.tts_settings_changed.emit(
+            bool(cfg.get("tts_enabled", False)),
+            str(cfg.get("tts_model_id_zh", "tts-icefall-zh-aishell3")),
+            str(cfg.get("tts_model_id_en", "tts-icefall-en-ljspeech-low")),
+        )
+
+    def _update_tts_status(self) -> None:
+        if not hasattr(self, "tts_status_label"):
+            return
+        cfg = self._store.load()
+        target = str(cfg.get("lang_pair", "zh-en")).split("-", 1)[-1]
+        model_id = str(cfg.get(f"tts_model_id_{target}", ""))
+        model = get_model(model_id)
+        ready = bool(
+            model is not None
+            and model.task == "tts"
+            and target in model.tts_languages
+            and ModelMarketplace(resolve_models_root(self._store)).is_installed(model)
+        )
+        language = "中文" if target == "zh" else "英文"
+        if ready:
+            state = tr(
+                f"当前{language}译文将使用 {model.name} 朗读。",
+                f"The current {'Chinese' if target == 'zh' else 'English'} translation will be read with {model.name}.",
+            )
+        else:
+            state = tr(
+                f"尚未安装当前{language}译文所需的朗读模型，请前往模型广场下载。",
+                f"No installed voice is available for the current {'Chinese' if target == 'zh' else 'English'} translation. Download one from Model Hub.",
+            )
+        self.tts_status_label.setText(state)
 
     def _overlay_call(self, method: str, *args) -> None:
         if self._overlay is None:
@@ -1446,6 +1593,7 @@ class SettingsWindow(QWidget):
         self._update_cloud_mode_summary()
         self._set_tuning_dirty(self._tuning_dirty)
         self._refresh_model_storage()
+        self._update_tts_status()
         if hasattr(self, "release_history_label"):
             self.release_history_label.setText(release_history_text())
 

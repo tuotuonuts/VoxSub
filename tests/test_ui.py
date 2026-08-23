@@ -245,6 +245,8 @@ class TestConfigStore:
         assert data["theme"] == "system"
         assert data["translate_tier"] == "fast"
         assert data["tts_enabled"] is True
+        assert data["tts_model_id_zh"] == "tts-icefall-zh-aishell3"
+        assert data["tts_model_id_en"] == "tts-icefall-en-ljspeech-low"
         assert data["mic_device_id"] == ""
         assert data["loopback_device_id"] == ""
         assert data["capture_process_id"] == 0
@@ -583,6 +585,11 @@ class TestMainWindow:
             assert pipeline.asr_tuning["live_draft_enabled"] is True
             assert pipeline.asr_tuning["context_correction"] is True
             assert pipeline.asr_tuning["filler_mode"] == "light"
+            assert pipeline.tts_enabled is True
+            assert pipeline.tts_model_ids == {
+                "zh": "tts-icefall-zh-aishell3",
+                "en": "tts-icefall-en-ljspeech-low",
+            }
         finally:
             win.close()
             win.deleteLater()
@@ -1475,9 +1482,52 @@ class TestSettingsWindow:
         from voxsub.ui.settings_window import SettingsWindow
 
         sw = SettingsWindow(store=ConfigStore(tmp_path / "config.json"))
+        changes: list[tuple[bool, str, str]] = []
+        sw.tts_settings_changed.connect(
+            lambda enabled, zh, en: changes.append((enabled, zh, en)))
         try:
             sw.tts_switch.setChecked(False)
             assert sw._store.get("tts_enabled") is False  # noqa: SLF001
+            assert changes == [(
+                False,
+                "tts-icefall-zh-aishell3",
+                "tts-icefall-en-ljspeech-low",
+            )]
+        finally:
+            sw.close()
+            sw.deleteLater()
+
+    def test_tts_model_choices_use_installed_catalog_voices(self, qapp, tmp_path):
+        from voxsub.ui.settings_window import SettingsWindow
+
+        models = tmp_path / "models"
+        store = ConfigStore(tmp_path / "config.json")
+        store.set("models_root", str(models))
+        required = {
+            "tts/zh": ("model.onnx", "tokens.txt", "lexicon.txt"),
+            "tts/en": ("model.onnx", "tokens.txt", "espeak-ng-data/phontab"),
+            "tts/vits-melo-zh-en": ("model.onnx", "tokens.txt", "lexicon.txt"),
+        }
+        for directory, relatives in required.items():
+            for relative in relatives:
+                target = models / directory / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"ready")
+
+        sw = SettingsWindow(store=store)
+        changes: list[tuple[bool, str, str]] = []
+        sw.tts_settings_changed.connect(
+            lambda enabled, zh, en: changes.append((enabled, zh, en)))
+        try:
+            assert sw.tts_zh_model_combo.isEnabled()
+            assert sw.tts_en_model_combo.isEnabled()
+            assert sw.tts_zh_model_combo.currentData() == "tts-icefall-zh-aishell3"
+            assert sw.tts_en_model_combo.currentData() == "tts-icefall-en-ljspeech-low"
+            bilingual = sw.tts_zh_model_combo.findData("tts-melo-zh-en")
+            assert bilingual >= 0
+            sw.tts_zh_model_combo.setCurrentIndex(bilingual)
+            assert store.get("tts_model_id_zh") == "tts-melo-zh-en"
+            assert changes[-1][1] == "tts-melo-zh-en"
         finally:
             sw.close()
             sw.deleteLater()
@@ -1544,6 +1594,13 @@ class TestModelHubWindow:
             assert all(not card.progress.isTextVisible() for card in hub._cards.values())  # noqa: SLF001
             assert all(isinstance(button, PillChoiceButton)
                        for button in hub.filter_buttons.values())
+            assert set(hub.filter_buttons) == {"all", "asr", "translate", "tts"}
+            hub.set_filter("tts")
+            assert set(hub._cards) == {  # noqa: SLF001
+                "tts-melo-zh-en",
+                "tts-icefall-zh-aishell3",
+                "tts-icefall-en-ljspeech-low",
+            }
             assert all(button.isCheckable() for button in hub.filter_buttons.values())
             assert all(card.npu_badge.text().startswith("NPU ")
                        for card in hub._cards.values())  # noqa: SLF001

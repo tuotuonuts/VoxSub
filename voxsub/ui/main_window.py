@@ -721,6 +721,21 @@ class MainWindow(QWidget):
         signal = getattr(settings_page, "model_hub_requested", None)
         if signal is not None:
             signal.connect(self.show_model_hub_page)
+        tts_signal = getattr(settings_page, "tts_settings_changed", None)
+        if tts_signal is not None:
+            tts_signal.connect(self._on_tts_settings_changed)
+
+    def _on_tts_settings_changed(self, enabled: bool,
+                                 zh_model_id: str, en_model_id: str) -> None:
+        """Apply voice settings immediately, including during a live session."""
+        try:
+            self.pipeline.set_tts_models({
+                "zh": str(zh_model_id),
+                "en": str(en_model_id),
+            })
+            self.pipeline.set_tts(bool(enabled))
+        except AttributeError:
+            logger.debug("Pipeline 缺少 TTS 动态配置接口")
 
     def _register_embedded_page(self, key: str, page: QWidget, title: str) -> None:
         prepare = getattr(page, "set_embedded", None)

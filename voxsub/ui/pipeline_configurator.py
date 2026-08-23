@@ -23,6 +23,10 @@ def apply_pipeline_config(
 
     pipeline.set_models_dir(resolve_models_root(store))
     pipeline.set_langs(source, target)
+    pipeline.set_tts_models({
+        "zh": str(config.get("tts_model_id_zh", "tts-icefall-zh-aishell3")),
+        "en": str(config.get("tts_model_id_en", "tts-icefall-en-ljspeech-low")),
+    })
     pipeline.set_tts(bool(config.get("tts_enabled", False)))
     pipeline.set_audio_devices(
         str(config.get("mic_device_id", "")),

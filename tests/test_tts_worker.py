@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from voxsub.pipeline import Pipeline
-from voxsub.tts import SAMPLE_RATE
+from voxsub.tts import SAMPLE_RATE, TTSEngine
 from voxsub.tts_worker import TTSWorker
 
 
@@ -18,6 +18,36 @@ class _FakeEngine:
     @staticmethod
     def synthesize(text: str, lang: str = "zh") -> np.ndarray:
         return np.full(len(text), 0.25, dtype=np.float32)
+
+
+class _GeneratedAudio:
+    samples = np.ones(80, dtype=np.float32)
+    sample_rate = SAMPLE_RATE
+
+
+class _LateInstalledVoice:
+    @staticmethod
+    def generate(_text: str, sid: int = 0, speed: float = 1.0) -> _GeneratedAudio:
+        return _GeneratedAudio()
+
+
+def test_engine_discovers_model_installed_after_worker_start(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    engine = TTSEngine(tmp_path)
+    assert engine.synthesize("hello", "en") is None
+
+    voice_dir = tmp_path / "en"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "model.onnx").write_bytes(b"model")
+    (voice_dir / "tokens.txt").write_bytes(b"tokens")
+    monkeypatch.setattr(engine, "_build_tts", lambda _lang: _LateInstalledVoice())
+
+    pcm = engine.synthesize("hello", "en")
+
+    assert pcm is not None
+    assert pcm.dtype == np.float32
+    assert pcm.size == 80
 
 
 def test_worker_synthesizes_and_plays_in_background(tmp_path: Path) -> None:

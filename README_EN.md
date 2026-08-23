@@ -11,13 +11,13 @@
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Current source: `0.6.0-beta` (candidate, not released). Current public download: `0.5.0-beta`. The public installer passed its build, isolated startup check, and GitHub asset digest verification. Both remain development builds.
+Current source: `0.7.0-beta` (candidate, not released). Current public download: `0.5.0-beta`. The public installer passed its build, isolated startup check, and GitHub asset digest verification. Both remain development builds.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
 ## Downloads and candidate build
 
-- Local candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.6.0-beta.exe` (unsigned), 214,819,528 bytes (204.87 MiB); SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`. It is ready for local validation and has no GitHub Release yet.
+- Local candidate: `VoxSub-Setup-0.7.0-beta.exe` is being built through the full release gate; its exact size and SHA256 will be recorded when complete. It is unsigned and will not receive a GitHub Release before user validation.
 - Published build: `VoxSub-Setup-0.5.0-beta.exe` on [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) (unsigned), 214,795,950 bytes (204.85 MiB); SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`.
 - Previous build: [VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta).
 
@@ -26,7 +26,7 @@ Current source: `0.6.0-beta` (candidate, not released). Current public download:
 - **Mode A — Microphone interpreting:** choose a microphone and display segmented speech with its translation; optional simultaneous recording follows a Start → Pause/Resume → Finish and Save workflow.
 - **Mode B — Application/system audio:** choose a Windows output endpoint, or capture audio only from a selected application's process tree.
 - **Mode C — Audio/video subtitles:** import MP4, MKV, MOV, MP3, WAV, and other media; the bundled FFmpeg extracts audio automatically and VoxSub exports a matching SRT file.
-- **Model Hub:** browse supported open-source speech-recognition and translation models ordered by quality; download, switch, or uninstall them. Recommendations are labelled Not Recommended, Somewhat Recommended, Recommended, or Full Load based on the computer's CPU, RAM, GPU, and VRAM.
+- **Model Hub:** browse supported open-source recognition, translation, and text-to-speech models ordered by quality; download, switch, or uninstall them. Recommendations are labelled Not Recommended, Somewhat Recommended, Recommended, or Full Load based on the computer's CPU, RAM, GPU, and VRAM.
 - **Global and mainland-China download sources:** automatically benchmark and fail over between sources, or manually select Hugging Face/GitHub for global access or ModelScope for mainland China. Multi-gigabyte downloads retain progress and resume automatically after a CDN disconnect.
 - **Hardware routing for mainstream PCs:** discrete GPU → NPU → integrated GPU → CPU. The current source has verified automatic Intel NPU routing for Hy-MT2 1.8B Q4/Q6/Q8; other models follow their per-card Verified, Pending, or Unavailable NPU label.
 - **Built-in diagnostics and live logs:** view logs without opening or locking the log file, switch DEBUG logging on inside the app, and export logs, reports, and sessions through an in-app save dialog with background writing.
@@ -34,6 +34,7 @@ Current source: `0.6.0-beta` (candidate, not released). Current public download:
 - **Cloud and hybrid pipelines:** choose STT and translation independently. Cloud STT and cloud translation each have their own API key, BaseURL, and model name, supporting cloud STT plus local translation, local STT plus cloud translation, and a fully cloud-based chain. Cloud STT uploads only VAD-finalized speech segments.
 - **Recognition tuning:** the existing Automatic, Low Latency, Balanced, Accuracy, and Custom behaviors remain unchanged. The new Smart Context mode can extend pauses based on sentence completeness, merge fragments within a hard wait limit, conservatively correct from custom vocabulary and repeated recent context, and optionally apply light isolated-filler cleanup. Hover over each `i` icon for a plain-language explanation; changes are saved only when explicitly confirmed.
 - **0.6.0-beta candidate feature:** Smart Context now keeps one replaceable current-sentence draft that updates near word cadence and can revise earlier text. Its translation follows the changing source and accepts only the newest request result; the row enters history only when the sentence is final. When Qwen3, Fun-ASR, SenseVoice, or cloud STT is selected, the bundled Zipformer runs as a lightweight streaming draft sidecar while the selected high-quality recognizer remains authoritative for the corrected final, avoiding repeated large-model inference or audio uploads. A separate Live bilingual draft switch can disable this work while preserving Smart Context segmentation, correction, and filler cleanup.
+- **0.7.0-beta candidate feature:** Model Hub can download a bilingual MeloTTS voice plus lightweight Chinese AISHELL3 and English LJSpeech voices. Settings -> Text-to-speech selects Chinese and English voices independently and switches them during a live session. The TTS toggle now applies immediately; live bilingual draft mode reads finalized translations without repeatedly speaking every draft revision. Existing `models/tts/zh` and `models/tts/en` installations remain compatible.
 - **Subtitle sessions:** copy text from the main window or overlay, clear the current session, or save it as TXT, SRT, or VTT. The overlay can show source only, translation only, or both, with separate controls for content padding and the gap between lines.
 - **Soft Premium UI:** light, dark, and system-following themes across the main app, Settings, Model Hub, and diagnostics. The subtitle overlay supports a wider font range, free resizing, dragging, locking, and click-through mode. When locked, hovering reveals only the Unlock control.
 - **Fixed-size long subtitles:** long sentences no longer enlarge the overlay or push it beyond the screen. Text wraps inside the chosen dimensions; use the mouse wheel for the current sentence and `Ctrl + wheel` for subtitle history.
@@ -46,7 +47,7 @@ Current source: `0.6.0-beta` (candidate, not released). Current public download:
 - **Update notes:** a new version shows its user-facing notes once on the first launch. The same history remains available under Settings → About.
 - **Fullscreen behavior:** opening Settings or Model Hub from a fullscreen main window keeps the app fullscreen.
 
-The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off: Fun-ASR-Nano, Qwen3-ASR, SenseVoice Small, and Hy-MT2 1.8B/7B in Q4/Q6/Q8 variants. Built-in Zipformer and OPUS models remain only as very-low-resource fallbacks. Every model card shows an explicit NPU availability label; “NPU available” is reserved for exact model files that pass both forced-NPU inference and VoxSub's automatic application route.
+The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off: Fun-ASR-Nano, Qwen3-ASR, SenseVoice Small, Hy-MT2 1.8B/7B in Q4/Q6/Q8 variants, and MeloTTS bilingual, AISHELL3 Chinese lightweight, and LJSpeech English lightweight voices. Built-in Zipformer and OPUS models remain only as very-low-resource fallbacks. Every model card shows an explicit NPU availability label; “NPU available” is reserved for exact model files that pass both forced-NPU inference and VoxSub's automatic application route.
 
 ## Documentation
 
@@ -79,7 +80,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current local `0.6.0-beta` candidate is 214,819,528 bytes with SHA256 `585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2`.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current `0.7.0-beta` candidate is being built; its exact size and SHA256 will be recorded when complete.
 
 ## Project Layout
 

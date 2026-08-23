@@ -52,6 +52,14 @@ _OPUS_UNSUPPORTED = NpuCompatibility(
     "The packaged ONNX Runtime uses DirectML and does not include the Intel OpenVINO NPU provider; OPUS-MT uses a GPU, integrated GPU, or CPU.",
 )
 
+_TTS_UNSUPPORTED = NpuCompatibility(
+    NPU_STATUS_UNSUPPORTED,
+    "NPU 不可用",
+    "NPU unavailable",
+    "当前 sherpa-onnx 语音合成运行时使用 CPU；TTS 在独立后台线程运行，不会阻断字幕。",
+    "The current sherpa-onnx speech-synthesis runtime uses the CPU; TTS runs on a separate background thread and does not block subtitles.",
+)
+
 _GGUF_PENDING = NpuCompatibility(
     NPU_STATUS_PENDING,
     "NPU 待验证",
@@ -80,6 +88,9 @@ NPU_COMPATIBILITY: dict[str, NpuCompatibility] = {
     "asr-qwen3-0.6b-int8": _ASR_UNSUPPORTED,
     "asr-sensevoice-small-int8": _ASR_UNSUPPORTED,
     "asr-zipformer-bilingual-fast": _ASR_UNSUPPORTED,
+    "tts-melo-zh-en": _TTS_UNSUPPORTED,
+    "tts-icefall-zh-aishell3": _TTS_UNSUPPORTED,
+    "tts-icefall-en-ljspeech-low": _TTS_UNSUPPORTED,
     "mt-hy-mt2-7b-q4": _GGUF_PENDING,
     "mt-hy-mt2-7b-q6": _GGUF_PENDING,
     "mt-hy-mt2-7b-q8": _GGUF_PENDING,

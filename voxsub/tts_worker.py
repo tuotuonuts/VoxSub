@@ -5,7 +5,7 @@ import queue
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 import numpy as np
 
@@ -35,10 +35,12 @@ class TTSWorker:
         *,
         external_stop: threading.Event | None = None,
         max_pending: int = 4,
-        engine_factory: Callable[[Path], TTSEngine] = TTSEngine,
+        model_ids: Mapping[str, str] | None = None,
+        engine_factory: Callable[..., TTSEngine] = TTSEngine,
         player: Callable[[np.ndarray, int], None] | None = None,
     ) -> None:
         self._tts_dir = Path(models_root) / "tts"
+        self._model_ids = dict(model_ids or {})
         self._external_stop = external_stop
         self._engine_factory = engine_factory
         self._player = player or self._play_default
@@ -99,7 +101,9 @@ class TTSWorker:
 
     def _run(self) -> None:
         try:
-            engine = self._engine_factory(self._tts_dir)
+            engine_kwargs = (
+                {"model_ids": self._model_ids} if self._model_ids else {})
+            engine = self._engine_factory(self._tts_dir, **engine_kwargs)
         except Exception:
             logger.exception("TTS 引擎初始化失败，已降级为仅字幕")
             return

@@ -31,7 +31,7 @@ from voxsub.npu_validation import (
 
 
 def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
-    for task in ("asr", "translate"):
+    for task in ("asr", "translate", "tts"):
         scores = [model.quality_score for model in models_for_task(task)]
         assert scores == sorted(scores, reverse=True)
     ids = {model.id for model in CATALOG}
@@ -42,6 +42,30 @@ def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
             "mt-hy-mt2-7b-q6", "mt-hy-mt2-7b-q8"}.issubset(ids)
     assert len(ids) >= 11
     assert not any("qwen2.5" in model.id for model in CATALOG)
+
+
+def test_tts_catalog_has_selectable_zh_en_and_bilingual_models(tmp_path: Path) -> None:
+    voices = models_for_task("tts")
+    assert {model.id for model in voices} == {
+        "tts-melo-zh-en",
+        "tts-icefall-zh-aishell3",
+        "tts-icefall-en-ljspeech-low",
+    }
+    assert get_model("tts-melo-zh-en").tts_languages == ("zh", "en")
+    assert get_model("tts-icefall-zh-aishell3").tts_languages == ("zh",)
+    assert get_model("tts-icefall-en-ljspeech-low").tts_languages == ("en",)
+    assert all(model.task_label == "语音朗读" for model in voices)
+
+    # Existing installations from versions before the marketplace integration
+    # remain visible, so users are not forced to download the same voice twice.
+    legacy = tmp_path / "tts" / "zh"
+    legacy.mkdir(parents=True)
+    for relative in ("model.onnx", "tokens.txt", "lexicon.txt"):
+        (legacy / relative).write_bytes(b"ready")
+    marketplace = ModelMarketplace(tmp_path)
+    zh_model = get_model("tts-icefall-zh-aishell3")
+    assert marketplace.is_installed(zh_model)
+    assert marketplace.available_model_dir(zh_model) == legacy
 
 
 def test_every_catalog_model_has_explicit_npu_compatibility() -> None:

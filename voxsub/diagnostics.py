@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from voxsub import __version__
+from voxsub.config_store import ConfigStore
 from voxsub.model_catalog import ModelMarketplace, get_model
 from voxsub.model_storage import resolve_models_root
 from voxsub.models import ModelManager
@@ -223,40 +224,44 @@ def _check_vad_smoke() -> dict:
 
 
 def _check_tts_smoke() -> dict:
-    """TTS 冒烟: 模型存在则合成 "测试"; 未安装则 warn (不阻断)。"""
-    tts_dir = models_dir() / "tts"
-    if not tts_dir.exists():
-        logger.info("自检[TTS 冒烟] 模型未安装 (models/tts 不存在), 标记 warn")
+    """Synthesize with the configured catalog voice; missing TTS stays a warning."""
+    root = models_dir()
+    store = ConfigStore()
+    config = store.load()
+    model_ids = {
+        "zh": str(config.get("tts_model_id_zh", "tts-icefall-zh-aishell3")),
+        "en": str(config.get("tts_model_id_en", "tts-icefall-en-ljspeech-low")),
+    }
+    marketplace = ModelMarketplace(root)
+    pair = str(config.get("lang_pair", "zh-en"))
+    preferred = pair.split("-", 1)[-1] if "-" in pair else "en"
+    candidates = [preferred] + [lang for lang in ("zh", "en") if lang != preferred]
+    installed = []
+    for lang in candidates:
+        model = get_model(model_ids[lang])
+        if (model is not None and model.task == "tts"
+                and lang in model.tts_languages
+                and marketplace.is_installed(model)):
+            installed.append(lang)
+    if not installed:
+        logger.info("自检[TTS 冒烟] 当前所选朗读模型未安装, 标记 warn")
         return {"check": "TTS 冒烟", "status": "warn",
-                "detail": "TTS 模型未安装 (models/tts 不存在)",
-                "suggestion": "下载 sherpa-onnx piper/vits 模型到 models/tts/ 后重试 (缺朗读不影响字幕)"}
+                "detail": "当前所选 TTS 模型未安装",
+                "suggestion": "前往模型广场下载中文或英文朗读模型 (缺朗读不影响字幕)"}
     try:
-        import sherpa_onnx
+        from voxsub.tts import TTSEngine
 
-        models = sorted(tts_dir.glob("**/model.onnx"))
-        if not models:
-            archives = sorted(tts_dir.glob("**/*.tar.bz2")) + sorted(tts_dir.glob("**/*.tar.gz"))
-            hint = (f"; 检测到 {len(archives)} 个未解压的模型包 "
-                    f"(如 {archives[0].name}), 需先解压出 model.onnx") if archives else ""
-            logger.warning("自检[TTS 冒烟] models/tts 下未找到 model.onnx%s", hint)
-            return {"check": "TTS 冒烟", "status": "warn",
-                    "detail": f"models/tts 下未找到 model.onnx{hint}",
-                    "suggestion": "确认 tts 模型包结构 (model.onnx + tokens.txt)"}
-        model = models[0]
-        tokens = model.parent / "tokens.txt"
-        cfg = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                vits=sherpa_onnx.OfflineTtsVitsModelConfig(
-                    model=str(model), tokens=str(tokens), data_dir=str(model.parent)),
-                num_threads=2, provider="cpu"),
-            rule_fsts="")
-        tts = sherpa_onnx.OfflineTts(cfg)
+        lang = installed[0]
+        text = "测试" if lang == "zh" else "Test"
+        tts = TTSEngine(root / "tts", provider="cpu", num_threads=2,
+                        model_ids=model_ids)
         t0 = time.perf_counter()
-        audio = tts.generate("测试", sid=0, speed=1.0)
+        audio = tts.synthesize(text, lang=lang)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        samples = audio.samples if audio is not None else None
+        if audio is None or not len(audio):
+            raise RuntimeError(f"所选 {lang} 朗读模型未产生音频")
         return {"check": "TTS 冒烟", "status": "ok",
-                "detail": f"合成通过, 耗时 {elapsed_ms:.0f}ms, 采样数={len(samples) if samples is not None else 0}",
+                "detail": f"{lang} 所选模型合成通过, 耗时 {elapsed_ms:.0f}ms, 采样数={len(audio)}",
                 "suggestion": "无需处理"}
     except Exception as exc:  # noqa: BLE001
         logger.warning("自检[TTS 冒烟] 合成异常: %s", exc, exc_info=True)

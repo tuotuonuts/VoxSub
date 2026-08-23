@@ -21,6 +21,25 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.7.0-beta",
+        "可下载和切换中英朗读模型",
+        "Downloadable and selectable Chinese and English voices",
+        (
+            "模型广场新增语音朗读分类，可下载中文轻量、英文轻量和 MeloTTS 中英双语自然音色。",
+            "设置 → 语音朗读可分别选择中文与英文模型，运行中切换会立即重载后台朗读引擎。",
+            "修复朗读开关只保存设置、当前会话不生效的问题；安装完模型后下一个终句可自动开始朗读。",
+            "实时双语草稿与智能上下文可使用 TTS；为避免每次草稿修订都重复抢读，只朗读稳定后的最终译文。",
+            "旧版 models/tts/zh 和 models/tts/en 已有模型会自动识别，不需要重复下载。",
+        ),
+        (
+            "Model Hub adds a Text-to-speech category with lightweight Chinese and English voices plus a more natural bilingual MeloTTS voice.",
+            "Settings -> Text-to-speech can select Chinese and English models independently, with live sessions hot-reloading the speech worker.",
+            "The TTS switch now applies to the current session instead of only persisting; a newly installed model is discovered for the next finalized sentence.",
+            "Smart Context and live bilingual drafts support TTS, but only finalized translations are read to avoid repeated, overlapping draft speech.",
+            "Existing models under models/tts/zh and models/tts/en are detected automatically and do not need to be downloaded again.",
+        ),
+    ),
+    ReleaseNote(
         "0.6.0-beta",
         "当前句会随识别与翻译实时更新",
         "Live recognition and translation drafts",

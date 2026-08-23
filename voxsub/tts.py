@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 
@@ -72,17 +73,24 @@ class TTSEngine:
     直到真正合成时才返回 None (降级友好)。
     """
 
-    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 1):
+    def __init__(self, model_dir: Path, provider: str = "cpu", num_threads: int = 1,
+                 model_ids: Mapping[str, str] | None = None):
         self._model_dir = Path(model_dir)
         self._provider = provider
         self._num_threads = num_threads
+        self._model_ids = {
+            str(lang): str(model_id)
+            for lang, model_id in dict(model_ids or {}).items()
+            if lang in _CANDIDATE_LANGS and model_id
+        }
         self._lock = threading.RLock()
         self._tts: dict[str, object] = {}       # lang -> OfflineTts 实例 (懒加载)
         self._ready: dict[str, bool] = {}       # lang -> 模型文件就绪?
         for lang in _CANDIDATE_LANGS:
             self._ready[lang] = bool(self._find_model_files(lang))
-        logger.info("TTSEngine 初始化 (目录=%s): %s",
+        logger.info("TTSEngine 初始化 (目录=%s selected=%s): %s",
                     self._model_dir.name,
+                    self._model_ids or "legacy",
                     ", ".join(f"{lang}={'就绪' if v else '缺模型'}"
                               for lang, v in self._ready.items()))
 
@@ -91,15 +99,42 @@ class TTSEngine:
     # ------------------------------------------------------------------
 
     def _lang_dir(self, lang: str) -> Path:
-        """语种模型目录: <model_dir>/<lang> (契约约定 tts/{zh,en})。"""
+        """Resolve the selected catalog model, then fall back to legacy folders."""
+        model_id = self._model_ids.get(lang, "")
+        if model_id:
+            try:
+                from voxsub.model_catalog import ModelMarketplace, get_model
+
+                model = get_model(model_id)
+                if (model is not None and model.task == "tts"
+                        and lang in model.tts_languages):
+                    selected = ModelMarketplace(
+                        self._model_dir.parent).available_model_dir(model)
+                    if self._model_files_at(selected) is not None:
+                        return selected
+                logger.warning("所选 TTS 模型不可用，尝试兼容目录: lang=%s id=%s",
+                               lang, model_id)
+            except Exception:
+                logger.warning("解析所选 TTS 模型失败，尝试兼容目录: lang=%s id=%s",
+                               lang, model_id, exc_info=True)
         return self._model_dir / lang
+
+    @staticmethod
+    def _model_files_at(directory: Path) -> tuple[Path, Path] | None:
+        """Return one VITS ONNX file and its token table from ``directory``."""
+        tokens = directory / "tokens.txt"
+        if not tokens.is_file():
+            return None
+        preferred = directory / "model.onnx"
+        if preferred.is_file():
+            return preferred, tokens
+        candidates = sorted(directory.glob("*.onnx"))
+        return (candidates[0], tokens) if candidates else None
 
     def _find_model_files(self, lang: str) -> Path | None:
         """定位一个语种的模型目录 (须含 model.onnx + tokens.txt), 否则 None。"""
         d = self._lang_dir(lang)
-        if (d / "model.onnx").is_file() and (d / "tokens.txt").is_file():
-            return d
-        return None
+        return d if self._model_files_at(d) is not None else None
 
     def _build_tts(self, lang: str) -> object | None:
         """构造该语种 OfflineTts; 模型缺失/构造失败返回 None (不抛)。"""
@@ -109,9 +144,19 @@ class TTSEngine:
         try:
             import sherpa_onnx  # 延迟 import: 无模型环境的纯逻辑测试仍可导入本模块
 
+            model_files = self._model_files_at(d)
+            if model_files is None:
+                return None
+            model_path, tokens_path = model_files
+            rule_fsts = [
+                str(d / name)
+                for name in ("phone.fst", "date.fst", "number.fst")
+                if (d / name).is_file()
+            ]
+
             vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-                model=str(d / "model.onnx"),
-                tokens=str(d / "tokens.txt"),
+                model=str(model_path),
+                tokens=str(tokens_path),
                 lexicon=str(d / "lexicon.txt") if (d / "lexicon.txt").is_file() else "",
                 data_dir=str(d / "espeak-ng-data")
                 if (d / "espeak-ng-data").is_dir() else "",
@@ -120,7 +165,7 @@ class TTSEngine:
                 model=sherpa_onnx.OfflineTtsModelConfig(
                     vits=vits, provider=self._provider, num_threads=self._num_threads,
                 ),
-                rule_fsts="",
+                rule_fsts=",".join(rule_fsts),
                 max_num_sentences=1,
             )
             return sherpa_onnx.OfflineTts(cfg)
@@ -147,9 +192,15 @@ class TTSEngine:
         try:
             with self._lock:
                 tts = self._tts.get(lang)
-                if tts is None and self._ready.get(lang):
-                    tts = self._build_tts(lang)
-                    self._tts[lang] = tts
+                if tts is None:
+                    # Model Hub may finish an installation while this worker is
+                    # already alive. Re-probe missing files on demand so the
+                    # next finalized sentence can start speaking immediately.
+                    if not self._ready.get(lang):
+                        self._ready[lang] = bool(self._find_model_files(lang))
+                    if self._ready.get(lang):
+                        tts = self._build_tts(lang)
+                        self._tts[lang] = tts
                 if tts is None:
                     self._ready[lang] = False
                     return None

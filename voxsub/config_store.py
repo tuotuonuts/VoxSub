@@ -90,6 +90,8 @@ _DEFAULTS: dict[str, Any] = {
     "base_url": "https://api.deepseek.com/v1",
     "model": "",
     "tts_enabled": True,
+    "tts_model_id_zh": "tts-icefall-zh-aishell3",
+    "tts_model_id_en": "tts-icefall-en-ljspeech-low",
     "mic_device_id": "",
     "loopback_device_id": "",
     "capture_process_id": 0,

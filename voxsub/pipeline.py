@@ -142,6 +142,10 @@ class Pipeline:
         self._in_path: Optional[Path] = None          # C 模式输入文件
         self._src_lang, self._dst_lang = "zh", "en"   # 默认中→英
         self._tts_enabled = False
+        self._tts_model_ids = {
+            "zh": "tts-icefall-zh-aishell3",
+            "en": "tts-icefall-en-ljspeech-low",
+        }
         self._mic_device_id = ""
         self._loopback_device_id = ""
         self._capture_process_id = 0
@@ -240,6 +244,11 @@ class Pipeline:
     def set_tts(self, enabled: bool) -> None:
         enabled = bool(enabled)
         if enabled == self._tts_enabled:
+            # A previous worker may have exited because the selected model was
+            # not installed yet.  Re-applying an enabled setting after Model
+            # Hub changes is therefore also a cheap recovery trigger.
+            if enabled and self._running and self._mode != "c":
+                self._start_tts_worker()
             return
         self._tts_enabled = enabled
         if self._running and self._mode != "c":
@@ -247,6 +256,21 @@ class Pipeline:
                 self._start_tts_worker()
             else:
                 self._stop_tts_worker()
+
+    def set_tts_models(self, model_ids: dict[str, str] | None = None) -> None:
+        """Select per-language TTS models and hot-reload the speech worker."""
+        requested = dict(model_ids or {})
+        normalized = {
+            "zh": str(requested.get("zh", self._tts_model_ids.get("zh", ""))),
+            "en": str(requested.get("en", self._tts_model_ids.get("en", ""))),
+        }
+        if normalized == self._tts_model_ids:
+            return
+        self._tts_model_ids = normalized
+        if self._running and self._mode != "c" and self._tts_enabled:
+            self._stop_tts_worker()
+            self._start_tts_worker()
+        logger.info("TTS 模型选择已更新: %s", self._tts_model_ids)
 
     def set_models_dir(self, path: str | Path) -> None:
         """Switch model storage between runs and discard path-bound caches."""
@@ -483,6 +507,7 @@ class Pipeline:
             self._tts_worker = TTSWorker(
                 self._models_dir,
                 external_stop=self._stop_evt,
+                model_ids=self._tts_model_ids,
             )
         self._tts_worker.start()
 

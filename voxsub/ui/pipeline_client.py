@@ -51,6 +51,10 @@ class _PipelineStub:
         self.langs = ("zh", "en")
         self.input_file = ""
         self.tts_enabled = False
+        self.tts_model_ids = {
+            "zh": "tts-icefall-zh-aishell3",
+            "en": "tts-icefall-en-ljspeech-low",
+        }
         self.models_dir: Path | None = None
         self.audio_devices = ("", "")
         self.capture_process = (0, "")
@@ -86,6 +90,9 @@ class _PipelineStub:
 
     def set_tts(self, enabled: bool) -> None:
         self.tts_enabled = bool(enabled)
+
+    def set_tts_models(self, model_ids: dict[str, str] | None = None) -> None:
+        self.tts_model_ids = dict(model_ids or {})
 
     def set_models_dir(self, path: str | Path) -> None:
         if self._running:

@@ -27,7 +27,7 @@ from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 logger = get_logger("model_catalog")
 
 GIB = 1024 ** 3
-CATALOG_UPDATED = "2026-08-20"
+CATALOG_UPDATED = "2026-08-24"
 
 
 def default_models_dir() -> Path:
@@ -55,7 +55,7 @@ class ModelSource:
 @dataclass(frozen=True)
 class ModelSpec:
     id: str
-    task: str                  # asr | translate
+    task: str                  # asr | translate | tts
     name: str
     vendor: str
     release: str
@@ -82,13 +82,19 @@ class ModelSpec:
     npu_supported: bool = False
     igpu_supported: bool = False
     tags: tuple[str, ...] = ()
+    tts_languages: tuple[str, ...] = ()
 
     @property
     def task_label(self) -> str:
-        return {"asr": "语音识别", "translate": "字幕翻译"}.get(self.task, self.task)
+        return {
+            "asr": "语音识别",
+            "translate": "字幕翻译",
+            "tts": "语音朗读",
+        }.get(self.task, self.task)
 
 
 _GH_ASR = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+_GH_TTS = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 _MS_ASR = "https://modelscope.cn/models/csukuangfj/asr-models/resolve/master"
 _HF = "https://huggingface.co"
 _MS = "https://modelscope.cn"
@@ -478,6 +484,103 @@ CATALOG: tuple[ModelSpec, ...] = (
         npu_supported=True,
         igpu_supported=True,
         tags=("高保真", "端侧", "33 语言", "Q8"),
+    ),
+    ModelSpec(
+        id="tts-melo-zh-en",
+        task="tts",
+        name="MeloTTS 中英双语 · 自然音色",
+        vendor="MyShell AI / sherpa-onnx",
+        release="2024-11-03",
+        description="单模型支持中文、英文和中英混读，声音更自然；体积和 CPU 占用高于轻量模型。",
+        runtime="sherpa-vits",
+        quality_score=94,
+        languages="中文 / 英语 / 中英混读",
+        license="MIT",
+        download_bytes=167_006_755,
+        installed_bytes=180_000_000,
+        install_rel="tts/vits-melo-zh-en",
+        required_paths=("model.onnx", "tokens.txt", "lexicon.txt"),
+        sources=(
+            ModelSource(
+                "global", "GitHub 全球源",
+                f"{_GH_TTS}/vits-melo-tts-zh_en.tar.bz2",
+                "https://github.com/favicon.ico",
+            ),
+        ),
+        asset_name="vits-melo-tts-zh_en.tar.bz2",
+        archive=True,
+        min_ram_gb=4.0,
+        working_ram_gb=0.8,
+        compute_cost=48,
+        gpu_supported=False,
+        tags=("自然音色", "中英混读", "单音色"),
+        tts_languages=("zh", "en"),
+    ),
+    ModelSpec(
+        id="tts-icefall-zh-aishell3",
+        task="tts",
+        name="Icefall AISHELL3 · 中文轻量",
+        vendor="k2-fsa / AISHELL",
+        release="2024-04-08",
+        description="中文低延迟朗读模型，CPU 占用较低；当前使用稳定的默认说话人音色。",
+        runtime="sherpa-vits",
+        quality_score=84,
+        languages="中文",
+        license="Apache-2.0（模型）",
+        download_bytes=31_559_701,
+        installed_bytes=214_000_000,
+        install_rel="tts/vits-icefall-zh-aishell3",
+        legacy_install_rels=("tts/zh",),
+        required_paths=("model.onnx", "tokens.txt", "lexicon.txt"),
+        sources=(
+            ModelSource(
+                "global", "GitHub 全球源",
+                f"{_GH_TTS}/vits-icefall-zh-aishell3.tar.bz2",
+                "https://github.com/favicon.ico",
+            ),
+        ),
+        asset_name="vits-icefall-zh-aishell3.tar.bz2",
+        sha256="ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1",
+        archive=True,
+        min_ram_gb=4.0,
+        working_ram_gb=0.35,
+        compute_cost=18,
+        gpu_supported=False,
+        tags=("低延迟", "低内存", "中文"),
+        tts_languages=("zh",),
+    ),
+    ModelSpec(
+        id="tts-icefall-en-ljspeech-low",
+        task="tts",
+        name="Icefall LJSpeech · 英文轻量",
+        vendor="k2-fsa / LJ Speech",
+        release="2026-07-13",
+        description="美式英文女声轻量模型，适合实时译文朗读和低资源设备。",
+        runtime="sherpa-vits",
+        quality_score=80,
+        languages="英语（美国）",
+        license="Public Domain（数据）",
+        download_bytes=31_722_013,
+        installed_bytes=45_000_000,
+        install_rel="tts/vits-icefall-en-ljspeech-low",
+        legacy_install_rels=("tts/en",),
+        required_paths=("model.onnx", "tokens.txt", "espeak-ng-data/phontab"),
+        sources=(
+            ModelSource(
+                "global", "GitHub 全球源",
+                f"{_GH_TTS}/vits-icefall-en_US-ljspeech-low.tar.bz2",
+                "https://github.com/favicon.ico",
+            ),
+        ),
+        asset_name="vits-icefall-en_US-ljspeech-low.tar.bz2",
+        sha256="c5115bc85775ed15bf1121057055ed35d5d17c9b83be7769c23a2402fc2d4c74",
+        archive=True,
+        min_ram_gb=4.0,
+        working_ram_gb=0.3,
+        compute_cost=16,
+        gpu_supported=False,
+        tags=("低延迟", "低内存", "美式女声"),
+        tts_languages=("en",),
     ),
     ModelSpec(
         id="mt-opus-fast-builtin",

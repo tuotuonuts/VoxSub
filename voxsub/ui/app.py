@@ -112,6 +112,13 @@ def main(argv: list[str] | None = None) -> int:
     settings_win.set_storage_change_guard(model_hub_win.has_active_downloads)
     settings_win.model_storage_changed.connect(
         lambda _root: model_hub_win.reload_model_storage())
+    settings_win.model_storage_changed.connect(
+        lambda _root: settings_win.refresh_tts_model_choices())
+    model_hub_win.selection_changed.connect(
+        lambda task, _model_id: (
+            settings_win.refresh_tts_model_choices() if task == "tts" else None
+        )
+    )
     logger.info("窗口组件已创建: 主窗 / 浮窗 / 内置模型广场 / 内置设置 / 诊断")
 
     tray = TrayIcon.create(make_app_icon(), win)

@@ -338,6 +338,27 @@ TRANSLATIONS: dict[str, str] = {
     "已保存 · 下次开始时生效": "Saved · takes effect next time you start",
     "朗读译文（本地 TTS；失败自动降级为仅字幕）":
         "Read translations aloud (local TTS; falls back to subtitles if unavailable)",
+    "智能上下文和实时双语草稿均可使用朗读；为避免反复抢读，只朗读已经定稿的译文。":
+        "Text-to-speech works with Smart Context and live bilingual drafts. To avoid repeated or overlapping audio, only finalized translations are read.",
+    "中文朗读模型": "Chinese voice model",
+    "英文朗读模型": "English voice model",
+    "打开模型广场管理朗读模型": "Manage voice models in Model Hub",
+    "没有兼容的朗读模型": "No compatible voice model",
+    "尚未安装朗读模型": "No voice model installed",
+    "（未安装）": " (not installed)",
+    "中文 / 英语 / 中英混读": "Chinese / English / mixed speech",
+    "英语（美国）": "English (US)",
+    "自然音色": "Natural voice",
+    "中英混读": "Mixed Chinese and English",
+    "单音色": "Single voice",
+    "中文": "Chinese",
+    "美式女声": "US female voice",
+    "单模型支持中文、英文和中英混读，声音更自然；体积和 CPU 占用高于轻量模型。":
+        "One model reads Chinese, English, and mixed text with a more natural voice; it uses more storage and CPU than the lightweight models.",
+    "中文低延迟朗读模型，CPU 占用较低；当前使用稳定的默认说话人音色。":
+        "A low-latency Mandarin model with modest CPU use; VoxSub currently uses its stable default speaker.",
+    "美式英文女声轻量模型，适合实时译文朗读和低资源设备。":
+        "A lightweight US English female voice suited to live translation and low-resource devices.",
     "麦克风输入（A 模式）": "Microphone input (Mode A)",
     "系统输出（B 模式监听全部声音时）": "System output (Mode B, all system audio)",
     "应用声音隔离": "Application audio isolation",

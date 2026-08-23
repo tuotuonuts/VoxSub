@@ -84,6 +84,19 @@ def test_mode_validation() -> None:
     assert p.mode == "c"  # 非法值被忽略
 
 
+def test_reapplying_enabled_tts_recovers_worker_after_model_install(monkeypatch) -> None:
+    pipeline = Pipeline()
+    starts: list[bool] = []
+    pipeline._running = True  # noqa: SLF001
+    pipeline._mode = "a"  # noqa: SLF001
+    pipeline._tts_enabled = True  # noqa: SLF001
+    monkeypatch.setattr(pipeline, "_start_tts_worker", lambda: starts.append(True))
+
+    pipeline.set_tts(True)
+
+    assert starts == [True]
+
+
 def test_models_dir_switch_discards_path_bound_components(tmp_path: Path) -> None:
     class _Closable:
         def __init__(self) -> None:
