@@ -23,8 +23,12 @@
 
 ### 验证
 
-- 相关回归测试、全量测试、安装包大小与 SHA256 将在候选构建完成后回填。
-- 当前不创建 GitHub Release；先推送源码并交付本地安装包，等待用户验证。
+- 正式构建门禁为 `256 passed, 7 skipped`；唯一 warning 是声卡闭环测试报告一次录音数据 discontinuity，测试本身通过。
+- 真实旧版中文/英文 TTS 模型分别合成 51,050 和 46,796 个 16 kHz `float32` 采样点，健康状态为 `ok`。
+- 候选安装包 `VoxSub-Setup-0.7.0-beta.exe` 为 214,865,840 字节（204.91 MiB），SHA256 `252DE9C8881D1E268DA6053158F01368539B56D7A86902DDAE30D0E089F46D20`。
+- 主程序与安装包均使用 `CN=VoxSub Dev (self-signed)` 开发者自签名；签名状态为 `UnknownError`，不代表 Windows 信任或正式 OV 签名。
+- 打包目录使用隔离配置启动 12 秒未提前退出；日志确认 `ui=0.7.0-beta core=0.7.0-beta`、窗口组件创建完成并进入事件循环。
+- 功能提交 `8dd5c4a` 已推送 GitHub `main`；当前不创建 GitHub Release，等待用户验证。
 
 ## 版本: v0.6.0-beta（开发候选，未发布）
 

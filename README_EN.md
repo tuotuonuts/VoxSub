@@ -17,7 +17,7 @@ Current source: `0.7.0-beta` (candidate, not released). Current public download:
 
 ## Downloads and candidate build
 
-- Local candidate: `VoxSub-Setup-0.7.0-beta.exe` is being built through the full release gate; its exact size and SHA256 will be recorded when complete. It is unsigned and will not receive a GitHub Release before user validation.
+- Local candidate: `D:\OneDrive\app_dve\Release\VoxSub-Setup-0.7.0-beta.exe`, 214,865,840 bytes (204.91 MiB); SHA256 `252DE9C8881D1E268DA6053158F01368539B56D7A86902DDAE30D0E089F46D20`. It carries the `CN=VoxSub Dev (self-signed)` development signature, which Windows may still treat as untrusted. Please validate it locally first; no GitHub Release has been created.
 - Published build: `VoxSub-Setup-0.5.0-beta.exe` on [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta) (unsigned), 214,795,950 bytes (204.85 MiB); SHA256 `38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8`.
 - Previous build: [VoxSub v0.4.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.4.2-beta).
 
@@ -80,7 +80,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current `0.7.0-beta` candidate is being built; its exact size and SHA256 will be recorded when complete.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The current `0.7.0-beta` local candidate is 214,865,840 bytes with SHA256 `252DE9C8881D1E268DA6053158F01368539B56D7A86902DDAE30D0E089F46D20`.
 
 ## Project Layout
 
