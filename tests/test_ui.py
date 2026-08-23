@@ -1184,6 +1184,37 @@ class TestSettingsWindow:
             overlay.close()
             overlay.deleteLater()
 
+    def test_overlay_spinbox_arrows_match_tuning_style_and_both_step(
+        self, qapp, tmp_path
+    ):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QAbstractSpinBox
+        from voxsub.ui.settings_window import SettingsWindow
+
+        sw = SettingsWindow(store=ConfigStore(tmp_path / "config.json"))
+        try:
+            sw.tabs.setCurrentIndex(5)
+            sw.show()
+            qapp.processEvents()
+            sw.overlay_font_spin.setValue(30)
+            sw.overlay_opacity_spin.setValue(70)
+            for spin in (sw.overlay_font_spin, sw.overlay_opacity_spin):
+                assert spin.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+                before = spin.value()
+                up = spin._voxsub_step_up_btn  # noqa: SLF001
+                down = spin._voxsub_step_down_btn  # noqa: SLF001
+                assert up.objectName() == "spinStepButton"
+                assert down.objectName() == "spinStepButton"
+                assert up.isVisible() and down.isVisible()
+                QTest.mouseClick(up, Qt.MouseButton.LeftButton)
+                assert spin.value() == before + spin.singleStep()
+                QTest.mouseClick(down, Qt.MouseButton.LeftButton)
+                assert spin.value() == before
+        finally:
+            sw.close()
+            sw.deleteLater()
+
     def test_asr_tuning_has_hover_info_transaction_and_wide_ranges(
         self, qapp, tmp_path, monkeypatch
     ):

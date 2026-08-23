@@ -754,7 +754,7 @@ class SettingsWindow(QWidget):
         overlay_form = QFormLayout()
         overlay_form.setHorizontalSpacing(18)
         overlay_form.setVerticalSpacing(10)
-        self.overlay_font_spin = QSpinBox(overlay_card)
+        self.overlay_font_spin = _ReliableSpinBox(overlay_card)
         self.overlay_font_spin.setObjectName("inputBox")
         self.overlay_font_spin.setRange(10, 72)
         self.overlay_font_spin.setSingleStep(2)
@@ -762,7 +762,7 @@ class SettingsWindow(QWidget):
         self.overlay_font_spin.valueChanged.connect(self._on_overlay_font_changed)
         overlay_form.addRow("译文字号", self.overlay_font_spin)
 
-        self.overlay_opacity_spin = QSpinBox(overlay_card)
+        self.overlay_opacity_spin = _ReliableSpinBox(overlay_card)
         self.overlay_opacity_spin.setObjectName("inputBox")
         self.overlay_opacity_spin.setRange(20, 100)
         self.overlay_opacity_spin.setSingleStep(5)

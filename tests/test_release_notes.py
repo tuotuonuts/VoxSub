@@ -34,6 +34,7 @@ def test_release_notes_are_shown_only_once_for_a_version(qapp, tmp_path: Path):
     assert store.get("release_notes_seen_version") == __version__
     assert show_release_notes_once(parent, store, __version__) is None
     assert "更稳定的长时间同传与模型管理" in release_history_text()
+    assert "译文字号和浮窗不透明度" in release_history_text()
 
     first.close()
     first.deleteLater()

@@ -29,12 +29,14 @@ RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
             "语音朗读已接入独立后台播放；失败时字幕仍可继续工作。",
             "下载和模型写入增加完整性检查与中断保护，旧文件不容易被半成品覆盖。",
             "配置升级与异常值处理集中完成，旧设置会继续兼容。",
+            "外观设置中的译文字号和浮窗不透明度现在使用可靠的上下箭头，两边都可正常点击。",
         ),
         (
             "Recognition, translation, and speech backlogs are bounded instead of growing memory indefinitely.",
             "Speech playback now runs independently in the background; subtitles continue if it fails.",
             "Downloads and model writes have stronger integrity checks and interruption protection.",
             "Config upgrades and invalid values are handled centrally while preserving old settings.",
+            "Translation font size and overlay opacity now use reliable matching arrow controls in Appearance settings.",
         ),
     ),
     ReleaseNote(
