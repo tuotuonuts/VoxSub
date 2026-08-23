@@ -686,6 +686,30 @@ def test_pipeline_has_loopback_symbol() -> None:
         assert not isinstance(exc, NameError), f"B 模式缺 import: {exc}"
 
 
+def test_stop_uses_one_shared_worker_join_deadline(monkeypatch) -> None:
+    import voxsub.pipeline as pipeline_module
+
+    timeouts: list[float] = []
+
+    class _StuckThread:
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout is not None
+            timeouts.append(timeout)
+
+    ticks = iter((10.0, 11.0, 13.0, 16.0, 20.0))
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(ticks))
+    pipeline = Pipeline()
+    pipeline._state = PipelineState.RUNNING  # noqa: SLF001
+    pipeline._threads = [_StuckThread() for _ in range(4)]  # noqa: SLF001
+
+    pipeline.stop()
+
+    assert timeouts == [7.0, 5.0, 2.0]
+
+
 @pytest.mark.integration
 def test_video_audio_extraction_with_ffmpeg(tmp_path: Path, monkeypatch) -> None:
     """常见视频容器能自动提取为 16k 单声道 WAV，再进入识别阶段。"""

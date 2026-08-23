@@ -21,6 +21,23 @@ class ReleaseNote:
 
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
+        "0.7.2-beta",
+        "安装更新不再长时间假死",
+        "Installer updates no longer appear frozen",
+        (
+            "修复安装器把“关闭主窗口”误当成“退出应用”，等待约半分钟后才报无法关闭的问题。",
+            "新安装器会向语幕发送专用退出信号，让当前任务先做安全收尾，而不是把窗口缩到托盘。",
+            "旧版没有退出信号时，安装器会立即关闭 VoxSub.exe 及它启动的推理子进程，不再进入 Windows 默认的长等待。",
+            "后台处理线程退出改为共享总时限，不会再对每条线程逐一叠加等待。",
+        ),
+        (
+            "Fixes the installer treating a closed main window as an exited app, then waiting roughly thirty seconds before reporting failure.",
+            "The installer now sends VoxSub a dedicated shutdown signal so active work can clean up instead of merely hiding the window in the tray.",
+            "Older builds without the handshake are closed immediately together with their inference child processes, bypassing the long Windows default wait.",
+            "Background workers now share one total shutdown deadline instead of accumulating one timeout per thread.",
+        ),
+    ),
+    ReleaseNote(
         "0.7.1-beta",
         "实时双语草稿更易读也更跟手",
         "More readable and responsive live bilingual drafts",

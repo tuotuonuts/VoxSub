@@ -1075,9 +1075,16 @@ class Pipeline:
                 logger.debug("主动停止音频源失败", exc_info=True)
         # capture → process(flush) → translate 的拥有关系必须保持；处理线程是
         # segmenter 唯一拥有者，UI 线程绝不能再次 flush/reset 原生 sherpa 流。
+        # Use one shared deadline.  A per-thread 8 second timeout used to stack
+        # across capture/process/translation workers and could make application
+        # shutdown appear hung for over half a minute during an update.
+        join_deadline = time.monotonic() + 8.0
         for t in self._threads:
             if t is not threading.current_thread():
-                t.join(timeout=8.0)
+                remaining = join_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                t.join(timeout=remaining)
         self._threads = [t for t in self._threads if t.is_alive()]
         self._set_state(PipelineState.IDLE)
         self._live_draft.reset()

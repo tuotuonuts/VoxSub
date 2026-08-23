@@ -41,6 +41,11 @@ from voxsub.config_store import ConfigStore  # noqa: E402
 from voxsub.ui.diagnostics_window import DiagnosticsWindow  # noqa: E402
 from voxsub.ui.icons import make_app_icon  # noqa: E402
 from voxsub.ui.i18n import language_manager, tr  # noqa: E402
+from voxsub.ui.installer_shutdown import (  # noqa: E402
+    InstallerShutdownBridge,
+    RUNNING_MUTEX_NAME,
+    SHUTDOWN_EVENT_NAME,
+)
 from voxsub.ui.main_window import MainWindow  # noqa: E402
 from voxsub.ui.model_hub_window import ModelHubWindow  # noqa: E402
 from voxsub.ui.settings_window import SettingsWindow  # noqa: E402
@@ -123,6 +128,37 @@ def main(argv: list[str] | None = None) -> int:
 
     tray = TrayIcon.create(make_app_icon(), win)
 
+    def _request_application_quit(*, show_blocker: bool = True) -> bool:
+        """Run application-level cleanup instead of the window's tray hide."""
+        if not settings_win.can_close_application():
+            if show_blocker:
+                if not win.isVisible():
+                    win.show()
+                win.show_settings_page()
+                settings_win.tabs.setCurrentIndex(4)
+                win.raise_()
+                win.activateWindow()
+            return False
+        app._voxsub_quitting = True  # type: ignore[attr-defined]
+        try:
+            win.pipeline.stop()
+        except AttributeError:
+            pass
+        app.quit()
+        return True
+
+    # Alternate object names isolate automated app-startup tests from a real
+    # installed instance. Production does not set these environment variables.
+    installer_shutdown = InstallerShutdownBridge(
+        app,
+        mutex_name=os.environ.get(
+            "VOXSUB_INSTALLER_MUTEX", RUNNING_MUTEX_NAME),
+        event_name=os.environ.get(
+            "VOXSUB_INSTALLER_SHUTDOWN_EVENT", SHUTDOWN_EVENT_NAME),
+    )
+    installer_shutdown.shutdown_requested.connect(
+        lambda: _request_application_quit(show_blocker=False))
+
     # -- 主窗 ↔ 漂浮窗联动 --
     overlay.hide()
 
@@ -157,20 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             diagnostics_win.activateWindow()
 
         def _on_tray_quit() -> None:
-            if not settings_win.can_close_application():
-                if not win.isVisible():
-                    win.show()
-                win.show_settings_page()
-                settings_win.tabs.setCurrentIndex(4)
-                win.raise_()
-                win.activateWindow()
-                return
-            app._voxsub_quitting = True  # type: ignore[attr-defined]
-            try:
-                win.pipeline.stop()
-            except AttributeError:
-                pass
-            app.quit()
+            _request_application_quit()
 
         tray.mode_changed.connect(_on_tray_mode)
         tray.toggle_run_requested.connect(_on_tray_toggle)
@@ -216,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
     app.aboutToQuit.connect(model_hub_win.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
+    app.aboutToQuit.connect(installer_shutdown.close)
     app.aboutToQuit.connect(lambda: logger.info("应用退出"))
     logger.info("事件循环开始")
     return app.exec()

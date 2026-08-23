@@ -1,6 +1,6 @@
 ; VoxSub installer script (Inno Setup 6+)
 ; 语幕 VoxSub - 大众实时翻译安装包
-; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.7.1-beta.exe
+; Build: 用 InnoSetup (iscc) 编译本脚本 -> VoxSub-Setup-0.7.2-beta.exe
 ;   iscc scripts\installer.iss
 ; 说明: 大型模型不打包进安装包, 首次运行经模型广场下载(断点续传+SHA256)。
 ;       2.3MB 的基础 VAD 随程序分发，首次启动会自动修复到
@@ -9,10 +9,12 @@
 ;       build.ps1 的 osslsigncode 统一处理(SignedSetup)。
 
 #define MyAppName "VoxSub"
-#define MyAppVersion "0.7.1-beta"
+#define MyAppVersion "0.7.2-beta"
 #define MyAppPublisher "VoxSub"
 #define MyAppExeName "VoxSub.exe"
 #define MyAppId "{{7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001}"
+#define MyAppRunningMutex "Local\VoxSub.Application.7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001"
+#define MyAppShutdownEvent "Local\VoxSub.InstallerShutdown.7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001"
 
 [Setup]
 AppId={#MyAppId}
@@ -27,10 +29,15 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ; 正式版发布物统一输出到 D:\OneDrive\app_dve\Release (用户约定 2026-08-17)
 OutputDir=..\..\Release
-OutputBaseFilename=VoxSub-Setup-0.7.1-beta
+OutputBaseFilename=VoxSub-Setup-0.7.2-beta
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; VoxSub closes its main window to the tray. Restart Manager treats that as a
+; refusal and blocks for roughly 30 seconds, so use the explicit bounded
+; shutdown handshake in [Code] instead.
+CloseApplications=no
+RestartApplications=no
 ; 按 Windows UI 语言自动选择；无对应翻译时回退到英文，不显示语言选择弹窗。
 LanguageDetectionMethod=uilanguage
 ShowLanguageDialog=no
@@ -58,6 +65,12 @@ chinesetraditional.AdditionalIcons=附加圖示：
 english.LaunchApp=Launch %1
 chinesesimplified.LaunchApp=立即启动 %1
 chinesetraditional.LaunchApp=立即啟動 %1
+english.ClosingApp=Closing VoxSub before updating...
+chinesesimplified.ClosingApp=正在关闭语幕 VoxSub 以完成更新…
+chinesetraditional.ClosingApp=正在關閉語幕 VoxSub 以完成更新…
+english.AppCloseFailed=Setup could not close VoxSub. End VoxSub.exe in Task Manager, then try again.
+chinesesimplified.AppCloseFailed=安装程序无法关闭语幕 VoxSub。请在任务管理器中结束 VoxSub.exe 后重试。
+chinesetraditional.AppCloseFailed=安裝程式無法關閉語幕 VoxSub。請在工作管理員中結束 VoxSub.exe 後重試。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -89,4 +102,82 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchApp,{cm:MyAppName}}";
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+end;
+
+const
+  EVENT_MODIFY_STATE = $0002;
+  SYNCHRONIZE = $00100000;
+  GracefulCloseTimeoutMs = 2500;
+
+function OpenEvent(dwDesiredAccess: LongWord; bInheritHandle: Boolean;
+  lpName: string): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(hEvent: THandle): Boolean;
+  external 'SetEvent@kernel32.dll stdcall';
+function OpenMutex(dwDesiredAccess: LongWord; bInheritHandle: Boolean;
+  lpName: string): THandle;
+  external 'OpenMutexW@kernel32.dll stdcall';
+function CloseHandle(hObject: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+function GetTickCount(): LongWord;
+  external 'GetTickCount@kernel32.dll stdcall';
+
+function SignalRunningVoxSub(): Boolean;
+var
+  EventHandle: THandle;
+begin
+  Result := False;
+  EventHandle := OpenEvent(EVENT_MODIFY_STATE, False, '{#MyAppShutdownEvent}');
+  if EventHandle <> 0 then
+  begin
+    Result := SetEvent(EventHandle);
+    CloseHandle(EventHandle);
+  end;
+end;
+
+function NewVoxSubIsRunning(): Boolean;
+var
+  MutexHandle: THandle;
+begin
+  MutexHandle := OpenMutex(SYNCHRONIZE, False, '{#MyAppRunningMutex}');
+  Result := MutexHandle <> 0;
+  if Result then
+    CloseHandle(MutexHandle);
+end;
+
+function ForceCloseVoxSub(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  { /T also closes a bundled llama-server child. Exit 128 means no match. }
+  Result := Exec(ExpandConstant('{sys}\taskkill.exe'),
+    '/F /T /IM "{#MyAppExeName}"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Result := Result and ((ResultCode = 0) or (ResultCode = 128));
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Signalled: Boolean;
+  StartedAt: Cardinal;
+begin
+  Result := '';
+  WizardForm.StatusLabel.Caption := ExpandConstant('{cm:ClosingApp}');
+  WizardForm.StatusLabel.Update;
+
+  Signalled := SignalRunningVoxSub();
+  if Signalled then
+  begin
+    StartedAt := GetTickCount;
+    while NewVoxSubIsRunning() and
+      (GetTickCount - StartedAt < GracefulCloseTimeoutMs) do
+      Sleep(100);
+  end;
+
+  { 0.7.1 and older do not expose the event; an unresponsive newer process
+    can also outlive the short grace period. Handle both without Restart
+    Manager's 30-second wait. }
+  if (not Signalled) or NewVoxSubIsRunning() then
+    if not ForceCloseVoxSub() then
+      Result := ExpandConstant('{cm:AppCloseFailed}');
 end;
