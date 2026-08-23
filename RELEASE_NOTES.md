@@ -16,8 +16,11 @@
 
 ### 验证
 
-- 全量回归为 `261 passed, 8 skipped`；新增连续 partial 翻译调度、滞后译文安全性、英文大小写与 Pipeline 集成覆盖。
-- 候选安装包尚在本轮构建；未创建 GitHub Release，等待用户验证。
+- 正式构建门禁为 `262 passed, 7 skipped`；新增连续 partial 翻译调度、滞后译文安全性、英文大小写与 Pipeline 集成覆盖。唯一 warning 为声卡闭环测试的录音数据 discontinuity，该测试通过。
+- 候选安装包 `VoxSub-Setup-0.7.1-beta.exe` 为 214,877,960 字节（204.92 MiB），SHA256 `64B54C296C3CF5A53BB867889DA9CF479373BD79933E1377EB70C62BCEDC2C0B`。
+- 主程序与安装包均使用 `CN=VoxSub Dev (self-signed)` 开发者自签名；签名状态为 `UnknownError`，不代表 Windows 信任或正式 OV 签名。
+- 打包目录使用隔离配置启动 12 秒未提前退出；日志确认 `ui=0.7.1-beta core=0.7.1-beta`、窗口组件创建完成并进入事件循环。
+- 修复提交 `8577608` 已推送 GitHub `main`；未创建 GitHub Release，等待用户验证。
 
 ## 版本: v0.7.0-beta（开发候选，未发布）
 
