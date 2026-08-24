@@ -18,10 +18,36 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import json
 
 
 class TranslationError(RuntimeError):
     """单句翻译失败。由调用方 (pipeline / PrefetchEngine) 捕获并降级。"""
+
+
+def parse_translation_batch(output: str, expected_count: int) -> list[str]:
+    """Parse a model's JSON-array response without accepting extra prose."""
+    text = str(output or "").strip()
+    if text.startswith("```") and text.endswith("```"):
+        text = text[3:-3].strip()
+        if text.lower().startswith("json"):
+            text = text[4:].lstrip()
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end < start:
+        raise TranslationError("批量翻译没有返回 JSON 数组")
+    try:
+        value = json.loads(text[start:end + 1])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise TranslationError("批量翻译返回的 JSON 无法解析") from exc
+    if not isinstance(value, list) or len(value) != max(0, int(expected_count)):
+        raise TranslationError(
+            f"批量翻译返回数量不匹配: expected={expected_count} "
+            f"actual={len(value) if isinstance(value, list) else 'not-list'}"
+        )
+    results = [str(item or "").strip() for item in value]
+    if any(not item for item in results):
+        raise TranslationError("批量翻译包含空译文")
+    return results
 
 
 class Translator(ABC):

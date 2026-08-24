@@ -14,8 +14,10 @@ from voxsub.ocr import (
     RapidOcrEngine,
     fingerprint_distance,
     frame_fingerprint,
+    live_ocr_config,
     materially_changed,
     polygon_to_box,
+    preferred_ocr_backend,
 )
 from voxsub.ui.ocr_worker import OcrJob, OcrWorker
 
@@ -95,6 +97,109 @@ def test_translation_service_reuses_a_bounded_line_cache(monkeypatch):
     assert calls == ["Hello", "World"]
     assert first.translation_text == "zh:Hello\nzh:Hello\nzh:World"
     assert second.translation_text == first.translation_text
+
+
+def test_translation_service_batches_unique_lines_and_reuses_cache(monkeypatch):
+    calls: list[list[str]] = []
+
+    class FakeBatchTranslator:
+        def warmup(self):
+            return None
+
+        def translate_many(self, texts, source, target, *, timeout_ms):
+            calls.append(list(texts))
+            return [f"{target}:{text}" for text in texts]
+
+        def translate(self, *_args, **_kwargs):
+            raise AssertionError("batch-capable translator must not translate line by line")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "voxsub.ocr.TranslatorFactory.create",
+        lambda _kind, _config: FakeBatchTranslator(),
+    )
+    frame = OcrFrame(300, 120, (
+        OcrLine(OcrBox(0, 0, 80, 30), "Hello", 0.99),
+        OcrLine(OcrBox(0, 40, 80, 70), "Hello", 0.98),
+        OcrLine(OcrBox(0, 80, 100, 110), "World", 0.97),
+    ), 15, "GPU · DirectML", "ocr-rapidocr-v6-medium")
+    service = OcrTranslationService(cache_size=16)
+
+    first = service.translate_frame(frame, "en", "zh", {"translate_tier": "fast"})
+    second = service.translate_frame(frame, "en", "zh", {"translate_tier": "fast"})
+    service.close()
+
+    assert calls == [["Hello", "World"]]
+    assert [line.source for line in first.lines] == ["Hello", "Hello", "World"]
+    assert [line.translation for line in first.lines] == [
+        "zh:Hello", "zh:Hello", "zh:World"]
+    assert first.translation_requests == 1
+    assert second.translation_requests == 0
+    assert first.ocr_backend == "GPU · DirectML"
+    assert first.ocr_model_id == "ocr-rapidocr-v6-medium"
+
+
+def test_preferred_ocr_backend_selects_directml(monkeypatch):
+    monkeypatch.setattr(
+        "onnxruntime.get_available_providers",
+        lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    name, params = preferred_ocr_backend()
+
+    assert name == "GPU · DirectML"
+    assert params == {"EngineConfig.onnxruntime.use_dml": True}
+
+
+def test_live_ocr_keeps_quality_model_on_gpu_and_falls_back_on_cpu(monkeypatch):
+    selected = {"ocr_model_id": "ocr-rapidocr-v6-medium"}
+    monkeypatch.setattr(
+        "voxsub.ocr.preferred_ocr_backend", lambda: ("GPU · DirectML", {}))
+
+    gpu = live_ocr_config(selected)
+
+    assert gpu["ocr_live_mode"] is True
+    assert gpu["ocr_model_id"] == "ocr-rapidocr-v6-medium"
+    monkeypatch.setattr(
+        "voxsub.ocr.preferred_ocr_backend", lambda: ("CPU", {}))
+
+    cpu = live_ocr_config(selected)
+
+    assert cpu["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
+    assert cpu["ocr_live_fallback_from"] == "ocr-rapidocr-v6-medium"
+
+
+def test_rapidocr_engine_enables_directml_and_reports_actual_provider(monkeypatch):
+    captured: dict = {}
+
+    class FakeSession:
+        @staticmethod
+        def get_providers():
+            return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+    class FakeEngine:
+        text_det = SimpleNamespace(
+            session=SimpleNamespace(session=FakeSession()))
+
+    def fake_rapidocr(*, params):
+        captured.update(params)
+        return FakeEngine()
+
+    monkeypatch.setattr(
+        "voxsub.ocr.preferred_ocr_backend",
+        lambda: ("GPU · DirectML", {"EngineConfig.onnxruntime.use_dml": True}),
+    )
+    monkeypatch.setattr("rapidocr.main.RapidOCR", fake_rapidocr)
+    engine = RapidOcrEngine(config={"ocr_live_mode": True})
+
+    created = engine._ensure_engine()  # noqa: SLF001
+
+    assert isinstance(created, FakeEngine)
+    assert captured["EngineConfig.onnxruntime.use_dml"] is True
+    assert captured["Global.use_cls"] is False
+    assert engine._backend == "GPU · DirectML"  # noqa: SLF001
 
 
 def test_real_rapidocr_smoke_recognizes_generated_english_text():

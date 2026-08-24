@@ -25,6 +25,7 @@ from voxsub.ocr_cache import OcrCacheLocationError, cache_from_store
 from voxsub.ocr import (
     TranslatedOcrFrame,
     frame_fingerprint,
+    live_ocr_config,
     materially_changed,
 )
 from voxsub.ui.i18n import tr
@@ -44,6 +45,15 @@ from voxsub.ui.screen_capture import (
 )
 
 logger = get_logger("ui.ocr_workspace")
+
+
+def _ocr_runtime_name(model_id: str) -> str:
+    return {
+        "ocr-rapidocr-v6-tiny": "v6 Tiny",
+        "ocr-rapidocr-v6-small-builtin": "v6 Small",
+        "ocr-rapidocr-v6-medium": "v6 Medium",
+        "ocr-rapidocr-v5-document": "v5 Document",
+    }.get(str(model_id), "OCR")
 
 
 class OcrPreview(QWidget):
@@ -491,6 +501,8 @@ class OcrWorkspace(QWidget):
         self, captured: CapturedRegion, purpose: str, *, image: np.ndarray | None = None
     ) -> bool:
         config = self._store.load()
+        if purpose == "live":
+            config = live_ocr_config(config)
         pair = str(config.get("lang_pair", "zh-en"))
         source_lang, target_lang = pair.split("-", 1)
         self._revision += 1
@@ -545,8 +557,10 @@ class OcrWorkspace(QWidget):
         else:
             self.screenshot_status.setText(tr(
                 f"完成 · {len(frame.lines)} 行 · OCR {frame.ocr_elapsed_ms}ms · "
+                f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
                 f"翻译 {frame.translate_elapsed_ms}ms",
                 f"Done · {len(frame.lines)} lines · OCR {frame.ocr_elapsed_ms}ms · "
+                f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
                 f"translation {frame.translate_elapsed_ms}ms",
             ))
         if cache_warning:
@@ -634,8 +648,10 @@ class OcrWorkspace(QWidget):
             self._overlay.show()
         status = warning or tr(
             f"{len(frame.lines)} 行 · OCR {frame.ocr_elapsed_ms}ms · "
+            f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
             f"翻译 {frame.translate_elapsed_ms}ms",
             f"{len(frame.lines)} lines · OCR {frame.ocr_elapsed_ms}ms · "
+            f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
             f"translation {frame.translate_elapsed_ms}ms",
         )
         self.live_status.setText(status)

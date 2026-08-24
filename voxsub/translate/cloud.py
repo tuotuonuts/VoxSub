@@ -12,6 +12,7 @@ base_url 的主机必须命中 allowlist, 否则拒绝 (防止任意端点被进
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 from urllib.parse import urlparse
@@ -20,7 +21,7 @@ from voxsub.logging_setup import get_logger
 from voxsub.language_guard import language_name, normalize_language
 
 from ._http_client import OpenAICompatError, chat_completion, normalize_api_base
-from .base import TranslationError, Translator
+from .base import TranslationError, Translator, parse_translation_batch
 
 logger = get_logger("translate.cloud")
 
@@ -149,6 +150,49 @@ class CloudTranslator(Translator):
                              self._model)
             raise TranslationError(str(exc)) from exc
         return out
+
+    def translate_many(
+        self, texts: list[str], src_lang: str, dst_lang: str, *,
+        timeout_ms: int = 15000,
+    ) -> list[str]:
+        """Translate an OCR line batch with one cloud request."""
+        sources = [str(text or "").strip() for text in texts]
+        if not sources:
+            return []
+        if len(sources) == 1:
+            return [self.translate(
+                sources[0], src_lang, dst_lang, timeout_ms=timeout_ms)]
+        if not self._api_key:
+            raise TranslationError("云翻译未配置 DEEPSEEK_API_KEY")
+        endpoint = self._validate_endpoint()
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
+        payload = json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
+        messages = [
+            {"role": "system", "content": (
+                "You are a professional machine-translation engine. Return only "
+                "the valid JSON array requested by the user, with no prose.")},
+            {"role": "user", "content": (
+                f"Translate every JSON item from {language_name(src_lang)} to "
+                f"{language_name(dst_lang)}. Return exactly {len(sources)} strings "
+                "in the same order. Do not change the array length.\n" + payload)},
+        ]
+        effective_timeout = (
+            self._timeout if timeout_ms == 15000
+            else max(1.0, int(timeout_ms) / 1000.0)
+        )
+        try:
+            with self._lock:
+                raw = chat_completion(
+                    endpoint, messages=messages, api_key=self._api_key,
+                    model=self._model, temperature=0.1,
+                    timeout_sec=effective_timeout)
+            return parse_translation_batch(raw, len(sources))
+        except OpenAICompatError as exc:
+            logger.exception(
+                "云 OCR 批量翻译失败 (host=%s, model=%s)",
+                (urlparse(self._base_url).hostname or "").lower(), self._model)
+            raise TranslationError(str(exc)) from exc
 
     def close(self) -> None:
         pass  # 无长连接, 无需释放

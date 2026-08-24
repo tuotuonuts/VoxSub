@@ -24,9 +24,43 @@ from voxsub.translate.factory import TranslatorFactory
 
 logger = get_logger("ocr")
 
+_SLOW_LIVE_MODELS = frozenset({
+    "ocr-rapidocr-v6-medium",
+    "ocr-rapidocr-v5-document",
+})
+
 
 class OcrUnavailableError(RuntimeError):
     """The configured OCR runtime cannot be loaded."""
+
+
+def preferred_ocr_backend() -> tuple[str, dict[str, Any]]:
+    """Return the packaged ONNX provider and RapidOCR engine parameters."""
+    try:
+        import onnxruntime as ort
+
+        providers = set(ort.get_available_providers())
+    except Exception:  # noqa: BLE001 - optional runtime probe
+        providers = set()
+    if "CUDAExecutionProvider" in providers:
+        return "GPU · CUDA", {"EngineConfig.onnxruntime.use_cuda": True}
+    if "DmlExecutionProvider" in providers:
+        return "GPU · DirectML", {"EngineConfig.onnxruntime.use_dml": True}
+    return "CPU", {}
+
+
+def live_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Select a responsive live OCR path without changing static-image quality."""
+    prepared = dict(config)
+    prepared["ocr_live_mode"] = True
+    backend, _params = preferred_ocr_backend()
+    selected = str(prepared.get(
+        "ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
+        "ocr-rapidocr-v6-small-builtin")
+    if backend == "CPU" and selected in _SLOW_LIVE_MODELS:
+        prepared["ocr_live_fallback_from"] = selected
+        prepared["ocr_model_id"] = "ocr-rapidocr-v6-small-builtin"
+    return prepared
 
 
 def _rapidocr_model_params(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -124,6 +158,8 @@ class OcrFrame:
     height: int
     lines: tuple[OcrLine, ...]
     elapsed_ms: int = 0
+    backend: str = "CPU"
+    model_id: str = ""
 
     @property
     def text(self) -> str:
@@ -146,6 +182,9 @@ class TranslatedOcrFrame:
     ocr_elapsed_ms: int
     translate_elapsed_ms: int
     failed_lines: int = 0
+    ocr_backend: str = "CPU"
+    ocr_model_id: str = ""
+    translation_requests: int = 0
 
     @property
     def source_text(self) -> str:
@@ -213,10 +252,18 @@ class RapidOcrEngine:
         self, *, minimum_confidence: float = 0.52,
         config: Mapping[str, Any] | None = None,
     ) -> None:
+        selected_config = dict(config or {})
         self.minimum_confidence = max(0.0, min(1.0, float(minimum_confidence)))
         self._engine: Any | None = None
         self._initialization_error: OcrUnavailableError | None = None
-        self._model_params = _rapidocr_model_params(config or {})
+        self._model_params = _rapidocr_model_params(selected_config)
+        self._model_id = str(selected_config.get(
+            "ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
+            "ocr-rapidocr-v6-small-builtin")
+        self._live_mode = bool(selected_config.get("ocr_live_mode", False))
+        self._requested_backend, self._acceleration_params = preferred_ocr_backend()
+        self._backend = "CPU"
+        self._gpu_disabled = False
         self._lock = threading.Lock()
 
     def _ensure_engine(self) -> Any:
@@ -233,27 +280,83 @@ class RapidOcrEngine:
 
             params = {
                 "Global.text_score": self.minimum_confidence,
-                "Global.use_cls": True,
+                # Desktop UI text is normally upright. Skipping orientation
+                # classification cuts one model pass from every live frame;
+                # static image translation retains the more tolerant path.
+                "Global.use_cls": not self._live_mode,
             }
             params.update(self._model_params)
+            if not self._gpu_disabled:
+                params.update(self._acceleration_params)
             self._engine = RapidOCR(params=params)
+            self._backend = self._detect_engine_backend(self._engine)
+            logger.info(
+                "OCR 引擎就绪: model=%s mode=%s backend=%s",
+                self._model_id,
+                "live" if self._live_mode else "image",
+                self._backend,
+            )
         except Exception as exc:  # noqa: BLE001 - optional runtime boundary
+            if self._acceleration_params and not self._gpu_disabled:
+                logger.warning(
+                    "OCR GPU 初始化失败，回退 CPU: requested=%s error=%s",
+                    self._requested_backend, exc,
+                    exc_info=True,
+                )
+                self._gpu_disabled = True
+                return self._ensure_engine()
             logger.exception("RapidOCR 初始化失败")
             self._initialization_error = OcrUnavailableError(
                 f"OCR 引擎不可用: {exc}")
             raise self._initialization_error from exc
         return self._engine
 
+    @staticmethod
+    def _detect_engine_backend(engine: Any) -> str:
+        for component_name in ("text_det", "text_rec", "text_cls"):
+            component = getattr(engine, component_name, None)
+            infer = getattr(component, "session", None)
+            session = getattr(infer, "session", None)
+            get_providers = getattr(session, "get_providers", None)
+            if not callable(get_providers):
+                continue
+            providers = list(get_providers())
+            if not providers:
+                continue
+            if providers[0] == "DmlExecutionProvider":
+                return "GPU · DirectML"
+            if providers[0] == "CUDAExecutionProvider":
+                return "GPU · CUDA"
+            return "CPU"
+        return "CPU"
+
     def recognize(self, image: np.ndarray) -> OcrFrame:
         if image.size == 0 or image.ndim not in (2, 3):
             raise ValueError("OCR 图像为空或格式无效")
         started = time.perf_counter()
         with self._lock:
-            result = self._ensure_engine()(image)
+            engine = self._ensure_engine()
+            try:
+                result = engine(image)
+            except Exception as exc:  # noqa: BLE001 - provider boundary
+                if self._backend.startswith("GPU") and not self._gpu_disabled:
+                    logger.warning(
+                        "OCR GPU 推理失败，本次立即回退 CPU: backend=%s error=%s",
+                        self._backend, exc,
+                        exc_info=True,
+                    )
+                    self._gpu_disabled = True
+                    self._engine = None
+                    self._initialization_error = None
+                    engine = self._ensure_engine()
+                    result = engine(image)
+                else:
+                    raise
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         height, width = image.shape[:2]
         lines = self._normalize_result(result, width, height)
-        return OcrFrame(width, height, lines, elapsed_ms)
+        return OcrFrame(
+            width, height, lines, elapsed_ms, self._backend, self._model_id)
 
     def _normalize_result(
         self, result: Any, width: int, height: int
@@ -291,6 +394,29 @@ def _translator_key(config: Mapping[str, Any]) -> tuple[str, ...]:
         "translate_model",
     )
     return tuple(str(config.get(key, "")) for key in keys)
+
+
+def _translation_chunks(
+    texts: Sequence[str], *, maximum_items: int = 12,
+    maximum_characters: int = 900,
+) -> tuple[tuple[str, ...], ...]:
+    """Bound OCR batches so prompts and outputs stay within a 2K context."""
+    chunks: list[tuple[str, ...]] = []
+    current: list[str] = []
+    characters = 0
+    for text in texts:
+        if current and (
+            len(current) >= max(1, maximum_items)
+            or characters + len(text) > max(64, maximum_characters)
+        ):
+            chunks.append(tuple(current))
+            current = []
+            characters = 0
+        current.append(text)
+        characters += len(text)
+    if current:
+        chunks.append(tuple(current))
+    return tuple(chunks)
 
 
 class OcrTranslationService:
@@ -340,6 +466,73 @@ class OcrTranslationService:
             return translated, False
         return "", True
 
+    def _partition_cached_sources(
+        self, sources: Sequence[str], source_lang: str, target_lang: str,
+    ) -> tuple[dict[str, str], list[str]]:
+        """Return cache hits and unique misses while preserving source order."""
+        targets: dict[str, str] = {}
+        uncached: list[str] = []
+        seen: set[str] = set()
+        for source in sources:
+            key = (source_lang, target_lang, source)
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                targets[source] = cached
+            elif source not in seen:
+                seen.add(source)
+                uncached.append(source)
+        return targets, uncached
+
+    def _translate_uncached_sources(
+        self,
+        translator: Any,
+        sources: Sequence[str],
+        source_lang: str,
+        target_lang: str,
+    ) -> tuple[dict[str, str], int]:
+        """Translate unique cache misses in bounded batches with safe fallback."""
+        targets: dict[str, str] = {}
+        requests = 0
+        batch_translate = getattr(translator, "translate_many", None)
+        if not callable(batch_translate):
+            for source in sources:
+                requests += 1
+                target, _failed = self._translate_text(
+                    translator, source, source_lang, target_lang)
+                if target:
+                    targets[source] = target
+            return targets, requests
+
+        for chunk in _translation_chunks(sources):
+            requests += 1
+            try:
+                outputs = list(batch_translate(
+                    list(chunk), source_lang, target_lang,
+                    timeout_ms=12_000,
+                ))
+                if len(outputs) != len(chunk):
+                    raise TranslationError(
+                        "OCR 批量翻译返回数量与输入不一致")
+            except (TranslationError, OSError, RuntimeError, ValueError):
+                logger.warning(
+                    "OCR 批量翻译失败，回退逐行: lines=%d", len(chunk),
+                    exc_info=True,
+                )
+                outputs = []
+                for source in chunk:
+                    requests += 1
+                    target, _failed = self._translate_text(
+                        translator, source, source_lang, target_lang)
+                    outputs.append(target)
+            for source, target in zip(chunk, outputs):
+                cleaned = str(target or "").strip()
+                if cleaned:
+                    self._remember(
+                        (source_lang, target_lang, source), cleaned)
+                    targets[source] = cleaned
+        return targets, requests
+
     def translate_frame(
         self,
         frame: OcrFrame,
@@ -352,8 +545,7 @@ class OcrTranslationService:
     ) -> TranslatedOcrFrame:
         started = time.perf_counter()
         translator = self._ensure_translator(config)
-        translated: list[TranslatedOcrLine] = []
-        failures = 0
+        prepared: list[tuple[OcrLine, str]] = []
         consumed = 0
         for line in frame.lines[:max(1, maximum_lines)]:
             remaining = max(0, maximum_characters - consumed)
@@ -361,10 +553,20 @@ class OcrTranslationService:
                 break
             source = line.text[:remaining]
             consumed += len(source)
-            target, failed = self._translate_text(
-                translator, source, source_lang, target_lang
-            )
-            failures += int(failed)
+            prepared.append((line, source))
+
+        sources = [source for _line, source in prepared]
+        targets, uncached = self._partition_cached_sources(
+            sources, source_lang, target_lang)
+        fresh, requests = self._translate_uncached_sources(
+            translator, uncached, source_lang, target_lang)
+        targets.update(fresh)
+
+        translated: list[TranslatedOcrLine] = []
+        failures = 0
+        for line, source in prepared:
+            target = targets.get(source, "")
+            failures += int(not target)
             translated.append(TranslatedOcrLine(
                 line.box, source, target, line.confidence
             ))
@@ -376,6 +578,9 @@ class OcrTranslationService:
             frame.elapsed_ms,
             elapsed_ms,
             failures,
+            frame.backend,
+            frame.model_id,
+            requests,
         )
 
     def close(self) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -38,15 +39,18 @@ class OcrWorkerBridge(QObject):
 
 def _untranslated_frame(frame: OcrFrame) -> TranslatedOcrFrame:
     return TranslatedOcrFrame(
-        frame.width,
-        frame.height,
-        tuple(
+        width=frame.width,
+        height=frame.height,
+        lines=tuple(
             TranslatedOcrLine(line.box, line.text, "", line.confidence)
             for line in frame.lines
         ),
-        frame.elapsed_ms,
-        0,
-        len(frame.lines),
+        ocr_elapsed_ms=frame.elapsed_ms,
+        translate_elapsed_ms=0,
+        failed_lines=len(frame.lines),
+        ocr_backend=frame.backend,
+        ocr_model_id=frame.model_id,
+        translation_requests=0,
     )
 
 
@@ -78,7 +82,7 @@ class OcrWorker:
 
     def _run(self) -> None:
         engine: RapidOcrEngine | None = None
-        engine_key: tuple[str, str] | None = None
+        engine_key: tuple[str, str, bool] | None = None
         translator = OcrTranslationService()
         while not self._stop.is_set():
             job = self._requests.get()
@@ -87,6 +91,7 @@ class OcrWorker:
             requested_key = (
                 str(job.config.get("ocr_model_id", "")),
                 str(job.config.get("models_root", "")),
+                bool(job.config.get("ocr_live_mode", False)),
             )
             if engine is None or requested_key != engine_key:
                 try:
@@ -105,10 +110,24 @@ class OcrWorker:
     def _process_job(
         self, engine: RapidOcrEngine, translator: OcrTranslationService, job: OcrJob
     ) -> None:
+        started = time.perf_counter()
         try:
             recognized = engine.recognize(job.image)
             result, warning = self._translate_or_retain(
                 recognized, translator, job
+            )
+            logger.info(
+                "OCR 帧完成: purpose=%s revision=%d lines=%d model=%s "
+                "backend=%s ocr_ms=%d translate_ms=%d requests=%d total_ms=%d",
+                job.purpose,
+                job.revision,
+                len(result.lines),
+                result.ocr_model_id,
+                result.ocr_backend,
+                result.ocr_elapsed_ms,
+                result.translate_elapsed_ms,
+                result.translation_requests,
+                int((time.perf_counter() - started) * 1000),
             )
             self._bridge.result_ready.emit(job.revision, job.purpose, result, warning)
         except Exception as exc:  # noqa: BLE001 - worker boundary

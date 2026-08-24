@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -35,7 +36,7 @@ from voxsub.language_guard import normalize_language
 from voxsub.model_storage import resolve_models_root
 
 from ._http_client import OpenAICompatError, chat_completion
-from .base import TranslationError, Translator
+from .base import TranslationError, Translator, parse_translation_batch
 from .llama_launch import build_llama_launch_plan
 
 logger = get_logger("translate.qwen")
@@ -483,6 +484,107 @@ class QwenQualityTranslator(Translator):
                 raise TranslationError("质量档返回了说明性或异常长度内容，已拒绝显示")
             return cleaned
         raise TranslationError(f"本地翻译引擎所有后端均失败: {last_error}")
+
+    def translate_many(
+        self, texts: list[str], src_lang: str, dst_lang: str, *,
+        timeout_ms: int = 15000,
+    ) -> list[str]:
+        """Translate one OCR batch in a single llama request.
+
+        OCR preserves one geometry box per source line, so the response uses a
+        strict JSON array contract. A malformed batch falls back to the proven
+        single-line path instead of putting translations on the wrong boxes.
+        """
+        sources = [str(text or "").strip() for text in texts]
+        if not sources:
+            return []
+        if len(sources) == 1:
+            return [self.translate(
+                sources[0], src_lang, dst_lang, timeout_ms=timeout_ms)]
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
+        names = _LANG_NAMES.get((src_lang, dst_lang))
+        if names is None:
+            raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
+        last_error: OpenAICompatError | None = None
+        for _backend_attempt in range(4):
+            endpoint = self._ensure()
+            try:
+                with self._lock:
+                    raw = self._request_translation_batch(
+                        endpoint, sources, names, timeout_ms)
+                translated = parse_translation_batch(raw, len(sources))
+            except OpenAICompatError as exc:
+                last_error = exc
+                key = self._runtime_key(self._runtime)
+                can_fallback = (
+                    self._explicit_server_exe is None and key is not None
+                    and key[0] != "cpu"
+                )
+                if not can_fallback:
+                    raise TranslationError(
+                        f"本地批量翻译引擎调用失败: {exc}") from exc
+                self._failed_runtimes.add(key)
+                logger.warning(
+                    "OCR 批量翻译期间加速后端失败，立即降级重试: "
+                    "backend=%s target=%s error=%s",
+                    key[0], key[1], exc,
+                )
+                self.close()
+                continue
+            except TranslationError as exc:
+                logger.warning(
+                    "OCR 批量翻译格式无效，回退逐行: lines=%d error=%s",
+                    len(sources), exc,
+                )
+                return [self.translate(
+                    source, src_lang, dst_lang, timeout_ms=timeout_ms)
+                    for source in sources]
+            if any(
+                _invalid_translation(source, target, src_lang, dst_lang)
+                for source, target in zip(sources, translated)
+            ):
+                logger.warning(
+                    "OCR 批量译文存在越界项，回退逐行: lines=%d", len(sources))
+                return [self.translate(
+                    source, src_lang, dst_lang, timeout_ms=timeout_ms)
+                    for source in sources]
+            return translated
+        raise TranslationError(f"本地批量翻译所有后端均失败: {last_error}")
+
+    def _request_translation_batch(
+        self, endpoint: str, texts: list[str], names: tuple[str, str],
+        timeout_ms: int,
+    ) -> str:
+        src_name, dst_name = names
+        payload = json.dumps(texts, ensure_ascii=False, separators=(",", ":"))
+        instruction = (
+            f"The source strings are written in {src_name}. Translate every JSON "
+            f"array item only into {dst_name}. Return only one valid JSON array "
+            f"with exactly {len(texts)} translated strings in the same order. "
+            "Do not add explanations, labels, or change the array length.\n"
+            f"{payload}"
+        )
+        if self._prompt_style == "hy-mt2":
+            messages = [{"role": "user", "content": instruction}]
+        else:
+            messages = [
+                {"role": "system", "content": (
+                    "You are a machine-translation engine. Return only the valid "
+                    "JSON array requested by the user, with no surrounding prose.")},
+                {"role": "user", "content": instruction},
+            ]
+        output_budget = min(
+            768,
+            max(96, sum(max(4, len(text) * 2) for text in texts) + 32),
+        )
+        return chat_completion(
+            endpoint,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=output_budget,
+            timeout_sec=timeout_ms / 1000.0,
+        )
 
     def _request_translation(self, endpoint: str, text: str,
                              names: tuple[str, str], timeout_ms: int,

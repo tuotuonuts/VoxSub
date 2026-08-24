@@ -363,3 +363,23 @@ def test_quality_translation_rejects_explanatory_answer(tmp_path: Path, monkeypa
                         lambda *_args, **_kwargs: next(answers))
     assert q.translate("你好。", "zh", "en") == "Hello."
     assert _invalid_translation("你好。", "Here's the translation and a note", "zh", "en")
+
+
+def test_quality_ocr_batch_uses_one_request_and_preserves_order(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    calls: list[dict] = []
+
+    def fake_chat(_endpoint, **kwargs):
+        calls.append(kwargs)
+        return '["Hello.","World."]'
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+
+    translated = q.translate_many(["你好。", "世界。"], "zh", "en")
+
+    assert translated == ["Hello.", "World."]
+    assert len(calls) == 1
+    assert "exactly 2" in calls[0]["messages"][-1]["content"]

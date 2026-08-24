@@ -7,6 +7,13 @@
 
 这一版把 OCR 从首个候选功能补全为可上传、可缓存、可导出、可切换模型的图片与屏幕翻译工作流，同时修复安装包内 OCR 完全不可用的问题。
 
+### 实时性能与 GPU
+
+- 日志与真机基准确认，翻译使用的 Hy-MT2 已运行在 RTX 4060 / Vulkan；此前持续占用 CPU 的是 RapidOCR，因为 OCR 会话没有配置已随包安装的 DirectML provider。现在截图和实时 OCR 会优先创建 DirectML GPU 会话，界面与日志显示实际 provider；GPU 初始化或单帧推理失败时会立即重建 CPU 会话并重试，不会让整个 OCR 功能失效。
+- 实时模式不再执行通常不需要的文字方向分类；没有可用 GPU 且选择 Medium/Server 质量档时，实时区域会临时使用内置 Small 保证响应，单张图片仍保留用户选择的高质量模型。
+- OCR 译文从“每一行一次模型请求”改为最多 12 行、900 字符的有界批量请求；严格校验 JSON 数量与顺序，异常时才逐行回退。相同文字继续复用有界缓存，页面只改变少量区域时不会重新翻译所有行。
+- 本机 1920×1080、30 行 PP-OCRv6 Medium 基准：原 CPU 热帧约 24 秒，DirectML 首帧（含模型初始化）约 2.95 秒，后续热帧约 0.45 秒。该数字用于回归对比，不承诺所有显卡达到同一耗时。
+
 ### 故障与视觉修复
 
 - 根因日志确认 `rapidocr` 通过模块级延迟导出 `RapidOCR`，PyInstaller 没有发现真实的 `rapidocr.main`。运行时现改为直接导入实现模块，构建参数显式添加 hidden import，并把 `VoxSub.exe --ocr-smoke` 设为每次打包必过门禁。
@@ -35,9 +42,8 @@
 
 ### 验证与发布物
 
-- 源码全量门禁为 `287 passed, 8 skipped`；唯一 warning 是既有声卡闭环测试报告一次录音 data discontinuity，该测试通过。
-- 打包后的 `VoxSub.exe --ocr-smoke` 从成品目录加载 PP-OCRv6 检测、方向分类和识别模型，独立复跑退出码为 0。
-- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,283,040 字节（264.44 MiB），SHA256 `7F5DB1956C6A86485DF3AF92BC1C879CD512CF1B14D6D53B37EF2817528DF7DC`；主程序与安装包使用 `CN=VoxSub Dev (self-signed)` 开发者自签名。
+- 加速与批量翻译源码全量门禁为 `294 passed, 8 skipped`；复杂度预算、DirectML provider、批量顺序/缓存和 OCR UI 回归均通过。
+- 上一份 `VoxSub-Setup-0.9.0-beta.exe` 生成于本次性能修复之前，已被源码候选取代；按“先推送源码、再打包”的约定重建安装包并复跑成品 `--ocr-smoke` 后，再在此处记录最终体积与 SHA256。
 - `0.9.0-beta` 仅推送源码与安装包，不在用户验证前创建 GitHub Release。
 
 ## 版本: v0.8.0-beta（开发候选，未发布）
