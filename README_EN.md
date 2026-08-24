@@ -11,7 +11,7 @@
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Current source candidate: `0.9.0-beta`; the current public GitHub download remains `0.7.2-beta`. The candidate is not presented as released until its build and verification are complete.
+Current source candidate: `0.9.0-beta`; the current public GitHub download remains `0.7.2-beta`. Its local installer has passed the build gates, but it is not presented as released before user acceptance.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
@@ -85,7 +85,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. `0.9.0-beta` remains a local candidate; its installer size and SHA256 will be added after the verified build, and no GitHub Release will be created before user validation.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. The local `0.9.0-beta` candidate is 277,259,168 bytes (264.41 MiB), SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`; no GitHub Release will be created before user validation.
 
 ## Project Layout
 

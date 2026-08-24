@@ -12,7 +12,7 @@
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，云 STT 与云翻译可独立配置并混合使用。
 
-当前源码候选版本：`0.9.0-beta`；GitHub 当前公开下载仍为 `0.7.2-beta`。`0.9.0-beta` 完成构建与验证前不会冒充已发布版本。
+当前源码候选版本：`0.9.0-beta`；GitHub 当前公开下载仍为 `0.7.2-beta`。`0.9.0-beta` 安装包已完成本地构建与门禁验证，但在用户验收前不会冒充已发布版本。
 
 > **Intel NPU 支持仍有限。** `0.4.1-beta` 已在 Intel AI Boost 真机验证 Hy-MT2 1.8B Q4/Q6/Q8：VoxSub 自动调度和禁止 CPU 回退的强制 NPU 推理均通过。Hy-MT2 7B Q4/Q6/Q8 仅依据 llama.cpp OpenVINO 公开兼容资料列为“NPU 待验证”，启动真实翻译探针失败时会自动改用核显或 CPU；现有 sherpa-onnx ASR 和 OPUS 运行时不支持 NPU。
 
@@ -82,7 +82,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。`0.9.0-beta` 仍是本地候选，完成构建后会在这里补充安装包大小与 SHA256；用户验证前不会创建 GitHub Release。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。本地候选 `0.9.0-beta` 为 277,259,168 字节（264.41 MiB），SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`；用户验证前不会创建 GitHub Release。
 
 ## 目录结构
 
