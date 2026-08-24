@@ -239,8 +239,15 @@ function Sign-Artifact([string]$Path, $Certificate) {
     Write-Host "[sign] status=$($Signature.Status) (self-signed certificate may report NotTrusted/UnknownError)"
 }
 $Exe = Join-Path $Dist "VoxSub.exe"
-Run-Checked "packaged OCR smoke" {
-    & $Exe --ocr-smoke
+Write-Host "[build] packaged OCR smoke ..." -ForegroundColor Cyan
+# VoxSub is built as a Windows GUI executable, so invoking it with `&` does not
+# reliably populate $LASTEXITCODE. Read the real process exit code explicitly;
+# otherwise a successful smoke test is mistaken for `exit $null` and the
+# installer stage is skipped.
+$OcrSmoke = Start-Process -FilePath $Exe -ArgumentList "--ocr-smoke" `
+    -WindowStyle Hidden -Wait -PassThru
+if ($OcrSmoke.ExitCode -ne 0) {
+    throw "packaged OCR smoke failed (exit $($OcrSmoke.ExitCode))"
 }
 $Cert = Find-DevCert
 Sign-Artifact -Path $Exe -Certificate $Cert
