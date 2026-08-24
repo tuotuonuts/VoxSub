@@ -56,6 +56,12 @@ from voxsub.logging_setup import get_logger
 from voxsub.logging_setup import set_debug_mode
 from voxsub.model_catalog import ModelMarketplace, get_model, models_for_task
 from voxsub.model_storage import migrate_models, resolve_models_root
+from voxsub.ocr_cache import (
+    OcrCacheLocationError,
+    cache_from_store,
+    resolve_ocr_cache_root,
+    validate_ocr_cache_root,
+)
 from voxsub.ui.release_notes import release_history_text
 
 logger = get_logger("ui.settings_window")
@@ -242,6 +248,7 @@ class SettingsWindow(QWidget):
         self._embedded = False
         self._storage_worker: _ModelMigrationWorker | None = None
         self._storage_dialog: QFileDialog | None = None
+        self._ocr_cache_dialog: QFileDialog | None = None
         self._storage_change_guard: Callable[[], bool] | None = None
         self._storage_switch_destination: Path | None = None
         self.setObjectName("settingsWindow")
@@ -756,6 +763,47 @@ class SettingsWindow(QWidget):
         box.addLayout(actions)
         lay.addWidget(card)
 
+        ocr_card, ocr_box = self._card("OCR 图片缓存")
+        ocr_note = QLabel(
+            "上传/截图原图与译后覆盖图分开保存，绝不写入 C 盘。默认每类保留最近 15 张；设为 0 表示无限保留。",
+            ocr_card,
+        )
+        ocr_note.setObjectName("cardCaption")
+        ocr_note.setWordWrap(True)
+        ocr_box.addWidget(ocr_note)
+        self.ocr_cache_path_value = QLabel(ocr_card)
+        self.ocr_cache_path_value.setObjectName("modelStoragePath")
+        self.ocr_cache_path_value.setWordWrap(True)
+        self.ocr_cache_path_value.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        ocr_box.addWidget(self.ocr_cache_path_value)
+        ocr_form = QFormLayout()
+        self.ocr_cache_limit_spin = _ReliableSpinBox(ocr_card)
+        self.ocr_cache_limit_spin.setObjectName("inputBox")
+        self.ocr_cache_limit_spin.setRange(0, 10_000)
+        self.ocr_cache_limit_spin.setSpecialValueText(tr("无限"))
+        self.ocr_cache_limit_spin.setSuffix(tr(" 张/类"))
+        self.ocr_cache_limit_spin.valueChanged.connect(
+            self._on_ocr_cache_limit_changed)
+        ocr_form.addRow(tr("每类保留"), self.ocr_cache_limit_spin)
+        ocr_box.addLayout(ocr_form)
+        ocr_actions = QHBoxLayout()
+        self.open_ocr_cache_btn = QPushButton("打开缓存", ocr_card)
+        self.open_ocr_cache_btn.setObjectName("secondaryButton")
+        self.open_ocr_cache_btn.clicked.connect(self._open_ocr_cache_folder)
+        self.change_ocr_cache_btn = QPushButton("更改缓存位置", ocr_card)
+        self.change_ocr_cache_btn.setObjectName("secondaryButton")
+        self.change_ocr_cache_btn.clicked.connect(self._choose_ocr_cache_folder)
+        ocr_actions.addWidget(self.open_ocr_cache_btn)
+        ocr_actions.addWidget(self.change_ocr_cache_btn)
+        ocr_actions.addStretch(1)
+        ocr_box.addLayout(ocr_actions)
+        self.ocr_cache_status = QLabel(ocr_card)
+        self.ocr_cache_status.setObjectName("secondaryLabel")
+        self.ocr_cache_status.setWordWrap(True)
+        ocr_box.addWidget(self.ocr_cache_status)
+        lay.addWidget(ocr_card)
+
         import_card, import_box = self._card("迁移已有模型")
         import_note = QLabel(
             "如果以前把模型放在其他磁盘或手动复制过模型，可从这里把它们并入当前位置。"
@@ -965,6 +1013,8 @@ class SettingsWindow(QWidget):
         self.overlay_opacity_spin.setValue(
             int(round(float(cfg.get("overlay_opacity", 0.92)) * 100)))
         self.overlay_lock_switch.setChecked(bool(cfg.get("overlay_click_through", False)))
+        self.ocr_cache_limit_spin.setValue(int(cfg.get("ocr_cache_limit", 15)))
+        self._refresh_ocr_cache_storage()
         self._refresh_model_storage()
         if hasattr(self, "release_history_label"):
             self.release_history_label.setText(release_history_text())
@@ -1365,6 +1415,79 @@ class SettingsWindow(QWidget):
                        "The model location stays unchanged across updates until you change it."))
         self.models_path_mode.setText(mode_text)
 
+    def _refresh_ocr_cache_storage(self) -> None:
+        try:
+            root = resolve_ocr_cache_root(self._store)
+            self.ocr_cache_path_value.setText(str(root))
+            self.ocr_cache_status.setText(
+                tr("原图保存在 originals，译后图片保存在 translated。"))
+            self.open_ocr_cache_btn.setEnabled(True)
+        except OcrCacheLocationError as exc:
+            self.ocr_cache_path_value.setText(tr("尚未配置非 C 盘目录"))
+            self.ocr_cache_status.setText(str(exc))
+            self.open_ocr_cache_btn.setEnabled(False)
+
+    def _on_ocr_cache_limit_changed(self, value: int) -> None:
+        if self._loading:
+            return
+        self._store.set("ocr_cache_limit", int(value))
+        try:
+            cache = cache_from_store(self._store)
+            cache.prune("original")
+            cache.prune("translated")
+        except (OSError, OcrCacheLocationError):
+            # The status already explains how to choose a valid non-C path.
+            logger.debug("OCR 缓存数量设置已保存，当前路径暂不可整理", exc_info=True)
+
+    def _open_ocr_cache_folder(self) -> None:
+        try:
+            root = resolve_ocr_cache_root(self._store)
+            (root / "originals").mkdir(parents=True, exist_ok=True)
+            (root / "translated").mkdir(parents=True, exist_ok=True)
+        except (OSError, OcrCacheLocationError) as exc:
+            self.ocr_cache_status.setText(f"{tr('无法打开 OCR 缓存')}：{exc}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def _choose_ocr_cache_folder(self) -> None:
+        if self._ocr_cache_dialog is not None:
+            return
+        try:
+            current = resolve_ocr_cache_root(self._store)
+        except OcrCacheLocationError:
+            current = resolve_models_root(self._store)
+        dialog = QFileDialog(
+            self.window(), tr("选择非 C 盘 OCR 图片缓存目录"), str(current.parent))
+        dialog.setObjectName("ocrCacheFolderDialog")
+        dialog.setFileMode(QFileDialog.FileMode.Directory)
+        dialog.setAcceptMode(QFileDialog.AcceptMode.AcceptOpen)
+        dialog.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.fileSelected.connect(self._on_ocr_cache_folder_selected)
+        dialog.finished.connect(
+            lambda _result, opened=dialog: self._on_ocr_cache_dialog_finished(opened))
+        self._ocr_cache_dialog = dialog
+        dialog.open()
+        QTimer.singleShot(0, dialog.raise_)
+        QTimer.singleShot(0, dialog.activateWindow)
+
+    def _on_ocr_cache_folder_selected(self, selected: str) -> None:
+        try:
+            root = validate_ocr_cache_root(Path(selected) / "VoxSub-OCR")
+            (root / "originals").mkdir(parents=True, exist_ok=True)
+            (root / "translated").mkdir(parents=True, exist_ok=True)
+        except (OSError, OcrCacheLocationError) as exc:
+            self.ocr_cache_status.setText(str(exc))
+            return
+        self._store.set("ocr_cache_root", str(root))
+        self._refresh_ocr_cache_storage()
+
+    def _on_ocr_cache_dialog_finished(self, dialog: QFileDialog) -> None:
+        if self._ocr_cache_dialog is dialog:
+            self._ocr_cache_dialog = None
+        dialog.deleteLater()
+
     def _set_storage_controls_enabled(self, enabled: bool) -> None:
         for control in (
             self.open_models_folder_btn,
@@ -1484,6 +1607,7 @@ class SettingsWindow(QWidget):
                 "model_storage_initialized": True,
             })
         self._refresh_model_storage()
+        self._refresh_ocr_cache_storage()
         self.model_storage_status.setText(
             f"{tr('模型迁移完成', 'Model move complete')}: {detail}")
         self.model_storage_changed.emit(str(resolve_models_root(self._store)))
@@ -1590,9 +1714,12 @@ class SettingsWindow(QWidget):
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
+        self.ocr_cache_limit_spin.setSpecialValueText(tr("无限"))
+        self.ocr_cache_limit_spin.setSuffix(tr(" 张/类"))
         self._update_cloud_mode_summary()
         self._set_tuning_dirty(self._tuning_dirty)
         self._refresh_model_storage()
+        self._refresh_ocr_cache_storage()
         self._update_tts_status()
         if hasattr(self, "release_history_label"):
             self.release_history_label.setText(release_history_text())

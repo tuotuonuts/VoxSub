@@ -72,6 +72,11 @@ _DEFAULTS: dict[str, Any] = {
     "asr_context_correction": True,
     "asr_filler_mode": "light",
     "translate_model_id": "mt-opus-fast-builtin",
+    "ocr_model_id": "ocr-rapidocr-v6-small-builtin",
+    "ocr_cache_root": "",
+    # 0 means unlimited; otherwise keep this many newest images in each of
+    # the physically separate original/translated cache directories.
+    "ocr_cache_limit": 15,
     "download_source": "auto",
     # Model files are user-owned data.  An empty root means an installation
     # predates the storage migration and is resolved conservatively.
@@ -179,6 +184,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "overlay_content_padding": (8, 64),
         "overlay_line_gap": (0, 40),
         "overlay_opacity": (0.2, 1.0),
+        "ocr_cache_limit": (0, 10_000),
     },
 )
 

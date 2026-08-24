@@ -60,6 +60,14 @@ _TTS_UNSUPPORTED = NpuCompatibility(
     "The current sherpa-onnx speech-synthesis runtime uses the CPU; TTS runs on a separate background thread and does not block subtitles.",
 )
 
+_OCR_UNSUPPORTED = NpuCompatibility(
+    NPU_STATUS_UNSUPPORTED,
+    "NPU 不可用",
+    "NPU unavailable",
+    "当前 RapidOCR ONNX Runtime 适配使用 CPU；OCR 在独立后台线程运行。",
+    "The current RapidOCR ONNX Runtime adapter uses CPU; OCR runs on a separate background thread.",
+)
+
 _GGUF_PENDING = NpuCompatibility(
     NPU_STATUS_PENDING,
     "NPU 待验证",
@@ -91,6 +99,10 @@ NPU_COMPATIBILITY: dict[str, NpuCompatibility] = {
     "tts-melo-zh-en": _TTS_UNSUPPORTED,
     "tts-icefall-zh-aishell3": _TTS_UNSUPPORTED,
     "tts-icefall-en-ljspeech-low": _TTS_UNSUPPORTED,
+    "ocr-rapidocr-v6-small-builtin": _OCR_UNSUPPORTED,
+    "ocr-rapidocr-v6-tiny": _OCR_UNSUPPORTED,
+    "ocr-rapidocr-v6-medium": _OCR_UNSUPPORTED,
+    "ocr-rapidocr-v5-document": _OCR_UNSUPPORTED,
     "mt-hy-mt2-7b-q4": _GGUF_PENDING,
     "mt-hy-mt2-7b-q6": _GGUF_PENDING,
     "mt-hy-mt2-7b-q8": _GGUF_PENDING,

@@ -65,6 +65,9 @@ def test_release_build_collects_the_offline_ocr_runtime():
 
     assert "rapidocr==3.9.2" in requirements
     assert '"--collect-all", "rapidocr"' in build
+    assert '"--hidden-import", "rapidocr.main"' in build
     assert '"--collect-all", "cv2"' in build
     assert '"--hidden-import", "voxsub.ui.ocr_workspace"' in build
     assert '"--ocr-smoke"' in entrypoint
+    assert 'Run-Checked "packaged OCR smoke"' in build
+    assert '& $Exe --ocr-smoke' in build

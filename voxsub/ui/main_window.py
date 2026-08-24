@@ -641,6 +641,11 @@ class MainWindow(QWidget):
         self.model_hub_btn.setObjectName("secondaryButton")
         self.model_hub_btn.setMinimumHeight(44)
         self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
+        self.ocr_btn = QPushButton("OCR 图片翻译", self)
+        self.ocr_btn.setObjectName("secondaryButton")
+        self.ocr_btn.setMinimumHeight(44)
+        self.ocr_btn.setToolTip("截图、上传图片或选定屏幕范围实时翻译")
+        self.ocr_btn.clicked.connect(self.ocr_requested.emit)
         self.overlay_open_btn = QPushButton("打开浮窗", self)
         self.overlay_open_btn.setObjectName("secondaryButton")
         self.overlay_open_btn.setMinimumHeight(44)
@@ -655,6 +660,7 @@ class MainWindow(QWidget):
         self.diagnostics_btn.setMinimumHeight(44)
         self.diagnostics_btn.clicked.connect(self.diagnostics_requested.emit)
         title_row.addWidget(self.model_hub_btn)
+        title_row.addWidget(self.ocr_btn)
         title_row.addWidget(self.overlay_open_btn)
         title_row.addWidget(self.settings_btn)
         title_row.addWidget(self.diagnostics_btn)
@@ -725,7 +731,7 @@ class MainWindow(QWidget):
         self._register_embedded_page("settings", settings_page, "设置")
         self._register_embedded_page("model_hub", model_hub_page, "模型广场")
         if ocr_page is not None:
-            self._register_embedded_page("ocr", ocr_page, "OCR 屏幕翻译")
+            self._register_embedded_page("ocr", ocr_page, "OCR 图片与屏幕翻译")
         signal = getattr(settings_page, "model_hub_requested", None)
         if signal is not None:
             signal.connect(self.show_model_hub_page)
@@ -834,13 +840,6 @@ class MainWindow(QWidget):
             card.clicked.connect(self.set_mode)
             self.mode_cards[m] = card
             lay.addWidget(card)
-
-        self.ocr_btn = QPushButton("OCR 屏幕翻译", panel)
-        self.ocr_btn.setObjectName("secondaryButton")
-        self.ocr_btn.setMinimumHeight(44)
-        self.ocr_btn.setToolTip("截图 OCR 或选定屏幕范围实时翻译")
-        self.ocr_btn.clicked.connect(self.ocr_requested.emit)
-        lay.addWidget(self.ocr_btn)
 
         lay.addSpacing(4)
         pair_label = QLabel("语言对", panel)

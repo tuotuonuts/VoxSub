@@ -532,6 +532,27 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    def test_ocr_tool_does_not_overlap_mode_cards_at_minimum_size(
+        self, qapp, tmp_path
+    ):
+        from PySide6.QtCore import QRect
+
+        win = self._make_win(tmp_path)
+        try:
+            win.resize(win.minimumSize())
+            win.show()
+            qapp.processEvents()
+            ocr_rect = win.ocr_btn.geometry()
+            ocr_top_left = win.ocr_btn.parentWidget().mapTo(win, ocr_rect.topLeft())
+            ocr_global = QRect(ocr_top_left, ocr_rect.size())
+            for card in win.mode_cards.values():
+                card_rect = card.geometry()
+                top_left = card.parentWidget().mapTo(win, card_rect.topLeft())
+                assert not ocr_global.intersects(QRect(top_left, card_rect.size()))
+        finally:
+            win.close()
+            win.deleteLater()
+
     def test_lang_pair(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:
@@ -1594,7 +1615,8 @@ class TestModelHubWindow:
             assert all(not card.progress.isTextVisible() for card in hub._cards.values())  # noqa: SLF001
             assert all(isinstance(button, PillChoiceButton)
                        for button in hub.filter_buttons.values())
-            assert set(hub.filter_buttons) == {"all", "asr", "translate", "tts"}
+            assert set(hub.filter_buttons) == {
+                "all", "asr", "translate", "tts", "ocr"}
             hub.set_filter("tts")
             assert set(hub._cards) == {  # noqa: SLF001
                 "tts-melo-zh-en",

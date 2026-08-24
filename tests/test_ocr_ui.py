@@ -13,6 +13,7 @@ from voxsub.ocr import OcrBox, TranslatedOcrFrame, TranslatedOcrLine  # noqa: E4
 from voxsub.ui.ocr_overlay import (  # noqa: E402
     OcrLiveControlBar,
     OcrTranslationOverlay,
+    render_translated_image,
 )
 from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
 from voxsub.ui.screen_capture import qimage_to_bgr  # noqa: E402
@@ -102,6 +103,9 @@ def test_workspace_exposes_two_modes_and_can_be_embedded(tmp_path):
 def test_workspace_renders_screenshot_result_without_starting_capture(tmp_path):
     _app()
     workspace = OcrWorkspace(ConfigStore(tmp_path / "config.json"))
+    workspace._store.update({  # noqa: SLF001
+        "ocr_cache_root": str(tmp_path / "ocr-cache"),
+    })
     capture = QImage(200, 100, QImage.Format.Format_RGB888)
     capture.fill(QColor(240, 240, 240))
     try:
@@ -109,6 +113,54 @@ def test_workspace_renders_screenshot_result_without_starting_capture(tmp_path):
         assert workspace.source_text.toPlainText() == "Hello"
         assert workspace.translation_text.toPlainText() == "你好"
         assert "1 行" in workspace.screenshot_status.text()
+        assert not workspace._translated_image.isNull()  # noqa: SLF001
+        assert len(list((tmp_path / "ocr-cache" / "translated").glob("*.png"))) == 1
     finally:
         workspace.shutdown()
         workspace.deleteLater()
+
+
+def test_workspace_waits_for_desktop_settle_before_picker(monkeypatch, tmp_path):
+    _app()
+    workspace = OcrWorkspace(ConfigStore(tmp_path / "config.json"))
+    calls = []
+    monkeypatch.setattr(
+        workspace._picker, "begin", lambda: calls.append("picker"))  # noqa: SLF001
+
+    def settle(callback, *, minimum_delay_ms):
+        calls.append(minimum_delay_ms)
+        callback()
+
+    monkeypatch.setattr("voxsub.ui.ocr_workspace.wait_for_desktop_settle", settle)
+    try:
+        workspace._begin_pick("screenshot")  # noqa: SLF001
+        _app().processEvents()
+        assert calls == [300, "picker"]
+    finally:
+        workspace.shutdown()
+        workspace.deleteLater()
+
+
+def test_live_ocr_stops_retry_timer_after_engine_failure(tmp_path):
+    _app()
+    workspace = OcrWorkspace(ConfigStore(tmp_path / "config.json"))
+    try:
+        workspace._revision = 7  # noqa: SLF001
+        workspace._live_timer.start()  # noqa: SLF001
+        workspace._on_failure(7, "live", "OCR 引擎不可用")  # noqa: SLF001
+        assert not workspace._live_timer.isActive()  # noqa: SLF001
+        assert workspace._live_paused  # noqa: SLF001
+    finally:
+        workspace.shutdown()
+        workspace.deleteLater()
+
+
+def test_render_translated_image_replaces_pixels_in_line_region():
+    _app()
+    capture = QImage(200, 100, QImage.Format.Format_RGB888)
+    capture.fill(QColor(240, 240, 240))
+
+    rendered = render_translated_image(capture, _frame())
+
+    assert not rendered.isNull()
+    assert rendered != capture

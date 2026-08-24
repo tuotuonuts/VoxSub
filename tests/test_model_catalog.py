@@ -70,6 +70,18 @@ def test_tts_catalog_has_selectable_zh_en_and_bilingual_models(tmp_path: Path) -
 
 def test_every_catalog_model_has_explicit_npu_compatibility() -> None:
     assert set(NPU_COMPATIBILITY) == {model.id for model in CATALOG}
+
+
+def test_ocr_catalog_has_builtin_speed_quality_and_document_presets() -> None:
+    models = models_for_task("ocr")
+    assert {model.runtime for model in models} == {
+        "rapidocr-v6-small",
+        "rapidocr-v6-tiny",
+        "rapidocr-v6-medium",
+        "rapidocr-v5-server",
+    }
+    assert any(model.builtin for model in models)
+    assert all(model.task_label == "图片文字识别" for model in models)
     for model in CATALOG:
         evidence = npu_compatibility(model.id)
         assert evidence.status in {

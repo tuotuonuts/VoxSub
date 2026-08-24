@@ -13,4 +13,4 @@
 - app.py              入口：python -m voxsub.ui.app
 """
 
-__version__ = "0.8.0-beta"
+__version__ = "0.9.0-beta"

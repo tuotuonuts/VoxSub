@@ -77,12 +77,27 @@ class OcrWorker:
         return self._busy.is_set()
 
     def _run(self) -> None:
-        engine = RapidOcrEngine()
+        engine: RapidOcrEngine | None = None
+        engine_key: tuple[str, str] | None = None
         translator = OcrTranslationService()
         while not self._stop.is_set():
             job = self._requests.get()
             if job is None:
                 break
+            requested_key = (
+                str(job.config.get("ocr_model_id", "")),
+                str(job.config.get("models_root", "")),
+            )
+            if engine is None or requested_key != engine_key:
+                try:
+                    engine = RapidOcrEngine(config=job.config)
+                    engine_key = requested_key
+                except Exception as exc:  # noqa: BLE001 - model boundary
+                    logger.exception("OCR 模型配置失败")
+                    self._bridge.failed.emit(
+                        job.revision, job.purpose, str(exc))
+                    self._busy.clear()
+                    continue
             self._process_job(engine, translator, job)
             self._busy.clear()
         translator.close()

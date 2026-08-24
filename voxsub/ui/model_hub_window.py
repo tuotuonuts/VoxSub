@@ -369,7 +369,8 @@ class ModelHubWindow(QWidget):
         filters.setSpacing(8)
         self.filter_buttons: dict[str, QPushButton] = {}
         for key, text in (("all", "全部"), ("asr", "语音识别"),
-                          ("translate", "字幕翻译"), ("tts", "语音朗读")):
+                          ("translate", "字幕翻译"), ("tts", "语音朗读"),
+                          ("ocr", "OCR 识别")):
             button = PillChoiceButton(text, self)
             button.setObjectName("filterPill")
             button.clicked.connect(lambda _checked, k=key: self.set_filter(k))
@@ -429,7 +430,7 @@ class ModelHubWindow(QWidget):
         )
 
     def set_filter(self, task: str) -> None:
-        self._filter = task if task in {"all", "asr", "translate", "tts"} else "all"
+        self._filter = task if task in {"all", "asr", "translate", "tts", "ocr"} else "all"
         for key, button in self.filter_buttons.items():
             button.setChecked(key == self._filter)
         self._rebuild_cards()
@@ -452,11 +453,13 @@ class ModelHubWindow(QWidget):
             "asr": "asr_model_id",
             "translate": "translate_model_id",
             "tts": "tts_model_id_zh",
+            "ocr": "ocr_model_id",
         }.get(task, "translate_model_id")
         fallback = {
             "asr": "asr-zipformer-bilingual-fast",
             "translate": "mt-opus-fast-builtin",
             "tts": "tts-icefall-zh-aishell3",
+            "ocr": "ocr-rapidocr-v6-small-builtin",
         }.get(task, "mt-opus-fast-builtin")
         return str(self._store.get(key, fallback))
 
@@ -483,6 +486,8 @@ class ModelHubWindow(QWidget):
                 f"tts_model_id_{lang}": model.id
                 for lang in model.tts_languages
             }
+        if model.task == "ocr":
+            return {"ocr_model_id": model.id}
         return {}
 
     def refresh(self) -> None:

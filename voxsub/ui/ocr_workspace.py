@@ -1,8 +1,10 @@
 """Embedded screenshot and live-region OCR translation workspace."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import QIODevice, QRect, QSaveFile, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,19 +21,26 @@ from PySide6.QtWidgets import (
 
 from voxsub.config_store import ConfigStore
 from voxsub.logging_setup import get_logger
+from voxsub.ocr_cache import OcrCacheLocationError, cache_from_store
 from voxsub.ocr import (
     TranslatedOcrFrame,
     frame_fingerprint,
     materially_changed,
 )
 from voxsub.ui.i18n import tr
-from voxsub.ui.ocr_overlay import OcrLiveControlBar, OcrTranslationOverlay
+from voxsub.ui.file_dialogs import choose_open_file, choose_save_file
+from voxsub.ui.ocr_overlay import (
+    OcrLiveControlBar,
+    OcrTranslationOverlay,
+    render_translated_image,
+)
 from voxsub.ui.ocr_worker import OcrJob, OcrWorker, OcrWorkerBridge
 from voxsub.ui.screen_capture import (
     CapturedRegion,
     ScreenRegionPicker,
     capture_screen_region,
     qimage_to_bgr,
+    wait_for_desktop_settle,
 )
 
 logger = get_logger("ui.ocr_workspace")
@@ -47,9 +56,12 @@ class OcrPreview(QWidget):
         self.setMinimumHeight(220)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def set_result(self, image: QImage, frame: TranslatedOcrFrame) -> None:
+    def set_result(
+        self, image: QImage, frame: TranslatedOcrFrame, *, show_boxes: bool = True
+    ) -> None:
         self._image = image.copy()
         self._frame = frame
+        self._show_boxes = bool(show_boxes)
         self.update()
 
     def clear(self) -> None:
@@ -67,6 +79,8 @@ class OcrPreview(QWidget):
             return
         target = self._fit_rect(self._image.width(), self._image.height())
         painter.drawImage(target, self._image)
+        if not getattr(self, "_show_boxes", True):
+            return
         painter.setPen(QPen(QColor("#14B8A6"), 2))
         scale_x = target.width() / max(1, self._frame.width)
         scale_y = target.height() / max(1, self._frame.height)
@@ -132,6 +146,10 @@ class OcrWorkspace(QWidget):
         self._previous_fingerprint: bytes | None = None
         self._revision = 0
         self._captures: dict[int, QImage] = {}
+        self._source_image = QImage()
+        self._translated_image = QImage()
+        self._result_frame: TranslatedOcrFrame | None = None
+        self._translated_cache_path: Path | None = None
         self._host_was_visible = False
         self._empty_live_frames = 0
         self._build_ui()
@@ -144,7 +162,7 @@ class OcrWorkspace(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(26, 24, 26, 24)
         root.setSpacing(16)
-        title = QLabel(tr("OCR 屏幕翻译"), self)
+        title = QLabel(tr("OCR 图片与屏幕翻译"), self)
         title.setObjectName("sectionTitle")
         intro = QLabel(tr(
             "一次截图适合图片与文档；实时区域只在画面变化时重新识别，并把译文原位覆盖。"
@@ -181,11 +199,30 @@ class OcrWorkspace(QWidget):
         self.screenshot_button.setObjectName("primaryButton")
         self.screenshot_button.setMinimumHeight(44)
         self.screenshot_button.clicked.connect(self.start_screenshot)
+        self.upload_button = QPushButton(tr("上传图片并翻译"), page)
+        self.upload_button.setObjectName("secondaryButton")
+        self.upload_button.setMinimumHeight(44)
+        self.upload_button.clicked.connect(self.upload_image)
         self.screenshot_status = QLabel(tr("等待框选"), page)
         self.screenshot_status.setObjectName("secondaryLabel")
         action_row.addWidget(self.screenshot_button)
+        action_row.addWidget(self.upload_button)
         action_row.addWidget(self.screenshot_status, 1)
         layout.addLayout(action_row)
+        preview_actions = QHBoxLayout()
+        self.show_source_button = _mode_button(tr("查看原图"), page)
+        self.show_translation_button = _mode_button(tr("查看覆盖译文"), page)
+        self.export_image_button = QPushButton(tr("导出译后图片"), page)
+        self.export_image_button.setObjectName("secondaryButton")
+        self.export_image_button.setEnabled(False)
+        self.show_source_button.clicked.connect(lambda: self._set_preview_mode(False))
+        self.show_translation_button.clicked.connect(lambda: self._set_preview_mode(True))
+        self.export_image_button.clicked.connect(self.export_translated_image)
+        preview_actions.addWidget(self.show_source_button)
+        preview_actions.addWidget(self.show_translation_button)
+        preview_actions.addStretch(1)
+        preview_actions.addWidget(self.export_image_button)
+        layout.addLayout(preview_actions)
         self.preview = OcrPreview(page)
         layout.addWidget(self.preview, 2)
         texts = QHBoxLayout()
@@ -282,7 +319,11 @@ class OcrWorkspace(QWidget):
         self._host_was_visible = self._host_was_visible or host_is_visible
         if host_is_visible:
             host.hide()
-        QTimer.singleShot(100, self._picker.begin)
+        # Do not freeze the desktop until Windows has actually composited the
+        # hidden main window out of the frame.
+        QTimer.singleShot(
+            0, lambda: wait_for_desktop_settle(
+                self._picker.begin, minimum_delay_ms=300))
 
     def start_screenshot(self) -> None:
         if self._worker.is_busy() or self._captures:
@@ -293,6 +334,37 @@ class OcrWorkspace(QWidget):
         self.set_mode("screenshot")
         self.screenshot_status.setText(tr("拖动选择区域，Esc 取消"))
         self._begin_pick("screenshot")
+
+    def upload_image(self) -> None:
+        """Load, cache and translate a user-selected local image."""
+        if self._worker.is_busy() or self._captures:
+            self.screenshot_status.setText(tr("上一张图片仍在处理中"))
+            return
+        selected = choose_open_file(
+            self,
+            tr("选择要翻译的图片"),
+            "",
+            [tr("图片文件 (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)"),
+             tr("所有文件 (*)")],
+        )
+        if not selected:
+            return
+        image = QImage(selected)
+        if image.isNull():
+            self.screenshot_status.setText(tr("无法读取这张图片，请换用 PNG、JPG 或 WebP"))
+            return
+        if self._live_rect is not None:
+            self.stop_live(restore_host=False)
+        self.set_mode("screenshot")
+        self._reset_screenshot_result()
+        try:
+            cache_from_store(self._store).cache_file(selected, kind="original")
+        except (OSError, OcrCacheLocationError, ValueError) as exc:
+            self.screenshot_status.setText(f"{tr('图片缓存不可用')}：{exc}")
+            return
+        captured = CapturedRegion(image.copy(), QRect(0, 0, image.width(), image.height()))
+        self.screenshot_status.setText(tr("正在识别并翻译上传图片…"))
+        self._submit(captured, "screenshot")
 
     def start_live(self) -> None:
         if self._worker.is_busy() or self._captures:
@@ -325,9 +397,12 @@ class OcrWorkspace(QWidget):
             self._restore_host()
             return
         self._restore_host()
-        self.preview.clear()
-        self.source_text.clear()
-        self.translation_text.clear()
+        self._reset_screenshot_result()
+        try:
+            self._cache_qimage(captured.image, "original")
+        except (OSError, OcrCacheLocationError, ValueError) as exc:
+            self.screenshot_status.setText(f"{tr('截图缓存不可用')}：{exc}")
+            return
         self.screenshot_status.setText(tr("正在识别并翻译…"))
         self._submit(captured, "screenshot")
 
@@ -448,7 +523,19 @@ class OcrWorkspace(QWidget):
     def _show_screenshot_result(
         self, capture: QImage, frame: TranslatedOcrFrame, warning: str
     ) -> None:
-        self.preview.set_result(capture, frame)
+        self._source_image = capture.copy()
+        self._result_frame = frame
+        self._translated_image = render_translated_image(capture, frame)
+        self._set_preview_mode(True)
+        self.export_image_button.setEnabled(not self._translated_image.isNull())
+        self._translated_cache_path = None
+        cache_warning = ""
+        try:
+            self._translated_cache_path = self._cache_qimage(
+                self._translated_image, "translated")
+        except (OSError, OcrCacheLocationError, ValueError) as exc:
+            logger.warning("译后图片缓存失败: %s", exc)
+            cache_warning = f"{tr('译后图片未缓存')}：{exc}"
         self.source_text.setPlainText(frame.source_text)
         self.translation_text.setPlainText(frame.translation_text)
         if warning:
@@ -462,6 +549,75 @@ class OcrWorkspace(QWidget):
                 f"Done · {len(frame.lines)} lines · OCR {frame.ocr_elapsed_ms}ms · "
                 f"translation {frame.translate_elapsed_ms}ms",
             ))
+        if cache_warning:
+            self.screenshot_status.setText(
+                f"{self.screenshot_status.text()} · {cache_warning}")
+
+    def _reset_screenshot_result(self) -> None:
+        self.preview.clear()
+        self.source_text.clear()
+        self.translation_text.clear()
+        self._source_image = QImage()
+        self._translated_image = QImage()
+        self._result_frame = None
+        self._translated_cache_path = None
+        self.export_image_button.setEnabled(False)
+
+    def _set_preview_mode(self, translated: bool) -> None:
+        frame = self._result_frame
+        if frame is None:
+            return
+        use_translation = bool(translated and not self._translated_image.isNull())
+        image = self._translated_image if use_translation else self._source_image
+        self.preview.set_result(image, frame, show_boxes=not use_translation)
+        self.show_translation_button.setChecked(use_translation)
+        self.show_source_button.setChecked(not use_translation)
+
+    @staticmethod
+    def _write_qimage(image: QImage, destination: Path, image_format: str) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        output = QSaveFile(str(destination))
+        if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise OSError(output.errorString())
+        if not image.save(output, image_format):
+            output.cancelWriting()
+            raise OSError("图片编码失败")
+        if not output.commit():
+            raise OSError(output.errorString())
+
+    def _cache_qimage(self, image: QImage, kind: str) -> Path:
+        if image.isNull():
+            raise ValueError("图片为空")
+        cache = cache_from_store(self._store)
+        destination = cache.allocate(kind, ".png")
+        self._write_qimage(image, destination, "PNG")
+        return cache.finalize(kind, destination)
+
+    def export_translated_image(self) -> None:
+        if self._translated_image.isNull():
+            self.screenshot_status.setText(tr("当前没有可导出的译后图片"))
+            return
+        destination, _selected_filter = choose_save_file(
+            self,
+            tr("导出译后图片"),
+            "VoxSub-OCR-translated.png",
+            [tr("PNG 图片 (*.png)"), tr("JPEG 图片 (*.jpg *.jpeg)")],
+            "png",
+        )
+        if not destination:
+            return
+        path = Path(destination)
+        image_format = "JPEG" if path.suffix.lower() in {".jpg", ".jpeg"} else "PNG"
+        try:
+            self._write_qimage(self._translated_image, path, image_format)
+            if self._translated_cache_path is not None:
+                cache_from_store(self._store).discard(
+                    "translated", self._translated_cache_path)
+                self._translated_cache_path = None
+        except (OSError, OcrCacheLocationError, ValueError) as exc:
+            self.screenshot_status.setText(f"{tr('导出失败')}：{exc}")
+            return
+        self.screenshot_status.setText(f"{tr('已导出译后图片')}：{path}")
 
     def _show_live_result(
         self, capture: QImage, frame: TranslatedOcrFrame, warning: str
@@ -493,7 +649,12 @@ class OcrWorkspace(QWidget):
         label = self.live_status if purpose == "live" else self.screenshot_status
         label.setText(f"{tr('OCR 失败')}：{error}")
         if purpose == "live":
-            self._control.set_status(tr("OCR 失败，画面变化后重试"))
+            # An unavailable runtime/model will not heal every 700 ms. Stop the
+            # loop instead of flooding the log and CPU until the user retries
+            # after repairing or switching the OCR model.
+            self._live_timer.stop()
+            self._live_paused = True
+            self._control.set_status(tr("OCR 已暂停，请修复模型后重试"))
 
     def _on_live_paused(self, paused: bool) -> None:
         self._live_paused = bool(paused)

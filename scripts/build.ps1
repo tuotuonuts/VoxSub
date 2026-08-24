@@ -9,7 +9,7 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Version = "0.8.0-beta"
+$Version = "0.9.0-beta"
 $LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
 Set-Location $Root
 
@@ -69,6 +69,7 @@ if (-not $SkipPyInstaller) {
             "--collect-all", "psutil",
             "--collect-all", "onnxruntime",
             "--collect-all", "rapidocr",
+            "--hidden-import", "rapidocr.main",
             "--collect-all", "cv2",
             "--collect-all", "qfluentwidgets",
             "--hidden-import", "voxsub.pipeline",
@@ -225,6 +226,9 @@ function Sign-Artifact([string]$Path, $Certificate) {
     Write-Host "[sign] status=$($Signature.Status) (self-signed certificate may report NotTrusted/UnknownError)"
 }
 $Exe = Join-Path $Dist "VoxSub.exe"
+Run-Checked "packaged OCR smoke" {
+    & $Exe --ocr-smoke
+}
 $Cert = Find-DevCert
 Sign-Artifact -Path $Exe -Certificate $Cert
 

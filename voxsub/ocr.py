@@ -13,6 +13,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -26,6 +27,61 @@ logger = get_logger("ocr")
 
 class OcrUnavailableError(RuntimeError):
     """The configured OCR runtime cannot be loaded."""
+
+
+def _rapidocr_model_params(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve the selected, already-installed Model Hub OCR preset."""
+    model_id = str(
+        config.get("ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
+        "ocr-rapidocr-v6-small-builtin")
+    if model_id == "ocr-rapidocr-v6-small-builtin":
+        return {}
+
+    from voxsub.model_catalog import ModelMarketplace, get_model
+    from voxsub.model_storage import resolve_models_root
+
+    model = get_model(model_id)
+    if model is None or model.task != "ocr":
+        raise OcrUnavailableError(f"未知 OCR 模型: {model_id}")
+    configured_root = str(config.get("models_root", "") or "").strip()
+    root = Path(configured_root) if configured_root else resolve_models_root()
+    marketplace = ModelMarketplace(root)
+    if not marketplace.is_installed(model):
+        raise OcrUnavailableError(f"OCR 模型尚未安装或文件不完整: {model.name}")
+    model_dir = marketplace.available_model_dir(model)
+    from rapidocr.utils.typings import ModelType, OCRVersion
+
+    params: dict[str, Any] = {
+        "Det.model_path": str(model_dir / "det.onnx"),
+        "Rec.model_path": str(model_dir / "rec.onnx"),
+    }
+    if model_id == "ocr-rapidocr-v6-tiny":
+        params.update({
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Det.model_type": ModelType.TINY,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.model_type": ModelType.TINY,
+        })
+    elif model_id == "ocr-rapidocr-v6-medium":
+        params.update({
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Det.model_type": ModelType.MEDIUM,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.model_type": ModelType.MEDIUM,
+        })
+    elif model_id == "ocr-rapidocr-v5-document":
+        params.update({
+            "Det.ocr_version": OCRVersion.PPOCRV5,
+            "Det.model_type": ModelType.SERVER,
+            "Det.lang_type": "ch",
+            "Rec.ocr_version": OCRVersion.PPOCRV5,
+            "Rec.model_type": ModelType.SERVER,
+            "Rec.lang_type": "ch",
+            "Cls.model_path": str(model_dir / "cls.onnx"),
+            "Cls.ocr_version": OCRVersion.PPOCRV5,
+            "Cls.model_type": ModelType.MOBILE,
+        })
+    return params
 
 
 @dataclass(frozen=True)
@@ -153,24 +209,39 @@ def materially_changed(previous: bytes | None, current: bytes, threshold: float 
 class RapidOcrEngine:
     """Lazy, serialized RapidOCR adapter returning stable VoxSub data types."""
 
-    def __init__(self, *, minimum_confidence: float = 0.52) -> None:
+    def __init__(
+        self, *, minimum_confidence: float = 0.52,
+        config: Mapping[str, Any] | None = None,
+    ) -> None:
         self.minimum_confidence = max(0.0, min(1.0, float(minimum_confidence)))
         self._engine: Any | None = None
+        self._initialization_error: OcrUnavailableError | None = None
+        self._model_params = _rapidocr_model_params(config or {})
         self._lock = threading.Lock()
 
     def _ensure_engine(self) -> Any:
         if self._engine is not None:
             return self._engine
+        if self._initialization_error is not None:
+            raise self._initialization_error
         try:
-            from rapidocr import RapidOCR
+            # RapidOCR exposes this class through module-level __getattr__.
+            # PyInstaller cannot reliably discover that lazy import, so import
+            # the concrete module here and list it as an explicit hidden import
+            # in the release build.
+            from rapidocr.main import RapidOCR
 
-            self._engine = RapidOCR(params={
+            params = {
                 "Global.text_score": self.minimum_confidence,
                 "Global.use_cls": True,
-            })
+            }
+            params.update(self._model_params)
+            self._engine = RapidOCR(params=params)
         except Exception as exc:  # noqa: BLE001 - optional runtime boundary
             logger.exception("RapidOCR 初始化失败")
-            raise OcrUnavailableError(f"OCR 引擎不可用: {exc}") from exc
+            self._initialization_error = OcrUnavailableError(
+                f"OCR 引擎不可用: {exc}")
+            raise self._initialization_error from exc
         return self._engine
 
     def recognize(self, image: np.ndarray) -> OcrFrame:

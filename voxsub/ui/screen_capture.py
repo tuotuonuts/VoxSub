@@ -4,6 +4,7 @@ from __future__ import annotations
 import ctypes
 import os
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
@@ -68,6 +69,28 @@ def exclude_window_from_capture(widget: QWidget) -> bool:
     """Keep VoxSub's translated overlay out of subsequent desktop captures."""
     if os.name != "nt":
         return False
+
+
+def wait_for_desktop_settle(
+    callback: Callable[[], None], *, minimum_delay_ms: int = 260
+) -> None:
+    """Run ``callback`` only after hidden VoxSub windows leave the DWM frame.
+
+    Hiding a top-level Qt window is asynchronous on Windows. Capturing on the
+    next timer tick can therefore preserve a translucent afterimage of the app.
+    Flush posted Qt work, ask DWM to finish its queued composition, then leave a
+    short compositor-safe interval before taking the selector background.
+    """
+    app = QApplication.instance()
+    if app is not None:
+        app.sendPostedEvents()
+        app.processEvents()
+    if os.name == "nt":
+        try:
+            ctypes.windll.dwmapi.DwmFlush()
+        except (AttributeError, OSError):
+            logger.debug("DwmFlush 不可用，使用定时等待桌面稳定", exc_info=True)
+    QTimer.singleShot(max(160, int(minimum_delay_ms)), callback)
     try:
         hwnd = int(widget.winId())
         result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
@@ -240,4 +263,5 @@ __all__ = [
     "capture_screen_region",
     "exclude_window_from_capture",
     "qimage_to_bgr",
+    "wait_for_desktop_settle",
 ]

@@ -15,6 +15,7 @@
 - v0.7.1-beta 草稿调度修复后验收：构建门禁 262 passed，7 skipped；大小写整理仅在 context partial 显示路径，终句证据不变；合并节流和过期译文接纳策略仍封装在 `live_draft.py`。
 - v0.7.2-beta 安装升级收尾修复后验收：构建门禁 265 passed，7 skipped；安装器与应用通过独立命名事件协作，旧版兼容回退严格限定为 VoxSub 进程树；Pipeline 所有工作线程共享单一退出截止时间。
 - v0.8.0-beta OCR 候选：构建门禁 276 passed，8 skipped；识别/翻译数据与 RapidOCR 适配在 Qt 无关的 `ocr.py`，屏幕采集、覆盖绘制、页面编排和有界 worker 分属独立模块；实时帧只保留一个在途任务，译文覆盖窗和控制条都有自采集防回路，翻译失败降级为保留原文；打包入口提供不创建 GUI 的 OCR 成品自检。
+- v0.9.0-beta OCR 完善：构建门禁 286 passed，8 skipped；缓存路径/清理策略独立在 `ocr_cache.py`，原图与译后图物理隔离并强制拒绝 C 盘；静态图片与实时覆盖共用 `render_translated_image` 绘制路径；模型广场只列出已接通 `RapidOcrEngine` 的四档模型；成品 OCR 自检改为构建强制门禁，安装包不再可能在未执行 OCR 的情况下完成。
 - `compileall` 全包编译通过，`git diff --check` 通过。
 - 生产代码中没有估算分支复杂度达到 15 的函数。
 - 生产代码中没有使用默认容量的无界 `queue.Queue()`。

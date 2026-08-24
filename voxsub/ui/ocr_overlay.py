@@ -89,6 +89,44 @@ def _translation_rect(base: QRect, bounds: QRect, source: str, translation: str)
     return QRect(left, top, width, height)
 
 
+def _paint_translations(
+    painter: QPainter,
+    frame: TranslatedOcrFrame,
+    capture: QImage,
+    bounds: QRect,
+) -> None:
+    for line in frame.lines:
+        text = line.translation.strip() or line.source
+        source_rect = _mapped_box(line.box, frame, bounds).adjusted(-4, -3, 4, 3)
+        rect = _translation_rect(source_rect, bounds, line.source, text).intersected(bounds)
+        if rect.width() < 4 or rect.height() < 4:
+            continue
+        background = _sample_background(capture, line.box)
+        painter.setPen(QPen(_contrasting_text(background), 1))
+        painter.setBrush(background)
+        painter.drawRoundedRect(rect, min(7, rect.height() / 3), min(7, rect.height() / 3))
+        painter.setFont(_fit_font(rect, text))
+        painter.drawText(
+            rect.adjusted(3, 1, -3, -1),
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            text,
+        )
+
+
+def render_translated_image(
+    capture: QImage, frame: TranslatedOcrFrame
+) -> QImage:
+    """Return an exportable image with translated text painted in place."""
+    if capture.isNull():
+        return QImage()
+    rendered = capture.convertToFormat(QImage.Format.Format_ARGB32).copy()
+    painter = QPainter(rendered)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    _paint_translations(painter, frame, capture, rendered.rect())
+    painter.end()
+    return rendered
+
+
 class OcrTranslationOverlay(QWidget):
     """Paint translations over their source line boxes without taking input."""
 
@@ -128,27 +166,8 @@ class OcrTranslationOverlay(QWidget):
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for line in frame.lines:
-            self._paint_line(painter, frame, line)
+        _paint_translations(painter, frame, self._capture, self.rect())
         painter.end()
-
-    def _paint_line(self, painter: QPainter, frame, line) -> None:
-        text = line.translation.strip() or line.source
-        source_rect = _mapped_box(line.box, frame, self.rect()).adjusted(-4, -3, 4, 3)
-        rect = _translation_rect(source_rect, self.rect(), line.source, text)
-        rect = rect.intersected(self.rect())
-        if rect.width() < 4 or rect.height() < 4:
-            return
-        background = _sample_background(self._capture, line.box)
-        painter.setPen(QPen(_contrasting_text(background), 1))
-        painter.setBrush(background)
-        painter.drawRoundedRect(rect, min(7, rect.height() / 3), min(7, rect.height() / 3))
-        painter.setFont(_fit_font(rect, text))
-        painter.drawText(
-            rect.adjusted(3, 1, -3, -1),
-            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-            text,
-        )
 
 
 class OcrLiveControlBar(QFrame):
@@ -237,4 +256,4 @@ def _screen_for_point(point):
     return QApplication.primaryScreen()
 
 
-__all__ = ["OcrLiveControlBar", "OcrTranslationOverlay"]
+__all__ = ["OcrLiveControlBar", "OcrTranslationOverlay", "render_translated_image"]

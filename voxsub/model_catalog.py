@@ -55,7 +55,7 @@ class ModelSource:
 @dataclass(frozen=True)
 class ModelSpec:
     id: str
-    task: str                  # asr | translate | tts
+    task: str                  # asr | translate | tts | ocr
     name: str
     vendor: str
     release: str
@@ -90,6 +90,7 @@ class ModelSpec:
             "asr": "语音识别",
             "translate": "字幕翻译",
             "tts": "语音朗读",
+            "ocr": "图片文字识别",
         }.get(self.task, self.task)
 
 
@@ -99,6 +100,7 @@ _MS_ASR = "https://modelscope.cn/models/csukuangfj/asr-models/resolve/master"
 _HF = "https://huggingface.co"
 _MS = "https://modelscope.cn"
 _HF_MIRROR = "https://hf-mirror.com"
+_MS_OCR = "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx"
 
 
 def _opus_remote_files(language_pair: str, base_url: str) -> tuple[RemoteFile, ...]:
@@ -126,6 +128,131 @@ def _opus_remote_files(language_pair: str, base_url: str) -> tuple[RemoteFile, .
 
 
 CATALOG: tuple[ModelSpec, ...] = (
+    ModelSpec(
+        id="ocr-rapidocr-v6-small-builtin",
+        task="ocr",
+        name="PP-OCRv6 Small · 通用内置",
+        vendor="PaddleOCR / RapidAI",
+        release="2026-08-20",
+        description="随应用内置的中英多语言均衡模型，适合屏幕、网页、字幕和常规图片。",
+        runtime="rapidocr-v6-small",
+        quality_score=88,
+        languages="中文 / 英语 / 多语言",
+        license="Apache-2.0",
+        download_bytes=0,
+        installed_bytes=31_750_000,
+        install_rel="ocr/rapidocr-v6-small-builtin",
+        required_paths=(),
+        builtin=True,
+        min_ram_gb=4.0,
+        working_ram_gb=0.45,
+        compute_cost=28,
+        gpu_supported=False,
+        tags=("内置", "均衡", "多语言"),
+    ),
+    ModelSpec(
+        id="ocr-rapidocr-v6-tiny",
+        task="ocr",
+        name="PP-OCRv6 Tiny · 实时低延迟",
+        vendor="PaddleOCR / RapidAI",
+        release="2026-08-20",
+        description="更轻的实时区域识别模型，适合低功耗电脑和频繁变化的屏幕内容。",
+        runtime="rapidocr-v6-tiny",
+        quality_score=78,
+        languages="中文 / 英语 / 多语言",
+        license="Apache-2.0",
+        download_bytes=16_000_000,
+        installed_bytes=16_000_000,
+        install_rel="ocr/rapidocr-v6-tiny",
+        required_paths=("det.onnx", "rec.onnx"),
+        sources=(ModelSource(
+            "china", "ModelScope 官方源", f"{_MS_OCR}/PP-OCRv6",
+            "https://modelscope.cn/favicon.ico",
+            files=(
+                RemoteFile(f"{_MS_OCR}/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx",
+                           "det.onnx", 0,
+                           "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5"),
+                RemoteFile(f"{_MS_OCR}/PP-OCRv6/rec/PP-OCRv6_rec_tiny.onnx",
+                           "rec.onnx", 0,
+                           "e16e242de5937ad92609223f19bc2aff3727ee40b095f996907c24749bad251b"),
+            ),
+        ),),
+        min_ram_gb=4.0,
+        working_ram_gb=0.25,
+        compute_cost=15,
+        gpu_supported=False,
+        tags=("低延迟", "低内存", "多语言"),
+    ),
+    ModelSpec(
+        id="ocr-rapidocr-v6-medium",
+        task="ocr",
+        name="PP-OCRv6 Medium · 多语言高精度",
+        vendor="PaddleOCR / RapidAI",
+        release="2026-08-20",
+        description="更高精度的多语言档，适合复杂排版、小字和导出译后图片。",
+        runtime="rapidocr-v6-medium",
+        quality_score=96,
+        languages="中文 / 英语 / 多语言",
+        license="Apache-2.0",
+        download_bytes=95_000_000,
+        installed_bytes=95_000_000,
+        install_rel="ocr/rapidocr-v6-medium",
+        required_paths=("det.onnx", "rec.onnx"),
+        sources=(ModelSource(
+            "china", "ModelScope 官方源", f"{_MS_OCR}/PP-OCRv6",
+            "https://modelscope.cn/favicon.ico",
+            files=(
+                RemoteFile(f"{_MS_OCR}/PP-OCRv6/det/PP-OCRv6_det_medium.onnx",
+                           "det.onnx", 0,
+                           "92078b7355007ccfffcd4c8cd441a3afd4538904d06881b29a155e1e679907c2"),
+                RemoteFile(f"{_MS_OCR}/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
+                           "rec.onnx", 0,
+                           "eef444829dbbe18d7fea59a3f6eb75647518d2b3a9568d27c92e42940204894b"),
+            ),
+        ),),
+        min_ram_gb=6.0,
+        working_ram_gb=0.9,
+        compute_cost=58,
+        gpu_supported=False,
+        tags=("高精度", "复杂排版", "多语言"),
+    ),
+    ModelSpec(
+        id="ocr-rapidocr-v5-document",
+        task="ocr",
+        name="PP-OCRv5 Server · 文档与手写增强",
+        vendor="PaddleOCR / RapidAI",
+        release="2025-05-20",
+        description="面向中英文复杂文档、竖排与手写场景的质量档；艺术字仍取决于字形清晰度。",
+        runtime="rapidocr-v5-server",
+        quality_score=94,
+        languages="简体中文 / 英语",
+        license="Apache-2.0",
+        download_bytes=180_000_000,
+        installed_bytes=180_000_000,
+        install_rel="ocr/rapidocr-v5-document",
+        required_paths=("det.onnx", "rec.onnx", "cls.onnx"),
+        sources=(ModelSource(
+            "china", "ModelScope 官方源", f"{_MS_OCR}/PP-OCRv5",
+            "https://modelscope.cn/favicon.ico",
+            files=(
+                RemoteFile(f"{_MS_OCR}/PP-OCRv5/det/ch_PP-OCRv5_det_server.onnx",
+                           "det.onnx", 0,
+                           "0f8846b1d4bba223a2a2f9d9b44022fbc22cc019051a602b41a7fda9667e4cad"),
+                RemoteFile(f"{_MS_OCR}/PP-OCRv5/rec/ch_PP-OCRv5_rec_server.onnx",
+                           "rec.onnx", 0,
+                           "e09385400eaaaef34ceff54aeb7c4f0f1fe014c27fa8b9905d4709b65746562a"),
+                RemoteFile(
+                    f"{_MS_OCR}/PP-OCRv5/cls/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
+                    "cls.onnx", 0,
+                    "54379ae5174d026780215fc748a7f31910dee36818e63d49e17dc598ecc82df7"),
+            ),
+        ),),
+        min_ram_gb=8.0,
+        working_ram_gb=1.4,
+        compute_cost=76,
+        gpu_supported=False,
+        tags=("手写增强", "复杂文档", "中英"),
+    ),
     ModelSpec(
         id="asr-funasr-nano-2512-int8",
         task="asr",

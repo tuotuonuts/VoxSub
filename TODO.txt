@@ -204,4 +204,13 @@
 [x] Windows 实测覆盖窗已排除后续截图，不会识别自己的译文形成反馈回路
 [x] 全量门禁 276 passed / 8 skipped；成品 OCR 自检、高 DPI 截图、译文/控制条捕获排除及隔离启动/退出通过
 [x] 安装包 277,266,873 字节；SHA256 04997F7A48B5EB878C4303F6BCCAEC5A72CDD82864131DC5E994FB03AE8E1365；未签名
-[ ] push GitHub main；用户验证前不创建 Release
+[x] push GitHub main；用户验证前不创建 Release
+
+=== 2026-08-24 (v0.9.0 OCR 图片翻译完善) ===
+[x] 根据已安装日志定位并修复 PyInstaller 未收集 rapidocr.main，构建强制执行成品 OCR 冒烟
+[x] OCR 入口移出 A/B/C 模式栈；框选前等待 Qt 隐藏事件与 Windows DWM 桌面合成完成
+[x] 支持上传图片、原图标框/覆盖译文切换、PNG/JPEG 译后图导出
+[x] 原图和未导出译后图分别缓存至 originals / translated；强制非 C 盘；默认每类 15 张，0 无限
+[x] 模型广场新增 PP-OCRv6 Tiny/Small/Medium 与 PP-OCRv5 文档手写增强档，下载/校验/切换接入真实运行时
+[x] 全量门禁 286 passed / 8 skipped
+[ ] 完成 0.9.0-beta 安装包、SHA256、GitHub push；用户验证前不创建 Release

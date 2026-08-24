@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import numpy as np
@@ -115,6 +117,30 @@ def test_real_rapidocr_smoke_recognizes_generated_english_text():
     assert "Hello VoxSub OCR" in frame.text
     assert frame.lines[0].confidence > 0.9
     assert frame.lines[0].box.width > 300
+
+
+def test_downloaded_ocr_preset_uses_model_hub_files(tmp_path):
+    import cv2
+    import rapidocr
+
+    package_models = Path(rapidocr.__file__).resolve().parent / "models"
+    model_dir = tmp_path / "models" / "ocr" / "rapidocr-v6-tiny"
+    model_dir.mkdir(parents=True)
+    shutil.copyfile(
+        package_models / "PP-OCRv6_det_small.onnx", model_dir / "det.onnx")
+    shutil.copyfile(
+        package_models / "PP-OCRv6_rec_small.onnx", model_dir / "rec.onnx")
+    engine = RapidOcrEngine(config={
+        "ocr_model_id": "ocr-rapidocr-v6-tiny",
+        "models_root": str(tmp_path / "models"),
+    })
+    image = np.full((120, 420, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "OCR MODEL", (15, 78), cv2.FONT_HERSHEY_SIMPLEX,
+                1.25, (0, 0, 0), 3, cv2.LINE_AA)
+
+    frame = engine.recognize(image)
+
+    assert "OCR" in frame.text.upper()
 
 
 def test_worker_keeps_ocr_text_when_translation_backend_fails():
