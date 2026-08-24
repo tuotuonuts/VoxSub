@@ -10,6 +10,7 @@
 ### 故障与视觉修复
 
 - 根因日志确认 `rapidocr` 通过模块级延迟导出 `RapidOCR`，PyInstaller 没有发现真实的 `rapidocr.main`。运行时现改为直接导入实现模块，构建参数显式添加 hidden import，并把 `VoxSub.exe --ocr-smoke` 设为每次打包必过门禁。
+- 用户安装目录进一步确认残留了旧版不完整的 `_internal/brotlicffi`，覆盖安装只写入新文件但不会删除已移除依赖，最终让 urllib3 在 RapidOCR 初始化时访问不存在的 `brotlicffi.error`。升级安装现会在关闭 VoxSub 后清理 `_internal`、`tools` 和 `models_base` 三个应用管理目录再写入当前运行时，明确不触碰 `Models` 与 `Cache`。
 - 实时区域 OCR 遇到引擎/模型不可用会立即暂停，不再每 700ms 重试并持续刷日志。
 - OCR 入口从左侧模式卡堆栈移到顶部工具区，A/B/C 模式选择不再被新按钮挤压。
 - 框选前会先处理 Qt 隐藏事件、等待 Windows DWM 合成完成，再额外保留稳定间隔；冻结的桌面背景不再包含主应用虚影。
@@ -34,7 +35,7 @@
 
 ### 验证与发布物
 
-- 源码全量门禁为 `286 passed, 8 skipped`；唯一 warning 是既有声卡闭环测试报告一次录音 data discontinuity，该测试通过。
+- 源码全量门禁为 `287 passed, 8 skipped`；唯一 warning 是既有声卡闭环测试报告一次录音 data discontinuity，该测试通过。
 - 打包后的 `VoxSub.exe --ocr-smoke` 从成品目录加载 PP-OCRv6 检测、方向分类和识别模型，独立复跑退出码为 0。
 - 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,259,168 字节（264.41 MiB），SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`；主程序与安装包使用 `CN=VoxSub Dev (self-signed)` 开发者自签名。
 - `0.9.0-beta` 仅推送源码与安装包，不在用户验证前创建 GitHub Release。

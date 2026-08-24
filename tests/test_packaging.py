@@ -44,6 +44,17 @@ def test_installer_uses_bounded_shutdown_instead_of_restart_manager_wait():
     assert '/F /T /IM \"{#MyAppExeName}\"' in script
 
 
+def test_upgrade_removes_stale_runtime_without_touching_user_data():
+    script = (ROOT / "scripts" / "installer.iss").read_text(encoding="utf-8")
+    install_delete = script.split("[InstallDelete]", 1)[1].split("[Dirs]", 1)[0]
+
+    assert 'Name: "{app}\\_internal"' in install_delete
+    assert 'Name: "{app}\\tools"' in install_delete
+    assert 'Name: "{app}\\models_base"' in install_delete
+    assert "{app}\\Models" not in install_delete
+    assert "{app}\\Cache" not in install_delete
+
+
 def test_release_build_requires_the_validated_no_npuw_runtime():
     build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
     builder = (ROOT / "scripts" / "build_npu_runtime.ps1").read_text(

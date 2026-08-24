@@ -79,6 +79,17 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription
 ; VoxSub 主程序 + 全部运行时 (PyInstaller onedir 输出)
 Source: "..\dist\VoxSub\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+; PyInstaller's onedir layout changes as dependencies evolve. Overwriting an
+; existing installation leaves removed packages behind; a partial legacy
+; brotlicffi directory has already been observed shadowing urllib3 and breaking
+; RapidOCR. Remove only application-managed runtime directories after VoxSub
+; has been closed by PrepareToInstall. Models and Cache are user data and must
+; never be included here.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\tools"
+Type: filesandordirs; Name: "{app}\models_base"
+
 [Dirs]
 ; 模型是用户数据，不随升级/卸载删除。只让普通用户写 Models，程序文件仍受保护。
 Name: "{app}\Models"; Permissions: users-modify
