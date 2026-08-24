@@ -7,6 +7,7 @@ from ctypes import wintypes
 
 import pytest
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 
 from voxsub.ui.installer_shutdown import InstallerShutdownBridge
 
@@ -38,8 +39,8 @@ def test_named_event_requests_shutdown_without_closing_a_window() -> None:
         assert bridge.is_available
         assert handle
         assert kernel32.SetEvent(handle)
-        for _ in range(10):
-            app.processEvents()
+        for _ in range(100):
+            QTest.qWait(10)
             if requests:
                 break
         assert requests == [True]

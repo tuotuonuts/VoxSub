@@ -21,13 +21,26 @@ function Run-Checked([string]$Label, [scriptblock]$Block) {
 
 
 if (-not $SkipTests) {
-    # OneDrive can retain handles on a reused workspace basetemp and make the
-    # next pytest run fail before test setup.  A unique OS temp directory keeps
-    # the release gate isolated from sync-client filesystem locks.
-    $TestBaseTemp = Join-Path $env:TEMP (
-        "VoxSub_pytest_build_" + [guid]::NewGuid().ToString("N"))
-    Run-Checked "pytest" {
-        & ".venv\Scripts\python.exe" -m pytest tests/ -q --basetemp $TestBaseTemp
+    # Use a unique D-drive folder inside the workspace. OCR cache policy tests
+    # intentionally reject drive C, while uniqueness still avoids OneDrive
+    # retaining a handle from a previous pytest run.
+    $TestBaseTemp = Join-Path $Root (
+        ".pytest-build-" + [guid]::NewGuid().ToString("N"))
+    try {
+        Run-Checked "pytest" {
+            & ".venv\Scripts\python.exe" -m pytest tests/ -q --basetemp $TestBaseTemp
+        }
+    } finally {
+        $ResolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+        $ResolvedTestBase = [IO.Path]::GetFullPath($TestBaseTemp)
+        if (-not $ResolvedTestBase.StartsWith(
+                $ResolvedRoot + ".pytest-build-",
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean unexpected pytest path: $ResolvedTestBase"
+        }
+        if (Test-Path -LiteralPath $ResolvedTestBase) {
+            Remove-Item -LiteralPath $ResolvedTestBase -Recurse -Force
+        }
     }
 }
 
