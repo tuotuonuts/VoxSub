@@ -85,7 +85,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. The local `0.9.0-beta` candidate is 277,259,168 bytes (264.41 MiB), SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`; no GitHub Release will be created before user validation.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. The local `0.9.0-beta` candidate is 277,283,040 bytes (264.44 MiB), SHA256 `7F5DB1956C6A86485DF3AF92BC1C879CD512CF1B14D6D53B37EF2817528DF7DC`; no GitHub Release will be created before user validation.
 
 ## Project Layout
 

@@ -37,7 +37,7 @@
 
 - 源码全量门禁为 `287 passed, 8 skipped`；唯一 warning 是既有声卡闭环测试报告一次录音 data discontinuity，该测试通过。
 - 打包后的 `VoxSub.exe --ocr-smoke` 从成品目录加载 PP-OCRv6 检测、方向分类和识别模型，独立复跑退出码为 0。
-- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,259,168 字节（264.41 MiB），SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`；主程序与安装包使用 `CN=VoxSub Dev (self-signed)` 开发者自签名。
+- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,283,040 字节（264.44 MiB），SHA256 `7F5DB1956C6A86485DF3AF92BC1C879CD512CF1B14D6D53B37EF2817528DF7DC`；主程序与安装包使用 `CN=VoxSub Dev (self-signed)` 开发者自签名。
 - `0.9.0-beta` 仅推送源码与安装包，不在用户验证前创建 GitHub Release。
 
 ## 版本: v0.8.0-beta（开发候选，未发布）

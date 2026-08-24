@@ -82,7 +82,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。本地候选 `0.9.0-beta` 为 277,259,168 字节（264.41 MiB），SHA256 `D2D52B2FAC5EBF11F7FF445051C38F1E86ED0A1017BBB67940DEED41D70E9659`；用户验证前不会创建 GitHub Release。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。本地候选 `0.9.0-beta` 为 277,283,040 字节（264.44 MiB），SHA256 `7F5DB1956C6A86485DF3AF92BC1C879CD512CF1B14D6D53B37EF2817528DF7DC`；用户验证前不会创建 GitHub Release。
 
 ## 目录结构
 
