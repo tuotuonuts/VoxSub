@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -17,6 +18,7 @@ from voxsub.ui.ocr_overlay import (  # noqa: E402
 )
 from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
 from voxsub.ui.screen_capture import CapturedRegion, qimage_to_bgr  # noqa: E402
+from voxsub.ui import screen_capture  # noqa: E402
 
 
 def _app():
@@ -125,7 +127,7 @@ def test_workspace_uses_shared_language_direction_and_staged_live_models(
         assert [(job.source_lang, job.target_lang) for job in jobs] == [
             ("en", "zh"), ("en", "zh")]
         assert jobs[0].config["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
-        assert jobs[0].config["ocr_maximum_lines"] == 24
+        assert jobs[0].config["ocr_maximum_lines"] == 40
         assert jobs[1].config["ocr_model_id"] == "ocr-rapidocr-v6-medium"
         assert jobs[1].config["ocr_refinement_mode"] is True
     finally:
@@ -224,3 +226,39 @@ def test_render_translated_image_replaces_pixels_in_line_region():
 
     assert not rendered.isNull()
     assert rendered != capture
+
+
+def test_failed_translation_leaves_source_image_uncovered():
+    _app()
+    capture = QImage(200, 100, QImage.Format.Format_RGB888)
+    capture.fill(QColor(240, 240, 240))
+    frame = TranslatedOcrFrame(
+        200,
+        100,
+        (TranslatedOcrLine(OcrBox(10, 12, 160, 45), "Hello", "", 0.99),),
+        20,
+        30,
+    )
+
+    rendered = render_translated_image(capture, frame)
+
+    assert rendered == capture.convertToFormat(QImage.Format.Format_ARGB32)
+
+
+def test_windows_capture_affinity_is_applied_to_overlay_window(monkeypatch):
+    calls = []
+    fake_user32 = SimpleNamespace(
+        SetWindowDisplayAffinity=lambda hwnd, affinity: (
+            calls.append((hwnd, affinity)) or 1
+        )
+    )
+    monkeypatch.setattr(screen_capture, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        screen_capture,
+        "ctypes",
+        SimpleNamespace(windll=SimpleNamespace(user32=fake_user32)),
+    )
+    widget = SimpleNamespace(winId=lambda: 4321)
+
+    assert screen_capture.exclude_window_from_capture(widget)
+    assert calls == [(4321, 0x00000011)]

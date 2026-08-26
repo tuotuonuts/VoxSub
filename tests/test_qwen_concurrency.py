@@ -383,3 +383,25 @@ def test_quality_ocr_batch_uses_one_request_and_preserves_order(
     assert translated == ["Hello.", "World."]
     assert len(calls) == 1
     assert "exactly 2" in calls[0]["messages"][-1]["content"]
+
+
+def test_quality_ocr_single_paragraph_uses_large_batch_budget(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    calls: list[dict] = []
+
+    def fake_chat(_endpoint, **kwargs):
+        calls.append(kwargs)
+        return '["这是一段经过整体翻译的长正文。"]'
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+
+    source = "A long document paragraph needs one coherent translation. " * 5
+    translated = q.translate_many([source], "en", "zh")
+
+    assert translated == ["这是一段经过整体翻译的长正文。"]
+    assert len(calls) == 1
+    assert calls[0]["max_tokens"] > 128
+    assert "exactly 1" in calls[0]["messages"][-1]["content"]

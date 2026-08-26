@@ -69,6 +69,15 @@ def exclude_window_from_capture(widget: QWidget) -> bool:
     """Keep VoxSub's translated overlay out of subsequent desktop captures."""
     if os.name != "nt":
         return False
+    try:
+        hwnd = int(widget.winId())
+        result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
+        if not result:
+            logger.warning("设置 WDA_EXCLUDEFROMCAPTURE 失败: hwnd=%s", hwnd)
+        return bool(result)
+    except (AttributeError, OSError, ValueError):
+        logger.warning("当前系统不支持覆盖层捕获排除", exc_info=True)
+        return False
 
 
 def wait_for_desktop_settle(
@@ -91,15 +100,6 @@ def wait_for_desktop_settle(
         except (AttributeError, OSError):
             logger.debug("DwmFlush 不可用，使用定时等待桌面稳定", exc_info=True)
     QTimer.singleShot(max(160, int(minimum_delay_ms)), callback)
-    try:
-        hwnd = int(widget.winId())
-        result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x00000011)
-        if not result:
-            logger.warning("设置 WDA_EXCLUDEFROMCAPTURE 失败: hwnd=%s", hwnd)
-        return bool(result)
-    except (AttributeError, OSError, ValueError):
-        logger.warning("当前系统不支持覆盖层捕获排除", exc_info=True)
-        return False
 
 
 class _ScreenSelector(QWidget):

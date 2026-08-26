@@ -498,9 +498,6 @@ class QwenQualityTranslator(Translator):
         sources = [str(text or "").strip() for text in texts]
         if not sources:
             return []
-        if len(sources) == 1:
-            return [self.translate(
-                sources[0], src_lang, dst_lang, timeout_ms=timeout_ms)]
         src_lang = normalize_language(src_lang)
         dst_lang = normalize_language(dst_lang)
         names = _LANG_NAMES.get((src_lang, dst_lang))

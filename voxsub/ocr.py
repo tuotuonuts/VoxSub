@@ -61,13 +61,13 @@ def live_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
         prepared["ocr_live_refine_model_id"] = selected
         prepared["ocr_model_id"] = "ocr-rapidocr-v6-small-builtin"
         prepared["ocr_live_fast_stage"] = True
-        prepared["ocr_minimum_confidence"] = 0.64
-        prepared["ocr_maximum_lines"] = 24
-        prepared["ocr_maximum_characters"] = 1600
+        prepared["ocr_minimum_confidence"] = 0.56
+        prepared["ocr_maximum_lines"] = 40
+        prepared["ocr_maximum_characters"] = 3600
     else:
-        prepared["ocr_minimum_confidence"] = 0.58
+        prepared["ocr_minimum_confidence"] = 0.54
         prepared["ocr_maximum_lines"] = 48
-        prepared["ocr_maximum_characters"] = 3000
+        prepared["ocr_maximum_characters"] = 4000
     return prepared
 
 
@@ -80,9 +80,9 @@ def refinement_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
     prepared["ocr_model_id"] = selected
     prepared["ocr_live_mode"] = True
     prepared["ocr_refinement_mode"] = True
-    prepared["ocr_minimum_confidence"] = 0.52
-    prepared["ocr_maximum_lines"] = 48
-    prepared["ocr_maximum_characters"] = 3000
+    prepared["ocr_minimum_confidence"] = 0.48
+    prepared["ocr_maximum_lines"] = 72
+    prepared["ocr_maximum_characters"] = 6500
     return prepared
 
 
@@ -187,6 +187,171 @@ class OcrFrame:
     @property
     def text(self) -> str:
         return "\n".join(line.text for line in self.lines)
+
+
+def _median_line_height(lines: Sequence[OcrLine]) -> int:
+    heights = sorted(max(1, line.box.height) for line in lines)
+    return heights[len(heights) // 2] if heights else 16
+
+
+def _same_row(left: OcrLine, right: OcrLine, median_height: int) -> bool:
+    overlap = min(left.box.bottom, right.box.bottom) - max(
+        left.box.top, right.box.top)
+    minimum_height = max(1, min(left.box.height, right.box.height))
+    gap = right.box.left - left.box.right
+    return (
+        overlap / minimum_height >= 0.58
+        and -median_height // 2 <= gap <= max(10, round(median_height * 1.35))
+    )
+
+
+def _join_fragments(left: str, right: str) -> str:
+    left = left.rstrip()
+    right = right.lstrip()
+    if not left or not right:
+        return left + right
+    no_space_before = ",.!?;:，。！？；：、)]}》」』"
+    no_space_after = "([{《「『"
+    if right[0] in no_space_before or left[-1] in no_space_after:
+        return left + right
+    if "\u3400" <= left[-1] <= "\u9fff" and "\u3400" <= right[0] <= "\u9fff":
+        return left + right
+    return f"{left} {right}"
+
+
+def _merge_row_fragments(
+    lines: Sequence[OcrLine], median_height: int
+) -> tuple[OcrLine, ...]:
+    rows: list[list[OcrLine]] = []
+    for line in sorted(lines, key=lambda item: (item.box.top, item.box.left)):
+        best: list[OcrLine] | None = None
+        best_gap = 1_000_000
+        for row in rows:
+            last = row[-1]
+            if _same_row(last, line, median_height):
+                gap = abs(line.box.left - last.box.right)
+                if gap < best_gap:
+                    best, best_gap = row, gap
+        if best is None:
+            rows.append([line])
+        else:
+            best.append(line)
+
+    merged: list[OcrLine] = []
+    for fragments in rows:
+        fragments.sort(key=lambda item: item.box.left)
+        text = fragments[0].text
+        for fragment in fragments[1:]:
+            text = _join_fragments(text, fragment.text)
+        weights = [max(1, len(fragment.text)) for fragment in fragments]
+        confidence = sum(
+            fragment.confidence * weight
+            for fragment, weight in zip(fragments, weights)
+        ) / sum(weights)
+        merged.append(OcrLine(
+            OcrBox(
+                min(fragment.box.left for fragment in fragments),
+                min(fragment.box.top for fragment in fragments),
+                max(fragment.box.right for fragment in fragments),
+                max(fragment.box.bottom for fragment in fragments),
+            ),
+            text,
+            confidence,
+        ))
+    merged.sort(key=lambda item: (item.box.top, item.box.left))
+    return tuple(merged)
+
+
+def _starts_list_item(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    if stripped[0] in "•·▪◦*-":
+        return True
+    return (
+        len(stripped) >= 2
+        and stripped[0].isdigit()
+        and stripped[1] in ".)、)"
+    )
+
+
+def _paragraph_match_score(
+    block: Sequence[OcrLine], candidate: OcrLine, median_height: int
+) -> float | None:
+    last = block[-1]
+    vertical_advance = candidate.box.top - last.box.top
+    vertical_gap = candidate.box.top - last.box.bottom
+    if vertical_advance < max(3, round(min(last.box.height, candidate.box.height) * 0.42)):
+        return None
+    if vertical_gap > max(5, round(median_height * 0.62)):
+        return None
+    if len(block) >= 6 or sum(len(item.text) for item in block) + len(candidate.text) > 700:
+        return None
+    if _starts_list_item(candidate.text):
+        return None
+    if not (
+        len(last.text) >= 18
+        or len(candidate.text) >= 18
+        or len(block) >= 2
+    ):
+        return None
+    overlap = max(0, min(last.box.right, candidate.box.right) - max(
+        last.box.left, candidate.box.left))
+    overlap_ratio = overlap / max(1, min(last.box.width, candidate.box.width))
+    left_delta = abs(last.box.left - candidate.box.left)
+    if overlap_ratio < 0.42 and left_delta > max(18, round(median_height * 2.1)):
+        return None
+    return max(0, vertical_gap) * 4.0 + left_delta - overlap_ratio * median_height
+
+
+def group_ocr_lines(
+    lines: Sequence[OcrLine], image_width: int, image_height: int
+) -> tuple[OcrLine, ...]:
+    """Combine OCR fragments and neighboring prose rows into layout blocks.
+
+    Dense documents are translated paragraph-by-paragraph instead of painting
+    one independent box for every detected row. Short controls and isolated UI
+    labels remain separate, while columns are kept apart by overlap/alignment
+    checks.
+    """
+    if not lines:
+        return ()
+    median_height = _median_line_height(lines)
+    rows = _merge_row_fragments(lines, median_height)
+    blocks: list[list[OcrLine]] = []
+    for row in rows:
+        best: list[OcrLine] | None = None
+        best_score = float("inf")
+        for block in blocks:
+            score = _paragraph_match_score(block, row, median_height)
+            if score is not None and score < best_score:
+                best, best_score = block, score
+        if best is None:
+            blocks.append([row])
+        else:
+            best.append(row)
+
+    grouped: list[OcrLine] = []
+    for block in blocks:
+        if len(block) == 1:
+            grouped.append(block[0])
+            continue
+        weights = [max(1, len(item.text)) for item in block]
+        grouped.append(OcrLine(
+            OcrBox(
+                max(0, min(item.box.left for item in block)),
+                max(0, min(item.box.top for item in block)),
+                min(max(0, image_width), max(item.box.right for item in block)),
+                min(max(0, image_height), max(item.box.bottom for item in block)),
+            ),
+            "\n".join(item.text for item in block),
+            sum(
+                item.confidence * weight
+                for item, weight in zip(block, weights)
+            ) / sum(weights),
+        ))
+    grouped.sort(key=lambda item: (item.box.top, item.box.left))
+    return tuple(grouped)
 
 
 @dataclass(frozen=True)
@@ -445,6 +610,65 @@ def _translation_chunks(
     return tuple(chunks)
 
 
+def _select_translation_lines(
+    lines: Sequence[OcrLine], maximum_lines: int, maximum_characters: int
+) -> tuple[OcrLine, ...]:
+    """Retain the most useful text blocks when a very busy screen hits a cap."""
+    line_limit = max(1, int(maximum_lines))
+    character_limit = max(64, int(maximum_characters))
+    if len(lines) <= line_limit and sum(len(line.text) for line in lines) <= character_limit:
+        return tuple(lines)
+
+    indexed = list(enumerate(lines))
+    anchor = max(
+        lines,
+        key=lambda line: len(line.text) * max(1, line.box.width),
+    )
+
+    def in_dominant_column(line: OcrLine) -> bool:
+        overlap = max(0, min(anchor.box.right, line.box.right) - max(
+            anchor.box.left, line.box.left))
+        return overlap / max(1, min(anchor.box.width, line.box.width)) >= 0.45
+
+    primary = [item for item in indexed if in_dominant_column(item[1])]
+    secondary = sorted(
+        (item for item in indexed if not in_dominant_column(item[1])),
+        key=lambda item: (
+            len(item[1].text) * (1.0 + 0.2 * item[1].text.count("\n")),
+            item[1].box.width * item[1].box.height,
+        ),
+        reverse=True,
+    )
+    ranked = primary + secondary
+    selected: list[tuple[int, OcrLine]] = []
+    consumed = 0
+    for index, line in ranked:
+        if len(selected) >= line_limit:
+            break
+        length = len(line.text)
+        if selected and consumed + length > character_limit:
+            continue
+        selected.append((index, line))
+        consumed += length
+        if consumed >= character_limit:
+            break
+    selected.sort(key=lambda item: item[0])
+    return tuple(line for _index, line in selected)
+
+
+def _matches_source_script(text: str, source_lang: str) -> bool:
+    """Skip target-language UI chrome that would only add clutter and latency."""
+    language = str(source_lang or "").lower().split("-", 1)[0]
+    ascii_letters = sum(
+        ("a" <= character.lower() <= "z") for character in text)
+    cjk = sum("\u3400" <= character <= "\u9fff" for character in text)
+    if language == "en":
+        return ascii_letters >= max(2, cjk * 2)
+    if language == "zh":
+        return cjk > 0
+    return True
+
+
 class OcrTranslationService:
     """One-owner translator with a bounded line cache for changing frames."""
 
@@ -534,7 +758,10 @@ class OcrTranslationService:
                     targets[source] = target
             return targets, requests
 
-        for chunk in _translation_chunks(sources):
+        batch_characters = 1400 if source_lang.lower().startswith("en") else 800
+        for chunk in _translation_chunks(
+            sources, maximum_items=10, maximum_characters=batch_characters
+        ):
             requests += 1
             try:
                 outputs = list(batch_translate(
@@ -574,10 +801,20 @@ class OcrTranslationService:
         maximum_characters: int = 3000,
     ) -> TranslatedOcrFrame:
         started = time.perf_counter()
-        translator = self._ensure_translator(config)
         prepared: list[tuple[OcrLine, str]] = []
         consumed = 0
-        for line in frame.lines[:max(1, maximum_lines)]:
+        source_lines = tuple(
+            line for line in frame.lines
+            if _matches_source_script(line.text, source_lang)
+        )
+        grouped = (
+            group_ocr_lines(source_lines, frame.width, frame.height)
+            if bool(config.get("ocr_group_paragraphs", True))
+            else source_lines
+        )
+        selected = _select_translation_lines(
+            grouped, maximum_lines, maximum_characters)
+        for line in selected:
             remaining = max(0, maximum_characters - consumed)
             if remaining <= 0:
                 break
@@ -585,6 +822,21 @@ class OcrTranslationService:
             consumed += len(source)
             prepared.append((line, source))
 
+        if not prepared:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            return TranslatedOcrFrame(
+                frame.width,
+                frame.height,
+                (),
+                frame.elapsed_ms,
+                elapsed_ms,
+                0,
+                frame.backend,
+                frame.model_id,
+                0,
+            )
+
+        translator = self._ensure_translator(config)
         sources = [source for _line, source in prepared]
         targets, uncached = self._partition_cached_sources(
             sources, source_lang, target_lang)
@@ -634,6 +886,7 @@ __all__ = [
     "TranslatedOcrLine",
     "fingerprint_distance",
     "frame_fingerprint",
+    "group_ocr_lines",
     "live_ocr_config",
     "materially_changed",
     "polygon_to_box",

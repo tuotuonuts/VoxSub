@@ -172,6 +172,7 @@ class OcrWorkspace(QWidget):
         self._translated_cache_path: Path | None = None
         self._host_was_visible = False
         self._empty_live_frames = 0
+        self._last_fast_had_lines = False
         self._build_ui()
         self.set_mode("screenshot")
 
@@ -483,6 +484,7 @@ class OcrWorkspace(QWidget):
         self._live_paused = False
         self._showing_original = False
         self._overlay.set_capture_region(self._live_rect)
+        self._overlay.clear_frame()
         self._overlay.show()
         self._overlay.raise_()
         self._control.place_near(self._live_rect)
@@ -730,15 +732,37 @@ class OcrWorkspace(QWidget):
         self, capture: QImage, frame: TranslatedOcrFrame, warning: str, *,
         purpose: str = "live",
     ) -> None:
-        if purpose == "live-refine" and not frame.lines:
-            self._control.set_status(tr(
-                "高质量纠偏未找到更可靠文字，保留快速结果"))
-            return
+        selected_model = str(self._store.get(
+            "ocr_model_id", "ocr-rapidocr-v6-small-builtin"))
+        can_refine = (
+            purpose == "live"
+            and not warning
+            and frame.ocr_model_id != selected_model
+            and frame.ocr_backend.startswith("GPU")
+            and self._previous_fingerprint is not None
+        )
+        if purpose == "live":
+            self._last_fast_had_lines = bool(frame.lines)
         if not frame.lines:
             self._empty_live_frames += 1
-            if self._empty_live_frames < 2:
-                self._control.set_status(tr("未检测到文字，等待下一帧"))
-                return
+            if can_refine:
+                self._pending_refine_fingerprint = self._previous_fingerprint
+                self._refine_timer.start()
+                self._control.set_status(tr("快速识别不完整，正在高质量纠偏…"))
+            elif purpose == "live-refine":
+                if not self._last_fast_had_lines:
+                    self._overlay.clear_frame()
+                self._control.set_status(tr(
+                    "高质量纠偏未找到更可靠文字，保留已有结果"))
+            elif self._empty_live_frames < 2:
+                # Retry one identical frame before clearing a readable result;
+                # a single low-confidence pass must not make the overlay flash.
+                self._previous_fingerprint = None
+                self._control.set_status(tr("未检测到文字，正在重试"))
+            else:
+                self._overlay.clear_frame()
+                self._control.set_status(tr("当前画面未检测到文字"))
+            return
         else:
             self._empty_live_frames = 0
         self._overlay.set_frame(frame, capture)
@@ -755,15 +779,7 @@ class OcrWorkspace(QWidget):
         )
         self.live_status.setText(status)
         self._control.set_status(status)
-        selected_model = str(self._store.get(
-            "ocr_model_id", "ocr-rapidocr-v6-small-builtin"))
-        if (
-            purpose == "live"
-            and not warning
-            and frame.ocr_model_id != selected_model
-            and frame.ocr_backend.startswith("GPU")
-            and self._previous_fingerprint is not None
-        ):
+        if can_refine:
             self._pending_refine_fingerprint = self._previous_fingerprint
             self._refine_timer.start()
 
@@ -809,6 +825,7 @@ class OcrWorkspace(QWidget):
         self._live_paused = False
         self._previous_fingerprint = None
         self._pending_refine_fingerprint = None
+        self._last_fast_had_lines = False
         self._revision += 1
         self._captures.clear()
         self._overlay.hide()

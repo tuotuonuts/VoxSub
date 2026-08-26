@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -63,29 +63,68 @@ def _contrasting_text(background: QColor) -> QColor:
     return QColor("#111827") if luminance >= 150 else QColor("#F9FAFB")
 
 
-def _fit_font(rect: QRect, text: str) -> QFont:
+def _is_paragraph(source: str) -> bool:
+    return "\n" in source or len(source) >= 80
+
+
+def _text_flags(paragraph: bool) -> Qt.AlignmentFlag | Qt.TextFlag:
+    horizontal = (
+        Qt.AlignmentFlag.AlignLeft if paragraph
+        else Qt.AlignmentFlag.AlignCenter
+    )
+    return horizontal | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
+
+
+def _inner_text_rect(rect: QRect) -> QRect:
+    horizontal = min(6, max(1, (rect.width() - 2) // 4))
+    vertical = min(4, max(1, (rect.height() - 2) // 4))
+    return rect.adjusted(horizontal, vertical, -horizontal, -vertical)
+
+
+def _fit_font(rect: QRect, text: str, source: str) -> QFont:
+    paragraph = _is_paragraph(source)
+    source_rows = max(1, source.count("\n") + 1)
     font = QFont("Microsoft YaHei UI")
-    size = max(10, min(38, round(rect.height() * 0.62)))
-    flags = int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap)
+    size = max(10, min(32, round(rect.height() / source_rows * 0.68)))
+    flags = int(_text_flags(paragraph))
+    inner = _inner_text_rect(rect)
     while size > 9:
         font.setPixelSize(size)
-        bounds = QFontMetrics(font).boundingRect(rect, flags, text)
-        if bounds.width() <= rect.width() and bounds.height() <= rect.height():
+        measured = QFontMetrics(font).boundingRect(inner, flags, text)
+        if measured.width() <= inner.width() and measured.height() <= inner.height():
             break
         size -= 1
     font.setPixelSize(size)
-    font.setWeight(QFont.Weight.DemiBold)
+    font.setWeight(QFont.Weight.Normal if paragraph else QFont.Weight.DemiBold)
     return font
 
 
 def _translation_rect(base: QRect, bounds: QRect, source: str, translation: str) -> QRect:
-    """Grow around the source center when the target language needs more room."""
-    ratio = min(2.5, max(1.0, len(translation) / max(1, len(source))))
-    width = min(bounds.width(), max(base.width(), round(base.width() * min(1.8, ratio))))
-    rows = min(2.2, max(1.0, ratio / max(1.0, width / max(1, base.width()))))
-    height = min(bounds.height(), max(base.height(), round(base.height() * rows)))
-    left = max(bounds.left(), min(base.center().x() - width // 2, bounds.right() - width + 1))
-    top = max(bounds.top(), min(base.center().y() - height // 2, bounds.bottom() - height + 1))
+    """Allocate enough measured space while keeping prose as one large block."""
+    paragraph = _is_paragraph(source)
+    source_rows = max(1, source.count("\n") + 1)
+    probe = QFont("Microsoft YaHei UI")
+    probe.setPixelSize(max(10, min(32, round(base.height() / source_rows * 0.68))))
+    metrics = QFontMetrics(probe)
+    padding = 12
+    if paragraph:
+        width_cap = min(bounds.width(), max(base.width(), round(base.width() * 1.18)))
+        width = max(base.width(), min(width_cap, metrics.horizontalAdvance(translation) + padding))
+    else:
+        width_cap = min(bounds.width(), max(base.width(), round(base.width() * 2.2)))
+        width = max(base.width(), min(width_cap, metrics.horizontalAdvance(translation) + padding))
+    flags = int(_text_flags(paragraph))
+    measured = metrics.boundingRect(
+        QRect(0, 0, max(4, width - padding), bounds.height()), flags, translation)
+    height = min(bounds.height(), max(base.height(), measured.height() + 8))
+    if paragraph:
+        left = base.left()
+        top = base.top()
+    else:
+        left = base.center().x() - width // 2
+        top = base.center().y() - height // 2
+    left = max(bounds.left(), min(left, bounds.right() - width + 1))
+    top = max(bounds.top(), min(top, bounds.bottom() - height + 1))
     return QRect(left, top, width, height)
 
 
@@ -96,19 +135,24 @@ def _paint_translations(
     bounds: QRect,
 ) -> None:
     for line in frame.lines:
-        text = line.translation.strip() or line.source
+        text = line.translation.strip()
+        if not text:
+            # A failed translation should leave the readable source untouched,
+            # not cover it with a duplicate OCR result.
+            continue
         source_rect = _mapped_box(line.box, frame, bounds).adjusted(-4, -3, 4, 3)
         rect = _translation_rect(source_rect, bounds, line.source, text).intersected(bounds)
         if rect.width() < 4 or rect.height() < 4:
             continue
         background = _sample_background(capture, line.box)
-        painter.setPen(QPen(_contrasting_text(background), 1))
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(background)
         painter.drawRoundedRect(rect, min(7, rect.height() / 3), min(7, rect.height() / 3))
-        painter.setFont(_fit_font(rect, text))
+        painter.setPen(_contrasting_text(background))
+        painter.setFont(_fit_font(rect, text, line.source))
         painter.drawText(
-            rect.adjusted(3, 1, -3, -1),
-            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            _inner_text_rect(rect),
+            _text_flags(_is_paragraph(line.source)),
             text,
         )
 
@@ -151,6 +195,11 @@ class OcrTranslationOverlay(QWidget):
     def set_frame(self, frame: TranslatedOcrFrame, capture: QImage) -> None:
         self._frame = frame
         self._capture = capture.copy()
+        self.update()
+
+    def clear_frame(self) -> None:
+        self._frame = None
+        self._capture = QImage()
         self.update()
 
     def showEvent(self, event) -> None:  # noqa: N802

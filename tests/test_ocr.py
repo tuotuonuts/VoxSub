@@ -14,6 +14,7 @@ from voxsub.ocr import (
     RapidOcrEngine,
     fingerprint_distance,
     frame_fingerprint,
+    group_ocr_lines,
     live_ocr_config,
     materially_changed,
     polygon_to_box,
@@ -164,10 +165,95 @@ def test_live_ocr_uses_fast_stage_then_restores_selected_refinement_model():
     assert fast["ocr_live_fast_stage"] is True
     assert fast["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
     assert fast["ocr_live_refine_model_id"] == "ocr-rapidocr-v6-medium"
-    assert fast["ocr_maximum_lines"] == 24
+    assert fast["ocr_maximum_lines"] == 40
     assert refinement["ocr_model_id"] == "ocr-rapidocr-v6-medium"
     assert refinement["ocr_refinement_mode"] is True
-    assert refinement["ocr_maximum_lines"] == 48
+    assert refinement["ocr_maximum_lines"] == 72
+
+
+def test_dense_document_rows_are_grouped_into_paragraph_blocks():
+    lines = (
+        OcrLine(OcrBox(100, 100, 360, 118),
+                "I have reviewed your latest document.", 0.98),
+        OcrLine(OcrBox(366, 100, 520, 118),
+                "The direction is clearer.", 0.97),
+        OcrLine(OcrBox(100, 124, 610, 142),
+                "Please address the following points before approval.", 0.96),
+        OcrLine(OcrBox(100, 150, 620, 168),
+                "• Recheck the dependencies for iteration one.", 0.95),
+        OcrLine(OcrBox(116, 174, 600, 192),
+                "Confirm that every user story remains complete.", 0.94),
+    )
+
+    grouped = group_ocr_lines(lines, 800, 400)
+
+    assert len(grouped) == 2
+    assert grouped[0].text == (
+        "I have reviewed your latest document. The direction is clearer.\n"
+        "Please address the following points before approval."
+    )
+    assert grouped[0].box == OcrBox(100, 100, 610, 142)
+    assert grouped[1].text.startswith("• Recheck")
+    assert "\nConfirm that" in grouped[1].text
+
+
+def test_busy_screen_line_limit_prioritizes_large_body_block(monkeypatch):
+    calls: list[str] = []
+
+    class FakeTranslator:
+        def warmup(self):
+            return None
+
+        def translate(self, text, source, target, *, timeout_ms):
+            calls.append(text)
+            return f"译:{text}"
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "voxsub.ocr.TranslatorFactory.create",
+        lambda _kind, _config: FakeTranslator(),
+    )
+    frame = OcrFrame(1200, 700, (
+        OcrLine(OcrBox(10, 10, 70, 28), "Activity", 0.99),
+        OcrLine(OcrBox(10, 40, 70, 58), "Chat", 0.99),
+        OcrLine(OcrBox(400, 200, 1050, 220),
+                "This is the first long sentence in the primary document body.", 0.98),
+        OcrLine(OcrBox(400, 226, 1080, 246),
+                "This second sentence must not be displaced by navigation labels.", 0.97),
+    ), 12)
+    service = OcrTranslationService()
+
+    translated = service.translate_frame(
+        frame, "en", "zh", {"translate_tier": "fast"}, maximum_lines=1)
+    service.close()
+
+    assert len(translated.lines) == 1
+    assert "primary document body" in translated.lines[0].source
+    assert "\n" in translated.lines[0].source
+    assert calls == [translated.lines[0].source]
+
+
+def test_target_language_ui_text_is_not_covered_or_sent_to_translator(monkeypatch):
+    def fail_create(*_args, **_kwargs):
+        raise AssertionError("target-language UI must not load a translator")
+
+    monkeypatch.setattr(
+        "voxsub.ocr.TranslatorFactory.create",
+        fail_create,
+    )
+    frame = OcrFrame(400, 120, (
+        OcrLine(OcrBox(20, 20, 180, 48), "活动 设置 搜索", 0.99),
+    ), 8)
+    service = OcrTranslationService()
+
+    translated = service.translate_frame(
+        frame, "en", "zh", {"translate_tier": "quality"})
+    service.close()
+
+    assert translated.lines == ()
+    assert translated.translation_requests == 0
 
 
 def test_rapidocr_engine_enables_directml_and_reports_actual_provider(monkeypatch):
