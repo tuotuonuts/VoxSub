@@ -6,7 +6,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QRect  # noqa: E402
-from PySide6.QtGui import QColor, QImage  # noqa: E402
+from PySide6.QtGui import QColor, QFontMetrics, QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from voxsub.config_store import ConfigStore  # noqa: E402
@@ -14,6 +14,11 @@ from voxsub.ocr import OcrBox, TranslatedOcrFrame, TranslatedOcrLine  # noqa: E4
 from voxsub.ui.ocr_overlay import (  # noqa: E402
     OcrLiveControlBar,
     OcrTranslationOverlay,
+    _fit_font,
+    _inner_text_rect,
+    _is_paragraph,
+    _text_flags,
+    _translation_rect,
     render_translated_image,
 )
 from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
@@ -226,6 +231,46 @@ def test_render_translated_image_replaces_pixels_in_line_region():
 
     assert not rendered.isNull()
     assert rendered != capture
+
+
+def test_overlay_fits_unbroken_translation_inside_adaptive_box():
+    """URLs and CJK text must not overflow or clip after wrapping."""
+    base = QRect(100, 100, 160, 24)
+    bounds = QRect(0, 0, 800, 600)
+    source = "A source line"
+    translation = "A" * 80
+
+    rect = _translation_rect(base, bounds, source, translation)
+    font = _fit_font(rect, translation, source)
+    measured = QFontMetrics(font).boundingRect(
+        _inner_text_rect(rect),
+        int(_text_flags(_is_paragraph(source))),
+        translation,
+    )
+
+    assert font.pixelSize() < 32
+    assert measured.width() <= _inner_text_rect(rect).width()
+    assert measured.height() <= _inner_text_rect(rect).height()
+
+
+def test_overlay_shrinks_long_paragraph_to_capture_bounds():
+    base = QRect(100, 100, 160, 24)
+    bounds = QRect(0, 0, 800, 600)
+    source = "A" * 100
+    translation = "中" * 1200
+
+    rect = _translation_rect(base, bounds, source, translation)
+    font = _fit_font(rect, translation, source)
+    measured = QFontMetrics(font).boundingRect(
+        _inner_text_rect(rect),
+        int(_text_flags(_is_paragraph(source))),
+        translation,
+    )
+
+    assert rect.bottom() <= bounds.bottom()
+    assert font.pixelSize() >= 4
+    assert measured.width() <= _inner_text_rect(rect).width()
+    assert measured.height() <= _inner_text_rect(rect).height()
 
 
 def test_failed_translation_leaves_source_image_uncovered():

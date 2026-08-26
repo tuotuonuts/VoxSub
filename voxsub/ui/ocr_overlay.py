@@ -72,7 +72,14 @@ def _text_flags(paragraph: bool) -> Qt.AlignmentFlag | Qt.TextFlag:
         Qt.AlignmentFlag.AlignLeft if paragraph
         else Qt.AlignmentFlag.AlignCenter
     )
-    return horizontal | Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap
+    # TextWordWrap preserves natural word breaks, while TextWrapAnywhere is
+    # required for URLs, identifiers, and CJK strings without whitespace.
+    return (
+        horizontal
+        | Qt.AlignmentFlag.AlignVCenter
+        | Qt.TextFlag.TextWordWrap
+        | Qt.TextFlag.TextWrapAnywhere
+    )
 
 
 def _inner_text_rect(rect: QRect) -> QRect:
@@ -85,10 +92,13 @@ def _fit_font(rect: QRect, text: str, source: str) -> QFont:
     paragraph = _is_paragraph(source)
     source_rows = max(1, source.count("\n") + 1)
     font = QFont("Microsoft YaHei UI")
-    size = max(10, min(32, round(rect.height() / source_rows * 0.68)))
+    # OCR boxes can be only a few pixels high after a DPI conversion.  Start
+    # from the source line height, then keep shrinking until the complete
+    # translated block fits the actual painted rectangle.
+    size = max(4, min(32, round(rect.height() / source_rows * 0.68)))
     flags = int(_text_flags(paragraph))
     inner = _inner_text_rect(rect)
-    while size > 9:
+    while size > 4:
         font.setPixelSize(size)
         measured = QFontMetrics(font).boundingRect(inner, flags, text)
         if measured.width() <= inner.width() and measured.height() <= inner.height():
