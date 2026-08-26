@@ -45,7 +45,7 @@
 
 - 当前源码全量门禁为 `298 passed, 8 skipped`；复杂度预算、四模式布局、语言方向传递、分阶段模型配置、DirectML provider、批量顺序/缓存和 OCR UI 回归均通过。
 - 打包后的 `VoxSub.exe --ocr-smoke` 独立复跑退出码为 0，隔离日志确认 `backend=GPU · DirectML`，成品目录包含 `DirectML.dll`。
-- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,338,824 字节（264.49 MiB），SHA256 `9B6D57572E1A2C17178C2A169587DD57CA312C265D9EF343A8D3AD6B3334ED6B`；当前构建环境没有可用代码签名证书，主程序与安装包未签名。
+- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,277,256 字节（264.43 MiB），SHA256 `79C9A34841E014C5CFF6FC44604377AD136C9FA12E9B53DD8E82BA893F688766`；当前构建环境没有可用代码签名证书，主程序与安装包未签名。
 - `0.9.0-beta` 仅推送源码与安装包，不在用户验证前创建 GitHub Release。
 
 ## 版本: v0.8.0-beta（开发候选，未发布）

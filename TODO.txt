@@ -213,4 +213,14 @@
 [x] 原图和未导出译后图分别缓存至 originals / translated；强制非 C 盘；默认每类 15 张，0 无限
 [x] 模型广场新增 PP-OCRv6 Tiny/Small/Medium 与 PP-OCRv5 文档手写增强档，下载/校验/切换接入真实运行时
 [x] 全量门禁 286 passed / 8 skipped
-[ ] 完成 0.9.0-beta 安装包、SHA256、GitHub push；用户验证前不创建 Release
+[x] 完成首轮 0.9.0-beta 安装包、SHA256、GitHub push；用户验证前不创建 Release
+
+=== 2026-08-26 (v0.9.0 OCR 平级模式与实时性能修复) ===
+[x] OCR 改为 A/B/C/D 平级模式；四卡片 2×2 布局，共用左侧中→英/英→中翻译方向
+[x] 进入 D 模式后台预热 OCR 与翻译器；成品程序预热 2.09 秒并确认 GPU · DirectML
+[x] Medium/Document 实时链路改为 Small 快速首帧 + 稳定画面所选质量模型纠偏；CPU 避免昂贵自动纠偏
+[x] 相邻 OCR 行按屏幕上下文有界批量翻译，保留严格一一对应校验、缓存和逐行降级
+[x] 全量门禁 298 passed / 8 skipped；复杂度预算、四模式布局、语言方向与分阶段配置均通过
+[x] 源码提交 ccdf4a9 已推送 GitHub main
+[x] 重建同版本安装包 277,277,256 字节；SHA256 79C9A34841E014C5CFF6FC44604377AD136C9FA12E9B53DD8E82BA893F688766
+[ ] 等待用户安装验证；不创建 GitHub Release
