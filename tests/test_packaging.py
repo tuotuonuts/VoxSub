@@ -37,11 +37,22 @@ def test_installer_uses_bounded_shutdown_instead_of_restart_manager_wait():
     assert "CloseApplications=no" in script
     assert "RestartApplications=no" in script
     assert "function PrepareToInstall" in script
-    assert "GracefulCloseTimeoutMs = 2500" in script
+    assert "GracefulCloseTimeoutMs = 5000" in script
+    assert "ForcedCloseVerifyTimeoutMs = 2000" in script
+    assert "function WaitForNewVoxSubToExit" in script
+    assert "if not WaitForNewVoxSubToExit(GracefulCloseTimeoutMs)" in script
+    assert "if not WaitForNewVoxSubToExit(ForcedCloseVerifyTimeoutMs)" in script
     assert "MyAppShutdownEvent" in script
     assert "MyAppRunningMutex" in script
     assert "taskkill.exe" in script
     assert '/F /T /IM \"{#MyAppExeName}\"' in script
+
+    app = (ROOT / "voxsub" / "ui" / "app.py").read_text(encoding="utf-8")
+    assert "app.aboutToQuit.connect(installer_shutdown.close)" not in app
+
+    build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    assert 'Run-Checked "packaged installer shutdown smoke"' in build
+    assert '"scripts\\smoke_installer_shutdown.py" --exe $Exe' in build
 
 
 def test_upgrade_removes_stale_runtime_without_touching_user_data():

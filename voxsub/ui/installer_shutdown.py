@@ -4,8 +4,8 @@ Closing VoxSub's main window normally hides it to the tray.  Windows Restart
 Manager therefore cannot distinguish a user close from an update request and
 waits for its full timeout.  The installer signals a named event instead; the
 Qt event loop receives it and runs the same application-level cleanup as the
-tray Quit action.  A named mutex remains open until cleanup is complete, so
-the installer can use a short bounded grace period before its legacy fallback.
+tray Quit action.  A named mutex remains open until the process really exits,
+so the installer can distinguish normal cleanup from a slow or stuck shutdown.
 """
 from __future__ import annotations
 

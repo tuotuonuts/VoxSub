@@ -248,7 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     app.aboutToQuit.connect(model_hub_win.shutdown)
     app.aboutToQuit.connect(ocr_workspace.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
-    app.aboutToQuit.connect(installer_shutdown.close)
+    # Keep the running mutex owned until the process has actually terminated.
+    # Closing it from aboutToQuit creates a small race where setup starts
+    # replacing files while PyInstaller/Python is still finishing teardown.
+    # Windows reclaims both named handles when the process exits.
     app.aboutToQuit.connect(lambda: logger.info("应用退出"))
     logger.info("事件循环开始")
     return app.exec()

@@ -122,7 +122,10 @@ end;
 const
   EVENT_MODIFY_STATE = $0002;
   SYNCHRONIZE = $00100000;
-  GracefulCloseTimeoutMs = 2500;
+  { OCR and translation workers can need a little over two seconds to unwind.
+    Keep the wait bounded, but do not race their normal cleanup. }
+  GracefulCloseTimeoutMs = 5000;
+  ForcedCloseVerifyTimeoutMs = 2000;
 
 function OpenEvent(dwDesiredAccess: LongWord; bInheritHandle: Boolean;
   lpName: string): THandle;
@@ -160,21 +163,33 @@ begin
     CloseHandle(MutexHandle);
 end;
 
+function WaitForNewVoxSubToExit(TimeoutMs: Cardinal): Boolean;
+var
+  StartedAt: Cardinal;
+begin
+  StartedAt := GetTickCount;
+  while NewVoxSubIsRunning() and
+    (GetTickCount - StartedAt < TimeoutMs) do
+    Sleep(100);
+  Result := not NewVoxSubIsRunning();
+end;
+
 function ForceCloseVoxSub(): Boolean;
 var
   ResultCode: Integer;
 begin
   { /T also closes a bundled llama-server child. Exit 128 means no match. }
+  ResultCode := -1;
   Result := Exec(ExpandConstant('{sys}\taskkill.exe'),
     '/F /T /IM "{#MyAppExeName}"', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);
+  Log(Format('VoxSub taskkill completed: started=%d exit=%d', [Ord(Result), ResultCode]));
   Result := Result and ((ResultCode = 0) or (ResultCode = 128));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Signalled: Boolean;
-  StartedAt: Cardinal;
 begin
   Result := '';
   WizardForm.StatusLabel.Caption := ExpandConstant('{cm:ClosingApp}');
@@ -183,16 +198,22 @@ begin
   Signalled := SignalRunningVoxSub();
   if Signalled then
   begin
-    StartedAt := GetTickCount;
-    while NewVoxSubIsRunning() and
-      (GetTickCount - StartedAt < GracefulCloseTimeoutMs) do
-      Sleep(100);
+    Log('VoxSub shutdown event was signalled; waiting for cleanup.');
+    if not WaitForNewVoxSubToExit(GracefulCloseTimeoutMs) then
+    begin
+      { The application may disappear between this check and taskkill.  Do not
+        treat taskkill's resulting "not found"/race response as a failure;
+        verify the named running mutex after the attempt instead. }
+      ForceCloseVoxSub();
+      if not WaitForNewVoxSubToExit(ForcedCloseVerifyTimeoutMs) then
+        Result := ExpandConstant('{cm:AppCloseFailed}');
+    end;
   end;
 
   { 0.7.1 and older do not expose the event; an unresponsive newer process
     can also outlive the short grace period. Handle both without Restart
     Manager's 30-second wait. }
-  if (not Signalled) or NewVoxSubIsRunning() then
+  if (Result = '') and (not Signalled) then
     if not ForceCloseVoxSub() then
       Result := ExpandConstant('{cm:AppCloseFailed}');
 end;

@@ -249,6 +249,9 @@ $OcrSmoke = Start-Process -FilePath $Exe -ArgumentList "--ocr-smoke" `
 if ($OcrSmoke.ExitCode -ne 0) {
     throw "packaged OCR smoke failed (exit $($OcrSmoke.ExitCode))"
 }
+Run-Checked "packaged installer shutdown smoke" {
+    & ".venv\Scripts\python.exe" "scripts\smoke_installer_shutdown.py" --exe $Exe
+}
 $Cert = Find-DevCert
 Sign-Artifact -Path $Exe -Certificate $Cert
 
