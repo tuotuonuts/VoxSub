@@ -17,6 +17,7 @@ from voxsub.ui.ocr_overlay import (  # noqa: E402
     _fit_font,
     _inner_text_rect,
     _is_paragraph,
+    _translation_layouts,
     _text_flags,
     _translation_rect,
     render_translated_image,
@@ -271,6 +272,24 @@ def test_overlay_shrinks_long_paragraph_to_capture_bounds():
     assert font.pixelSize() >= 4
     assert measured.width() <= _inner_text_rect(rect).width()
     assert measured.height() <= _inner_text_rect(rect).height()
+
+
+def test_overlay_translation_boxes_never_overlap():
+    frame = TranslatedOcrFrame(
+        400,
+        120,
+        (
+            TranslatedOcrLine(OcrBox(10, 40, 170, 62), "first", "A" * 80, 0.99),
+            TranslatedOcrLine(OcrBox(190, 40, 350, 62), "second", "B" * 80, 0.99),
+        ),
+        20,
+        30,
+    )
+
+    layouts = _translation_layouts(frame, QRect(0, 0, 400, 120))
+
+    assert len(layouts) == 2
+    assert not layouts[0][1].intersects(layouts[1][1])
 
 
 def test_failed_translation_leaves_source_image_uncovered():

@@ -88,14 +88,21 @@ def _inner_text_rect(rect: QRect) -> QRect:
     return rect.adjusted(horizontal, vertical, -horizontal, -vertical)
 
 
-def _fit_font(rect: QRect, text: str, source: str) -> QFont:
+def _fit_font(
+    rect: QRect,
+    text: str,
+    source: str,
+    reference_rect: QRect | None = None,
+) -> QFont:
+    """Fit translated text while keeping the source glyph scale as baseline."""
     paragraph = _is_paragraph(source)
     source_rows = max(1, source.count("\n") + 1)
     font = QFont("Microsoft YaHei UI")
     # OCR boxes can be only a few pixels high after a DPI conversion.  Start
     # from the source line height, then keep shrinking until the complete
     # translated block fits the actual painted rectangle.
-    size = max(4, min(32, round(rect.height() / source_rows * 0.68)))
+    reference = reference_rect if reference_rect is not None else rect
+    size = max(4, min(32, round(reference.height() / source_rows * 0.68)))
     flags = int(_text_flags(paragraph))
     inner = _inner_text_rect(rect)
     while size > 4:
@@ -138,20 +145,108 @@ def _translation_rect(base: QRect, bounds: QRect, source: str, translation: str)
     return QRect(left, top, width, height)
 
 
+def _candidate_rect(width: int, height: int, left: int, top: int,
+                    bounds: QRect) -> QRect | None:
+    """Clamp a candidate to the capture bounds without changing its size."""
+    if width > bounds.width() or height > bounds.height():
+        return None
+    x = max(bounds.left(), min(int(left), bounds.right() - width + 1))
+    y = max(bounds.top(), min(int(top), bounds.bottom() - height + 1))
+    return QRect(x, y, width, height)
+
+
+def _place_translation_rect(
+    base: QRect,
+    desired: QRect,
+    bounds: QRect,
+    occupied: tuple[QRect, ...],
+) -> QRect | None:
+    """Place one overlay box without covering any earlier translated box."""
+    base = base.intersected(bounds)
+    desired = desired.intersected(bounds)
+    candidates: list[QRect] = []
+
+    def add(rect: QRect | None) -> None:
+        if rect is None or rect.width() < 4 or rect.height() < 4:
+            return
+        if any(rect == previous for previous in candidates):
+            return
+        candidates.append(rect)
+
+    # Preserve the measured expansion whenever the surrounding layout allows
+    # it.  The source box is the stable fallback for dense rows.
+    add(desired)
+    add(base)
+    gap = 2
+    width, height = desired.width(), desired.height()
+    around = (
+        (base.left(), base.top()),
+        (base.left(), base.bottom() + gap),
+        (base.left(), base.top() - height - gap),
+        (base.right() - width + 1, base.top()),
+        (base.left() - width - gap, base.top()),
+        (base.right() + gap, base.top()),
+    )
+    for left, top in around:
+        add(_candidate_rect(width, height, left, top, bounds))
+
+    for candidate in candidates:
+        if not any(candidate.intersects(previous) for previous in occupied):
+            return candidate
+    return None
+
+
+def _translation_layouts(
+    frame: TranslatedOcrFrame, bounds: QRect
+) -> tuple[tuple[TranslatedOcrLine, QRect, QFont], ...]:
+    """Build collision-free overlay rectangles and their fitted fonts."""
+    # Keep every source box available before allowing a long translation to
+    # expand.  This makes the result deterministic for adjacent OCR lines:
+    # an early long line cannot consume the area needed by a later line.
+    source_rects = tuple(
+        _mapped_box(line.box, frame, bounds).intersected(bounds)
+        for line in frame.lines
+    )
+    occupied: list[QRect] = []
+    layouts: list[tuple[TranslatedOcrLine, QRect, QFont]] = []
+    for index, line in enumerate(frame.lines):
+        text = line.translation.strip()
+        if not text:
+            continue
+        source_rect = source_rects[index]
+        if source_rect.width() < 4 or source_rect.height() < 4:
+            continue
+        desired = _translation_rect(source_rect, bounds, line.source, text)
+        reserved = tuple(
+            other for other_index, other in enumerate(source_rects)
+            if other_index != index and other.width() >= 4 and other.height() >= 4
+        )
+        rect = _place_translation_rect(
+            source_rect,
+            desired,
+            bounds,
+            reserved + tuple(occupied),
+        )
+        if rect is None:
+            # OCR boxes can overlap slightly after DPI mapping.  In that case
+            # use the original box only when it is still collision-free; never
+            # paint a rectangle over another translated result.
+            if any(source_rect.intersects(previous) for previous in occupied):
+                continue
+            rect = source_rect
+        layouts.append((line, rect, _fit_font(rect, text, line.source, source_rect)))
+        occupied.append(rect)
+    return tuple(layouts)
+
+
 def _paint_translations(
     painter: QPainter,
     frame: TranslatedOcrFrame,
     capture: QImage,
     bounds: QRect,
 ) -> None:
-    for line in frame.lines:
+    for line, rect, font in _translation_layouts(frame, bounds):
         text = line.translation.strip()
-        if not text:
-            # A failed translation should leave the readable source untouched,
-            # not cover it with a duplicate OCR result.
-            continue
-        source_rect = _mapped_box(line.box, frame, bounds).adjusted(-4, -3, 4, 3)
-        rect = _translation_rect(source_rect, bounds, line.source, text).intersected(bounds)
         if rect.width() < 4 or rect.height() < 4:
             continue
         background = _sample_background(capture, line.box)
@@ -159,7 +254,7 @@ def _paint_translations(
         painter.setBrush(background)
         painter.drawRoundedRect(rect, min(7, rect.height() / 3), min(7, rect.height() / 3))
         painter.setPen(_contrasting_text(background))
-        painter.setFont(_fit_font(rect, text, line.source))
+        painter.setFont(font)
         painter.drawText(
             _inner_text_rect(rect),
             _text_flags(_is_paragraph(line.source)),

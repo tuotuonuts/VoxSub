@@ -15,6 +15,9 @@
 #define MyAppId "{{7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001}"
 #define MyAppRunningMutex "Local\VoxSub.Application.7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001"
 #define MyAppShutdownEvent "Local\VoxSub.InstallerShutdown.7B5F6A3C-2E8D-4B1A-9C7E-VOXSUB0000001"
+#ifndef MyAppSourceDir
+#define MyAppSourceDir "..\dist\VoxSub"
+#endif
 
 [Setup]
 AppId={#MyAppId}
@@ -77,7 +80,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopShortcut}"; GroupDescription
 
 [Files]
 ; VoxSub 主程序 + 全部运行时 (PyInstaller onedir 输出)
-Source: "..\dist\VoxSub\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyAppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
 ; PyInstaller's onedir layout changes as dependencies evolve. Overwriting an
