@@ -16,7 +16,7 @@ from voxsub.ui.ocr_overlay import (  # noqa: E402
     render_translated_image,
 )
 from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
-from voxsub.ui.screen_capture import qimage_to_bgr  # noqa: E402
+from voxsub.ui.screen_capture import CapturedRegion, qimage_to_bgr  # noqa: E402
 
 
 def _app():
@@ -98,6 +98,66 @@ def test_workspace_exposes_two_modes_and_can_be_embedded(tmp_path):
         workspace.shutdown()
         workspace.deleteLater()
         host.deleteLater()
+
+
+def test_workspace_uses_shared_language_direction_and_staged_live_models(
+    monkeypatch, tmp_path
+):
+    _app()
+    store = ConfigStore(tmp_path / "config.json")
+    store.update({
+        "lang_pair": "en-zh",
+        "ocr_model_id": "ocr-rapidocr-v6-medium",
+    })
+    workspace = OcrWorkspace(store)
+    jobs = []
+    monkeypatch.setattr(
+        workspace._worker, "submit",  # noqa: SLF001
+        lambda job: jobs.append(job) or True,
+    )
+    image = QImage(160, 90, QImage.Format.Format_RGB888)
+    image.fill(QColor(245, 245, 245))
+    captured = CapturedRegion(image, QRect(0, 0, 160, 90))
+    try:
+        assert workspace._submit(captured, "live")  # noqa: SLF001
+        assert workspace._submit(captured, "live-refine")  # noqa: SLF001
+
+        assert [(job.source_lang, job.target_lang) for job in jobs] == [
+            ("en", "zh"), ("en", "zh")]
+        assert jobs[0].config["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
+        assert jobs[0].config["ocr_maximum_lines"] == 24
+        assert jobs[1].config["ocr_model_id"] == "ocr-rapidocr-v6-medium"
+        assert jobs[1].config["ocr_refinement_mode"] is True
+    finally:
+        workspace.shutdown()
+        workspace.deleteLater()
+
+
+def test_peer_mode_prewarms_the_selected_language_direction(monkeypatch, tmp_path):
+    _app()
+    store = ConfigStore(tmp_path / "config.json")
+    store.update({
+        "lang_pair": "en-zh",
+        "ocr_model_id": "ocr-rapidocr-v6-medium",
+    })
+    workspace = OcrWorkspace(store)
+    prepared = []
+    monkeypatch.setattr(
+        workspace._worker, "prepare",  # noqa: SLF001
+        lambda config, source, target: (
+            prepared.append((config, source, target)) or True),
+    )
+    try:
+        workspace.prepare_live()
+
+        assert len(prepared) == 1
+        config, source, target = prepared[0]
+        assert (source, target) == ("en", "zh")
+        assert config["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
+        assert "预热" in workspace.live_status.text()
+    finally:
+        workspace.shutdown()
+        workspace.deleteLater()
 
 
 def test_workspace_renders_screenshot_result_without_starting_capture(tmp_path):

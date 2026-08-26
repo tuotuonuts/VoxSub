@@ -18,6 +18,7 @@ from voxsub.ocr import (
     materially_changed,
     polygon_to_box,
     preferred_ocr_backend,
+    refinement_ocr_config,
 )
 from voxsub.ui.ocr_worker import OcrJob, OcrWorker
 
@@ -153,22 +154,20 @@ def test_preferred_ocr_backend_selects_directml(monkeypatch):
     assert params == {"EngineConfig.onnxruntime.use_dml": True}
 
 
-def test_live_ocr_keeps_quality_model_on_gpu_and_falls_back_on_cpu(monkeypatch):
+def test_live_ocr_uses_fast_stage_then_restores_selected_refinement_model():
     selected = {"ocr_model_id": "ocr-rapidocr-v6-medium"}
-    monkeypatch.setattr(
-        "voxsub.ocr.preferred_ocr_backend", lambda: ("GPU · DirectML", {}))
 
-    gpu = live_ocr_config(selected)
+    fast = live_ocr_config(selected)
+    refinement = refinement_ocr_config(selected)
 
-    assert gpu["ocr_live_mode"] is True
-    assert gpu["ocr_model_id"] == "ocr-rapidocr-v6-medium"
-    monkeypatch.setattr(
-        "voxsub.ocr.preferred_ocr_backend", lambda: ("CPU", {}))
-
-    cpu = live_ocr_config(selected)
-
-    assert cpu["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
-    assert cpu["ocr_live_fallback_from"] == "ocr-rapidocr-v6-medium"
+    assert fast["ocr_live_mode"] is True
+    assert fast["ocr_live_fast_stage"] is True
+    assert fast["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
+    assert fast["ocr_live_refine_model_id"] == "ocr-rapidocr-v6-medium"
+    assert fast["ocr_maximum_lines"] == 24
+    assert refinement["ocr_model_id"] == "ocr-rapidocr-v6-medium"
+    assert refinement["ocr_refinement_mode"] is True
+    assert refinement["ocr_maximum_lines"] == 48
 
 
 def test_rapidocr_engine_enables_directml_and_reports_actual_provider(monkeypatch):
@@ -200,6 +199,27 @@ def test_rapidocr_engine_enables_directml_and_reports_actual_provider(monkeypatc
     assert captured["EngineConfig.onnxruntime.use_dml"] is True
     assert captured["Global.use_cls"] is False
     assert engine._backend == "GPU · DirectML"  # noqa: SLF001
+
+
+def test_refinement_engine_restores_orientation_classification(monkeypatch):
+    captured: dict = {}
+
+    class FakeEngine:
+        pass
+
+    monkeypatch.setattr(
+        "voxsub.ocr.preferred_ocr_backend", lambda: ("CPU", {}))
+    monkeypatch.setattr(
+        "rapidocr.main.RapidOCR",
+        lambda *, params: captured.update(params) or FakeEngine(),
+    )
+
+    RapidOcrEngine(config={
+        "ocr_live_mode": True,
+        "ocr_refinement_mode": True,
+    })._ensure_engine()  # noqa: SLF001
+
+    assert captured["Global.use_cls"] is True
 
 
 def test_real_rapidocr_smoke_recognizes_generated_english_text():

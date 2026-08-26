@@ -222,7 +222,8 @@ class TestCycleMode:
     def test_cycles(self):
         assert cycle_mode("a") == "b"
         assert cycle_mode("b") == "c"
-        assert cycle_mode("c") == "a"
+        assert cycle_mode("c") == "d"
+        assert cycle_mode("d") == "a"
 
     def test_invalid_falls_back(self):
         assert cycle_mode("zz") == "a"
@@ -268,6 +269,13 @@ class TestConfigStore:
         assert data["base_url"] == "https://example.com/v1"
         # 未动的键保留默认
         assert data["lang_pair"] == "zh-en"
+
+    def test_ocr_peer_mode_is_a_valid_persisted_choice(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+
+        store.set("mode", "d")
+
+        assert ConfigStore(store.path).get("mode") == "d"
 
     def test_legacy_cloud_keys_migrate_to_translation_side(self, tmp_path):
         path = tmp_path / "config.json"
@@ -408,7 +416,7 @@ class TestMainWindow:
         win = self._make_win(tmp_path)
         try:
             assert win.windowTitle() == "语幕 VoxSub"
-            assert set(win.mode_cards) == {"a", "b", "c"}
+            assert set(win.mode_cards) == {"a", "b", "c", "d"}
             assert all(isinstance(c, ModeCard) for c in win.mode_cards.values())
             assert win.lang_combo.count() == 2
             assert win.lang_combo.itemText(0) == "中 → 英"
@@ -422,6 +430,7 @@ class TestMainWindow:
 
     def test_secondary_pages_are_embedded_and_navigate_as_a_stack(self, qapp, tmp_path):
         from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
         from voxsub.model_catalog import ModelMarketplace
         from voxsub.ui.model_hub_window import ModelHubWindow
         from voxsub.ui.settings_window import SettingsWindow
@@ -433,7 +442,17 @@ class TestMainWindow:
             store=store,
             marketplace=ModelMarketplace(tmp_path / "models"),
         )
-        win.install_in_app_pages(settings, hub)
+
+        class FakeOcrWorkspace(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.prepare_calls = 0
+
+            def prepare_live(self):
+                self.prepare_calls += 1
+
+        ocr = FakeOcrWorkspace()
+        win.install_in_app_pages(settings, hub, ocr)
         try:
             win.show()
             win.show_settings_page()
@@ -461,11 +480,24 @@ class TestMainWindow:
             win.close_in_app_page()
             assert not win._page_layer.isVisible()  # noqa: SLF001
             assert win._page_blur.blurRadius() == 0  # noqa: SLF001
+
+            win.set_mode("d")
+            assert win._workspace_stack.currentWidget() is ocr  # noqa: SLF001
+            assert win.pair_label.text() == "翻译方向"
+            assert win.lang_combo.isVisible()
+            assert not win.cta.isVisible()
+            assert ocr.prepare_calls == 1
+            win.set_lang_pair("en-zh")
+            assert store.get("lang_pair") == "en-zh"
+
+            win.set_mode("a")
+            assert win._workspace_stack.currentWidget() is win._translation_workspace  # noqa: SLF001
         finally:
             win.close()
             win.deleteLater()
             settings.deleteLater()
             hub.deleteLater()
+            ocr.deleteLater()
 
     def test_mode_card_selection_highlights(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
@@ -532,9 +564,11 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
-    def test_ocr_tool_does_not_overlap_mode_cards_at_minimum_size(
+    def test_four_peer_mode_cards_do_not_overlap_at_minimum_size(
         self, qapp, tmp_path
     ):
+        from itertools import combinations
+
         from PySide6.QtCore import QRect
 
         win = self._make_win(tmp_path)
@@ -542,13 +576,18 @@ class TestMainWindow:
             win.resize(win.minimumSize())
             win.show()
             qapp.processEvents()
-            ocr_rect = win.ocr_btn.geometry()
-            ocr_top_left = win.ocr_btn.parentWidget().mapTo(win, ocr_rect.topLeft())
-            ocr_global = QRect(ocr_top_left, ocr_rect.size())
+            card_rects = []
             for card in win.mode_cards.values():
                 card_rect = card.geometry()
                 top_left = card.parentWidget().mapTo(win, card_rect.topLeft())
-                assert not ocr_global.intersects(QRect(top_left, card_rect.size()))
+                card_rects.append(QRect(top_left, card_rect.size()))
+            assert all(
+                not first.intersects(second)
+                for first, second in combinations(card_rects, 2)
+            )
+            pair_top = win.pair_label.parentWidget().mapTo(
+                win, win.pair_label.geometry().topLeft()).y()
+            assert max(rect.bottom() for rect in card_rects) < pair_top
         finally:
             win.close()
             win.deleteLater()

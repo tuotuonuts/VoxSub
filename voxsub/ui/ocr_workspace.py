@@ -27,6 +27,7 @@ from voxsub.ocr import (
     frame_fingerprint,
     live_ocr_config,
     materially_changed,
+    refinement_ocr_config,
 )
 from voxsub.ui.i18n import tr
 from voxsub.ui.file_dialogs import choose_open_file, choose_save_file
@@ -128,6 +129,7 @@ class OcrWorkspace(QWidget):
 
     LIVE_INTERVAL_MS = 700
     LIVE_CHANGE_THRESHOLD = 0.035
+    LIVE_REFINE_DELAY_MS = 450
 
     def __init__(self, store: ConfigStore | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -140,9 +142,14 @@ class OcrWorkspace(QWidget):
         self._worker = OcrWorker(self._bridge)
         self._bridge.result_ready.connect(self._on_result)
         self._bridge.failed.connect(self._on_failure)
+        self._bridge.prepared.connect(self._on_prepared)
         self._live_timer = QTimer(self)
         self._live_timer.setInterval(self.LIVE_INTERVAL_MS)
         self._live_timer.timeout.connect(self._capture_live_tick)
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.setInterval(self.LIVE_REFINE_DELAY_MS)
+        self._refine_timer.timeout.connect(self._capture_live_refinement)
         self._overlay = OcrTranslationOverlay()
         self._control = OcrLiveControlBar()
         self._control.paused_changed.connect(self._on_live_paused)
@@ -154,6 +161,9 @@ class OcrWorkspace(QWidget):
         self._live_paused = False
         self._showing_original = False
         self._previous_fingerprint: bytes | None = None
+        self._pending_refine_fingerprint: bytes | None = None
+        self._prepared_key: tuple[str, ...] | None = None
+        self._preparing_key: tuple[str, ...] | None = None
         self._revision = 0
         self._captures: dict[int, QImage] = {}
         self._source_image = QImage()
@@ -167,6 +177,46 @@ class OcrWorkspace(QWidget):
 
     def set_embedded(self, _embedded: bool = True) -> None:
         return
+
+    def prepare_live(self) -> None:
+        """Called when OCR becomes the active peer mode."""
+        if self._live_rect is not None:
+            return
+        config = live_ocr_config(self._store.load())
+        key = tuple(str(config.get(name, "")) for name in (
+            "ocr_model_id",
+            "models_root",
+            "translate_tier",
+            "translate_model_id",
+            "translate_api_key",
+            "translate_base_url",
+            "translate_model",
+        ))
+        if key == self._prepared_key or key == self._preparing_key:
+            return
+        if self._worker.is_busy():
+            return
+        pair = str(config.get("lang_pair", "zh-en"))
+        source_lang, target_lang = pair.split("-", 1)
+        if self._worker.prepare(config, source_lang, target_lang):
+            self._preparing_key = key
+            status = tr("正在后台预热 OCR 与翻译模型…")
+            self.live_status.setText(status)
+            self.screenshot_status.setText(status)
+
+    def _on_prepared(self, succeeded: bool, detail: str) -> None:
+        key, self._preparing_key = self._preparing_key, None
+        if succeeded:
+            self._prepared_key = key
+            status = tr(
+                "OCR 已就绪 · 请选择翻译方向并框选尽量精确的文字区域")
+            logger.info("OCR 平级模式已就绪: %s", detail)
+        else:
+            status = f"{tr('OCR 预热未完成，首次识别时将重试')}：{detail}"
+            logger.warning("OCR 平级模式预热失败: %s", detail)
+        if self._live_rect is None:
+            self.live_status.setText(status)
+            self.screenshot_status.setText(status)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -337,7 +387,9 @@ class OcrWorkspace(QWidget):
 
     def start_screenshot(self) -> None:
         if self._worker.is_busy() or self._captures:
-            self.screenshot_status.setText(tr("上一张截图仍在处理中"))
+            self.screenshot_status.setText(tr(
+                "OCR 模型正在预热，请稍候" if self._preparing_key is not None
+                else "上一张截图仍在处理中"))
             return
         if self._live_rect is not None:
             self.stop_live(restore_host=False)
@@ -378,7 +430,9 @@ class OcrWorkspace(QWidget):
 
     def start_live(self) -> None:
         if self._worker.is_busy() or self._captures:
-            self.live_status.setText(tr("OCR 正在处理中，请稍候"))
+            self.live_status.setText(tr(
+                "OCR 模型正在预热，请稍候" if self._preparing_key is not None
+                else "OCR 正在处理中，请稍候"))
             return
         self.stop_live(restore_host=False)
         self.set_mode("live")
@@ -494,8 +548,45 @@ class OcrWorkspace(QWidget):
             self._control.set_status(tr("画面稳定"))
             return
         if self._submit(captured, "live", image=image):
+            self._refine_timer.stop()
+            self._pending_refine_fingerprint = None
             self._previous_fingerprint = fingerprint
             self._control.set_status(tr("识别翻译中…"))
+
+    def _capture_live_refinement(self) -> None:
+        if (
+            self._live_rect is None
+            or self._live_paused
+            or self._worker.is_busy()
+            or self._captures
+            or self._pending_refine_fingerprint is None
+        ):
+            return
+        if self._overlay.isVisible() and not self._overlay.capture_excluded:
+            self._overlay.hide()
+            QTimer.singleShot(45, self._capture_live_refinement_after_hide)
+            return
+        self._capture_live_refinement_after_hide()
+
+    def _capture_live_refinement_after_hide(self) -> None:
+        expected = self._pending_refine_fingerprint
+        self._pending_refine_fingerprint = None
+        if self._live_rect is None or expected is None:
+            return
+        try:
+            captured = capture_screen_region(self._live_rect)
+        except Exception as exc:  # noqa: BLE001 - OS capture boundary
+            self.live_status.setText(f"{tr('实时截图失败')}：{exc}")
+            return
+        if not self._showing_original:
+            self._overlay.show()
+        image = qimage_to_bgr(captured.image)
+        current = frame_fingerprint(image)
+        if materially_changed(expected, current, self.LIVE_CHANGE_THRESHOLD):
+            self._control.set_status(tr("画面仍在变化，等待稳定后纠偏"))
+            return
+        if self._submit(captured, "live-refine", image=image):
+            self._control.set_status(tr("高质量纠偏中…"))
 
     def _submit(
         self, captured: CapturedRegion, purpose: str, *, image: np.ndarray | None = None
@@ -503,6 +594,8 @@ class OcrWorkspace(QWidget):
         config = self._store.load()
         if purpose == "live":
             config = live_ocr_config(config)
+        elif purpose == "live-refine":
+            config = refinement_ocr_config(config)
         pair = str(config.get("lang_pair", "zh-en"))
         source_lang, target_lang = pair.split("-", 1)
         self._revision += 1
@@ -529,8 +622,8 @@ class OcrWorkspace(QWidget):
         if purpose == "screenshot":
             self._show_screenshot_result(capture, frame, warning)
             return
-        if purpose == "live" and self._live_rect is not None:
-            self._show_live_result(capture, frame, warning)
+        if purpose in {"live", "live-refine"} and self._live_rect is not None:
+            self._show_live_result(capture, frame, warning, purpose=purpose)
 
     def _show_screenshot_result(
         self, capture: QImage, frame: TranslatedOcrFrame, warning: str
@@ -634,8 +727,13 @@ class OcrWorkspace(QWidget):
         self.screenshot_status.setText(f"{tr('已导出译后图片')}：{path}")
 
     def _show_live_result(
-        self, capture: QImage, frame: TranslatedOcrFrame, warning: str
+        self, capture: QImage, frame: TranslatedOcrFrame, warning: str, *,
+        purpose: str = "live",
     ) -> None:
+        if purpose == "live-refine" and not frame.lines:
+            self._control.set_status(tr(
+                "高质量纠偏未找到更可靠文字，保留快速结果"))
+            return
         if not frame.lines:
             self._empty_live_frames += 1
             if self._empty_live_frames < 2:
@@ -646,20 +744,37 @@ class OcrWorkspace(QWidget):
         self._overlay.set_frame(frame, capture)
         if not self._showing_original:
             self._overlay.show()
+        stage = tr("高质量纠偏") if purpose == "live-refine" else tr("快速结果")
         status = warning or tr(
-            f"{len(frame.lines)} 行 · OCR {frame.ocr_elapsed_ms}ms · "
+            f"{stage} · {len(frame.lines)} 行 · OCR {frame.ocr_elapsed_ms}ms · "
             f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
             f"翻译 {frame.translate_elapsed_ms}ms",
-            f"{len(frame.lines)} lines · OCR {frame.ocr_elapsed_ms}ms · "
+            f"{stage} · {len(frame.lines)} lines · OCR {frame.ocr_elapsed_ms}ms · "
             f"{_ocr_runtime_name(frame.ocr_model_id)} / {frame.ocr_backend} · "
             f"translation {frame.translate_elapsed_ms}ms",
         )
         self.live_status.setText(status)
         self._control.set_status(status)
+        selected_model = str(self._store.get(
+            "ocr_model_id", "ocr-rapidocr-v6-small-builtin"))
+        if (
+            purpose == "live"
+            and not warning
+            and frame.ocr_model_id != selected_model
+            and frame.ocr_backend.startswith("GPU")
+            and self._previous_fingerprint is not None
+        ):
+            self._pending_refine_fingerprint = self._previous_fingerprint
+            self._refine_timer.start()
 
     def _on_failure(self, revision: int, purpose: str, error: str) -> None:
         self._captures.pop(revision, None)
         if revision != self._revision:
+            return
+        if purpose == "live-refine":
+            self.live_status.setText(
+                f"{tr('高质量纠偏失败，继续使用快速结果')}：{error}")
+            self._control.set_status(tr("高质量纠偏失败，继续使用快速结果"))
             return
         self._previous_fingerprint = None
         label = self.live_status if purpose == "live" else self.screenshot_status
@@ -689,9 +804,11 @@ class OcrWorkspace(QWidget):
 
     def stop_live(self, restore_host: bool = True) -> None:
         self._live_timer.stop()
+        self._refine_timer.stop()
         self._live_rect = None
         self._live_paused = False
         self._previous_fingerprint = None
+        self._pending_refine_fingerprint = None
         self._revision += 1
         self._captures.clear()
         self._overlay.hide()

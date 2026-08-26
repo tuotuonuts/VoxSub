@@ -1,6 +1,6 @@
 """系统托盘（M7 组件清单 #3）。
 
-- 图标 + 菜单：模式快捷切换（A/B/C 单选）/ 开始·停止 / 显示主窗 / 设置 / 退出
+- 图标 + 菜单：模式快捷切换（A/B/C/D 单选）/ 开始·停止 / 显示主窗 / 设置 / 退出
 - 双击托盘图标 → 显示主窗
 - 环境无托盘时（isSystemTrayAvailable() False）create() 返回 None，不阻塞主程序。
 - 与主窗松耦合：托盘只发信号（mode_changed / toggle_run_requested /
@@ -8,7 +8,7 @@
 - 开机自启（QStandardPaths 启动项）按 M7 范围先实现占位接口，M9 发布前补齐。
 
 信号（类体声明）:
-    mode_changed(str)            模式切换（"a"/"b"/"c"）
+    mode_changed(str)            模式切换（"a"/"b"/"c"/"d"）
     toggle_run_requested()       开始/停止
     show_main_requested()        显示主窗
     settings_requested()         打开设置
@@ -93,6 +93,7 @@ class TrayIcon(QSystemTrayIcon):
         act = self.mode_actions.get(self._mode)
         if act is not None:
             act.setChecked(True)
+        self.toggle_action.setEnabled(self._mode != "d")
 
     def set_running_state(self, running: bool) -> None:
         self._running = bool(running)

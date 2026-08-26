@@ -55,7 +55,7 @@ _DEFAULTS: dict[str, Any] = {
     "config_version": CONFIG_VERSION,
     "language": "system",       # system | zh | en
     "theme": "system",          # light | dark | system
-    "mode": "a",                # a microphone | b system audio | c file
+    "mode": "a",                # a microphone | b system audio | c file | d OCR
     "lang_pair": "zh-en",
     "translate_tier": "fast",   # fast | quality | cloud
     "stt_provider": "local",    # local | cloud
@@ -159,7 +159,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
     choices={
         "language": frozenset({"system", "zh", "en"}),
         "theme": frozenset({"system", "light", "dark"}),
-        "mode": frozenset({"a", "b", "c"}),
+        "mode": frozenset({"a", "b", "c", "d"}),
         "lang_pair": frozenset({"zh-en", "en-zh"}),
         "translate_tier": frozenset({"fast", "quality", "cloud"}),
         "stt_provider": frozenset({"local", "cloud"}),

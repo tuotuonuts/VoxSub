@@ -151,9 +151,31 @@ TRANSLATIONS: dict[str, str] = {
         "Inspect devices, models, and runtime health; open live logs when troubleshooting.",
     "模式": "Mode",
     "语言对": "Language pair",
+    "翻译方向": "Translation direction",
     "中 → 英": "Chinese -> English",
     "英 → 中": "English -> Chinese",
     "设备可在「设置」中选择": "Choose the input device in Settings",
+    "输入：截图、图片或选定屏幕区域":
+        "Input: screenshot, image, or selected screen region",
+    "OCR 待命": "OCR ready",
+    "选择翻译方向后，框选尽量只包含需要翻译的内容区域。":
+        "Choose a translation direction, then select only the text area you need.",
+    "正在后台预热 OCR 与翻译模型…":
+        "Warming up OCR and translation models in the background...",
+    "OCR 已就绪 · 请选择翻译方向并框选尽量精确的文字区域":
+        "OCR ready · choose a translation direction and select the text area precisely",
+    "OCR 预热未完成，首次识别时将重试":
+        "OCR warm-up did not finish; the first recognition will retry",
+    "OCR 模型正在预热，请稍候": "OCR model is warming up; please wait",
+    "画面仍在变化，等待稳定后纠偏":
+        "The image is still changing; waiting to refine when stable",
+    "高质量纠偏中…": "Running high-quality refinement...",
+    "高质量纠偏未找到更可靠文字，保留快速结果":
+        "High-quality refinement found no more reliable text; keeping the fast result",
+    "快速结果": "Fast result",
+    "高质量纠偏": "High-quality refinement",
+    "高质量纠偏失败，继续使用快速结果":
+        "High-quality refinement failed; continuing with the fast result",
     "输入：设置中选择的麦克风": "Input: microphone selected in Settings",
     "输入：指定应用，或所选系统输出设备":
         "Input: selected app or system output device",

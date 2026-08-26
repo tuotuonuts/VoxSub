@@ -559,8 +559,11 @@ class QwenQualityTranslator(Translator):
         src_name, dst_name = names
         payload = json.dumps(texts, ensure_ascii=False, separators=(",", ":"))
         instruction = (
-            f"The source strings are written in {src_name}. Translate every JSON "
-            f"array item only into {dst_name}. Return only one valid JSON array "
+            f"The JSON items are neighboring OCR lines from one screen, ordered "
+            f"top-to-bottom, and are written in {src_name}. Use adjacent items as "
+            "context to resolve wording and conservatively repair only obvious OCR "
+            f"character mistakes. Translate every item only into {dst_name}. "
+            "Keep one output item for each input item. Return only one valid JSON array "
             f"with exactly {len(texts)} translated strings in the same order. "
             "Do not add explanations, labels, or change the array length.\n"
             f"{payload}"

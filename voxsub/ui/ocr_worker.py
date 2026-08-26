@@ -4,6 +4,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -35,6 +36,7 @@ class OcrJob:
 class OcrWorkerBridge(QObject):
     result_ready = Signal(int, str, object, str)
     failed = Signal(int, str, str)
+    prepared = Signal(bool, str)
 
 
 def _untranslated_frame(frame: OcrFrame) -> TranslatedOcrFrame:
@@ -70,19 +72,46 @@ class OcrWorker:
     def submit(self, job: OcrJob) -> bool:
         if self._stop.is_set() or self._busy.is_set():
             return False
+        self._busy.set()
         try:
             self._requests.put_nowait(job)
-            self._busy.set()
             return True
         except queue.Full:
+            self._busy.clear()
             return False
+
+    def prepare(
+        self, config: Mapping[str, Any], source_lang: str, target_lang: str
+    ) -> bool:
+        """Warm the fast OCR and translation runtimes on the owner thread."""
+        try:
+            import cv2
+
+            image = np.full((360, 960, 3), 248, dtype=np.uint8)
+            for index, text in enumerate((
+                "VoxSub live OCR preview",
+                "Context aware screen translation",
+                "Fast first frame and accurate refinement",
+            )):
+                cv2.putText(
+                    image, text, (32, 88 + index * 92),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (20, 20, 20), 2,
+                    cv2.LINE_AA,
+                )
+        except Exception:  # noqa: BLE001 - OpenCV is optional at import time
+            image = np.full((360, 960, 3), 248, dtype=np.uint8)
+            image[72:78, 32:720] = 20
+            image[164:170, 32:820] = 20
+            image[256:262, 32:900] = 20
+        return self.submit(OcrJob(
+            -1, "prepare", image, source_lang, target_lang, dict(config)))
 
     def is_busy(self) -> bool:
         return self._busy.is_set()
 
     def _run(self) -> None:
-        engine: RapidOcrEngine | None = None
-        engine_key: tuple[str, str, bool] | None = None
+        engines: OrderedDict[tuple[str, str, bool, bool, float], RapidOcrEngine] = (
+            OrderedDict())
         translator = OcrTranslationService()
         while not self._stop.is_set():
             job = self._requests.get()
@@ -92,17 +121,31 @@ class OcrWorker:
                 str(job.config.get("ocr_model_id", "")),
                 str(job.config.get("models_root", "")),
                 bool(job.config.get("ocr_live_mode", False)),
+                bool(job.config.get("ocr_refinement_mode", False)),
+                float(job.config.get("ocr_minimum_confidence", 0.52)),
             )
-            if engine is None or requested_key != engine_key:
+            engine = engines.get(requested_key)
+            if engine is None:
                 try:
-                    engine = RapidOcrEngine(config=job.config)
-                    engine_key = requested_key
+                    engine = RapidOcrEngine(
+                        config=job.config,
+                        minimum_confidence=requested_key[-1],
+                    )
+                    engines[requested_key] = engine
+                    engines.move_to_end(requested_key)
+                    while len(engines) > 3:
+                        engines.popitem(last=False)
                 except Exception as exc:  # noqa: BLE001 - model boundary
                     logger.exception("OCR 模型配置失败")
-                    self._bridge.failed.emit(
-                        job.revision, job.purpose, str(exc))
+                    if job.purpose == "prepare":
+                        self._bridge.prepared.emit(False, str(exc))
+                    else:
+                        self._bridge.failed.emit(
+                            job.revision, job.purpose, str(exc))
                     self._busy.clear()
                     continue
+            else:
+                engines.move_to_end(requested_key)
             self._process_job(engine, translator, job)
             self._busy.clear()
         translator.close()
@@ -113,6 +156,16 @@ class OcrWorker:
         started = time.perf_counter()
         try:
             recognized = engine.recognize(job.image)
+            if job.purpose == "prepare":
+                translator.warmup(job.config)
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                logger.info(
+                    "OCR 模式预热完成: model=%s backend=%s elapsed_ms=%d",
+                    recognized.model_id, recognized.backend, elapsed_ms,
+                )
+                self._bridge.prepared.emit(
+                    True, f"{recognized.model_id} / {recognized.backend}")
+                return
             result, warning = self._translate_or_retain(
                 recognized, translator, job
             )
@@ -132,7 +185,10 @@ class OcrWorker:
             self._bridge.result_ready.emit(job.revision, job.purpose, result, warning)
         except Exception as exc:  # noqa: BLE001 - worker boundary
             logger.exception("OCR 后台任务失败")
-            self._bridge.failed.emit(job.revision, job.purpose, str(exc))
+            if job.purpose == "prepare":
+                self._bridge.prepared.emit(False, str(exc))
+            else:
+                self._bridge.failed.emit(job.revision, job.purpose, str(exc))
 
     @staticmethod
     def _translate_or_retain(
@@ -146,6 +202,9 @@ class OcrWorker:
                 job.source_lang,
                 job.target_lang,
                 job.config,
+                maximum_lines=int(job.config.get("ocr_maximum_lines", 48)),
+                maximum_characters=int(
+                    job.config.get("ocr_maximum_characters", 3000)),
             ), ""
         except Exception as exc:  # noqa: BLE001 - retain OCR-only result
             logger.exception("OCR 文本翻译失败，保留识别结果")

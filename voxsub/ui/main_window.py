@@ -1,6 +1,6 @@
 """主窗（M7 组件清单 #1）：编辑式左右分栏。
 
-- 左栏：模式三卡片（A 麦克风同传 / B 系统声音字幕 / C 文件字幕，选中高亮）
+- 左栏：模式四卡片（A 麦克风 / B 系统声音 / C 文件 / D OCR，选中高亮）
   + 语言对下拉（中→英 / 英→中）+ 状态灯（待机 / 拾音中 / 推理中，推理中脉冲）
 - 右栏：实时字幕流列表（原文 + 译文两行，自动滚动，最新行短暂高亮）
 - 底部：胶囊 CTA「开始 / 停止」，内嵌圆形箭头小岛（QPainter 自绘矢量，
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsBlurEffect,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -61,8 +62,9 @@ MODE_INFO: dict[str, dict[str, str]] = {
     "a": {"badge": "A", "title": "麦克风同传", "desc": "选择麦克风，说完一句即生成双语字幕"},
     "b": {"badge": "B", "title": "应用 / 系统声音", "desc": "隔离指定应用，或监听所选输出设备"},
     "c": {"badge": "C", "title": "音视频字幕", "desc": "导入音频或视频，自动提音并导出 SRT"},
+    "d": {"badge": "D", "title": "OCR 翻译", "desc": "截图 OCR 或选定屏幕范围实时翻译"},
 }
-MODE_ORDER = ("a", "b", "c")
+MODE_ORDER = ("a", "b", "c", "d")
 
 # 语言对（value, 显示标签）—— QFW ComboBox 用文本定位，不依赖 itemData
 LANG_PAIRS = [("zh-en", "中 → 英"), ("en-zh", "英 → 中")]
@@ -92,7 +94,7 @@ def _status_kind(status: str) -> str:
 
 
 def cycle_mode(current: str) -> str:
-    """模式轮换 a → b → c → a（托盘 / 快捷键复用；非法值回落 a）。"""
+    """模式轮换 a → b → c → d → a（托盘 / 快捷键复用；非法值回落 a）。"""
     if current not in MODE_ORDER:
         return "a"
     idx = (MODE_ORDER.index(current) + 1) % len(MODE_ORDER)
@@ -105,7 +107,7 @@ def cycle_mode(current: str) -> str:
 class ModeCard(QFrame):
     """可点击模式卡：badge + 标题 + 描述；selected 高亮（QSS 动态属性驱动）。"""
 
-    clicked = Signal(str)  # 携带模式键 "a"/"b"/"c"
+    clicked = Signal(str)  # 携带模式键 "a"/"b"/"c"/"d"
 
     def __init__(self, mode: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -113,19 +115,20 @@ class ModeCard(QFrame):
         self.setObjectName("modeCard")
         self.setProperty("active", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(78)
-        self.setMaximumHeight(82)
+        self.setMinimumHeight(64)
+        self.setMaximumHeight(68)
 
         info = MODE_INFO[mode]
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 10, 16, 10)
-        lay.setSpacing(4)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(0)
         top = QHBoxLayout()
         top.setSpacing(8)
         badge = QLabel(info["badge"], self)
         badge.setObjectName("modeBadge")
         title = QLabel(info["title"], self)
         title.setObjectName("modeTitle")
+        title.setWordWrap(True)
         top.addWidget(badge)
         top.addWidget(title)
         top.addStretch(1)
@@ -133,7 +136,8 @@ class ModeCard(QFrame):
         desc.setObjectName("modeDesc")
         desc.setWordWrap(True)
         lay.addLayout(top)
-        lay.addWidget(desc)
+        desc.hide()
+        self.setToolTip(info["desc"])
 
     def set_active(self, active: bool) -> None:
         self.setProperty("active", bool(active))
@@ -544,7 +548,6 @@ class MainWindow(QWidget):
     settings_requested = Signal()
     diagnostics_requested = Signal()
     model_hub_requested = Signal()
-    ocr_requested = Signal()
     running_state_changed = Signal(bool)
 
     def __init__(
@@ -641,11 +644,6 @@ class MainWindow(QWidget):
         self.model_hub_btn.setObjectName("secondaryButton")
         self.model_hub_btn.setMinimumHeight(44)
         self.model_hub_btn.clicked.connect(self.model_hub_requested.emit)
-        self.ocr_btn = QPushButton("OCR 图片翻译", self)
-        self.ocr_btn.setObjectName("secondaryButton")
-        self.ocr_btn.setMinimumHeight(44)
-        self.ocr_btn.setToolTip("截图、上传图片或选定屏幕范围实时翻译")
-        self.ocr_btn.clicked.connect(self.ocr_requested.emit)
         self.overlay_open_btn = QPushButton("打开浮窗", self)
         self.overlay_open_btn.setObjectName("secondaryButton")
         self.overlay_open_btn.setMinimumHeight(44)
@@ -660,7 +658,6 @@ class MainWindow(QWidget):
         self.diagnostics_btn.setMinimumHeight(44)
         self.diagnostics_btn.clicked.connect(self.diagnostics_requested.emit)
         title_row.addWidget(self.model_hub_btn)
-        title_row.addWidget(self.ocr_btn)
         title_row.addWidget(self.overlay_open_btn)
         title_row.addWidget(self.settings_btn)
         title_row.addWidget(self.diagnostics_btn)
@@ -670,7 +667,12 @@ class MainWindow(QWidget):
         body = QHBoxLayout()
         body.setSpacing(24)
         body.addWidget(self._build_left_panel(), 0)
-        body.addWidget(self._build_right_panel(), 1)
+        self._workspace_stack = QStackedWidget(self)
+        self._workspace_stack.setObjectName("mainWorkspaceStack")
+        self._translation_workspace = self._build_right_panel()
+        self._workspace_stack.addWidget(self._translation_workspace)
+        self._ocr_workspace: QWidget | None = None
+        body.addWidget(self._workspace_stack, 1)
         root.addLayout(body, 1)
 
         # 底部胶囊 CTA 居中
@@ -731,7 +733,17 @@ class MainWindow(QWidget):
         self._register_embedded_page("settings", settings_page, "设置")
         self._register_embedded_page("model_hub", model_hub_page, "模型广场")
         if ocr_page is not None:
-            self._register_embedded_page("ocr", ocr_page, "OCR 图片与屏幕翻译")
+            prepare = getattr(ocr_page, "set_embedded", None)
+            if callable(prepare):
+                prepare(True)
+            ocr_page.setParent(self._workspace_stack)
+            self._workspace_stack.addWidget(ocr_page)
+            self._ocr_workspace = ocr_page
+            if self._mode == "d":
+                self._workspace_stack.setCurrentWidget(ocr_page)
+                warmup = getattr(ocr_page, "prepare_live", None)
+                if callable(warmup):
+                    warmup()
         signal = getattr(settings_page, "model_hub_requested", None)
         if signal is not None:
             signal.connect(self.show_model_hub_page)
@@ -791,7 +803,7 @@ class MainWindow(QWidget):
         self._open_in_app_page("model_hub")
 
     def show_ocr_page(self) -> None:
-        self._open_in_app_page("ocr")
+        self.set_mode("d")
 
     def close_in_app_page(self) -> None:
         if not self._page_layer.isVisible():
@@ -827,24 +839,30 @@ class MainWindow(QWidget):
         panel.setObjectName("sidePanel")
         panel.setFixedWidth(344)
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lay.setSpacing(12)
+        lay.setContentsMargins(18, 18, 18, 18)
+        lay.setSpacing(8)
 
         mode_title = QLabel("模式", panel)
         mode_title.setObjectName("sectionTitle")
         lay.addWidget(mode_title)
 
         self.mode_cards: dict[str, ModeCard] = {}
+        mode_grid = QGridLayout()
+        mode_grid.setContentsMargins(0, 0, 0, 0)
+        mode_grid.setHorizontalSpacing(8)
+        mode_grid.setVerticalSpacing(8)
         for m in MODE_ORDER:
             card = ModeCard(m, panel)
             card.clicked.connect(self.set_mode)
             self.mode_cards[m] = card
-            lay.addWidget(card)
+            index = MODE_ORDER.index(m)
+            mode_grid.addWidget(card, index // 2, index % 2)
+        lay.addLayout(mode_grid)
 
         lay.addSpacing(4)
-        pair_label = QLabel("语言对", panel)
-        pair_label.setObjectName("sectionTitle")
-        lay.addWidget(pair_label)
+        self.pair_label = QLabel("语言对", panel)
+        self.pair_label.setObjectName("sectionTitle")
+        lay.addWidget(self.pair_label)
         # QFluentWidgets ComboBox（随 QFW 主题自动着色，见 DESIGN 组件清单 #1）
         from qfluentwidgets import ComboBox as FComboBox
 
@@ -999,43 +1017,80 @@ class MainWindow(QWidget):
             logger.debug("Pipeline 缺少 on_utterance/on_status, 跳过订阅 (stub 联调期正常)")
 
     # -- 状态切换 -----------------------------------------------------------
-    def set_mode(self, mode: str) -> None:
-        norm = mode if mode in MODE_ORDER else "a"
+    def _mode_switch_blocked(self, norm: str) -> bool:
         if self._pipeline_busy and norm != self._mode:
             self._on_status("正在启动或结束任务，请稍候")
-            return
+            return True
         try:
             if self.pipeline.is_running() and norm != self._mode:
                 self._on_status("请先停止当前任务，再切换模式")
-                return
+                return True
         except AttributeError:
             pass
+        return False
+
+    def _set_pipeline_mode(self, mode: str) -> None:
+        if mode == "d":
+            return
+        try:
+            self.pipeline.set_mode(mode)
+        except AttributeError:
+            logger.debug("Pipeline 缺少 set_mode, 跳过 (stub 联调期正常)")
+
+    def _activate_ocr_workspace(self) -> None:
+        if self._ocr_workspace is not None:
+            self._workspace_stack.setCurrentWidget(self._ocr_workspace)
+            warmup = getattr(self._ocr_workspace, "prepare_live", None)
+            if callable(warmup):
+                warmup()
+        self.source_hint.setText(tr("输入：截图、图片或选定屏幕区域"))
+        self.status_light.set_status(tr("OCR 待命"))
+
+    def _activate_translation_workspace(self, mode: str) -> None:
+        copy = {
+            "a": (
+                "输入：设置中选择的麦克风",
+                "实时字幕",
+                "原文与译文只保留在本次会话内",
+                "字幕将显示在这里 —— 说完一句后自动生成",
+            ),
+            "b": (
+                "输入：指定应用，或所选系统输出设备",
+                "实时字幕",
+                "其它应用声音可通过进程隔离排除",
+                "字幕将显示在这里 —— 播放目标应用中的内容",
+            ),
+            "c": (
+                "支持 MP4 / MKV / MOV / MP3 / WAV 等常见格式",
+                "文件字幕",
+                "自动提取音频 · 识别翻译 · 导出 SRT",
+                "选择文件后，处理结果与导出位置将显示在这里",
+            ),
+        }[mode]
+        self._workspace_stack.setCurrentWidget(self._translation_workspace)
+        self.cta.set_record_mode(mode == "a" and self.record_switch.isChecked())
+        self.source_hint.setText(tr(copy[0]))
+        self.workspace_title.setText(tr(copy[1]))
+        self.workspace_context.setText(tr(copy[2]))
+        self.subtitle_list.set_empty_hint(tr(copy[3]))
+
+    def set_mode(self, mode: str) -> None:
+        norm = mode if mode in MODE_ORDER else "a"
+        if self._mode_switch_blocked(norm):
+            return
         self._mode = norm
         for key, card in self.mode_cards.items():
             card.set_active(key == norm)
-        try:
-            self.pipeline.set_mode(norm)
-        except AttributeError:
-            logger.debug("Pipeline 缺少 set_mode, 跳过 (stub 联调期正常)")
+        self._set_pipeline_mode(norm)
         self._store.set("mode", norm)
         self.file_panel.setVisible(norm == "c")
         self.record_panel.setVisible(norm == "a")
-        self.cta.set_record_mode(norm == "a" and self.record_switch.isChecked())
-        if norm == "a":
-            self.source_hint.setText(tr("输入：设置中选择的麦克风"))
-            self.workspace_title.setText(tr("实时字幕"))
-            self.workspace_context.setText(tr("原文与译文只保留在本次会话内"))
-            self.subtitle_list.set_empty_hint(tr("字幕将显示在这里 —— 说完一句后自动生成"))
-        elif norm == "b":
-            self.source_hint.setText(tr("输入：指定应用，或所选系统输出设备"))
-            self.workspace_title.setText(tr("实时字幕"))
-            self.workspace_context.setText(tr("其它应用声音可通过进程隔离排除"))
-            self.subtitle_list.set_empty_hint(tr("字幕将显示在这里 —— 播放目标应用中的内容"))
-        else:
-            self.source_hint.setText(tr("支持 MP4 / MKV / MOV / MP3 / WAV 等常见格式"))
-            self.workspace_title.setText(tr("文件字幕"))
-            self.workspace_context.setText(tr("自动提取音频 · 识别翻译 · 导出 SRT"))
-            self.subtitle_list.set_empty_hint(tr("选择文件后，处理结果与导出位置将显示在这里"))
+        self.cta.setVisible(norm != "d")
+        self.pair_label.setText(tr("翻译方向") if norm == "d" else tr("语言对"))
+        if norm == "d":
+            self._activate_ocr_workspace()
+            return
+        self._activate_translation_workspace(norm)
 
     def current_mode(self) -> str:
         return self._mode
@@ -1353,6 +1408,9 @@ class MainWindow(QWidget):
 
     def _toggle_run(self) -> None:
         if self._pipeline_busy:
+            return
+        if self._mode == "d":
+            self.show_ocr_page()
             return
         try:
             record_flow = self._mode == "a" and self.record_switch.isChecked()

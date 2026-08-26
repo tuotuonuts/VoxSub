@@ -50,16 +50,39 @@ def preferred_ocr_backend() -> tuple[str, dict[str, Any]]:
 
 
 def live_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Select a responsive live OCR path without changing static-image quality."""
+    """Build the fast first stage used immediately after a screen change."""
     prepared = dict(config)
     prepared["ocr_live_mode"] = True
-    backend, _params = preferred_ocr_backend()
     selected = str(prepared.get(
         "ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
         "ocr-rapidocr-v6-small-builtin")
-    if backend == "CPU" and selected in _SLOW_LIVE_MODELS:
-        prepared["ocr_live_fallback_from"] = selected
+    staged = selected in _SLOW_LIVE_MODELS
+    if staged:
+        prepared["ocr_live_refine_model_id"] = selected
         prepared["ocr_model_id"] = "ocr-rapidocr-v6-small-builtin"
+        prepared["ocr_live_fast_stage"] = True
+        prepared["ocr_minimum_confidence"] = 0.64
+        prepared["ocr_maximum_lines"] = 24
+        prepared["ocr_maximum_characters"] = 1600
+    else:
+        prepared["ocr_minimum_confidence"] = 0.58
+        prepared["ocr_maximum_lines"] = 48
+        prepared["ocr_maximum_characters"] = 3000
+    return prepared
+
+
+def refinement_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore the selected quality model for a stable-screen correction pass."""
+    prepared = dict(config)
+    selected = str(prepared.get(
+        "ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
+        "ocr-rapidocr-v6-small-builtin")
+    prepared["ocr_model_id"] = selected
+    prepared["ocr_live_mode"] = True
+    prepared["ocr_refinement_mode"] = True
+    prepared["ocr_minimum_confidence"] = 0.52
+    prepared["ocr_maximum_lines"] = 48
+    prepared["ocr_maximum_characters"] = 3000
     return prepared
 
 
@@ -261,6 +284,8 @@ class RapidOcrEngine:
             "ocr_model_id", "ocr-rapidocr-v6-small-builtin") or
             "ocr-rapidocr-v6-small-builtin")
         self._live_mode = bool(selected_config.get("ocr_live_mode", False))
+        self._refinement_mode = bool(
+            selected_config.get("ocr_refinement_mode", False))
         self._requested_backend, self._acceleration_params = preferred_ocr_backend()
         self._backend = "CPU"
         self._gpu_disabled = False
@@ -283,7 +308,7 @@ class RapidOcrEngine:
                 # Desktop UI text is normally upright. Skipping orientation
                 # classification cuts one model pass from every live frame;
                 # static image translation retains the more tolerant path.
-                "Global.use_cls": not self._live_mode,
+                "Global.use_cls": not self._live_mode or self._refinement_mode,
             }
             params.update(self._model_params)
             if not self._gpu_disabled:
@@ -293,7 +318,8 @@ class RapidOcrEngine:
             logger.info(
                 "OCR 引擎就绪: model=%s mode=%s backend=%s",
                 self._model_id,
-                "live" if self._live_mode else "image",
+                ("refine" if self._refinement_mode else
+                 "live" if self._live_mode else "image"),
                 self._backend,
             )
         except Exception as exc:  # noqa: BLE001 - optional runtime boundary
@@ -439,6 +465,10 @@ class OcrTranslationService:
         if callable(warmup):
             warmup()
         return self._translator
+
+    def warmup(self, config: Mapping[str, Any]) -> None:
+        """Load the configured translator before the first visible OCR frame."""
+        self._ensure_translator(config)
 
     def _remember(self, key: tuple[str, str, str], translation: str) -> None:
         self._cache[key] = translation
@@ -604,6 +634,9 @@ __all__ = [
     "TranslatedOcrLine",
     "fingerprint_distance",
     "frame_fingerprint",
+    "live_ocr_config",
     "materially_changed",
     "polygon_to_box",
+    "preferred_ocr_backend",
+    "refinement_ocr_config",
 ]

@@ -22,15 +22,17 @@ class ReleaseNote:
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
         "0.9.0-beta",
-        "OCR 图片翻译、缓存导出与可切换模型",
-        "OCR image translation, cache/export, and selectable models",
+        "平级 OCR 翻译、快速首帧与稳定纠偏",
+        "Peer OCR mode, fast first result, and stable refinement",
         (
             "修复安装包内 RapidOCR 延迟导入缺失，截图与实时区域 OCR 现在使用同一条已验证的离线识别链路。",
             "主窗口可上传 PNG、JPG、WebP、BMP 或 TIFF；结果可在原图标框和原位覆盖译文之间切换，并导出译后图片。",
             "原图与未导出的译后图分别缓存在应用目录的 originals / translated；禁止写入 C 盘，默认每类保留 15 张，0 表示无限。",
             "模型广场新增 OCR 分类，可切换 PP-OCRv6 Tiny、内置 Small、Medium，以及更适合复杂中英文手写/竖排的 PP-OCRv5 Server。",
             "框选器会等待主窗口从 Windows 桌面合成帧中完全消失，避免截图带有应用虚影。",
-            "OCR 入口移到顶部工具区，A/B/C 模式卡恢复独立布局；引擎不可用时实时模式会暂停，不再持续重试刷日志。",
+            "OCR 现在是与麦克风、系统声音、音视频字幕平级的 D 模式，共用左侧常驻的中→英 / 英→中翻译方向。",
+            "进入 D 模式会提前预热 DirectML OCR 与翻译模型；画面变化先显示快速结果，稳定后再用所选质量模型纠偏。相邻 OCR 行会利用屏幕上下文批量翻译。",
+            "四张模式卡使用 2×2 布局；引擎不可用时实时模式会暂停，不再持续重试刷日志。",
         ),
         (
             "Fixes the missing RapidOCR lazy import in packaged builds, so screenshot and live-region OCR share one verified offline path.",
@@ -38,7 +40,9 @@ RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
             "Source and unexported translated images use separate originals/translated app cache folders. Drive C is rejected; each type keeps 15 images by default, while 0 is unlimited.",
             "Model Hub adds OCR presets: PP-OCRv6 Tiny, bundled Small, Medium, and PP-OCRv5 Server for more challenging Chinese/English handwriting and vertical text.",
             "The selector waits for the main window to leave the Windows compositor frame, preventing a VoxSub afterimage in the frozen desktop.",
-            "OCR moves to the top tool row so A/B/C mode cards keep their layout. A missing engine pauses live OCR instead of retrying and flooding logs.",
+            "OCR is now peer Mode D beside microphone, system audio, and media subtitles, using the always-visible Chinese-to-English / English-to-Chinese direction selector.",
+            "Mode D prewarms DirectML OCR and translation. A changed frame gets a fast result first, then a stable frame is refined with the selected quality model; neighboring OCR lines are translated with screen context.",
+            "The four mode cards use a 2-by-2 layout. A missing engine pauses live OCR instead of retrying and flooding logs.",
         ),
     ),
     ReleaseNote(

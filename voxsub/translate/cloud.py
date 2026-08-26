@@ -173,9 +173,13 @@ class CloudTranslator(Translator):
                 "You are a professional machine-translation engine. Return only "
                 "the valid JSON array requested by the user, with no prose.")},
             {"role": "user", "content": (
-                f"Translate every JSON item from {language_name(src_lang)} to "
+                "The JSON items are neighboring OCR lines from one screen in "
+                "top-to-bottom order. Use adjacent items as context and conservatively "
+                "repair only obvious OCR character mistakes. "
+                f"Translate every item from {language_name(src_lang)} to "
                 f"{language_name(dst_lang)}. Return exactly {len(sources)} strings "
-                "in the same order. Do not change the array length.\n" + payload)},
+                "in the same order, with one output per input. Do not change the "
+                "array length.\n" + payload)},
         ]
         effective_timeout = (
             self._timeout if timeout_ms == 15000

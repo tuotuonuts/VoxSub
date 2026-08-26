@@ -174,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
         def _on_tray_mode(mode: str) -> None:
             win.set_mode(mode)
             tray.set_mode_state(mode)
+            if mode == "d":
+                win.showNormal()
+                win.raise_()
+                win.activateWindow()
 
         def _on_tray_toggle() -> None:
             win._toggle_run()  # noqa: SLF001 - 壳层内部方法，属同一 UI 域
@@ -235,17 +239,9 @@ def main(argv: list[str] | None = None) -> int:
         win.raise_()
         win.activateWindow()
 
-    def _show_ocr() -> None:
-        if not win.isVisible():
-            win.show()
-        win.show_ocr_page()
-        win.raise_()
-        win.activateWindow()
-
     win.settings_requested.connect(_show_settings)
     win.diagnostics_requested.connect(_show_diagnostics)
     win.model_hub_requested.connect(_show_model_hub)
-    win.ocr_requested.connect(_show_ocr)
     win.show()
     QTimer.singleShot(0, lambda: show_release_notes_once(win, store, _UI_VERSION))
     # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
