@@ -127,7 +127,7 @@ def test_workspace_uses_shared_language_direction_and_staged_live_models(
         assert [(job.source_lang, job.target_lang) for job in jobs] == [
             ("en", "zh"), ("en", "zh")]
         assert jobs[0].config["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
-        assert jobs[0].config["ocr_maximum_lines"] == 40
+        assert jobs[0].config["ocr_maximum_lines"] == 20
         assert jobs[1].config["ocr_model_id"] == "ocr-rapidocr-v6-medium"
         assert jobs[1].config["ocr_refinement_mode"] is True
     finally:

@@ -62,12 +62,22 @@ def live_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
         prepared["ocr_model_id"] = "ocr-rapidocr-v6-small-builtin"
         prepared["ocr_live_fast_stage"] = True
         prepared["ocr_minimum_confidence"] = 0.56
-        prepared["ocr_maximum_lines"] = 40
-        prepared["ocr_maximum_characters"] = 3600
+        # The first frame is a latency-sensitive preview.  Keeping this
+        # budget bounded prevents a dense page from turning into several
+        # serial LLM requests; the stable-screen refinement pass restores the
+        # selected model and full document budget afterwards.
+        prepared["ocr_maximum_lines"] = 20
+        prepared["ocr_maximum_characters"] = 2200
     else:
         prepared["ocr_minimum_confidence"] = 0.54
-        prepared["ocr_maximum_lines"] = 48
-        prepared["ocr_maximum_characters"] = 4000
+        prepared["ocr_maximum_lines"] = 24
+        prepared["ocr_maximum_characters"] = 2400
+    prepared["ocr_live_batch_items"] = 10
+    source_lang = str(prepared.get("lang_pair", "zh-en")).split("-", 1)[0].lower()
+    # English source usually compresses into fewer target tokens; Chinese
+    # source expands into English, so keep that batch smaller to avoid a
+    # truncated JSON response from the local model.
+    prepared["ocr_live_batch_characters"] = 1200 if source_lang == "en" else 800
     return prepared
 
 
@@ -669,6 +679,38 @@ def _matches_source_script(text: str, source_lang: str) -> bool:
     return True
 
 
+def _invoke_batch_translate(
+    batch_translate: Any,
+    chunk: Sequence[str],
+    source_lang: str,
+    target_lang: str,
+    *,
+    allow_single_fallback: bool,
+) -> tuple[list[str] | None, Exception | None]:
+    """Call a batch translator and normalize legacy signature failures."""
+    try:
+        try:
+            outputs = list(batch_translate(
+                list(chunk),
+                source_lang,
+                target_lang,
+                timeout_ms=12_000,
+                allow_single_fallback=allow_single_fallback,
+            ))
+        except TypeError as exc:
+            # Third-party/test translators may still implement the older batch
+            # signature. Retry only for the new keyword mismatch.
+            if "allow_single_fallback" not in str(exc):
+                raise
+            outputs = list(batch_translate(
+                list(chunk), source_lang, target_lang, timeout_ms=12_000))
+        if len(outputs) != len(chunk):
+            raise TranslationError("OCR 批量翻译返回数量与输入不一致")
+    except (TranslationError, OSError, RuntimeError, ValueError) as exc:
+        return None, exc
+    return outputs, None
+
+
 class OcrTranslationService:
     """One-owner translator with a bounded line cache for changing frames."""
 
@@ -744,8 +786,18 @@ class OcrTranslationService:
         sources: Sequence[str],
         source_lang: str,
         target_lang: str,
+        *,
+        allow_single_fallback: bool = True,
+        batch_items: int = 10,
+        batch_characters: int | None = None,
     ) -> tuple[dict[str, str], int]:
-        """Translate unique cache misses in bounded batches with safe fallback."""
+        """Translate cache misses in bounded batches.
+
+        Live OCR deliberately does not fall back to one request per line when
+        a model violates the JSON batch contract.  That fallback is useful for
+        a static screenshot, but on a changing screen it can queue dozens of
+        requests and block the next page for tens of seconds.
+        """
         targets: dict[str, str] = {}
         requests = 0
         batch_translate = getattr(translator, "translate_many", None)
@@ -758,24 +810,33 @@ class OcrTranslationService:
                     targets[source] = target
             return targets, requests
 
-        batch_characters = 1400 if source_lang.lower().startswith("en") else 800
+        if batch_characters is None:
+            batch_characters = 1400 if source_lang.lower().startswith("en") else 800
         for chunk in _translation_chunks(
-            sources, maximum_items=10, maximum_characters=batch_characters
+            sources,
+            maximum_items=max(1, int(batch_items)),
+            maximum_characters=max(64, int(batch_characters)),
         ):
             requests += 1
-            try:
-                outputs = list(batch_translate(
-                    list(chunk), source_lang, target_lang,
-                    timeout_ms=12_000,
-                ))
-                if len(outputs) != len(chunk):
-                    raise TranslationError(
-                        "OCR 批量翻译返回数量与输入不一致")
-            except (TranslationError, OSError, RuntimeError, ValueError):
+            outputs, error = _invoke_batch_translate(
+                batch_translate,
+                chunk,
+                source_lang,
+                target_lang,
+                allow_single_fallback=allow_single_fallback,
+            )
+            if error is not None:
                 logger.warning(
-                    "OCR 批量翻译失败，回退逐行: lines=%d", len(chunk),
-                    exc_info=True,
+                    "OCR 批量翻译失败%s: lines=%d error=%s",
+                    "，跳过逐行回退" if not allow_single_fallback else "，回退逐行",
+                    len(chunk), error,
+                    exc_info=allow_single_fallback,
                 )
+                if not allow_single_fallback:
+                    # Keep the OCR boxes visible without covering them with a
+                    # partial/incorrect translation.  The next changed frame
+                    # gets another bounded batch opportunity.
+                    continue
                 outputs = []
                 for source in chunk:
                     requests += 1
@@ -840,8 +901,19 @@ class OcrTranslationService:
         sources = [source for _line, source in prepared]
         targets, uncached = self._partition_cached_sources(
             sources, source_lang, target_lang)
+        live_fast = bool(config.get("ocr_live_mode", False)) and not bool(
+            config.get("ocr_refinement_mode", False))
         fresh, requests = self._translate_uncached_sources(
-            translator, uncached, source_lang, target_lang)
+            translator,
+            uncached,
+            source_lang,
+            target_lang,
+            allow_single_fallback=not live_fast,
+            batch_items=int(config.get("ocr_live_batch_items", 10))
+            if live_fast else 10,
+            batch_characters=int(config.get("ocr_live_batch_characters", 1200))
+            if live_fast else None,
+        )
         targets.update(fresh)
 
         translated: list[TranslatedOcrLine] = []

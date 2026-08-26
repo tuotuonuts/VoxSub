@@ -488,6 +488,7 @@ class QwenQualityTranslator(Translator):
     def translate_many(
         self, texts: list[str], src_lang: str, dst_lang: str, *,
         timeout_ms: int = 15000,
+        allow_single_fallback: bool = True,
     ) -> list[str]:
         """Translate one OCR batch in a single llama request.
 
@@ -530,6 +531,12 @@ class QwenQualityTranslator(Translator):
                 self.close()
                 continue
             except TranslationError as exc:
+                if not allow_single_fallback:
+                    logger.warning(
+                        "OCR 批量翻译格式无效，实时模式跳过逐行回退: lines=%d error=%s",
+                        len(sources), exc,
+                    )
+                    raise
                 logger.warning(
                     "OCR 批量翻译格式无效，回退逐行: lines=%d error=%s",
                     len(sources), exc,
@@ -541,6 +548,8 @@ class QwenQualityTranslator(Translator):
                 _invalid_translation(source, target, src_lang, dst_lang)
                 for source, target in zip(sources, translated)
             ):
+                if not allow_single_fallback:
+                    raise TranslationError("批量译文存在越界项")
                 logger.warning(
                     "OCR 批量译文存在越界项，回退逐行: lines=%d", len(sources))
                 return [self.translate(

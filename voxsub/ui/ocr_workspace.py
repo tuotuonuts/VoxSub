@@ -501,8 +501,6 @@ class OcrWorkspace(QWidget):
         if (
             self._live_rect is None
             or self._live_paused
-            or self._worker.is_busy()
-            or self._captures
         ):
             return
         overlay_needs_hide = (
@@ -525,8 +523,6 @@ class OcrWorkspace(QWidget):
         if (
             self._live_rect is None
             or self._live_paused
-            or self._worker.is_busy()
-            or self._captures
         ):
             return
         try:
@@ -610,9 +606,26 @@ class OcrWorkspace(QWidget):
             target_lang,
             dict(config),
         )
-        if not self._worker.submit(job):
+        try:
+            accepted = self._worker.submit(
+                job, replace_pending=purpose == "live")
+        except TypeError as exc:
+            # Keep lightweight integrations that monkeypatch the old worker
+            # signature working while the bundled worker supports replacement
+            # of a pending live frame.
+            if "replace_pending" not in str(exc):
+                raise
+            accepted = self._worker.submit(job)
+        if not accepted:
             return False
         self._captures[revision] = captured.image.copy()
+        if purpose == "live":
+            # Results from older in-flight frames are intentionally discarded;
+            # retaining their full-size captures would waste memory while a
+            # busy screen keeps producing newer revisions.
+            for older in tuple(self._captures):
+                if older < revision:
+                    self._captures.pop(older, None)
         return True
 
     def _on_result(
@@ -768,6 +781,12 @@ class OcrWorkspace(QWidget):
         self._overlay.set_frame(frame, capture)
         if not self._showing_original:
             self._overlay.show()
+        if purpose == "live" and frame.failed_lines >= len(frame.lines):
+            # A malformed batch is intentionally not expanded into one request
+            # per line.  Mark this fingerprint as retryable so an unchanged
+            # screen gets another bounded batch attempt on the next tick.
+            self._previous_fingerprint = None
+            self._control.set_status(tr("批量翻译未完成，稍后重试"))
         stage = tr("高质量纠偏") if purpose == "live-refine" else tr("快速结果")
         status = warning or tr(
             f"{stage} · {len(frame.lines)} 行 · OCR {frame.ocr_elapsed_ms}ms · "

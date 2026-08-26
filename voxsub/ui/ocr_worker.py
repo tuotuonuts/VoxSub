@@ -64,21 +64,39 @@ class OcrWorker:
         self._requests: queue.Queue[OcrJob | None] = queue.Queue(maxsize=1)
         self._stop = threading.Event()
         self._busy = threading.Event()
+        self._latest_revision = -1
         self._thread = threading.Thread(
             target=self._run, name="ocr-translation", daemon=True
         )
         self._thread.start()
 
-    def submit(self, job: OcrJob) -> bool:
-        if self._stop.is_set() or self._busy.is_set():
+    def submit(self, job: OcrJob, *, replace_pending: bool = False) -> bool:
+        if self._stop.is_set() or (self._busy.is_set() and not replace_pending):
             return False
+        if job.revision >= 0:
+            self._latest_revision = job.revision
         self._busy.set()
         try:
             self._requests.put_nowait(job)
             return True
         except queue.Full:
-            self._busy.clear()
-            return False
+            if not replace_pending:
+                self._busy.clear()
+                return False
+            # A live capture is only useful if it is the newest screen.  Drop
+            # the one pending frame, keeping the currently running native
+            # inference untouched and avoiding an ever-growing backlog.
+            try:
+                self._requests.get_nowait()
+            except queue.Empty:
+                self._busy.clear()
+                return False
+            try:
+                self._requests.put_nowait(job)
+                return True
+            except queue.Full:
+                self._busy.clear()
+                return False
 
     def prepare(
         self, config: Mapping[str, Any], source_lang: str, target_lang: str
@@ -109,6 +127,13 @@ class OcrWorker:
     def is_busy(self) -> bool:
         return self._busy.is_set()
 
+    def _is_stale(self, job: OcrJob) -> bool:
+        return (
+            self._stop.is_set()
+            or job.revision >= 0
+            and job.revision != self._latest_revision
+        )
+
     def _run(self) -> None:
         engines: OrderedDict[tuple[str, str, bool, bool, float], RapidOcrEngine] = (
             OrderedDict())
@@ -117,6 +142,9 @@ class OcrWorker:
             job = self._requests.get()
             if job is None:
                 break
+            if self._is_stale(job):
+                self._busy.clear()
+                continue
             requested_key = (
                 str(job.config.get("ocr_model_id", "")),
                 str(job.config.get("models_root", "")),
@@ -166,9 +194,19 @@ class OcrWorker:
                 self._bridge.prepared.emit(
                     True, f"{recognized.model_id} / {recognized.backend}")
                 return
+            if self._is_stale(job):
+                logger.debug(
+                    "丢弃过期 OCR 任务: purpose=%s revision=%d latest=%d",
+                    job.purpose, job.revision, self._latest_revision)
+                return
             result, warning = self._translate_or_retain(
                 recognized, translator, job
             )
+            if self._is_stale(job):
+                logger.debug(
+                    "丢弃过期 OCR 结果: purpose=%s revision=%d latest=%d",
+                    job.purpose, job.revision, self._latest_revision)
+                return
             logger.info(
                 "OCR 帧完成: purpose=%s revision=%d lines=%d model=%s "
                 "backend=%s ocr_ms=%d translate_ms=%d requests=%d total_ms=%d",

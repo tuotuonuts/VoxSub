@@ -143,6 +143,55 @@ def test_translation_service_batches_unique_lines_and_reuses_cache(monkeypatch):
     assert first.ocr_model_id == "ocr-rapidocr-v6-medium"
 
 
+def test_live_translation_skips_expensive_single_line_fallback(monkeypatch):
+    calls: list[tuple[list[str], bool]] = []
+
+    class InvalidBatchTranslator:
+        def warmup(self):
+            return None
+
+        def translate_many(
+            self, texts, source, target, *, timeout_ms, allow_single_fallback
+        ):
+            calls.append((list(texts), allow_single_fallback))
+            raise RuntimeError("invalid JSON")
+
+        def translate(self, *_args, **_kwargs):
+            raise AssertionError("live OCR must not fall back line by line")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "voxsub.ocr.TranslatorFactory.create",
+        lambda _kind, _config: InvalidBatchTranslator(),
+    )
+    frame = OcrFrame(500, 180, (
+        OcrLine(OcrBox(0, 0, 200, 30), "First line", 0.99),
+        OcrLine(OcrBox(0, 40, 200, 70), "Second line", 0.99),
+    ), 15)
+    service = OcrTranslationService()
+
+    result = service.translate_frame(
+        frame,
+        "en",
+        "zh",
+        {
+            "translate_tier": "quality",
+            "ocr_live_mode": True,
+            "ocr_live_batch_items": 10,
+            "ocr_live_batch_characters": 1200,
+        },
+    )
+    service.close()
+
+    assert calls == [(["First line", "Second line"], False)]
+    assert result.translation_requests == 1
+    assert result.failed_lines == 2
+    assert result.translation_text == (
+        "[翻译失败] First line\n[翻译失败] Second line")
+
+
 def test_preferred_ocr_backend_selects_directml(monkeypatch):
     monkeypatch.setattr(
         "onnxruntime.get_available_providers",
@@ -165,7 +214,9 @@ def test_live_ocr_uses_fast_stage_then_restores_selected_refinement_model():
     assert fast["ocr_live_fast_stage"] is True
     assert fast["ocr_model_id"] == "ocr-rapidocr-v6-small-builtin"
     assert fast["ocr_live_refine_model_id"] == "ocr-rapidocr-v6-medium"
-    assert fast["ocr_maximum_lines"] == 40
+    assert fast["ocr_maximum_lines"] == 20
+    assert fast["ocr_maximum_characters"] == 2200
+    assert fast["ocr_live_batch_items"] == 10
     assert refinement["ocr_model_id"] == "ocr-rapidocr-v6-medium"
     assert refinement["ocr_refinement_mode"] is True
     assert refinement["ocr_maximum_lines"] == 72

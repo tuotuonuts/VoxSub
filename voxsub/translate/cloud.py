@@ -154,6 +154,7 @@ class CloudTranslator(Translator):
     def translate_many(
         self, texts: list[str], src_lang: str, dst_lang: str, *,
         timeout_ms: int = 15000,
+        allow_single_fallback: bool = True,
     ) -> list[str]:
         """Translate an OCR line batch with one cloud request."""
         sources = [str(text or "").strip() for text in texts]
