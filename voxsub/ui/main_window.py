@@ -67,7 +67,12 @@ MODE_INFO: dict[str, dict[str, str]] = {
 MODE_ORDER = ("a", "b", "c", "d")
 
 # 语言对（value, 显示标签）—— QFW ComboBox 用文本定位，不依赖 itemData
-LANG_PAIRS = [("zh-en", "中 → 英"), ("en-zh", "英 → 中")]
+LANG_PAIRS = [
+    ("zh-en", "中 → 英"),
+    ("en-zh", "英 → 中"),
+    ("auto-zh", "自动 → 中文"),
+    ("auto-en", "自动 → 英文"),
+]
 _LANG_LABEL_TO_VALUE = {label: value for value, label in LANG_PAIRS}
 _LANG_VALUE_TO_LABEL = {value: label for value, label in LANG_PAIRS}
 

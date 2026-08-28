@@ -32,7 +32,7 @@ from voxsub.hardware import (
     detect_hardware,
     select_llama_runtime,
 )
-from voxsub.language_guard import normalize_language
+from voxsub.language_guard import detect_text_language, normalize_language
 from voxsub.model_storage import resolve_models_root
 
 from ._http_client import OpenAICompatError, chat_completion
@@ -61,7 +61,10 @@ def _default_tools_dir() -> Path:
 _LANG_NAMES = {
     ("zh", "en"): ("Chinese", "English"),
     ("en", "zh"): ("English", "Chinese"),
+    ("auto", "zh"): ("the detected source language", "Chinese"),
+    ("auto", "en"): ("the detected source language", "English"),
 }
+_AUTO_SOURCE_NAME = "the detected source language"
 
 _SYSTEM_PROMPT = (
     "You are a professional machine-translation engine. Translate faithfully and "
@@ -449,6 +452,10 @@ class QwenQualityTranslator(Translator):
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
+        if src_lang == dst_lang:
+            return text
+        if src_lang == "auto" and detect_text_language(text) == dst_lang:
+            return text
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
             endpoint = self._ensure()
@@ -504,6 +511,8 @@ class QwenQualityTranslator(Translator):
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
+        if _can_passthrough_batch(sources, src_lang, dst_lang):
+            return list(sources)
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
             endpoint = self._ensure()
@@ -564,9 +573,15 @@ class QwenQualityTranslator(Translator):
     ) -> str:
         src_name, dst_name = names
         payload = json.dumps(texts, ensure_ascii=False, separators=(",", ":"))
+        source_clause = (
+            "Detect the source language of each item from its text. The items may "
+            "contain different languages."
+            if src_name == _AUTO_SOURCE_NAME
+            else f"The items are written in {src_name}."
+        )
         instruction = (
             f"The JSON items are neighboring OCR lines from one screen, ordered "
-            f"top-to-bottom, and are written in {src_name}. Use adjacent items as "
+            f"top-to-bottom. {source_clause} Use adjacent items as "
             "context to resolve wording and conservatively repair only obvious OCR "
             f"character mistakes. Translate every item only into {dst_name}. "
             "Keep one output item for each input item. Return only one valid JSON array "
@@ -599,21 +614,39 @@ class QwenQualityTranslator(Translator):
                              names: tuple[str, str], timeout_ms: int,
                              retry: bool = False) -> str:
         src_name, dst_name = names
+        source_auto = src_name == _AUTO_SOURCE_NAME
         if self._prompt_style == "hy-mt2":
-            instruction = (
-                f"The source text is written in {src_name}. Translate it only into {dst_name}. "
-                "Do not identify, rewrite, or translate it into any other language. "
-                "Only output the translated result and do not add explanations:\n"
-                f"{text}"
-            )
+            if source_auto:
+                instruction = (
+                    "Detect the source language from the input text, then translate "
+                    f"it only into {dst_name}. Do not translate it into any other "
+                    "language. Only output the translated result and do not add "
+                    f"explanations:\n{text}"
+                )
+            else:
+                instruction = (
+                    f"The source text is written in {src_name}. Translate it only into {dst_name}. "
+                    "Do not identify, rewrite, or translate it into any other language. "
+                    "Only output the translated result and do not add explanations:\n"
+                    f"{text}"
+                )
             messages = [{"role": "user", "content": instruction}]
         else:
-            instruction = (
-                f"Translate the text between <source> tags from {src_name} to {dst_name} only. "
-                "The source language is fixed; do not use another source or target language. "
-                "Output the translation only.\n<source>\n"
-                f"{text}\n</source>"
-            )
+            if source_auto:
+                instruction = (
+                    "Detect the source language from the text between <source> tags "
+                    f"and translate it only into {dst_name}. The source language may "
+                    "vary between requests; do not translate into any other language. "
+                    "Output the translation only.\n<source>\n"
+                    f"{text}\n</source>"
+                )
+            else:
+                instruction = (
+                    f"Translate the text between <source> tags from {src_name} to {dst_name} only. "
+                    "The source language is fixed; do not use another source or target language. "
+                    "Output the translation only.\n<source>\n"
+                    f"{text}\n</source>"
+                )
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": instruction},
@@ -690,6 +723,16 @@ def _clean(text: str) -> str:
         if text.lower().startswith(pref.lower()) and len(text) > len(pref):
             text = text[len(pref):].strip()
     return text
+
+
+def _can_passthrough_batch(sources: list[str], src_lang: str, dst_lang: str) -> bool:
+    """Return whether a batch is already in its requested target language."""
+    if src_lang == dst_lang:
+        return True
+    if src_lang != "auto":
+        return False
+    detected = [detect_text_language(source) for source in sources]
+    return bool(detected) and all(item == dst_lang for item in detected)
 
 
 def _invalid_translation(source: str, output: str,

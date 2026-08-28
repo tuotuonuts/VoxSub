@@ -19,6 +19,9 @@ import unicodedata
 LANGUAGE_NAMES: dict[str, str] = {
     "zh": "Chinese",
     "en": "English",
+    # ``auto`` is used by N→1 translation: the recognizer/OCR may emit more
+    # than one source language while the target remains fixed.
+    "auto": "the detected source language",
 }
 
 
@@ -55,6 +58,24 @@ def _script_counts(text: str) -> dict[str, int]:
         else:
             counts["other"] += 1
     return counts
+
+
+def detect_text_language(text: str) -> str:
+    """Best-effort detection for scripts supported by the fast translator.
+
+    This intentionally returns only ``zh``, ``en`` or ``auto``. It is not a
+    general language detector; its purpose is to resolve ``auto`` for the
+    bundled Chinese↔English OPUS models and avoid needless same-language
+    translation calls in other backends.
+    """
+    counts = _script_counts(str(text or ""))
+    # CJK takes precedence when it is present: Chinese OCR/audio often mixes
+    # Latin product names, URLs, or numbers into an otherwise Chinese line.
+    if counts["cjk"] and counts["cjk"] >= counts["latin"]:
+        return "zh"
+    if counts["latin"] and counts["other"] == 0:
+        return "en"
+    return "auto"
 
 
 def text_matches_language(text: str, language: str, *, require_signal: bool = True) -> bool:
@@ -96,6 +117,7 @@ def guard_text(text: str, language: str, *, kind: str = "text") -> str:
 __all__ = [
     "LANGUAGE_NAMES",
     "guard_text",
+    "detect_text_language",
     "language_name",
     "normalize_language",
     "text_matches_language",

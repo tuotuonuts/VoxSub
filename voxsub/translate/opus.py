@@ -22,6 +22,7 @@ import numpy as np
 import onnxruntime as ort
 
 from voxsub.logging_setup import get_logger
+from voxsub.language_guard import detect_text_language, normalize_language
 from voxsub.model_storage import model_lookup_roots, resolve_models_root
 
 from .base import TranslationError, Translator
@@ -118,6 +119,18 @@ class OpusFastTranslator(Translator):
         text = (text or "").strip()
         if not text:
             return ""
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
+        if dst_lang == "auto":
+            raise TranslationError("快档目标语言必须明确，不能使用 auto")
+        if src_lang == "auto":
+            detected = detect_text_language(text)
+            if detected == "auto":
+                raise TranslationError(
+                    "快档无法从文本判断源语言；请改用质量档或云档以支持更多语言")
+            src_lang = detected
+        if src_lang == dst_lang:
+            return text
         pair = (src_lang, dst_lang)
         if pair not in self._opus_map:
             raise TranslationError(f"快档不支持语言对 {pair} (支持: {list(self._opus_map)})")

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from voxsub.language_guard import guard_text, normalize_language, text_matches_language
+from voxsub.language_guard import (
+    detect_text_language,
+    guard_text,
+    normalize_language,
+    text_matches_language,
+)
 
 
 def test_language_aliases_are_normalized() -> None:
@@ -32,3 +37,9 @@ def test_english_gate_rejects_cjk_and_devanagari() -> None:
 def test_punctuation_only_text_is_not_a_language_signal() -> None:
     assert not text_matches_language("...", "en")
     assert text_matches_language("...", "en", require_signal=False)
+
+
+def test_auto_language_detection_is_conservative() -> None:
+    assert detect_text_language("这是中文") == "zh"
+    assert detect_text_language("This is English") == "en"
+    assert detect_text_language("...") == "auto"

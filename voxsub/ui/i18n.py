@@ -154,6 +154,8 @@ TRANSLATIONS: dict[str, str] = {
     "翻译方向": "Translation direction",
     "中 → 英": "Chinese -> English",
     "英 → 中": "English -> Chinese",
+    "自动 → 中文": "Auto-detect -> Chinese",
+    "自动 → 英文": "Auto-detect -> English",
     "设备可在「设置」中选择": "Choose the input device in Settings",
     "输入：截图、图片或选定屏幕区域":
         "Input: screenshot, image, or selected screen region",

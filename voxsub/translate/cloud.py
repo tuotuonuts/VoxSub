@@ -18,7 +18,7 @@ import threading
 from urllib.parse import urlparse
 
 from voxsub.logging_setup import get_logger
-from voxsub.language_guard import language_name, normalize_language
+from voxsub.language_guard import detect_text_language, language_name, normalize_language
 
 from ._http_client import OpenAICompatError, chat_completion, normalize_api_base
 from .base import TranslationError, Translator, parse_translation_batch
@@ -113,6 +113,14 @@ class CloudTranslator(Translator):
         text = (text or "").strip()
         if not text:
             return ""
+        src_lang = normalize_language(src_lang)
+        dst_lang = normalize_language(dst_lang)
+        if dst_lang == "auto":
+            raise TranslationError("云翻译目标语言必须明确，不能使用 auto")
+        if src_lang == dst_lang:
+            return text
+        if src_lang == "auto" and detect_text_language(text) == dst_lang:
+            return text
         if not self._api_key:
             logger.debug("云翻译未配置 api_key, 按未就绪处理 (正常软降级)")
             raise TranslationError("云翻译未配置 DEEPSEEK_API_KEY")
@@ -124,13 +132,19 @@ class CloudTranslator(Translator):
         else:
             effective_timeout = max(1.0, int(timeout_ms) / 1000.0)
         endpoint = self._validate_endpoint()
-        src_lang = normalize_language(src_lang)
-        dst_lang = normalize_language(dst_lang)
-        lang_hint = (
-            f"The source text is {language_name(src_lang)}. "
-            f"Translate only from {language_name(src_lang)} to {language_name(dst_lang)}. "
-            "Do not translate into, detect as, or add any other language."
-        )
+        if src_lang == "auto":
+            lang_hint = (
+                "Detect the source language from the input text. "
+                f"Translate only into {language_name(dst_lang)}. "
+                "The source language may vary between requests; do not add or "
+                "translate into any other language."
+            )
+        else:
+            lang_hint = (
+                f"The source text is {language_name(src_lang)}. "
+                f"Translate only from {language_name(src_lang)} to {language_name(dst_lang)}. "
+                "Do not translate into, detect as, or add any other language."
+            )
         messages = [
             {"role": "system",
              "content": ("You are a professional translator. " + lang_hint +
@@ -168,6 +182,25 @@ class CloudTranslator(Translator):
         endpoint = self._validate_endpoint()
         src_lang = normalize_language(src_lang)
         dst_lang = normalize_language(dst_lang)
+        if dst_lang == "auto":
+            raise TranslationError("云翻译目标语言必须明确，不能使用 auto")
+        if src_lang == dst_lang:
+            return list(sources)
+        if src_lang == "auto":
+            detected = [detect_text_language(source) for source in sources]
+            if detected and all(item == dst_lang for item in detected):
+                return list(sources)
+        if src_lang == "auto":
+            direction = (
+                "Detect the source language of each item; the items may contain "
+                "different languages. Translate every item only into "
+                f"{language_name(dst_lang)}."
+            )
+        else:
+            direction = (
+                f"Translate every item from {language_name(src_lang)} to "
+                f"{language_name(dst_lang)}."
+            )
         payload = json.dumps(sources, ensure_ascii=False, separators=(",", ":"))
         messages = [
             {"role": "system", "content": (
@@ -177,8 +210,7 @@ class CloudTranslator(Translator):
                 "The JSON items are neighboring OCR lines from one screen in "
                 "top-to-bottom order. Use adjacent items as context and conservatively "
                 "repair only obvious OCR character mistakes. "
-                f"Translate every item from {language_name(src_lang)} to "
-                f"{language_name(dst_lang)}. Return exactly {len(sources)} strings "
+                f"{direction} Return exactly {len(sources)} strings "
                 "in the same order, with one output per input. Do not change the "
                 "array length.\n" + payload)},
         ]

@@ -418,7 +418,7 @@ class TestMainWindow:
             assert win.windowTitle() == "语幕 VoxSub"
             assert set(win.mode_cards) == {"a", "b", "c", "d"}
             assert all(isinstance(c, ModeCard) for c in win.mode_cards.values())
-            assert win.lang_combo.count() == 2
+            assert win.lang_combo.count() == 4
             assert win.lang_combo.itemText(0) == "中 → 英"
             assert isinstance(win.subtitle_list, SubtitleList)
             assert win.subtitle_list.count() == 0
@@ -604,6 +604,9 @@ class TestMainWindow:
             assert win.current_lang_pair() == "zh-en"
             win.set_lang_pair("bogus")  # 非法值回落 zh-en
             assert win.current_lang_pair() == "zh-en"
+            win.set_lang_pair("auto-zh")
+            assert win.current_lang_pair() == "auto-zh"
+            assert win._store.get("lang_pair") == "auto-zh"  # noqa: SLF001
         finally:
             win.close()
             win.deleteLater()

@@ -20,6 +20,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import json
 
+from voxsub.language_guard import normalize_language
+
 
 class TranslationError(RuntimeError):
     """单句翻译失败。由调用方 (pipeline / PrefetchEngine) 捕获并降级。"""
@@ -76,7 +78,11 @@ class Translator(ABC):
 
     # ---- 便捷: 语言对是否受支持 ----
     def supports(self, src_lang: str, dst_lang: str) -> bool:
-        return src_lang in self.langs and dst_lang in self.langs
+        src = normalize_language(src_lang)
+        dst = normalize_language(dst_lang)
+        # ``auto`` is a wildcard source for N→1. A destination must remain
+        # concrete so an accidental ``en→auto`` can never reach a backend.
+        return (src == "auto" or src in self.langs) and dst in self.langs
 
     def __enter__(self) -> "Translator":
         return self
