@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -39,9 +40,16 @@ def run_smoke(executable: Path) -> float:
     unique = uuid.uuid4().hex
     event_name = rf"Local\VoxSub.Test.Shutdown.{unique}"
     mutex_name = rf"Local\VoxSub.Test.Application.{unique}"
+    # Never reuse the developer's installed configuration/model cache.  A
+    # real local model can start a several-second OCR/translation warm-up and
+    # make this lifecycle check report a false timeout.  Keeping the isolated
+    # directory beside the tested bundle also avoids C: temp permissions.
+    smoke_root = executable.parent / f".smoke-appdata-{unique}"
     environment = os.environ.copy()
     environment.update({
         "QT_QPA_PLATFORM": "offscreen",
+        "LOCALAPPDATA": str(smoke_root),
+        "APPDATA": str(smoke_root),
         "VOXSUB_INSTANCE_LOCK": f"installer-smoke-{unique}.lock",
         "VOXSUB_INSTALLER_MUTEX": mutex_name,
         "VOXSUB_INSTALLER_SHUTDOWN_EVENT": event_name,
@@ -73,9 +81,13 @@ def run_smoke(executable: Path) -> float:
         if not kernel32.SetEvent(event_handle):
             raise ctypes.WinError(ctypes.get_last_error())
         try:
-            exit_code = process.wait(timeout=10.0)
+            # A cold packaged start may begin OCR/translation warm-up before
+            # the Qt event loop can dispatch the shutdown notifier.  Keep this
+            # smoke check bounded, but allow that one-time initialization to
+            # unwind instead of reporting a false failure on slower machines.
+            exit_code = process.wait(timeout=30.0)
         except subprocess.TimeoutExpired as exc:
-            raise TimeoutError("packaged app did not exit within 10s") from exc
+            raise TimeoutError("packaged app did not exit within 30s") from exc
         elapsed = time.monotonic() - started_at
         if exit_code != 0:
             raise RuntimeError(f"packaged app shutdown exit code was {exit_code}")
@@ -91,6 +103,7 @@ def run_smoke(executable: Path) -> float:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5.0)
+        shutil.rmtree(smoke_root, ignore_errors=True)
 
 
 def main() -> int:

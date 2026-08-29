@@ -71,6 +71,21 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(log_to_console=False)
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("VoxSub")
+
+    # Create the installer shutdown bridge immediately after QApplication.
+    # Model migration and UI construction can take several seconds on a cold
+    # start; registering the named event only after those steps made the
+    # installer believe VoxSub was unresponsive and fall back to taskkill.
+    # Keeping the bridge alive under QApplication also lets a shutdown request
+    # arrive while the remaining startup work is still being prepared.
+    installer_shutdown = InstallerShutdownBridge(
+        app,
+        mutex_name=os.environ.get(
+            "VOXSUB_INSTALLER_MUTEX", RUNNING_MUTEX_NAME),
+        event_name=os.environ.get(
+            "VOXSUB_INSTALLER_SHUTDOWN_EVENT", SHUTDOWN_EVENT_NAME),
+    )
+
     store = ConfigStore()
     initialize_model_storage(store)
     language_manager.set_language(store.get("language", "system"))
@@ -153,13 +168,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # Alternate object names isolate automated app-startup tests from a real
     # installed instance. Production does not set these environment variables.
-    installer_shutdown = InstallerShutdownBridge(
-        app,
-        mutex_name=os.environ.get(
-            "VOXSUB_INSTALLER_MUTEX", RUNNING_MUTEX_NAME),
-        event_name=os.environ.get(
-            "VOXSUB_INSTALLER_SHUTDOWN_EVENT", SHUTDOWN_EVENT_NAME),
-    )
     installer_shutdown.shutdown_requested.connect(
         lambda: _request_application_quit(show_blocker=False))
 
@@ -254,7 +262,9 @@ def main(argv: list[str] | None = None) -> int:
     # Windows reclaims both named handles when the process exits.
     app.aboutToQuit.connect(lambda: logger.info("应用退出"))
     logger.info("事件循环开始")
-    return app.exec()
+    exit_code = app.exec()
+    logger.info("事件循环结束: code=%s", exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":

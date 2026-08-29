@@ -93,5 +93,17 @@ def test_release_build_collects_the_offline_ocr_runtime():
     assert '"--collect-all", "cv2"' in build
     assert '"--hidden-import", "voxsub.ui.ocr_workspace"' in build
     assert '"--ocr-smoke"' in entrypoint
+    assert '"--qt-smoke"' in entrypoint
+    assert 'ArgumentList "--qt-smoke"' in build
     assert 'Start-Process -FilePath $Exe -ArgumentList "--ocr-smoke"' in build
     assert "$OcrSmoke.ExitCode -ne 0" in build
+def test_pyinstaller_runs_with_isolated_native_search_path():
+    runner = (ROOT / "scripts" / "run_pyinstaller.py").read_text(
+        encoding="utf-8")
+    build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+
+    assert "os.environ.pop(\"PYTHONPATH\", None)" in runner
+    assert "os.environ.pop(\"PYTHONHOME\", None)" in runner
+    assert "isolated_windows_path" in runner
+    assert "run_pyinstaller.py" in build
+    assert "Unexpected ICU DLLs in frozen bundle" in build

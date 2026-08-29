@@ -6,6 +6,13 @@
 """
 import sys
 
+from voxsub.runtime_bootstrap import configure_frozen_dll_search_path
+
+
+# Must run before importing ``voxsub.ui.app``: that module imports
+# ``PySide6.QtCore`` at module load time.
+configure_frozen_dll_search_path()
+
 
 def _run_ocr_smoke() -> int:
     """Load the bundled OCR path without creating or controlling a GUI window."""
@@ -32,7 +39,16 @@ def _run_ocr_smoke() -> int:
     return 0 if "hellovoxsubocr" in normalized else 2
 
 
+def _run_qt_smoke() -> int:
+    """Verify the frozen bundle can load the Qt extension module itself."""
+    from PySide6 import QtCore
+
+    return 0 if QtCore.qVersion() else 2
+
+
 def main() -> int:
+    if "--qt-smoke" in sys.argv[1:]:
+        return _run_qt_smoke()
     if "--ocr-smoke" in sys.argv[1:]:
         return _run_ocr_smoke()
     from voxsub.ui.app import main as ui_main

@@ -65,10 +65,11 @@ if (-not $SkipPyInstaller) {
     if (Test-Path $Dist) { Remove-Item $Dist -Recurse -Force }
     if (Test-Path $Work) { Remove-Item $Work -Recurse -Force }
     Run-Checked "pyinstaller" {
-        $Py = Join-Path "D:\OneDrive\app_dve\VoxSub" ".venv\Scripts\python.exe"
+        $Py = Join-Path $Root ".venv\Scripts\python.exe"
 
-        & $Py @(
-            "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed",
+        $PyInstallerRunner = Join-Path $Root "scripts\run_pyinstaller.py"
+        & $Py $PyInstallerRunner @(
+            "--noconfirm", "--clean", "--windowed",
             "--name", "VoxSub",
             "--icon", "D:/OneDrive/app_dve/VoxSub/assets/icon.ico",
             "--distpath", "D:/OneDrive/app_dve/VoxSub/dist",
@@ -100,6 +101,12 @@ if (-not $SkipPyInstaller) {
     throw "-SkipPyInstaller requested but existing dist output is missing"
 }
 
+$IcuFiles = @(Get-ChildItem -LiteralPath (Join-Path $Dist "_internal") `
+    -Recurse -File -Filter "icu*.dll" -ErrorAction SilentlyContinue)
+if ($IcuFiles.Count -gt 0) {
+    $IcuNames = ($IcuFiles | ForEach-Object { $_.FullName }) -join "; "
+    throw "Unexpected ICU DLLs in frozen bundle; refusing a Qt-incompatible build: $IcuNames"
+}
 # Every recognizer, including Marketplace ASR models, needs Silero VAD.  Keep
 # this small shared dependency inside the installer instead of requiring a
 # hidden first-run download that leaves a new machine unable to start.
@@ -239,6 +246,15 @@ function Sign-Artifact([string]$Path, $Certificate) {
     Write-Host "[sign] status=$($Signature.Status) (self-signed certificate may report NotTrusted/UnknownError)"
 }
 $Exe = Join-Path $Dist "VoxSub.exe"
+Write-Host "[build] packaged QtCore smoke ..." -ForegroundColor Cyan
+# The GUI executable has no console, so use an explicit process exit code to
+# catch the exact frozen-import failure users see when QtCore cannot locate a
+# dependent DLL. Keep this separate from OCR smoke: OCR does not import Qt.
+$QtSmoke = Start-Process -FilePath $Exe -ArgumentList "--qt-smoke" `
+    -WindowStyle Hidden -Wait -PassThru
+if ($QtSmoke.ExitCode -ne 0) {
+    throw "packaged QtCore smoke failed (exit $($QtSmoke.ExitCode))"
+}
 Write-Host "[build] packaged OCR smoke ..." -ForegroundColor Cyan
 # VoxSub is built as a Windows GUI executable, so invoking it with `&` does not
 # reliably populate $LASTEXITCODE. Read the real process exit code explicitly;
