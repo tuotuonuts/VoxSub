@@ -97,6 +97,9 @@ class ModelSpec:
 _GH_ASR = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
 _GH_TTS = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 _MS_ASR = "https://modelscope.cn/models/csukuangfj/asr-models/resolve/master"
+# Keep this filename in one place: the upstream release asset includes the
+# ``small-bilingual`` segment.  The older, shorter name returns HTTP 404.
+_ZIPFORMER_ASSET = "sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16.tar.bz2"
 _HF = "https://huggingface.co"
 _MS = "https://modelscope.cn"
 _HF_MIRROR = "https://hf-mirror.com"
@@ -387,7 +390,7 @@ CATALOG: tuple[ModelSpec, ...] = (
         quality_score=72,
         languages="中文 / 英语",
         license="Apache-2.0",
-        download_bytes=0,
+        download_bytes=458_187_351,
         installed_bytes=150_000_000,
         install_rel="stt/zipformer",
         required_paths=("tokens.txt",),
@@ -396,16 +399,11 @@ CATALOG: tuple[ModelSpec, ...] = (
         sources=(
             ModelSource(
                 "global", "GitHub 全球源",
-                f"{_GH_ASR}/sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
+                f"{_GH_ASR}/{_ZIPFORMER_ASSET}",
                 "https://github.com/favicon.ico",
             ),
-            ModelSource(
-                "china", "ModelScope 中国源",
-                f"{_MS_ASR}/sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
-                "https://modelscope.cn/favicon.ico",
-            ),
         ),
-        asset_name="sherpa-onnx-streaming-zipformer-zh-en-2023-02-16.tar.bz2",
+        asset_name=_ZIPFORMER_ASSET,
         archive=True,
         builtin=True,
         min_ram_gb=4.0,

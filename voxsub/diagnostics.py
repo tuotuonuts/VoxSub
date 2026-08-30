@@ -162,8 +162,11 @@ def _check_asr_smoke() -> dict:
     """加载流式 ASR, 对短音频做一次完整 decode (参考 spike_m1.py 方法)。"""
     asr_dir = _zipformer_dir()
     if not (asr_dir / "tokens.txt").exists() or not list(asr_dir.glob("*encoder*.onnx")):
-        logger.warning("自检[ASR 冒烟] ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): %s",
-                       asr_dir.name)
+        logger.warning(
+            "自检[ASR 冒烟] ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): "
+            "model=%s path=%s",
+            "asr-zipformer-bilingual-fast", asr_dir,
+        )
         return {"check": "ASR 冒烟", "status": "fail",
                 "detail": f"ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): {asr_dir}",
                 "suggestion": "点击修复以补齐 ASR 模型",
@@ -433,12 +436,21 @@ def repair_self_check(
     errors: list[str] = []
     total = len(actions)
     preference = str(config.get("download_source", "auto"))
+    logger.info(
+        "自检修复开始: root=%s preference=%s targets=%s",
+        root, preference, [f"{kind}:{target}" for kind, target in actions],
+    )
+    if not actions:
+        logger.info("自检修复跳过: 最新结果没有声明可执行的修复目标")
     for index, (kind, target) in enumerate(actions):
+        logger.info("自检修复目标开始: index=%d/%d kind=%s target=%s",
+                    index + 1, total, kind, target)
         if progress:
             progress(index, max(1, total), f"正在修复：{target}")
         try:
             _repair_one_action(kind, target, root, marketplace, preference)
             repaired.append(target)
+            logger.info("自检修复目标完成: kind=%s target=%s", kind, target)
         except Exception as exc:  # noqa: BLE001 - report each target separately
             logger.warning("自检修复失败: target=%s error=%s", target, exc,
                            exc_info=True)

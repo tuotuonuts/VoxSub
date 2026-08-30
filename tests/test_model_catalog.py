@@ -125,6 +125,20 @@ def test_sensevoice_catalog_entry_has_downloadable_runtime_contract() -> None:
     assert {source.id for source in model.sources} == {"global", "china"}
 
 
+def test_zipformer_catalog_uses_verified_upstream_asset() -> None:
+    """内置 Zipformer 修复不能引用已下线的旧文件名或 404 镜像。"""
+    model = get_model("asr-zipformer-bilingual-fast")
+    assert model is not None
+    expected = "sherpa-onnx-streaming-zipformer-small-bilingual-zh-en-2023-02-16.tar.bz2"
+    assert model.asset_name == expected
+    assert model.download_bytes == 458_187_351
+    assert len(model.sources) == 1
+    source = model.sources[0]
+    assert source.id == "global"
+    assert source.url.endswith(expected)
+    assert "streaming-zipformer-zh-en-2023-02-16.tar.bz2" not in source.url
+
+
 def test_hy_mt2_7b_q8_uses_exact_upstream_asset_metadata() -> None:
     model = get_model("mt-hy-mt2-7b-q8")
     assert model is not None
