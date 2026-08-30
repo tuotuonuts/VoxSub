@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -253,6 +254,68 @@ class TestDiagnosticsLogTab:
             _wait_until(qapp, lambda: "report" not in dw._export_workers)  # noqa: SLF001
             assert output.read_text(encoding="utf-8") == "report body"
             assert dw.export_btn.isEnabled()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_selfcheck_refresh_runs_off_ui_thread_with_progress(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        calls = {"count": 0}
+
+        class _SlowDiag:
+            @staticmethod
+            def run_self_check(progress=None):
+                calls["count"] += 1
+                if calls["count"] > 1:
+                    if progress:
+                        progress(0, 2, "phase one")
+                    time.sleep(0.15)
+                    if progress:
+                        progress(2, 2, "phase two")
+                return [{"check": "模型完整性", "status": "ok", "detail": "ready"}]
+
+        dw = DiagnosticsWindow(diagnostics_module=_SlowDiag())
+        try:
+            started = time.monotonic()
+            dw.refresh()
+            assert time.monotonic() - started < 0.08
+            assert not dw.selfcheck_refresh_btn.isEnabled()
+            assert not dw.selfcheck_progress.isHidden()
+            _wait_until(qapp, lambda: dw._selfcheck_worker is None)  # noqa: SLF001
+            assert dw.selfcheck_progress.isHidden()
+            assert dw.selfcheck_refresh_btn.isEnabled()
+            assert dw.selfcheck_progress.value() == 100
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_report_filename_has_timestamp(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        output = tmp_path / "report.txt"
+        captured = {}
+
+        class _Diag:
+            @staticmethod
+            def run_self_check():
+                return []
+
+            @staticmethod
+            def export_report():
+                return "report body"
+
+        def _choose(*args, **kwargs):
+            captured["suggested"] = args[2]
+            return str(output), "文本文件 (*.txt)"
+
+        dw = DiagnosticsWindow(diagnostics_module=_Diag())
+        try:
+            monkeypatch.setattr(diagnostics_window, "choose_save_file", _choose)
+            dw._export_report()  # noqa: SLF001
+            _wait_until(qapp, lambda: "report" not in dw._export_workers)  # noqa: SLF001
+            assert re.fullmatch(r"voxsub_diagnostics_\d{14}\.txt", captured["suggested"])
         finally:
             dw.close()
             dw.deleteLater()

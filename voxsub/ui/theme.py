@@ -632,6 +632,14 @@ QFrame#diagnosticCard[status="warn"] { border-left: 3px solid @warning; }
 QFrame#diagnosticCard[status="fail"] { border-left: 3px solid @error; }
 QLabel#diagnosticMark { font-size: 17px; }
 QLabel#logLiveState { color: @success; font-size: 13px; }
+QProgressBar#diagnosticsProgress {
+    min-height: 8px; max-height: 8px; border: none;
+    background: @surface_2; border-radius: 4px;
+    text-align: center; color: @text_secondary;
+}
+QProgressBar#diagnosticsProgress::chunk {
+    background: @accent; border-radius: 4px;
+}
 
 /* ---- 浮窗控制岛 ---- */
 QFrame#overlayToolbar, QWidget#overlayLockedPanel {

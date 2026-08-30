@@ -17,7 +17,9 @@ API Key、字幕正文、音频数据等用户内容。
 from __future__ import annotations
 
 import importlib
+import inspect
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -79,6 +82,25 @@ class _ExportBridge(QObject):
     done = Signal(str, bool, str)
 
 
+class _SelfCheckBridge(QObject):
+    """Deliver self-check and repair worker events to the Qt thread."""
+
+    progress = Signal(int, int, str)
+    done = Signal(object)
+
+
+def _call_self_check(module: object, progress) -> list[dict]:
+    """Call new progress-aware modules while retaining injected test doubles."""
+    run = getattr(module, "run_self_check")
+    try:
+        parameters = inspect.signature(run).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "progress" in parameters:
+        return list(run(progress=progress) or [])
+    return list(run() or [])
+
+
 class DiagnosticsWindow(QWidget):
     """诊断页：自检结果卡（Tab 1）+ 实时日志（Tab 2）。"""
 
@@ -99,6 +121,14 @@ class DiagnosticsWindow(QWidget):
         self._export_bridge.done.connect(self._on_export_done)
         self._export_workers: dict[str, threading.Thread] = {}
         self._export_buttons: dict[str, QPushButton] = {}
+        self._selfcheck_bridge = _SelfCheckBridge(self)
+        self._selfcheck_bridge.progress.connect(self._on_selfcheck_progress)
+        self._selfcheck_bridge.done.connect(self._on_selfcheck_done)
+        self._selfcheck_worker: threading.Thread | None = None
+        self._repair_bridge = _SelfCheckBridge(self)
+        self._repair_bridge.progress.connect(self._on_repair_progress)
+        self._repair_bridge.done.connect(self._on_repair_done)
+        self._repair_worker: threading.Thread | None = None
         self._last_counts = {"ok": 0, "warn": 0, "fail": 0}
         if diagnostics_module is _AUTO:
             self._load_module()
@@ -160,6 +190,14 @@ class DiagnosticsWindow(QWidget):
         head_row.addWidget(self.selfcheck_refresh_btn)
         lay.addLayout(head_row)
 
+        self.selfcheck_progress = QProgressBar(page)
+        self.selfcheck_progress.setObjectName("diagnosticsProgress")
+        self.selfcheck_progress.setRange(0, 100)
+        self.selfcheck_progress.setValue(0)
+        self.selfcheck_progress.setFormat("%p%")
+        self.selfcheck_progress.hide()
+        lay.addWidget(self.selfcheck_progress)
+
         self.scroll = QScrollArea(page)
         self.scroll.setObjectName("diagnosticsScroll")
         self.scroll.setWidgetResizable(True)
@@ -173,6 +211,11 @@ class DiagnosticsWindow(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
+        self.repair_btn = QPushButton("修复", page)
+        self.repair_btn.setObjectName("secondaryButton")
+        self.repair_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.repair_btn.clicked.connect(self._repair)
+        btn_row.addWidget(self.repair_btn)
         self.export_btn = QPushButton("导出报告 (txt)", page)
         self.export_btn.setObjectName("secondaryButton")
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -401,6 +444,144 @@ class DiagnosticsWindow(QWidget):
         self._vbox.insertWidget(self._vbox.count() - 1, card)
 
     # ------------------------------------------------------------------
+    def _set_selfcheck_busy(self, busy: bool, text: str = "") -> None:
+        self.selfcheck_refresh_btn.setEnabled(not busy)
+        self.repair_btn.setEnabled(not busy and self._repair_worker is None)
+        self.export_btn.setEnabled(not busy and "report" not in self._export_workers)
+        if busy:
+            self.selfcheck_progress.show()
+            self.selfcheck_progress.setValue(0)
+            self.selfcheck_progress.setFormat("%p%")
+            if text:
+                self.selfcheck_summary.setText(text)
+        else:
+            self.selfcheck_progress.hide()
+
+    def _on_selfcheck_progress(self, completed: int, total: int, label: str) -> None:
+        if self._selfcheck_worker is None:
+            return
+        value = int(completed / total * 100) if total else 0
+        self.selfcheck_progress.setValue(max(0, min(100, value)))
+        self.selfcheck_progress.setFormat(f"%p% · {label}")
+        self.selfcheck_summary.setText(label)
+
+    def _on_selfcheck_done(self, results: object) -> None:
+        self._selfcheck_worker = None
+        self._set_selfcheck_busy(False)
+        self._results = [dict(item) for item in (results or [])]
+        self._render_cached_results()
+
+    def _start_selfcheck(self) -> None:
+        if self._selfcheck_worker is not None:
+            return
+        if self._module is None or not hasattr(self._module, "run_self_check"):
+            self._render()
+            return
+        module = self._module
+        self._set_selfcheck_busy(True, tr("正在检查…"))
+
+        def _worker() -> None:
+            try:
+                results = _call_self_check(module, self._selfcheck_bridge.progress.emit)
+            except Exception:
+                logger.exception("后台 run_self_check 执行失败")
+                results = [{"check": "自检执行", "status": "fail", "detail": "run_self_check 抛异常"}]
+            self._selfcheck_bridge.done.emit(results)
+
+        self._selfcheck_worker = threading.Thread(
+            target=_worker, name="ui-self-check", daemon=True
+        )
+        self._selfcheck_worker.start()
+
+    def _repair(self) -> None:
+        """Repair bundled VAD and missing built-in catalog models in the background."""
+        if self._repair_worker is not None or self._selfcheck_worker is not None:
+            return
+        module = self._module
+        if module is None:
+            self.selfcheck_summary.setText(tr("未接入检查模块"))
+            return
+        self.repair_btn.setEnabled(False)
+        self.selfcheck_refresh_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
+        self.selfcheck_progress.show()
+        self.selfcheck_progress.setValue(0)
+        self.selfcheck_progress.setFormat("%p%")
+
+        def _worker() -> None:
+            repaired: list[str] = []
+            errors: list[str] = []
+            try:
+                from voxsub.bootstrap_models import ensure_bundled_vad
+                from voxsub.model_catalog import ModelMarketplace, get_model
+                from voxsub.model_storage import resolve_models_root
+
+                root = resolve_models_root(self._store)
+                vad_target = root / "vad" / "silero_vad_v5.onnx"
+                vad_was_missing = not vad_target.is_file()
+                if ensure_bundled_vad(root) is not None and vad_was_missing:
+                    repaired.append("VAD")
+                marketplace = ModelMarketplace(root)
+                config = self._store.load()
+                selected_ids = {
+                    str(config.get("asr_model_id", "asr-zipformer-bilingual-fast")),
+                    str(config.get("translate_model_id", "mt-opus-fast-builtin")),
+                    str(config.get("ocr_model_id", "ocr-rapidocr-v6-small-builtin")),
+                    str(config.get("tts_model_id_zh", "tts-icefall-zh-aishell3")),
+                    str(config.get("tts_model_id_en", "tts-icefall-en-ljspeech-low")),
+                }
+                models = [
+                    model for model_id in selected_ids
+                    if (model := get_model(model_id)) is not None
+                    and marketplace.missing_paths(model)
+                ]
+                total = len(models)
+                for index, model in enumerate(models):
+                    self._repair_bridge.progress.emit(
+                        index, max(1, total), f"正在修复：{model.name}"
+                    )
+                    marketplace.install(model, preference="auto")
+                    repaired.append(model.name)
+                    self._repair_bridge.progress.emit(
+                        index + 1, max(1, total), f"已修复：{model.name}"
+                    )
+                self._repair_bridge.done.emit({"repaired": repaired, "errors": errors})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("后台自检修复失败")
+                errors.append(str(exc))
+                self._repair_bridge.done.emit({"repaired": repaired, "errors": errors})
+
+        self._repair_worker = threading.Thread(
+            target=_worker, name="ui-self-check-repair", daemon=True
+        )
+        self._repair_worker.start()
+
+    def _on_repair_progress(self, completed: int, total: int, label: str) -> None:
+        if self._repair_worker is None:
+            return
+        value = int(completed / total * 100) if total else 0
+        self.selfcheck_progress.setValue(max(0, min(100, value)))
+        self.selfcheck_progress.setFormat(f"%p% · {label}")
+        self.selfcheck_summary.setText(label)
+
+    def _on_repair_done(self, outcome: object) -> None:
+        self._repair_worker = None
+        repaired = list((outcome or {}).get("repaired", []))
+        errors = list((outcome or {}).get("errors", []))
+        self.selfcheck_progress.setValue(100)
+        self.selfcheck_progress.setFormat("%p%")
+        self.repair_btn.setEnabled(self._selfcheck_worker is None)
+        self.selfcheck_refresh_btn.setEnabled(self._selfcheck_worker is None)
+        self.export_btn.setEnabled("report" not in self._export_workers)
+        self.selfcheck_progress.hide()
+        if errors:
+            self.selfcheck_summary.setText(f"{tr('修复失败')}: {errors[0]}")
+        elif repaired:
+            self.selfcheck_summary.setText(f"{tr('修复完成')} · {', '.join(repaired)}")
+        else:
+            self.selfcheck_summary.setText(tr("没有需要修复的项目"))
+        self._start_selfcheck()
+
     def _export_report(self) -> None:
         """Export a report in a worker; self-check work can be expensive."""
         module = self._module
@@ -409,17 +590,21 @@ class DiagnosticsWindow(QWidget):
         def _build_report() -> str:
             if module is not None and hasattr(module, "export_report"):
                 return str(module.export_report())
-            lines = ["语幕 VoxSub 诊断报告（诊断模块未实现，以下为骨架内容）"]
+            lines = [
+                "语幕 VoxSub 诊断报告（诊断模块未实现，以下为骨架内容）",
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            ]
             for item in results:
                 lines.append(
                     f"[{item.get('status', 'warn')}] {item.get('check', '')} — {item.get('detail', '')}"
                 )
             return "\n".join(lines)
 
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         self._start_text_export(
             "report",
             "导出诊断报告",
-            "voxsub_diagnostics.txt",
+            f"voxsub_diagnostics_{timestamp}.txt",
             _build_report,
         )
 
@@ -473,8 +658,12 @@ class DiagnosticsWindow(QWidget):
                 self.selfcheck_summary.setText(tr("报告导出失败"))
 
     def refresh(self) -> None:
-        self._load_module()
-        self._render()
+        # The module is imported once during construction.  Re-importing it on
+        # every click can invalidate injected implementations and adds avoidable
+        # latency before the actual background check even starts.
+        if self._module is None:
+            self._load_module()
+        self._start_selfcheck()
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)

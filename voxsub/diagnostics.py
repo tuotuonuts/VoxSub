@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import shutil
 import time
 from datetime import datetime
@@ -308,16 +309,30 @@ def _check_resources() -> dict:
 # 主入口
 # ---------------------------------------------------------------------------
 
-def run_self_check() -> list[dict]:
-    """执行全部自检项。每项 {check, status: ok|warn|fail, detail, suggestion}。"""
-    checks = [
-        _check_model_integrity(),
-        _check_ort_providers(),
-        _check_asr_smoke(),
-        _check_vad_smoke(),
-        _check_tts_smoke(),
-        _check_resources(),
-    ]
+def run_self_check(
+    progress: Callable[[int, int, str], None] | None = None,
+) -> list[dict]:
+    """执行全部自检项，可选地按阶段报告进度。
+
+    ``progress`` 只用于 UI 反馈，回调异常不会被吞掉；调用方应保持回调轻量。
+    不传回调时保持原有同步调用契约。
+    """
+    runners = (
+        ("模型完整性", _check_model_integrity),
+        ("ORT providers", _check_ort_providers),
+        ("ASR 冒烟", _check_asr_smoke),
+        ("VAD 冒烟", _check_vad_smoke),
+        ("TTS 冒烟", _check_tts_smoke),
+        ("磁盘/内存余量", _check_resources),
+    )
+    total = len(runners)
+    checks: list[dict] = []
+    for index, (label, runner) in enumerate(runners):
+        if progress:
+            progress(index, total, f"正在检查：{label}")
+        checks.append(runner())
+        if progress:
+            progress(index + 1, total, f"已完成：{label}")
     logger.info("自检完成 (共 %d 项)", len(checks))
     return checks
 
