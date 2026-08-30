@@ -24,7 +24,7 @@ from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from voxsub import __version__ as _CORE_VERSION
-from voxsub.logging_setup import get_logger, set_debug_mode, setup_logging
+from voxsub.logging_setup import get_logger, setup_logging
 
 # ---------------------------------------------------------------------------
 # 可观测性初始化：必须在其它 voxsub 模块导入前（见模块 docstring）
@@ -149,7 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     logger.info("应用启动: ui=%s core=%s argv=%r", _UI_VERSION, _CORE_VERSION, argv)
 
-    set_debug_mode(bool(store.get("debug_mode", False)))
+    # Legacy ``debug_mode`` is intentionally not restored at startup.  Verbose
+    # logging is now an explicit, auto-expiring diagnostics session.
+    if store.get("debug_mode", False):
+        store.set("debug_mode", False)
     theme = parse_theme(store.get("theme", "system"))
     load_theme(app, theme)
     logger.info("配置已加载, 主题=%s", theme.value)

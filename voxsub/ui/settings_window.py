@@ -57,7 +57,7 @@ from voxsub.ui.theme import AppTheme, DESIGN_TOKENS, load_theme
 from voxsub.ui.view_models import RecognitionTuningDraft
 from voxsub import __version__ as _PKG_VERSION
 from voxsub.logging_setup import get_logger
-from voxsub.logging_setup import set_debug_mode
+from voxsub.logging_setup import start_diagnostic_session, stop_diagnostic_session
 from voxsub.model_catalog import ModelMarketplace, get_model, models_for_task
 from voxsub.model_storage import migrate_models, resolve_models_root
 from voxsub.ocr_cache import (
@@ -1053,7 +1053,8 @@ class SettingsWindow(QWidget):
         self.tts_switch.setChecked(bool(cfg.get("tts_enabled", True)))
         self.tts_switch.setEnabled(True)
         self._update_tts_status()
-        self.debug_switch.setChecked(bool(cfg.get("debug_mode", False)))
+        # Legacy persisted debug mode must never silently re-enable DEBUG.
+        self.debug_switch.setChecked(False)
         self.sentry_dsn_edit.setText(str(cfg.get("sentry_dsn", "")))
         self.sentry_build_edit.setText(str(cfg.get("sentry_build", "source") or "source"))
         self._select_data(self.sentry_environment_combo,
@@ -1441,7 +1442,10 @@ class SettingsWindow(QWidget):
         if self._loading:
             return
         self._store.set("debug_mode", bool(checked))
-        set_debug_mode(bool(checked))
+        if checked:
+            start_diagnostic_session()
+        else:
+            stop_diagnostic_session()
 
     def _update_sentry_status(self) -> None:
         if is_error_reporting_enabled():

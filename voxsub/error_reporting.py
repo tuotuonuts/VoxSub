@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 from voxsub import __version__
 from voxsub.config_store import ConfigStore
-from voxsub.logging_setup import get_logger
+from voxsub.logging_setup import diagnostic_session_snapshot, get_logger
 
 logger = get_logger("error_reporting")
 
@@ -55,6 +55,9 @@ _INITIALIZED = False
 _HOOK_GUARD = threading.local()
 _STATE_LOCK = threading.RLock()
 _DIAGNOSTIC_MAX_CHARS = 120_000
+_SAFE_SESSION_ID_RE = re.compile(r"^[a-f0-9]{8,32}$", re.IGNORECASE)
+_SAFE_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:\+00:00)?$")
 
 
 @dataclass(frozen=True)
@@ -184,12 +187,26 @@ def runtime_context() -> RuntimeContext:
         return _CONTEXT
 
 
+def _sanitize_string_with_stats(value: str) -> tuple[str, int, bool]:
+    """Sanitize one free-form value and report non-sensitive filter counts."""
+    text = str(value)
+    replacements = 0
+    text, count = _WINDOWS_PATH_RE.subn("<private-path>", text)
+    replacements += count
+    text, count = _UNIX_PRIVATE_PATH_RE.subn("<private-path>", text)
+    replacements += count
+    text, count = _SECRET_RE.subn(
+        lambda match: f"{match.group(1)}=<filtered>", text)
+    replacements += count
+    text, count = _CONTENT_RE.subn(
+        lambda match: f"{match.group(1)}=<filtered>", text)
+    replacements += count
+    truncated = len(text) > 2000
+    return text[:2000], replacements, truncated
+
+
 def _sanitize_string(value: str) -> str:
-    value = _WINDOWS_PATH_RE.sub("<private-path>", str(value))
-    value = _UNIX_PRIVATE_PATH_RE.sub("<private-path>", value)
-    value = _SECRET_RE.sub(lambda match: f"{match.group(1)}=<filtered>", value)
-    value = _CONTENT_RE.sub(lambda match: f"{match.group(1)}=<filtered>", value)
-    return value[:2000]
+    return _sanitize_string_with_stats(value)[0]
 
 
 def _sanitize_value(value: Any, key: str = "") -> Any:
@@ -272,6 +289,49 @@ def _area_for_logger(name: str) -> str:
     return "runtime"
 
 
+def _safe_session_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Allow only generated diagnostic-session fields into telemetry."""
+    if not isinstance(value, Mapping):
+        return {}
+    safe: dict[str, Any] = {}
+    session_id = value.get("session_id")
+    if isinstance(session_id, str) and _SAFE_SESSION_ID_RE.fullmatch(session_id):
+        safe["session_id"] = session_id
+    for key in ("started_at", "expires_at", "first_log_at", "last_log_at"):
+        timestamp = value.get(key)
+        if isinstance(timestamp, str) and _SAFE_TIMESTAMP_RE.fullmatch(timestamp):
+            safe[key] = timestamp
+    for key in ("remaining_seconds", "line_count"):
+        number = value.get(key)
+        if isinstance(number, int) and not isinstance(number, bool):
+            safe[key] = max(0, min(number, 2_000_000))
+    return safe
+
+
+def _set_session_scope(scope: Any, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Join Sentry events with the current local diagnostic session, if any."""
+    safe = _safe_session_metadata(
+        metadata if metadata is not None else diagnostic_session_snapshot())
+    if not safe:
+        return safe
+    try:
+        scope.set_tag("diagnostic_session", safe["session_id"])
+        scope.set_context("voxsub_diagnostic_session", safe)
+    except Exception:
+        pass
+    return safe
+
+
+def _set_scope_context(scope: Any, key: str, value: Mapping[str, Any]) -> None:
+    """Set context when supported by the SDK/fake scope in use."""
+    setter = getattr(scope, "set_context", None)
+    if callable(setter):
+        try:
+            setter(key, dict(value))
+        except Exception:
+            pass
+
+
 def capture_exception(
     exc: BaseException,
     *,
@@ -287,6 +347,7 @@ def capture_exception(
             scope.set_tag("error_area", area)
             if logger_name:
                 scope.set_tag("error_logger", logger_name)
+            _set_session_scope(scope)
             return sdk.capture_exception(exc)
     except Exception:
         return None
@@ -300,6 +361,7 @@ def capture_message(message: str, *, level: str = "error", area: str = "runtime"
     try:
         with sdk.push_scope() as scope:
             scope.set_tag("error_area", area)
+            _set_session_scope(scope)
             # The local log retains ``message`` for diagnosis.  Sentry only
             # needs a stable marker because arbitrary log text may contain
             # subtitle, recognition, audio or user-file content.
@@ -314,12 +376,65 @@ def is_error_reporting_enabled() -> bool:
     return _SDK is not None
 
 
+def _sanitize_diagnostic_text_with_stats(value: str) -> tuple[str, dict[str, int | bool]]:
+    """Sanitize an upload attachment and expose only aggregate filter stats."""
+    rendered_lines: list[str] = []
+    replacements = 0
+    filtered_lines = 0
+    truncated = False
+    source_lines = str(value).splitlines()
+    for line in source_lines:
+        cleaned, count, line_truncated = _sanitize_string_with_stats(line)
+        rendered_lines.append(cleaned)
+        replacements += count
+        truncated = truncated or line_truncated
+        if count or line_truncated:
+            filtered_lines += 1
+    rendered = "\n".join(rendered_lines)
+    if len(rendered) > _DIAGNOSTIC_MAX_CHARS:
+        rendered = rendered[:_DIAGNOSTIC_MAX_CHARS]
+        truncated = True
+    return rendered, {
+        "source_lines": len(source_lines),
+        "uploaded_lines": len(rendered.splitlines()),
+        "filtered_lines": filtered_lines,
+        "privacy_filter_replacements": replacements,
+        "truncated": truncated,
+    }
+
+
 def _sanitize_diagnostic_text(value: str) -> str:
-    """Sanitize report/log text before it is attached to a Sentry event."""
-    lines = []
-    for line in str(value).splitlines():
-        lines.append(_sanitize_string(line))
-    return "\n".join(lines)[:_DIAGNOSTIC_MAX_CHARS]
+    """Backward-compatible text-only diagnostic sanitizer."""
+    return _sanitize_diagnostic_text_with_stats(value)[0]
+
+
+def _upload_metadata(
+    session_metadata: Mapping[str, Any] | None,
+    log_stats: Mapping[str, int | bool],
+) -> dict[str, Any]:
+    """Build a compact, non-content Sentry context for a diagnostic upload."""
+    metadata = _safe_session_metadata(session_metadata)
+    metadata.update({
+        "uploaded_log_lines": int(log_stats.get("uploaded_lines", 0)),
+        "privacy_filtered_lines": int(log_stats.get("filtered_lines", 0)),
+        "privacy_filter_replacements": int(
+            log_stats.get("privacy_filter_replacements", 0)),
+        "log_truncated": bool(log_stats.get("truncated", False)),
+    })
+    return metadata
+
+
+def _metadata_header(metadata: Mapping[str, Any]) -> str:
+    """Make an attachment self-describing without adding user content."""
+    if not metadata:
+        return ""
+    ordered = (
+        "session_id", "started_at", "expires_at", "first_log_at", "last_log_at",
+        "line_count", "uploaded_log_lines", "privacy_filtered_lines",
+        "privacy_filter_replacements", "log_truncated",
+    )
+    rows = [f"# {key}: {metadata[key]}" for key in ordered if key in metadata]
+    return "# VoxSub diagnostic upload\n" + "\n".join(rows) + "\n\n"
 
 
 def send_diagnostic_report(
@@ -327,6 +442,7 @@ def send_diagnostic_report(
     logs: str,
     *,
     trigger: str = "manual",
+    session_metadata: Mapping[str, Any] | None = None,
 ) -> bool:
     """Upload a filtered self-check report and local log snapshot.
 
@@ -337,12 +453,21 @@ def send_diagnostic_report(
     sdk = _SDK
     if sdk is None:
         return False
-    clean_report = _sanitize_diagnostic_text(report)
-    clean_logs = _sanitize_diagnostic_text(logs)
+    clean_report, report_stats = _sanitize_diagnostic_text_with_stats(report)
+    clean_logs, log_stats = _sanitize_diagnostic_text_with_stats(logs)
+    upload_metadata = _upload_metadata(session_metadata, log_stats)
+    upload_metadata.update({
+        "uploaded_report_lines": int(report_stats["uploaded_lines"]),
+        "report_privacy_filter_replacements": int(
+            report_stats["privacy_filter_replacements"]),
+    })
+    log_attachment = _metadata_header(upload_metadata) + clean_logs
     try:
         with sdk.push_scope() as scope:
             scope.set_tag("error_area", "diagnostics")
             scope.set_tag("diagnostic_trigger", _SAFE_BUILD_RE.sub("-", str(trigger))[:32])
+            _set_session_scope(scope, upload_metadata)
+            _set_scope_context(scope, "voxsub_diagnostic_upload", upload_metadata)
             add_attachment = getattr(scope, "add_attachment", None)
             if callable(add_attachment):
                 add_attachment(
@@ -351,14 +476,14 @@ def send_diagnostic_report(
                     content_type="text/plain",
                 )
                 add_attachment(
-                    bytes=clean_logs.encode("utf-8"),
+                    bytes=log_attachment.encode("utf-8"),
                     filename="voxsub-log.txt",
                     content_type="text/plain",
                 )
             else:
-                scope.set_context("voxsub_diagnostics", {
+                _set_scope_context(scope, "voxsub_diagnostics", {
                     "report": clean_report,
-                    "logs": clean_logs,
+                    "logs": log_attachment,
                 })
             return bool(sdk.capture_message("VoxSub diagnostic report", level="info"))
     except Exception:
@@ -366,7 +491,12 @@ def send_diagnostic_report(
         return False
 
 
-def send_log_snapshot(logs: str, *, trigger: str = "manual_log_upload") -> bool:
+def send_log_snapshot(
+    logs: str,
+    *,
+    trigger: str = "manual_log_upload",
+    session_metadata: Mapping[str, Any] | None = None,
+) -> bool:
     """Upload one filtered local-log snapshot without requiring a self-check.
 
     This is an explicit user action from the Diagnostics log tab.  The local
@@ -376,22 +506,27 @@ def send_log_snapshot(logs: str, *, trigger: str = "manual_log_upload") -> bool:
     sdk = _SDK
     if sdk is None:
         return False
-    clean_logs = _sanitize_diagnostic_text(logs)
+    clean_logs, log_stats = _sanitize_diagnostic_text_with_stats(logs)
+    upload_metadata = _upload_metadata(session_metadata, log_stats)
+    log_attachment = _metadata_header(upload_metadata) + clean_logs
     try:
         with sdk.push_scope() as scope:
             scope.set_tag("error_area", "diagnostics")
             scope.set_tag("diagnostic_trigger", _SAFE_BUILD_RE.sub(
                 "-", str(trigger))[:32])
+            _set_session_scope(scope, upload_metadata)
+            _set_scope_context(scope, "voxsub_diagnostic_upload", upload_metadata)
             add_attachment = getattr(scope, "add_attachment", None)
             if callable(add_attachment):
                 add_attachment(
-                    bytes=clean_logs.encode("utf-8"),
+                    bytes=log_attachment.encode("utf-8"),
                     filename="voxsub-log.txt",
                     content_type="text/plain",
                 )
             else:
-                scope.set_context("voxsub_diagnostics", {"logs": clean_logs})
-            return bool(sdk.capture_message("VoxSub log upload", level="info"))
+                _set_scope_context(scope, "voxsub_diagnostics", {"logs": log_attachment})
+            return bool(sdk.capture_message(
+                "VoxSub diagnostic log upload", level="info"))
     except Exception:
         logger.warning("Sentry 日志上传失败，保留本地日志", exc_info=True)
         return False

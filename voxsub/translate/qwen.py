@@ -30,6 +30,7 @@ from voxsub.hardware import (
     HardwareProfile,
     LlamaRuntime,
     detect_hardware,
+    discover_llama_runtimes,
     select_llama_runtime,
 )
 from voxsub.language_guard import detect_text_language, normalize_language
@@ -149,6 +150,13 @@ class QwenQualityTranslator(Translator):
             return None
         return runtime.backend, runtime.target or "CPU"
 
+    @staticmethod
+    def _runtime_summary(runtime: LlamaRuntime | None) -> str:
+        if runtime is None:
+            return "backend=cpu target=CPU"
+        return (f"backend={runtime.backend} target={runtime.target or 'CPU'} "
+                f"available={runtime.server_exe.exists()}")
+
     def _drain_server_output(self, proc: subprocess.Popen) -> None:
         """Drain llama-server output so a verbose crash cannot block the pipe."""
         stream = getattr(proc, "stdout", None)
@@ -224,6 +232,14 @@ class QwenQualityTranslator(Translator):
                 f"质量档模型缺失: {self._model_path} (请用 scripts/model_fetch.py 下载)")
         profile = detect_hardware()
         required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
+        try:
+            discovered = discover_llama_runtimes()
+            logger.info(
+                "质量翻译运行时探测: candidates=%s",
+                ";".join(self._runtime_summary(item) for item in discovered) or "none",
+            )
+        except Exception:
+            logger.debug("质量翻译运行时探测失败", exc_info=True)
         runtime = select_llama_runtime(
             profile, self._explicit_server_exe, required_gb=required_gb,
             excluded=self._failed_runtimes)
@@ -237,6 +253,9 @@ class QwenQualityTranslator(Translator):
                            self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
+        logger.info("质量翻译运行时已选择: %s reason=%s",
+                    self._runtime_summary(runtime),
+                    runtime.selection_reason if runtime else "CPU fallback")
         return profile, runtime
 
     def _start_server_process(self, cmd: list[str], child_env: dict[str, str]) -> None:
@@ -309,6 +328,13 @@ class QwenQualityTranslator(Translator):
             threads=self._n_threads,
             gpu_layers=gpu_layers,
             runtime=runtime,
+        )
+        logger.info(
+            "质量翻译启动参数摘要: backend=%s target=%s port=%s gpu_layers=%s "
+            "ctx=%s threads=%s",
+            runtime.backend if runtime else "cpu",
+            runtime.target if runtime else "CPU",
+            port, plan.gpu_layers, plan.context_size, self._n_threads,
         )
         self._start_server_process(list(plan.command), plan.environment)
         self._activate_server(port, runtime, plan.gpu_layers, plan.context_size)

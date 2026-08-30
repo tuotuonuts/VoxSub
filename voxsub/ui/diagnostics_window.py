@@ -7,7 +7,7 @@
   - QPlainTextEdit 只读视图：初始调 tail_log_file(300) 灌入最近日志；
   - QTimer(1s) 周期调 drain_events(50)，把新事件按末行指纹去重后 append 到底部并自动滚动；
 - 顶部按钮：「刷新」「导出日志」与「上传日志到 Sentry」（过滤后的手动上传）；
-  - 日志行统一格式 "HH:MM:SS LEVEL [name] message"（文件行去掉日期前缀后与
+  - 日志行统一格式 "HH:MM:SS LEVEL [name] [session=id] message"（文件行去掉日期前缀后与
     内存事件行同一格式，保证指纹去重跨两者生效，避免轮询重复追加）；
   - 日志组件初始化失败时页签内显示占位文案而非崩溃。
 
@@ -42,7 +42,15 @@ from voxsub.error_reporting import (
     send_diagnostic_report,
     send_log_snapshot,
 )
-from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
+from voxsub.logging_setup import (
+    diagnostic_session_log_snapshot,
+    diagnostic_session_snapshot,
+    drain_events,
+    get_logger,
+    start_diagnostic_session,
+    stop_diagnostic_session,
+    tail_log_file,
+)
 from voxsub.config_store import ConfigStore
 from voxsub.ui.file_dialogs import choose_save_file
 from voxsub.ui.i18n import (
@@ -64,13 +72,16 @@ _AUTO = object()
 #: 日志页签：初始/刷新读文件末尾行数；轮询每次 drain 事件条数
 _LOG_TAIL_LINES = 300
 _LOG_POLL_EVENTS = 50
+_DIAGNOSTIC_SESSION_SECONDS = 20 * 60
 
 
 def _fmt_log_line(ev: dict) -> str:
-    """"HH:MM:SS LEVEL [name] message" —— LEVEL %-8s 与文件 formatter 对齐, 便于指纹去重。"""
+    """"HH:MM:SS LEVEL [name] [session=id] message" —— 与文件 formatter 对齐。"""
     ts = str(ev.get("ts", ""))
     hhmmss = ts[-8:] if len(ts) >= 8 else ts  # drain 的 ts 可能带日期前缀, 统一取 HH:MM:SS
-    return f"{hhmmss} {str(ev.get('level', '')):<8} [{ev.get('name', '')}] {ev.get('message', '')}"
+    session_id = str(ev.get("session_id", "-") or "-")
+    return (f"{hhmmss} {str(ev.get('level', '')):<8} [{ev.get('name', '')}] "
+            f"[session={session_id}] {ev.get('message', '')}")
 
 
 def _strip_file_ts(line: str) -> str:
@@ -314,9 +325,13 @@ class DiagnosticsWindow(QWidget):
             self.log_live_state = QLabel("实时 · 自动跟随", page)
             self.log_live_state.setObjectName("logLiveState")
             btn_row.addWidget(self.log_live_state)
-            self.debug_switch = ToggleSwitch("调试模式", page)
-            self.debug_switch.setToolTip("显示音频电平、队列、设备打开与分句等详细事件")
-            self.debug_switch.setChecked(bool(self._store.get("debug_mode", False)))
+            self.diagnostic_session_state = QLabel(page)
+            self.diagnostic_session_state.setObjectName("diagnosticSessionState")
+            btn_row.addWidget(self.diagnostic_session_state)
+            self.debug_switch = ToggleSwitch("诊断调试", page)
+            self.debug_switch.setToolTip(
+                "显示音频电平、队列、设备打开与分句等详细事件；20 分钟后自动结束")
+            self.debug_switch.setChecked(bool(diagnostic_session_snapshot()))
             self.debug_switch.toggled.connect(self._toggle_debug)
             btn_row.addWidget(self.debug_switch)
             lay.addWidget(toolbar)
@@ -334,6 +349,11 @@ class DiagnosticsWindow(QWidget):
             self.log_timer.setInterval(1000)
             self.log_timer.timeout.connect(self._poll_events)
             self.log_timer.start()
+            self.diagnostic_session_timer = QTimer(self)
+            self.diagnostic_session_timer.setInterval(1000)
+            self.diagnostic_session_timer.timeout.connect(self._refresh_diagnostic_session_state)
+            self.diagnostic_session_timer.start()
+            self._refresh_diagnostic_session_state()
         except Exception:
             self._log_failed = True
             logger.exception("日志页签初始化失败, 显示占位")
@@ -344,9 +364,34 @@ class DiagnosticsWindow(QWidget):
         return page
 
     def _toggle_debug(self, enabled: bool) -> None:
+        # ``debug_mode`` used to persist a global DEBUG level.  Keep the key
+        # only as a migration target and never let it re-enable verbose logs on
+        # the next app launch.
         self._store.set("debug_mode", bool(enabled))
-        set_debug_mode(bool(enabled))
+        if enabled:
+            start_diagnostic_session(_DIAGNOSTIC_SESSION_SECONDS)
+        else:
+            stop_diagnostic_session()
+        self._refresh_diagnostic_session_state()
         self._poll_events()
+
+    def _refresh_diagnostic_session_state(self) -> None:
+        """Reflect expiration without relying on the UI timer for enforcement."""
+        metadata = diagnostic_session_snapshot()
+        active = metadata is not None
+        if hasattr(self, "debug_switch") and self.debug_switch.isChecked() != active:
+            self.debug_switch.blockSignals(True)
+            self.debug_switch.setChecked(active)
+            self.debug_switch.blockSignals(False)
+        if not hasattr(self, "diagnostic_session_state"):
+            return
+        if not active:
+            self.diagnostic_session_state.setText(tr("诊断调试未开启"))
+            return
+        remaining = int(metadata.get("remaining_seconds", 0))
+        minutes, seconds = divmod(remaining, 60)
+        self.diagnostic_session_state.setText(
+            f"{tr('诊断调试剩余')} {minutes:02d}:{seconds:02d}")
 
     def _poll_events(self) -> None:
         """drain 内存队列最新事件, 按末行指纹增量追加, 自动滚底。"""
@@ -706,10 +751,13 @@ class DiagnosticsWindow(QWidget):
                         parameters = {}
                     if "results" in parameters:
                         report = _call_export_report(module, results)
-                logs = tail_log_file(10**6)
-                success = bool(send_diagnostic_report(
-                    report, logs, trigger="diagnostics_page",
-                ))
+                logs, session_metadata = diagnostic_session_log_snapshot()
+                if session_metadata is None:
+                    logs = tail_log_file(10**6)
+                upload_kwargs = {"trigger": "diagnostics_page"}
+                if session_metadata is not None:
+                    upload_kwargs["session_metadata"] = session_metadata
+                success = bool(send_diagnostic_report(report, logs, **upload_kwargs))
                 detail = "" if success else "upload-failed"
             except Exception as exc:  # noqa: BLE001
                 logger.exception("后台发送 Sentry 诊断报告失败")
@@ -735,10 +783,13 @@ class DiagnosticsWindow(QWidget):
 
         def _worker() -> None:
             try:
-                logs = tail_log_file(10**6)
-                success = bool(send_log_snapshot(
-                    logs, trigger="diagnostics_logs_tab",
-                ))
+                logs, session_metadata = diagnostic_session_log_snapshot()
+                if session_metadata is None:
+                    logs = tail_log_file(10**6)
+                upload_kwargs = {"trigger": "diagnostics_logs_tab"}
+                if session_metadata is not None:
+                    upload_kwargs["session_metadata"] = session_metadata
+                success = bool(send_log_snapshot(logs, **upload_kwargs))
                 detail = "" if success else "upload-failed"
             except Exception as exc:  # noqa: BLE001
                 logger.exception("后台发送 Sentry 日志失败")
@@ -840,6 +891,9 @@ class DiagnosticsWindow(QWidget):
         timer = getattr(self, "log_timer", None)
         if timer is not None:
             timer.stop()
+        session_timer = getattr(self, "diagnostic_session_timer", None)
+        if session_timer is not None:
+            session_timer.stop()
         super().closeEvent(event)
 
     def showEvent(self, event) -> None:  # noqa: N802

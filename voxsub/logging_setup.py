@@ -16,7 +16,11 @@ import logging.handlers
 import os
 import queue
 import threading
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 
 def _log_dir() -> Path:
@@ -28,6 +32,64 @@ _EVENT_QUEUE: "queue.Queue[logging.LogRecord]" = queue.Queue(maxsize=2000)
 _QUEUE_LOCK = threading.Lock()
 _HANDLERS_INITIALIZED = False
 _INIT_LOCK = threading.Lock()
+_DIAGNOSTIC_SESSION_LOCK = threading.RLock()
+_DIAGNOSTIC_SESSION: "DiagnosticSession | None" = None
+_DIAGNOSTIC_SESSION_DEFAULT_SECONDS = 20 * 60
+
+
+@dataclass(frozen=True)
+class DiagnosticSession:
+    """A bounded verbose-logging interval created by the diagnostics UI."""
+
+    session_id: str
+    started_at: datetime
+    expires_at: datetime
+    previous_level: int
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_timestamp(value: datetime) -> str:
+    return value.isoformat(timespec="seconds")
+
+
+def _expire_diagnostic_session_locked(now: datetime) -> DiagnosticSession | None:
+    """Return the active session, restoring the prior level once it expires.
+
+    This intentionally does not log: it is also called from logging filters and
+    must never cause a recursive logging call.
+    """
+    global _DIAGNOSTIC_SESSION
+    session = _DIAGNOSTIC_SESSION
+    if session is None or now < session.expires_at:
+        return session
+    logging.getLogger("voxsub").setLevel(session.previous_level)
+    _DIAGNOSTIC_SESSION = None
+    return None
+
+
+def _active_diagnostic_session(*, announce_expiry: bool = True) -> DiagnosticSession | None:
+    expired = False
+    with _DIAGNOSTIC_SESSION_LOCK:
+        before = _DIAGNOSTIC_SESSION
+        session = _expire_diagnostic_session_locked(_utc_now())
+        expired = before is not None and session is None
+    if expired and announce_expiry:
+        root = logging.getLogger("voxsub")
+        root.info("诊断调试会话已自动结束，已恢复日志级别=%s",
+                  logging.getLevelName(root.level))
+    return session
+
+
+class _DiagnosticSessionFilter(logging.Filter):
+    """Annotate every local record with its bounded diagnostic-session ID."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        session = _active_diagnostic_session(announce_expiry=False)
+        record.diagnostic_session_id = session.session_id if session else "-"
+        return True
 
 
 class _RingBufferHandler(logging.Handler):
@@ -72,8 +134,9 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
             file_handler = logging.handlers.RotatingFileHandler(
                 str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
             file_handler.setFormatter(logging.Formatter(
-                "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+                "%(asctime)s %(levelname)-8s [%(name)s] [session=%(diagnostic_session_id)s] %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"))
+            file_handler.addFilter(_DiagnosticSessionFilter())
             root.addHandler(file_handler)
         except OSError as exc:
             # 日志文件被旧实例/外部工具锁住时，仍保留内存实时日志，不能让
@@ -83,11 +146,13 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
         if log_to_console:
             console = logging.StreamHandler()
             console.setFormatter(logging.Formatter(
-                "%(levelname)-8s [%(name)s] %(message)s"))
+                "%(levelname)-8s [%(name)s] [session=%(diagnostic_session_id)s] %(message)s"))
+            console.addFilter(_DiagnosticSessionFilter())
             root.addHandler(console)
 
         ring = _RingBufferHandler()
         ring.setLevel(logging.DEBUG)
+        ring.addFilter(_DiagnosticSessionFilter())
         root.addHandler(ring)
 
         _HANDLERS_INITIALIZED = True
@@ -103,24 +168,88 @@ def get_logger(name: str) -> logging.Logger:
 
 
 def set_debug_mode(enabled: bool) -> None:
-    """运行时切换应用日志级别，供内置调试控制台使用。
+    """Compatibility wrapper for the former persistent debug-mode control.
 
-    ``setup_logging`` 只负责一次性安装 handlers；调试模式必须允许用户在应用
-    已运行时开关，因此这里直接调整 ``voxsub`` 根 logger 的级别。内存事件流和
-    文件日志共用该级别，关闭后恢复 INFO。
+    User-facing callers now receive a bounded diagnostic session instead of an
+    easy-to-forget application-wide DEBUG setting.  The environment variable
+    ``VOXSUB_LOG=DEBUG`` remains available for intentional developer runs.
     """
-    setup_logging()
-    root = logging.getLogger("voxsub")
-    level = logging.DEBUG if enabled else logging.INFO
-    root.setLevel(level)
-    root.log(logging.INFO, "内置调试模式%s，日志级别=%s",
-             "已开启" if enabled else "已关闭", logging.getLevelName(level))
+    if enabled:
+        start_diagnostic_session()
+    else:
+        stop_diagnostic_session()
 
 
 def is_debug_mode() -> bool:
     """返回当前是否处于 DEBUG 日志级别。"""
     setup_logging()
+    _active_diagnostic_session()
     return logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
+
+
+def start_diagnostic_session(
+    duration_seconds: int = _DIAGNOSTIC_SESSION_DEFAULT_SECONDS,
+) -> dict[str, Any]:
+    """Enable verbose local logging for a bounded, privacy-safe interval.
+
+    Starting a new session replaces a prior active session and preserves the
+    logger level that existed before the first session.  No user content is
+    kept in the session metadata; the random ID only joins local logs, Sentry
+    events, and explicit diagnostic uploads.
+    """
+    global _DIAGNOSTIC_SESSION
+    setup_logging()
+    try:
+        requested = int(duration_seconds)
+    except (TypeError, ValueError):
+        requested = _DIAGNOSTIC_SESSION_DEFAULT_SECONDS
+    duration = max(60, min(requested, 2 * 60 * 60))
+    now = _utc_now()
+    root = logging.getLogger("voxsub")
+    with _DIAGNOSTIC_SESSION_LOCK:
+        previous = _expire_diagnostic_session_locked(now)
+        previous_level = previous.previous_level if previous else root.level
+        _DIAGNOSTIC_SESSION = DiagnosticSession(
+            session_id=uuid.uuid4().hex[:12],
+            started_at=now,
+            expires_at=now + timedelta(seconds=duration),
+            previous_level=previous_level,
+        )
+        root.setLevel(logging.DEBUG)
+    metadata = diagnostic_session_snapshot()
+    root.info("诊断调试会话已开启: id=%s duration_sec=%s",
+              metadata["session_id"] if metadata else "-", duration)
+    return metadata or {}
+
+
+def stop_diagnostic_session() -> bool:
+    """Stop the active diagnostic session and restore the previous log level."""
+    global _DIAGNOSTIC_SESSION
+    setup_logging()
+    with _DIAGNOSTIC_SESSION_LOCK:
+        session = _expire_diagnostic_session_locked(_utc_now())
+        if session is None:
+            return False
+        _DIAGNOSTIC_SESSION = None
+        root = logging.getLogger("voxsub")
+        root.setLevel(session.previous_level)
+    root.info("诊断调试会话已结束: id=%s，已恢复日志级别=%s",
+              session.session_id, logging.getLevelName(root.level))
+    return True
+
+
+def diagnostic_session_snapshot() -> dict[str, Any] | None:
+    """Return safe metadata for the currently active diagnostic session."""
+    session = _active_diagnostic_session()
+    if session is None:
+        return None
+    remaining = max(0, int((session.expires_at - _utc_now()).total_seconds()))
+    return {
+        "session_id": session.session_id,
+        "started_at": _format_timestamp(session.started_at),
+        "expires_at": _format_timestamp(session.expires_at),
+        "remaining_seconds": remaining,
+    }
 
 
 def drain_events(limit: int = 200) -> list[dict]:
@@ -138,6 +267,7 @@ def drain_events(limit: int = 200) -> list[dict]:
             "ts": ts,
             "level": r.levelname,
             "name": r.name,
+            "session_id": getattr(r, "diagnostic_session_id", "-"),
             "message": r.getMessage(),
         })
     return out
@@ -153,3 +283,40 @@ def tail_log_file(lines: int = 200) -> str:
             return "".join(f.readlines()[-lines:])
     except OSError as exc:
         return f"<读取日志失败: {exc}>"
+
+
+def diagnostic_session_log_snapshot() -> tuple[str, dict[str, Any] | None]:
+    """Return only the active session's on-disk logs plus bounded metadata.
+
+    The current rotating file is intentionally used instead of a second debug
+    file.  This keeps local diagnostics simple while preventing manual Sentry
+    uploads from sweeping unrelated historical activity when a session exists.
+    """
+    metadata = diagnostic_session_snapshot()
+    if metadata is None:
+        return "", None
+    marker = f"[session={metadata['session_id']}]"
+    lines = [line for line in tail_log_file(10**6).splitlines() if marker in line]
+    timestamps = [line[:19] for line in lines if len(line) >= 19 and line[4:5] == "-"]
+    metadata = dict(metadata)
+    metadata.update({
+        "line_count": len(lines),
+        "first_log_at": timestamps[0] if timestamps else "",
+        "last_log_at": timestamps[-1] if timestamps else "",
+    })
+    return ("\n".join(lines) + ("\n" if lines else ""), metadata)
+
+
+__all__ = [
+    "DiagnosticSession",
+    "diagnostic_session_log_snapshot",
+    "diagnostic_session_snapshot",
+    "drain_events",
+    "get_logger",
+    "is_debug_mode",
+    "set_debug_mode",
+    "setup_logging",
+    "start_diagnostic_session",
+    "stop_diagnostic_session",
+    "tail_log_file",
+]

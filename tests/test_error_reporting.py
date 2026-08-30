@@ -15,10 +15,14 @@ import voxsub.error_reporting as error_reporting
 class _Scope:
     def __init__(self) -> None:
         self.tags: dict[str, str] = {}
+        self.contexts: dict[str, dict] = {}
         self.attachments: list[dict[str, object]] = []
 
     def set_tag(self, key: str, value: str) -> None:
         self.tags[key] = value
+
+    def set_context(self, key: str, value: dict) -> None:
+        self.contexts[key] = value
 
     def add_attachment(self, **kwargs) -> None:
         self.attachments.append(kwargs)
@@ -309,3 +313,43 @@ def test_send_log_snapshot_attaches_only_filtered_logs(monkeypatch) -> None:
 def test_send_log_snapshot_without_sentry_is_noop() -> None:
     assert not error_reporting.is_error_reporting_enabled()
     assert not error_reporting.send_log_snapshot("local log")
+
+
+def test_send_log_snapshot_adds_session_context_and_filter_stats(monkeypatch) -> None:
+    fake = _FakeSentry()
+    monkeypatch.setenv("VOXSUB_SENTRY_DSN", "https://public@example.invalid/1")
+    monkeypatch.setattr(error_reporting, "_load_sdk", lambda: fake)
+    error_reporting.initialize_error_reporting()
+
+    assert error_reporting.send_log_snapshot(
+        "api_key=secret path=C:\\Users\\Alice\\clip.wav\nplain",
+        trigger="diagnostics_logs_tab",
+        session_metadata={
+            "session_id": "abc123def456",
+            "started_at": "2026-08-30T12:00:00+00:00",
+            "expires_at": "2026-08-30T12:20:00+00:00",
+            "line_count": 2,
+        },
+    )
+    scope = fake.scopes[-1]
+    assert scope.tags["diagnostic_session"] == "abc123def456"
+    assert scope.contexts["voxsub_diagnostic_session"]["session_id"] == "abc123def456"
+    upload = scope.contexts["voxsub_diagnostic_upload"]
+    assert upload["privacy_filter_replacements"] >= 2
+    rendered = scope.attachments[0]["bytes"]
+    assert b"secret" not in rendered
+    assert b"C:\\Users\\Alice" not in rendered
+    assert b"privacy_filter_replacements" in rendered
+
+
+def test_send_log_snapshot_rejects_unsafe_session_metadata(monkeypatch) -> None:
+    fake = _FakeSentry()
+    monkeypatch.setenv("VOXSUB_SENTRY_DSN", "https://public@example.invalid/1")
+    monkeypatch.setattr(error_reporting, "_load_sdk", lambda: fake)
+    error_reporting.initialize_error_reporting()
+
+    assert error_reporting.send_log_snapshot(
+        "safe", session_metadata={"session_id": "C:\\Users\\Alice\\secret"})
+    scope = fake.scopes[-1]
+    assert "diagnostic_session" not in scope.tags
+    assert "session_id" not in scope.contexts.get("voxsub_diagnostic_upload", {})

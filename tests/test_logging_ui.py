@@ -20,6 +20,7 @@ import re
 import sys
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 
 # 无头运行：必须在任何 Qt 构造前设置（QApplication 读取该变量）
@@ -32,7 +33,16 @@ if str(_ROOT) not in sys.path:
 import pytest  # noqa: E402
 
 import voxsub.logging_setup as logging_setup  # noqa: E402
-from voxsub.logging_setup import drain_events, get_logger, setup_logging, tail_log_file  # noqa: E402
+from voxsub.logging_setup import (
+    diagnostic_session_log_snapshot,
+    diagnostic_session_snapshot,
+    drain_events,
+    get_logger,
+    setup_logging,
+    start_diagnostic_session,
+    stop_diagnostic_session,
+    tail_log_file,
+)  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +124,43 @@ class TestTailLogFile:
         monkeypatch.setattr(logging_setup, "_log_dir", lambda: tmp_path)
         (tmp_path / "voxsub.log").mkdir()
         assert tail_log_file(5).startswith("<读取日志失败")
+
+
+class TestDiagnosticSession:
+    def test_session_is_bounded_and_tags_logs(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(logging_setup, "_log_dir", lambda: tmp_path)
+        stop_diagnostic_session()
+        metadata = start_diagnostic_session(60)
+        try:
+            assert metadata["session_id"]
+            assert diagnostic_session_snapshot()["session_id"] == metadata["session_id"]
+            get_logger("test.session").debug("session marker")
+            (tmp_path / "voxsub.log").write_text(
+                f"2026-01-01 00:00:00 DEBUG [voxsub.test.session] "
+                f"[session={metadata['session_id']}] session marker\n",
+                encoding="utf-8",
+            )
+            logs, upload_metadata = diagnostic_session_log_snapshot()
+            assert "session marker" in logs
+            assert f"session={metadata['session_id']}" in logs
+            assert upload_metadata["line_count"] >= 1
+        finally:
+            stop_diagnostic_session()
+
+    def test_expired_session_restores_previous_level(self, monkeypatch):
+        stop_diagnostic_session()
+        metadata = start_diagnostic_session(60)
+        session = logging_setup._DIAGNOSTIC_SESSION  # noqa: SLF001
+        assert session is not None
+        logging_setup._DIAGNOSTIC_SESSION = logging_setup.DiagnosticSession(  # noqa: SLF001
+            session.session_id, session.started_at,
+            session.started_at - timedelta(seconds=1), session.previous_level,
+        )
+        try:
+            assert diagnostic_session_snapshot() is None
+            assert not logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
+        finally:
+            stop_diagnostic_session()
 
 
 # ===========================================================================

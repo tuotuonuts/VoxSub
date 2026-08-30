@@ -306,6 +306,9 @@ TRANSLATIONS: dict[str, str] = {
     "清空视图": "Clear view",
     "实时 · 自动跟随": "Live · auto-follow",
     "调试模式": "Debug mode",
+    "诊断调试": "Diagnostic debug",
+    "诊断调试未开启": "Diagnostic debug is off",
+    "诊断调试剩余": "Diagnostic debug remaining",
     "暂无日志": "No logs yet",
     "诊断模块尚未实现": "Diagnostics module is not available",
     "未接入检查模块": "No check module connected",
@@ -434,6 +437,8 @@ TRANSLATIONS: dict[str, str] = {
     "日志页签初始化失败（详见日志文件）": "The log tab could not be initialized (see the log file)",
     "显示音频电平、队列、设备打开与分句等详细事件":
         "Show detailed audio levels, queues, device-open events, and sentence-splitting events",
+    "显示音频电平、队列、设备打开与分句等详细事件；20 分钟后自动结束":
+        "Show detailed audio levels, queues, device-open events, and sentence-splitting events; ends automatically after 20 minutes",
     "确定卸载": "Uninstall",
     "模型文件将从本机删除。": "The model files will be removed from this computer.",
     "翻译服务 API Key": "Translation service API key",
