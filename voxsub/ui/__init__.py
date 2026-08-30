@@ -6,7 +6,7 @@
 - pipeline_client.py  Pipeline 契约接入点（单测可显式注入鸭子类型 stub）
 - main_window.py      主窗：左右分栏 + 模式三卡片 + 实时字幕流 + 胶囊 CTA
 - subtitle_overlay.py 无边框置顶半透明字幕浮窗 (Double-Bezel 双层壳)
-- tray.py             系统托盘（模式快捷切换 / 显示主窗 / 退出）
+- tray.py             系统托盘（模式快捷切换 / 显示主窗 / 退出应用）
 - settings_window.py  设置页（翻译 / 语音 / 设备 / 外观 / 关于）
 - diagnostics_window.py 诊断与应用内实时日志
 - ocr_workspace.py    截图 OCR / 实时区域 OCR 与原位译文覆盖

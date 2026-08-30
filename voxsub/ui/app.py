@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     win.model_hub_requested.connect(_show_model_hub)
     win.show()
     QTimer.singleShot(0, lambda: show_release_notes_once(win, store, _UI_VERSION))
-    # 退出关键事件（托盘「退出」/ 系统退出统一在此记录）
+    # 退出关键事件（托盘「退出应用」/ 系统退出统一在此记录）
     app.aboutToQuit.connect(model_hub_win.shutdown)
     app.aboutToQuit.connect(ocr_workspace.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)

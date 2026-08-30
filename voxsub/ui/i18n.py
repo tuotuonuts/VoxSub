@@ -38,6 +38,7 @@ TRANSLATIONS: dict[str, str] = {
     "显示主窗": "Show main window",
     "诊断与实时日志": "Diagnostics & live logs",
     "退出": "Exit",
+    "退出应用": "Exit application",
     "诊断与日志": "Diagnostics & Logs",
     "诊断 — 语幕 VoxSub": "Diagnostics - VoxSub",
     "模型广场": "Model Hub",

@@ -64,6 +64,53 @@ function Invoke-Python {
     }
 }
 
+function Get-VoxSubProcesses {
+    <# Return only processes that can keep this checkout or its runtime busy. #>
+    $repoMarker = $repoRoot.ToLowerInvariant()
+    try {
+        $processes = Get-CimInstance -ClassName Win32_Process -ErrorAction Stop
+    } catch {
+        throw "无法检查正在运行的 VoxSub 进程：$($_.Exception.Message)"
+    }
+    foreach ($process in $processes) {
+        $name = ([string]$process.Name).ToLowerInvariant()
+        $commandLine = ([string]$process.CommandLine).ToLowerInvariant()
+        $isVoxSub = $name -eq "voxsub.exe"
+        $isPython = $name -in @("python.exe", "pythonw.exe") -and (
+            $commandLine.Contains($repoMarker) -or
+            $commandLine.Contains("run_app.py") -or
+            $commandLine.Contains("voxsub.ui.app")
+        )
+        $isLlama = $name -eq "llama-server.exe"
+        if ($isVoxSub -or $isPython -or $isLlama) {
+            [pscustomobject]@{
+                Id = [int]$process.ProcessId
+                Name = [string]$process.Name
+                CommandLine = ([string]$process.CommandLine).Trim()
+            }
+        }
+    }
+}
+
+function Wait-VoxSubProcessesExit {
+    param([int]$TimeoutSeconds = 30)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $remaining = @(Get-VoxSubProcesses)
+        if ($remaining.Count -eq 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    $remaining = @(Get-VoxSubProcesses)
+    foreach ($process in $remaining) {
+        Write-RunLog "仍在运行: $($process.Name) (PID $($process.Id)) $($process.CommandLine)"
+    }
+    return $false
+}
+
 try {
     Write-RunLog "VoxSub 源码测试启动"
     Write-RunLog "项目目录: $repoRoot"
@@ -72,6 +119,18 @@ try {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         throw "未找到 Git。请先安装 Git for Windows 后重试。"
     }
+
+    $running = @(Get-VoxSubProcesses)
+    if ($running.Count -gt 0) {
+        foreach ($process in $running) {
+            Write-RunLog "启动前检测到进程: $($process.Name) (PID $($process.Id)) $($process.CommandLine)"
+        }
+        Write-Host "检测到 VoxSub 或其相关子进程仍在运行。" -ForegroundColor Yellow
+        Write-Host "请先右键系统托盘图标，选择“退出应用”，然后重新双击本脚本。" -ForegroundColor Yellow
+        Write-RunLog "未执行 git pull：请先从托盘菜单选择“退出应用”。"
+        exit 2
+    }
+
     Invoke-LoggedStep "更新源码 (git pull --ff-only)" {
         git -C $repoRoot pull --ff-only
     }
@@ -143,7 +202,14 @@ try {
     Invoke-LoggedStep "启动 VoxSub 测试版" {
         & $venvPython (Join-Path $repoRoot "run_app.py")
     }
-    Write-RunLog "VoxSub 已退出。"
+    Write-RunLog "VoxSub 主程序已退出，等待相关子进程结束。"
+    if (-not (Wait-VoxSubProcessesExit)) {
+        Write-Host "主程序已退出，但仍有 VoxSub 相关子进程未结束。" -ForegroundColor Yellow
+        Write-Host "请使用托盘菜单中的“退出应用”完成退出；脚本不会强制结束进程。" -ForegroundColor Yellow
+        Write-RunLog "等待子进程超时；未强制结束任何进程。"
+        exit 3
+    }
+    Write-RunLog "VoxSub 主程序及相关子进程已结束。"
     exit 0
 } catch {
     $friendly = $_.Exception.Message

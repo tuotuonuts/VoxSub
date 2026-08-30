@@ -87,6 +87,8 @@ git pull --ff-only
 
 给朋友使用时，首次把仓库克隆到本机后，直接双击项目根目录的 `更新并启动测试版.bat`。以后每次双击同一个文件即可自动 `git pull`、检查 Python 3.11+、创建本机独立 `.venv`、同步 `requirements.lock` 并启动 `run_app.py`。脚本会清理 `PYTHONPATH` / `PYTHONHOME`，测试环境自动使用 `testing` 标记；不需要手动配置 Python 依赖。
 
+关闭主窗口右上角通常只是隐藏到系统托盘，并不会结束 VoxSub。真正退出源码测试版时，必须右键托盘图标并选择“退出应用”。启动脚本会在 `git pull` 前检查 VoxSub、源码 Python 和 `llama-server` 进程；发现仍在运行时只提示先执行“退出应用”，不会强制杀进程。应用返回后，脚本还会等待相关子进程结束，确认干净退出后才返回。
+
 脚本优先使用已安装的 `uv`，没有 `uv` 时自动改用虚拟环境内的 `pip`。准备或启动失败时，窗口会显示易懂的原因，详细输出保存到 `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`。脚本不会复制其他电脑的 `.venv`，也不会删除模型、配置或用户数据；不可用的旧 `.venv` 会先改名备份。
 
 脚本每次自动设置 `VOXSUB_ENVIRONMENT=testing`。如果希望朋友的诊断报告进入你的 Sentry，可由你提前把 DSN 放到朋友电脑的 `%LOCALAPPDATA%\VoxSub\sentry_dsn.txt`（一行纯文本）；脚本会自动读取，朋友无需手动配置。没有该文件时仅写本地日志，不会联网。

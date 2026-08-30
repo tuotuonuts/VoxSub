@@ -1,6 +1,6 @@
 """系统托盘（M7 组件清单 #3）。
 
-- 图标 + 菜单：模式快捷切换（A/B/C/D 单选）/ 开始·停止 / 显示主窗 / 设置 / 退出
+- 图标 + 菜单：模式快捷切换（A/B/C/D 单选）/ 开始·停止 / 显示主窗 / 设置 / 退出应用
 - 双击托盘图标 → 显示主窗
 - 环境无托盘时（isSystemTrayAvailable() False）create() 返回 None，不阻塞主程序。
 - 与主窗松耦合：托盘只发信号（mode_changed / toggle_run_requested /
@@ -77,7 +77,7 @@ class TrayIcon(QSystemTrayIcon):
         menu.addAction(diagnostics_action)
 
         menu.addSeparator()
-        quit_action = QAction(tr("退出"), menu)
+        quit_action = QAction(tr("退出应用"), menu)
         self._quit_action = quit_action
         quit_action.triggered.connect(self.quit_requested.emit)
         menu.addAction(quit_action)
@@ -109,7 +109,7 @@ class TrayIcon(QSystemTrayIcon):
         self._show_action.setText(tr("显示主窗"))
         self._settings_action.setText(tr("设置"))
         self._diagnostics_action.setText(tr("诊断与实时日志"))
-        self._quit_action.setText(tr("退出"))
+        self._quit_action.setText(tr("退出应用"))
         self.toggle_action.setText(tr("停止") if self._running else tr("开始"))
 
     # -- 内部 ---------------------------------------------------------------

@@ -88,6 +88,8 @@ git pull --ff-only
 
 For friends, clone the repository once and double-click `更新并启动测试版.bat` in the project root. Every later double-click automatically runs `git pull`, checks for Python 3.11+, creates a local `.venv` when needed, syncs `requirements.lock`, and starts `run_app.py`. The script clears `PYTHONPATH` / `PYTHONHOME`, sets the Sentry environment to `testing`, and requires no manual Python dependency setup.
 
+Closing the main window normally only hides VoxSub in the system tray; it does not end the process. To really exit the source test build, right-click the tray icon and choose “退出应用” (Exit application). Before `git pull`, the launcher checks for VoxSub, source Python, and `llama-server` processes. If any remain, it only asks you to choose “退出应用” and never force-kills them. After the app returns, it waits for related child processes to finish before the script returns.
+
 The script prefers `uv` and falls back to the virtual environment's `pip`. If preparation or startup fails, it shows a plain-language reason and saves detailed output under `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`. It never copies another computer's `.venv` and does not remove models, configuration, or user data; an unusable old `.venv` is renamed as a backup first.
 
 The script sets `VOXSUB_ENVIRONMENT=testing` on every run. If you want a friend's reports in your Sentry project, provision `%LOCALAPPDATA%\VoxSub\sentry_dsn.txt` with the DSN as one line; the script reads it automatically, so the friend does not configure anything. Without that file, only local logs are used and no network request is made.

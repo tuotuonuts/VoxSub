@@ -51,3 +51,25 @@ def test_runner_keeps_runtime_data_outside_git_and_logs_failures() -> None:
     assert "VoxSub\\diagnostics\\source-run" in script
     assert "Tee-Object -FilePath $logPath" in script
     assert "exit 1" in script
+
+
+def test_runner_checks_processes_before_pull_and_waits_after_exit() -> None:
+    text = PS1.read_text(encoding="utf-8")
+    assert "Get-CimInstance -ClassName Win32_Process" in text
+    assert "Get-VoxSubProcesses" in text
+    assert "git -C $repoRoot pull --ff-only" in text
+    assert "退出应用" in text
+    assert "Wait-VoxSubProcessesExit" in text
+    assert "Start-Sleep -Milliseconds 500" in text
+    assert "TimeoutSeconds = 30" in text
+    assert "未执行 git pull" in text
+    assert "Stop-Process" not in text
+    assert "taskkill" not in text
+
+
+def test_tray_exit_action_is_explicit_and_localized() -> None:
+    tray = (ROOT / "voxsub" / "ui" / "tray.py").read_text(encoding="utf-8")
+    i18n = (ROOT / "voxsub" / "ui" / "i18n.py").read_text(encoding="utf-8")
+    assert 'QAction(tr("退出应用")' in tray
+    assert 'self._quit_action.setText(tr("退出应用"))' in tray
+    assert '"退出应用": "Exit application"' in i18n
