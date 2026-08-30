@@ -53,7 +53,7 @@
 - 当前源码全量门禁为 `319 passed, 7 skipped`；复杂度预算、四模式布局、语言方向传递、分阶段模型配置、DirectML provider、段落合并、正文优先、捕获排除、安装器关闭协议、Pipeline 退出清理和 OCR UI 回归均通过。
 - 打包后的 `VoxSub.exe --ocr-smoke` 独立复跑退出码为 0，隔离日志确认 `backend=GPU · DirectML`，成品目录包含 `DirectML.dll`。
 - 打包后的真实应用已使用隔离命名事件执行完整退出握手：收到安装器信号后 3.53 秒退出，退出码为 0，进程运行标记随进程终止；该实测已加入每次正式构建的自动门禁。
-- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,285,664 字节（264.44 MiB），SHA256 `03B51AEF74177A10CEC18A44F29D6B619385C30A144881C43E30D61DCC8656AE`；本次构建使用本机自签名证书，主程序与安装包仍可能被 SmartScreen 标记为未受信任。
+- 候选安装包 `VoxSub-Setup-0.9.0-beta.exe` 为 277,285,664 字节（264.44 MiB），SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`；本次构建使用本机自签名证书，主程序与安装包仍可能被 SmartScreen 标记为未受信任。
 - `0.9.0-beta` 仅推送源码与安装包，不在用户验证前创建 GitHub Release。
 
 ## 版本: v0.8.0-beta（开发候选，未发布）

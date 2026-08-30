@@ -265,5 +265,5 @@
 [x] Pipeline 新增幂等 close()，应用退出时主动释放本地翻译器及 llama-server
 [x] 安装器按当前 {app}\tools\llama 路径清理旧版孤儿 llama-server.exe，避免 ggml-cpu.dll 错误 5
 [x] 完整构建门禁 `319 passed / 7 skipped`；QtCore/OCR/安装器退出 smoke 和 Inno Setup 编译通过
-[x] 重建同版本安装包 277,285,664 字节；SHA256 03B51AEF74177A10CEC18A44F29D6B619385C30A144881C43E30D61DCC8656AE；本机自签名
+[x] 重建同版本安装包 277,285,664 字节；SHA256 F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D；本机自签名
 [ ] 等待用户安装升级验证；不创建 GitHub Release
