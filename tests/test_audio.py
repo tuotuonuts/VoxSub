@@ -3,13 +3,14 @@
 分层:
 - 单元测试: 用 fake 设备对象验证 isloopback 过滤逻辑 / resample / 抽象基类约束
   (不依赖真机)。
-- 真机测试: 枚举测试 (麦克风/loopback 数量与类型)。
-- 集成测试 (@pytest.mark.integration): 本机有声卡, 默认全部执行。
+- 真机测试 (@pytest.mark.hardware_audio): 枚举测试 (麦克风/loopback 数量与类型)。
+- 集成测试 (@pytest.mark.integration + @pytest.mark.hardware_audio): 仅显式执行。
   - loopback 闭环: 默认扬声器播放合成正弦, 匹配端点的 loopback 必须采到信号,
     停止播放后恢复静音 —— 这是 M2 最关键的验收。
   - MicSource: start/read_chunk/stop/close 生命周期冒烟。
 
-运行: cd VoxSub && unset PYTHONPATH PYTHONHOME && .venv/Scripts/python.exe -m pytest tests/test_audio.py -v
+普通测试不访问真实声卡。需要验收声卡时运行:
+cd VoxSub && .venv/Scripts/python.exe -m pytest tests/test_audio.py -v -o "addopts=" -m hardware_audio
 """
 from __future__ import annotations
 
@@ -144,8 +145,9 @@ def test_resample_16k_downsample_48k() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 真机: 设备枚举
+# 真机: 设备枚举 (默认不执行，避免占用正在使用的音频设备)
 # ---------------------------------------------------------------------------
+@pytest.mark.hardware_audio
 def test_list_microphones_real_nonempty() -> None:
     """本机真实麦克风枚举: 非空, 全部 kind=mic, 无 loopback 混入。"""
     mics = list_microphones()
@@ -154,6 +156,7 @@ def test_list_microphones_real_nonempty() -> None:
     assert all(not getattr(m.device, "isloopback", False) for m in mics)
 
 
+@pytest.mark.hardware_audio
 def test_list_loopbacks_real_paired_with_speakers() -> None:
     """本机 loopback 枚举: 非空, 全部 kind=loopback, 与扬声器端点一一对应。
 
@@ -168,7 +171,7 @@ def test_list_loopbacks_real_paired_with_speakers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 集成: 真机声卡闭环 (本机有声卡, 默认执行)
+# 集成: 真机声卡闭环 (仅显式执行)
 # ---------------------------------------------------------------------------
 def _pick_loopback_for(spk) -> AudioDeviceInfo:
     """选与指定扬声器同一端点的 loopback, 找不到退到第一个。"""
@@ -181,6 +184,7 @@ def _pick_loopback_for(spk) -> AudioDeviceInfo:
 
 
 @pytest.mark.integration
+@pytest.mark.hardware_audio
 def test_loopback_closure_sine() -> None:
     """loopback 闭环验收: 默认扬声器播 2s 440Hz 正弦, 匹配端点的 loopback
     必须采到 (功率 > 1e-4); 停止播放后采集窗口恢复静音 (< 1e-3)。"""
@@ -237,6 +241,7 @@ def test_loopback_closure_sine() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.hardware_audio
 def test_loopback_chunk_format() -> None:
     """LoopbackSource 输出格式契约: 1D float32 / 480 帧 / 16k 属性。"""
     loops = list_loopbacks()
@@ -257,6 +262,7 @@ def test_loopback_chunk_format() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.hardware_audio
 def test_mic_source_smoke() -> None:
     """MicSource 生命周期冒烟: start/read_chunk/stop/close 不崩, 块格式正确。"""
     src = MicSource()

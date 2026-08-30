@@ -104,6 +104,7 @@ def test_list_capture_targets_deduplicates_pid(monkeypatch) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.hardware_audio
 @pytest.mark.skipif(os.environ.get("VOXSUB_TEST_PROCESS_AUDIO") != "1",
                     reason="设置 VOXSUB_TEST_PROCESS_AUDIO=1 才播放短测试音并验证进程捕获")
 def test_process_loopback_captures_target_tone() -> None:
@@ -138,6 +139,7 @@ def test_process_loopback_captures_target_tone() -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.hardware_audio
 @pytest.mark.skipif(os.environ.get("VOXSUB_TEST_PROCESS_AUDIO") != "1",
                     reason="设置 VOXSUB_TEST_PROCESS_AUDIO=1 才播放短测试音并验证进程隔离")
 def test_process_loopback_excludes_other_process_tone() -> None:

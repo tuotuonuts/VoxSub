@@ -85,6 +85,18 @@ git pull --ff-only
 .\.venv\Scripts\python.exe run_app.py
 ```
 
+上述默认测试不会访问真实麦克风、回环或扬声器，因此不会播放测试声音或占用声卡。真实设备验收保留为手动步骤，仅在排查音频设备、驱动或按应用音频采集问题时执行：
+
+```powershell
+# 真实麦克风/回环/扬声器测试；其中按应用音频测试仍需显式确认播放短音
+.\.venv\Scripts\python.exe -m pytest tests/ -q -o "addopts=" -m hardware_audio
+
+# 额外验证按应用音频捕获，会播放两段低音量短测试音
+$env:VOXSUB_TEST_PROCESS_AUDIO = "1"
+.\.venv\Scripts\python.exe -m pytest tests/test_process_audio.py -q -o "addopts=" -m hardware_audio
+Remove-Item Env:VOXSUB_TEST_PROCESS_AUDIO
+```
+
 给朋友使用时，首次把仓库克隆到本机后，直接双击项目根目录的 `更新并启动测试版.bat`。以后每次双击同一个文件即可自动 `git pull`、检查 Python 3.11+、创建本机独立 `.venv`、同步 `requirements.lock` 并启动 `run_app.py`。脚本会清理 `PYTHONPATH` / `PYTHONHOME`，测试环境自动使用 `testing` 标记；不需要手动配置 Python 依赖。
 
 关闭主窗口右上角通常只是隐藏到系统托盘，并不会结束 VoxSub。真正退出源码测试版时，必须右键托盘图标并选择“退出应用”。启动脚本会在 `git pull` 前检查 VoxSub、源码 Python 和 `llama-server` 进程；发现仍在运行时只提示先执行“退出应用”，不会强制杀进程。应用返回后，脚本还会等待相关子进程结束，确认干净退出后才返回。
