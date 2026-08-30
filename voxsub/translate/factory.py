@@ -51,6 +51,8 @@ class TranslatorFactory:
                             model_path=marketplace.model_file(model),
                             prompt_style="hy-mt2",
                             model_name=model.name,
+                            expected_size=model.download_bytes,
+                            expected_sha256=model.sha256,
                             n_threads=min(8, max(2, __import__("os").cpu_count() or 2)),
                         )
             return QwenQualityTranslator()
@@ -69,7 +71,9 @@ class TranslatorFactory:
         logger.info("翻译档位就绪探测: opus-fast=%s", found["opus-fast"])
         opus.close()
 
-        qwen = QwenQualityTranslator()
+        # Reuse the selected catalog model metadata when available so a
+        # truncated GGUF is reported as unavailable before any server spawn.
+        qwen = TranslatorFactory.create("qwen-quality", config)
         found["qwen-quality"] = bool(
             qwen.health() == "ok")   # health() 只校验文件存在, 不 spawn
         logger.info("翻译档位就绪探测: qwen-quality=%s", found["qwen-quality"])

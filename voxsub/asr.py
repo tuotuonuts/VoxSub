@@ -20,6 +20,7 @@ asr 目录内多精度 (int8/fp32) 并存时优先选 *int8*.onnx。
 from __future__ import annotations
 
 from collections import deque
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -276,12 +277,27 @@ class OfflineGenerativeASR:
         if not stream.chunks:
             return ""
         wav = np.concatenate(stream.chunks)
+        started = time.perf_counter()
+        logger.debug(
+            "生成式 ASR 开始解码: runtime=%s provider=%s audio_ms=%.1f samples=%d "
+            "peak=%.4f rms=%.4f",
+            self.runtime, self.provider, wav.size * 1000.0 / SAMPLE_RATE,
+            wav.size, float(np.max(np.abs(wav))) if wav.size else 0.0,
+            float(np.sqrt(np.mean(np.square(wav)))) if wav.size else 0.0,
+        )
         native = self._recognizer.create_stream()
         native.accept_waveform(SAMPLE_RATE, wav)
         self._recognizer.decode_stream(native)
         result = native.result
         text = getattr(result, "text", result)
         stream.result = str(text or "").strip()
+        logger.info(
+            "生成式 ASR 解码完成: runtime=%s provider=%s audio_ms=%.1f "
+            "decode_ms=%.1f chars=%d",
+            self.runtime, self.provider, wav.size * 1000.0 / SAMPLE_RATE,
+            (time.perf_counter() - started) * 1000.0,
+            len(stream.result),
+        )
         return stream.result
 
     def get_result(self, stream: _OfflineBuffer) -> str:
@@ -542,8 +558,14 @@ class AudioUtteranceSegmenter:
                          speech_samples * 1000.0 / SAMPLE_RATE)
             return
         audio = np.concatenate(chunks).astype(np.float32, copy=False)
-        logger.debug("生成式 ASR 自然分段: reason=%s duration=%.2fs",
-                     reason, audio.size / SAMPLE_RATE)
+        rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+        logger.info(
+            "生成式 ASR 自然分段: reason=%s duration=%.2fs speech_ms=%.1f "
+            "peak=%.4f rms=%.4f",
+            reason, audio.size / SAMPLE_RATE,
+            speech_samples * 1000.0 / SAMPLE_RATE, peak, rms,
+        )
         try:
             self._on_audio(audio)
         finally:

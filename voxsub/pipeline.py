@@ -119,7 +119,35 @@ def _load_translator(kind: str = "opus-fast", config=None) -> object:
     try:
         from voxsub.translate.factory import TranslatorFactory  # type: ignore[import-not-found]
         try:
-            return TranslatorFactory.create(kind, config), kind
+            translator = TranslatorFactory.create(kind, config)
+            effective_kind = kind
+            # A corrupted GGUF can exist on disk while llama-server only
+            # discovers the problem after spawning.  Validate the selected
+            # quality translator before any worker starts; if the local fast
+            # models are available, keep the pipeline useful and avoid a
+            # per-sentence respawn storm.
+            if kind == "qwen-quality":
+                health = getattr(translator, "health", lambda: "ok")()
+                if health != "ok":
+                    logger.error("质量翻译档位不可用: %s", health)
+                    fallback = TranslatorFactory.create("opus-fast", config)
+                    fallback_health = getattr(fallback, "health", lambda: "ok")()
+                    if fallback_health == "ok":
+                        close = getattr(translator, "close", None)
+                        if callable(close):
+                            close()
+                        logger.warning(
+                            "质量翻译不可用，自动切换 OPUS 极速档: reason=%s",
+                            health,
+                        )
+                        translator, effective_kind = fallback, "opus-fast"
+                    else:
+                        close = getattr(fallback, "close", None)
+                        if callable(close):
+                            close()
+                        logger.warning("OPUS 极速档也不可用，保留质量档错误路径: %s",
+                                       fallback_health)
+            return translator, effective_kind
         except Exception as exc:
             logger.error("翻译档位 %s 创建失败，退回原文显示: %s", kind, exc,
                          exc_info=True)
@@ -518,6 +546,29 @@ class Pipeline:
             self._translator, self._trans_kind = _load_translator(
                 self._requested_trans_kind, self._translator_config)
 
+    def _warmup_translator(self) -> None:
+        """Warm up the selected translator and fall back once on failure."""
+        warmup = getattr(self._translator, "warmup", None)
+        if not callable(warmup):
+            return
+        result = warmup()
+        if result is not False or self._trans_kind != "qwen-quality":
+            return
+        logger.warning("质量翻译预热失败，尝试切换 OPUS 极速档")
+        fallback, fallback_kind = _load_translator(
+            "opus-fast", self._translator_config)
+        if fallback_kind != "opus-fast":
+            close = getattr(fallback, "close", None)
+            if callable(close):
+                close()
+            return
+        old = self._translator
+        self._translator, self._trans_kind = fallback, fallback_kind
+        close = getattr(old, "close", None)
+        if callable(close):
+            close()
+        self._emit_status("质量翻译不可用，已切换极速翻译")
+
     def _start_tts_worker(self) -> None:
         if not self._tts_enabled or self._mode == "c":
             return
@@ -899,7 +950,7 @@ class Pipeline:
         warmup = getattr(self._translator, "warmup", None)
         if callable(warmup):
             logger.info("翻译工作线程开始预热")
-            warmup()
+            self._warmup_translator()
         while True:
             try:
                 text = self._translation_queue.get_nowait()
@@ -969,6 +1020,25 @@ class Pipeline:
         if client is None:
             kind = "云 STT 客户端" if self._is_cloud_stt else "本地 STT 执行器"
             raise RuntimeError(f"{kind}未初始化")
+        values = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if values.size:
+            peak = float(np.max(np.abs(values)))
+            rms = float(np.sqrt(np.mean(np.square(values))))
+            near_silent = float(np.mean(np.abs(values) < 1e-4))
+            clipped = float(np.mean(np.abs(values) >= 0.999))
+        else:
+            peak = rms = near_silent = clipped = 0.0
+        logger.debug(
+            "STT 片段开始: runtime=%s provider=%s audio_ms=%.1f samples=%d "
+            "peak=%.4f rms=%.4f near_silent=%.3f clipped=%.3f",
+            "cloud-stt" if self._is_cloud_stt else getattr(client, "runtime", "local-stt"),
+            "cloud" if self._is_cloud_stt else getattr(client, "provider", "cpu"),
+            values.size * 1000.0 / SAMPLE_RATE, values.size,
+            peak, rms, near_silent, clipped,
+        )
+        if values.size and rms < 0.003:
+            logger.warning("STT 片段音量很低: audio_ms=%.1f rms=%.5f peak=%.5f",
+                           values.size * 1000.0 / SAMPLE_RATE, rms, peak)
         try:
             if self._is_cloud_stt:
                 return client.transcribe_samples(
@@ -995,10 +1065,10 @@ class Pipeline:
                     getattr(self._asr, "provider", "cpu"))
         logger.info(
             "STT 片段完成: runtime=%s provider=%s audio_ms=%.1f wait_ms=%s "
-            "decode_ms=%.1f chars=%d",
+            "decode_ms=%.1f chars=%d source=%s",
             runtime, provider, audio.size * 1000.0 / SAMPLE_RATE,
             f"{wait_ms:.1f}" if wait_ms is not None else "na",
-            decode_ms, len(text),
+            decode_ms, len(text), self._src_lang,
         )
 
     # ---- 启停 ----
@@ -1296,10 +1366,9 @@ class Pipeline:
             self._emit_progress(0, 100, "正在准备音视频")
             self._emit_status(f"正在提取/读取音频: {self._in_path.name}")
             self._ensure_translator()
-            warmup = getattr(self._translator, "warmup", None)
-            if callable(warmup):
+            if callable(getattr(self._translator, "warmup", None)):
                 logger.info("文件模式开始预热翻译引擎")
-                warmup()
+                self._warmup_translator()
             lines, wav_path = self._transcribe_file(self._in_path)
             out = self._in_path.with_suffix(".srt")
             self._emit_progress(97, 100, "正在导出字幕")
@@ -1360,6 +1429,7 @@ class Pipeline:
             source_lang=self._src_lang,
             target_lang=self._dst_lang,
             validate_translation=self._trans_kind is not None,
+            tuning=self._effective_asr_tuning(generative=self._is_generative),
             progress=progress,
         )
 

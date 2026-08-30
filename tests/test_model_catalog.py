@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import os
 import tarfile
 from dataclasses import replace
@@ -147,6 +148,31 @@ def test_hy_mt2_7b_q8_uses_exact_upstream_asset_metadata() -> None:
     assert model.download_bytes == 7_981_928_896
     assert model.sha256 == "58b3ad55dd6f6fa08c695cddc34fb5f8f708a844f78ae10508071914b0ed67c0"
     assert all("HY-MT2-7B-Q8_0.gguf" in source.url for source in model.sources)
+
+
+def test_single_file_model_integrity_rejects_wrong_size_and_sha(tmp_path: Path) -> None:
+    """A present GGUF with bad metadata must be repairable, not treated ready."""
+    base = get_model("mt-hy-mt2-1.8b-q8")
+    assert base is not None
+    payload = b"valid test payload"
+    model = replace(
+        base,
+        download_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        install_rel="translate/test-integrity",
+        legacy_install_rels=(),
+    )
+    target = tmp_path / "models" / "translate" / "test-integrity"
+    target.mkdir(parents=True)
+    file_path = target / model.required_paths[0]
+    file_path.write_bytes(b"corrupt")
+    market = ModelMarketplace(tmp_path / "models")
+    assert market.missing_paths(model) == model.required_paths
+    assert not market.is_installed(model)
+
+    file_path.write_bytes(payload)
+    assert market.missing_paths(model) == ()
+    assert market.is_installed(model)
 
 
 def test_sensevoice_runtime_uses_catalog_file_layout(tmp_path: Path, monkeypatch) -> None:

@@ -7,6 +7,7 @@ treated as a product bug, not as a marketplace feature.
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import tarfile
 import tempfile
@@ -882,6 +883,7 @@ class ModelMarketplace:
         )
         self._downloads = self.models_dir / ".downloads"
         self._state_path = self.models_dir / "catalog_installs.json"
+        self._integrity_cache: dict[Path, tuple[int, int, bool]] = {}
 
     def model_dir(self, model: ModelSpec) -> Path:
         """Return the canonical destination for new downloads."""
@@ -907,9 +909,52 @@ class ModelMarketplace:
         return self.model_dir(model)
 
     @staticmethod
-    def _missing_paths_at(base: Path, model: ModelSpec) -> tuple[str, ...]:
-        missing = [rel for rel in model.required_paths
-                   if not (base / rel).is_file()]
+    def _sha256_matches(path: Path, expected: str) -> bool:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return False
+        return digest.hexdigest().lower() == expected
+
+    def _single_file_valid(self, path: Path, model: ModelSpec) -> bool:
+        """Validate metadata for a non-archive single-file model."""
+        if not path.is_file():
+            return False
+        expected_size = int(model.download_bytes or 0)
+        expected_sha = str(model.sha256 or "").strip().lower()
+        if expected_size <= 0 and not expected_sha:
+            return True
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        if expected_size > 0 and stat.st_size != expected_size:
+            logger.warning("模型文件大小不一致: model=%s expected=%d actual=%d",
+                           model.id, expected_size, stat.st_size)
+            return False
+        key = path.resolve()
+        cached = self._integrity_cache.get(key)
+        if cached and cached[:2] == (stat.st_size, stat.st_mtime_ns):
+            return cached[2]
+        valid = self._sha256_matches(path, expected_sha) if expected_sha else True
+        if expected_sha and not valid:
+            logger.warning("模型文件 SHA256 不一致: model=%s expected=%s",
+                           model.id, expected_sha[:12])
+        self._integrity_cache[key] = (stat.st_size, stat.st_mtime_ns, valid)
+        return valid
+
+    def _missing_paths_at(self, base: Path, model: ModelSpec) -> tuple[str, ...]:
+        missing: list[str] = []
+        for rel in model.required_paths:
+            path = base / rel
+            valid = path.is_file()
+            if valid and not model.archive and len(model.required_paths) == 1:
+                valid = self._single_file_valid(path, model)
+            if not valid:
+                missing.append(rel)
         missing.extend(
             pattern for pattern in model.required_patterns
             if not any(path.is_file() for path in base.glob(pattern))

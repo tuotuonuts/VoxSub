@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 import signal
@@ -88,7 +89,9 @@ class QwenQualityTranslator(Translator):
                  max_tokens: int = 128, fast_mode: bool = True,
                  port: int = 8080, prompt_style: str = "qwen",
                  model_name: str = "本地 GGUF 翻译模型",
-                 n_gpu_layers: int | None = None):
+                 n_gpu_layers: int | None = None,
+                 expected_size: int | None = None,
+                 expected_sha256: str | None = None):
         self._model_path = Path(model_path) if model_path else (
             _default_models_dir() / "translate" / "legacy-llm" /
             "qwen2.5-1.5b-instruct-q4_k_m.gguf")
@@ -103,6 +106,8 @@ class QwenQualityTranslator(Translator):
         self._prompt_style = prompt_style
         self._model_name = model_name
         self._n_gpu_layers = n_gpu_layers
+        self._expected_size = int(expected_size or 0)
+        self._expected_sha256 = str(expected_sha256 or "").strip().lower()
         self._start_port = port
         self._proc: subprocess.Popen | None = None
         self._port: int | None = None
@@ -112,6 +117,36 @@ class QwenQualityTranslator(Translator):
         # The blacklist is scoped to this translator/model instance.
         self._failed_runtimes: set[tuple[str, str]] = set()
         self._server_output_tail: deque[str] = deque(maxlen=80)
+
+    def _validate_model_file(self) -> None:
+        """Reject catalog files that are present but incomplete or corrupted."""
+        path = self._model_path
+        if not path.exists():
+            raise TranslationError(
+                f"质量档模型缺失: {path} (请在模型广场修复或重新下载)")
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise TranslationError(f"无法读取质量档模型: {path}") from exc
+        if self._expected_size > 0 and stat.st_size != self._expected_size:
+            logger.error("质量翻译模型完整性失败: expected_size=%d actual_size=%d",
+                         self._expected_size, stat.st_size)
+            raise TranslationError(
+                "质量档模型文件不完整或已损坏（文件大小不一致），请在模型广场点击修复")
+        if self._expected_sha256:
+            digest = hashlib.sha256()
+            try:
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                        digest.update(chunk)
+            except OSError as exc:
+                raise TranslationError(f"无法读取质量档模型: {path}") from exc
+            actual = digest.hexdigest().lower()
+            if actual != self._expected_sha256:
+                logger.error("质量翻译模型完整性失败: expected_sha=%s actual_sha=%s",
+                             self._expected_sha256[:12], actual[:12])
+                raise TranslationError(
+                    "质量档模型文件校验失败，可能已损坏，请在模型广场点击修复")
 
     # ------------------------------------------------------------------
     def _pick_free_port(self) -> int:
@@ -230,6 +265,7 @@ class QwenQualityTranslator(Translator):
                            self._model_path)
             raise TranslationError(
                 f"质量档模型缺失: {self._model_path} (请用 scripts/model_fetch.py 下载)")
+        self._validate_model_file()
         profile = detect_hardware()
         required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
         try:
@@ -696,22 +732,29 @@ class QwenQualityTranslator(Translator):
             logger.info("关闭质量档 llama-server (pid=%s, port=%s)", proc.pid, port)
             self._terminate_process(proc, port)
 
-    def warmup(self) -> None:
-        """Start and health-check the local server before the first sentence."""
+    def warmup(self) -> bool:
+        """Start and health-check the local server before the first sentence.
+
+        Returning a status lets the pipeline switch to its installed fast
+        translator without retrying a broken model for every subtitle line.
+        """
         started = time.perf_counter()
         try:
             self._ensure()
         except Exception:
             logger.exception("质量档翻译引擎预热失败")
-            return
+            return False
         logger.info("质量档翻译引擎预热完成: elapsed_ms=%.1f backend=%s target=%s",
                     (time.perf_counter() - started) * 1000.0,
                     self._runtime.backend if self._runtime else "cpu",
                     self._runtime.target if self._runtime else "CPU")
+        return True
 
     def health(self) -> str:
-        if not self._model_path.exists():
-            return f"质量档模型缺失: {self._model_path}"
+        try:
+            self._validate_model_file()
+        except TranslationError as exc:
+            return str(exc)
         required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
         runtime = select_llama_runtime(
             detect_hardware(), self._explicit_server_exe, required_gb=required_gb,

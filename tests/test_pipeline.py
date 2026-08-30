@@ -16,6 +16,39 @@ from voxsub.file_transcriber import FileRecognizer
 from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine
 
 
+def test_quality_translator_falls_back_to_ready_opus(monkeypatch) -> None:
+    import voxsub.translate.factory as factory
+    import voxsub.pipeline as pipeline_module
+
+    class _FakeTranslator:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.closed = False
+
+        def health(self) -> str:
+            return "模型文件校验失败" if self.kind == "qwen-quality" else "ok"
+
+        def close(self) -> None:
+            self.closed = True
+
+    created: list[_FakeTranslator] = []
+
+    class _Factory:
+        @staticmethod
+        def create(kind, _config=None):
+            item = _FakeTranslator(kind)
+            created.append(item)
+            return item
+
+    monkeypatch.setattr(factory, "TranslatorFactory", _Factory)
+    translator, effective = pipeline_module._load_translator(
+        "qwen-quality", {"translate_model_id": "mt-hy-mt2-1.8b-q8"})
+
+    assert effective == "opus-fast"
+    assert translator is created[1]
+    assert created[0].closed is True
+
+
 # ---------- 工具 ----------
 
 class FakeSource:
@@ -123,6 +156,54 @@ def test_file_recognizer_reports_monotonic_local_progress() -> None:
     assert all(total == 100 for _, total, _ in events)
     assert [done for done, _, _ in events] == sorted(done for done, _, _ in events)
     assert {stage for _, _, stage in events} >= {"正在识别音视频", "正在翻译字幕"}
+
+
+def test_file_recognizer_limits_continuous_generative_segments() -> None:
+    class _Vad:
+        window_size = 4
+
+        @staticmethod
+        def is_speech(_chunk) -> bool:
+            return True
+
+        @staticmethod
+        def reset() -> None:
+            return None
+
+    class _Asr:
+        decodes = 0
+
+        @staticmethod
+        def create_stream():
+            return type("Stream", (), {"chunks": []})()
+
+        @staticmethod
+        def feed(stream, chunk) -> None:
+            stream.chunks.append(np.asarray(chunk, dtype=np.float32))
+
+        @classmethod
+        def decode(cls, _stream) -> str:
+            cls.decodes += 1
+            return f"片段{cls.decodes}"
+
+        @staticmethod
+        def reset(stream) -> None:
+            stream.chunks.clear()
+
+    class _Translator:
+        @staticmethod
+        def translate(text, _source, _target) -> str:
+            return text
+
+    lines = FileRecognizer.local(
+        np.ones(40_000, dtype=np.float32), vad=_Vad(), asr=_Asr(),
+        translator=_Translator(), source_lang="zh", target_lang="en",
+        validate_translation=False,
+        tuning={"silence_ms": 500, "max_utterance_ms": 1000},
+    )
+
+    assert len(lines) >= 2
+    assert _Asr.decodes == len(lines)
 
 
 # ---------- 状态机 ----------

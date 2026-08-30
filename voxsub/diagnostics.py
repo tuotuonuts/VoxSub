@@ -68,14 +68,51 @@ def _model_ids_for_problems(root: Path, problems: list[dict]) -> list[str]:
     return ids
 
 
+def _catalog_file_problems(root: Path) -> list[dict]:
+    """Check present catalog single-file assets using their signed metadata."""
+    marketplace = ModelMarketplace(root)
+    problems: list[dict] = []
+    seen: set[str] = set()
+    for model in CATALOG:
+        if model.archive or len(model.required_paths) != 1:
+            continue
+        if not model.download_bytes and not model.sha256:
+            continue
+        candidates = marketplace._model_dir_candidates(model)
+        if any(not marketplace._missing_paths_at(candidate, model)
+               for candidate in candidates):
+            continue
+        for candidate in candidates:
+            required = candidate / model.required_paths[0]
+            if not required.is_file():
+                continue
+            missing = marketplace._missing_paths_at(candidate, model)
+            if not missing:
+                continue
+            rel = f"{model.install_rel}/{missing[0]}"
+            if rel not in seen:
+                seen.add(rel)
+                problems.append({
+                    "rel": rel,
+                    "status": "corrupt",
+                    "reason": "模型目录文件大小或 SHA256 校验失败",
+                })
+    return problems
+
+
 # ---------------------------------------------------------------------------
 # 单项检查
 # ---------------------------------------------------------------------------
 
 def _check_model_integrity() -> dict:
-    """manifest 登记条目 vs 磁盘: 文件存在 + 大小一致。"""
+    """Manifest and catalog assets vs disk: presence, size and hash."""
     mgr = ModelManager(models_dir())
     problems = mgr.verify_all()
+    known = {str(item.get("rel", "")) for item in problems}
+    for item in _catalog_file_problems(models_dir()):
+        if str(item.get("rel", "")) not in known:
+            problems.append(item)
+            known.add(str(item.get("rel", "")))
     files = mgr.load_manifest().get("files", {})
     total = len(files)
     ready = total - len(problems)

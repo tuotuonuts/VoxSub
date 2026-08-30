@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -132,13 +133,24 @@ class FileRecognizer:
         source_lang: str,
         target_lang: str,
         validate_translation: bool,
+        tuning: Mapping[str, Any] | None = None,
         progress: ProgressCallback | None = None,
     ) -> list[SubtitleLine]:
         lines: list[SubtitleLine] = []
         stream = asr.create_stream()
         segment_start: int | None = None
         silence = 0
-        minimum_silence = int(SAMPLE_RATE * 0.5)
+        utterance_samples = 0
+        segment_no = 0
+        tuning = tuning or {}
+        minimum_silence = int(
+            SAMPLE_RATE * max(50.0, min(5000.0, float(
+                tuning.get("silence_ms", 500)))) / 1000.0
+        )
+        maximum_utterance = int(
+            SAMPLE_RATE * max(1000.0, min(120000.0, float(
+                tuning.get("max_utterance_ms", 12000)))) / 1000.0
+        )
         window = vad.window_size
         last_progress = [-1]
         FileRecognizer._progress(progress, 10, "正在识别音视频", last_progress)
@@ -148,18 +160,41 @@ class FileRecognizer:
             if vad.is_speech(chunk):
                 if segment_start is None:
                     segment_start = index
+                    utterance_samples = 0
                 silence = 0
                 asr.feed(stream, chunk)
+                utterance_samples += window
             elif segment_start is not None:
                 asr.feed(stream, chunk)
                 silence += window
-                if silence >= minimum_silence:
+                utterance_samples += window
+                if (silence >= minimum_silence or
+                        utterance_samples >= maximum_utterance):
+                    segment_no += 1
                     FileRecognizer._append_local_result(
-                        lines, asr, stream, segment_start, source_lang)
+                        lines, asr, stream, segment_start, source_lang,
+                        segment_no=segment_no,
+                        reason=("pause" if silence >= minimum_silence else "limit"),
+                    )
                     asr.reset(stream)
                     segment_start = None
                     silence = 0
+                    utterance_samples = 0
                     vad.reset()
+            # A continuous speech run has no silence window to trigger the
+            # branch above; enforce the same safety boundary while speech is
+            # still active so generative decoders never receive unbounded audio.
+            if segment_start is not None and utterance_samples >= maximum_utterance:
+                segment_no += 1
+                FileRecognizer._append_local_result(
+                    lines, asr, stream, segment_start, source_lang,
+                    segment_no=segment_no, reason="limit",
+                )
+                asr.reset(stream)
+                segment_start = None
+                silence = 0
+                utterance_samples = 0
+                vad.reset()
             FileRecognizer._progress(
                 progress,
                 10 + int(65 * min(index + window, pcm.size) / max(1, pcm.size)),
@@ -167,8 +202,11 @@ class FileRecognizer:
                 last_progress,
             )
         if segment_start is not None:
+            segment_no += 1
             FileRecognizer._append_local_result(
-                lines, asr, stream, segment_start, source_lang)
+                lines, asr, stream, segment_start, source_lang,
+                segment_no=segment_no, reason="flush",
+            )
         FileRecognizer._progress(progress, 75, "正在翻译字幕", last_progress)
         FileRecognizer._translate(
             lines, translator, source_lang, target_lang, validate_translation,
@@ -184,8 +222,22 @@ class FileRecognizer:
         stream: Any,
         segment_start: int,
         source_lang: str,
+        *,
+        segment_no: int = 0,
+        reason: str = "pause",
     ) -> None:
+        started = time.perf_counter()
+        chunks = getattr(stream, "chunks", None)
+        audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+        rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         text = asr.decode(stream).strip()
+        logger.info(
+            "文件 ASR 片段完成: segment=%d reason=%s audio_ms=%.1f "
+            "peak=%.4f rms=%.4f decode_ms=%.1f chars=%d",
+            segment_no, reason, audio.size * 1000.0 / SAMPLE_RATE,
+            peak, rms, (time.perf_counter() - started) * 1000.0, len(text),
+        )
         try:
             text = guard_text(text, source_lang, kind="STT")
         except ValueError as exc:

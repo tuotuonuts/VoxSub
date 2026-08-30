@@ -1,6 +1,7 @@
 """Storage migration tests for fresh installs and upgrades."""
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from voxsub.model_catalog import ModelMarketplace, get_model
@@ -171,5 +172,8 @@ def test_default_marketplace_keeps_legacy_translation_visible_after_root_switch(
     assert model is not None
     marketplace = ModelMarketplace()
 
-    assert marketplace.is_installed(model)
-    assert marketplace.model_file(model) == legacy_model / "Hy-MT2-1.8B-Q4_K_M.gguf"
+    # This test exercises legacy path discovery; use a metadata-neutral copy
+    # so the tiny fixture is not mistaken for a real multi-GB GGUF asset.
+    metadata_neutral = replace(model, download_bytes=0, sha256="")
+    assert marketplace.is_installed(metadata_neutral)
+    assert marketplace.model_file(metadata_neutral) == legacy_model / "Hy-MT2-1.8B-Q4_K_M.gguf"

@@ -112,6 +112,18 @@ def test_healthy_reuses_endpoint_no_respawn(tmp_path: Path, monkeypatch) -> None
     assert n["val"] == 0  # 就绪时绝不重 spawn
 
 
+def test_health_rejects_corrupt_catalog_model_before_runtime_probe(tmp_path: Path,
+                                                                    monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._expected_size = 1
+    q._expected_sha256 = "0" * 64
+    monkeypatch.setattr(qwen_module, "detect_hardware",
+                        lambda: (_ for _ in ()).throw(AssertionError(
+                            "corrupt model must fail before hardware probe")))
+    status = q.health()
+    assert "不完整" in status or "校验失败" in status
+
+
 def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> None:
     """回归: 首次冷启动 _ensure 不死锁 (2026-08-17 冒烟抓到)。
 

@@ -108,6 +108,38 @@ def test_model_integrity_detects_missing_file(tmp_path: Path, monkeypatch) -> No
     assert entry["status"] == "ok"
 
 
+def test_model_integrity_detects_corrupt_catalog_asset_without_manifest(
+        tmp_path: Path, monkeypatch) -> None:
+    """A marketplace GGUF must fail self-check even when no manifest exists."""
+    import hashlib
+    from dataclasses import replace
+
+    import voxsub.diagnostics as diagnostics
+    from voxsub.model_catalog import get_model
+
+    base = get_model("mt-hy-mt2-1.8b-q8")
+    assert base is not None
+    payload = b"expected-model"
+    model = replace(
+        base,
+        download_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        install_rel="translate/test-corrupt",
+        legacy_install_rels=(),
+    )
+    path = tmp_path / model.install_rel / model.required_paths[0]
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"corrupt")
+    monkeypatch.setattr(diagnostics, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(diagnostics, "CATALOG", (model,))
+
+    entry = diagnostics._check_model_integrity()  # noqa: SLF001
+
+    assert entry["status"] == "fail"
+    assert "大小或 SHA256" in entry["detail"]
+    assert entry["repair"]["model_ids"] == [model.id]
+
+
 def test_vad_check_reports_missing_without_implicit_repair(
         tmp_path: Path, monkeypatch) -> None:
     """自检只报告 VAD 状态，修复动作必须由按钮显式触发。"""

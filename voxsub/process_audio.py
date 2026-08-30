@@ -51,7 +51,12 @@ def _capture_root_pid(pid: int, psutil_module) -> int:
     except Exception:
         return int(pid)
 
-    current_name = _process_family_name(process.name())
+    try:
+        current_name = _process_family_name(process.name())
+    except Exception:
+        # A window can outlive its process by a few milliseconds.  Keep the
+        # selected PID usable for the caller instead of failing enumeration.
+        return int(pid)
     is_teams_family = current_name in _TEAMS_PROCESS_NAMES
     root_pid = int(pid)
     visited: set[int] = {root_pid}
