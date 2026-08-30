@@ -10,7 +10,8 @@ param([switch]$SkipTests, [switch]$SkipPyInstaller)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Version = "0.9.0-beta"
-$LlamaVersion = "b10470"  # 2026-08-18 official latest; pinned for reproducible builds
+$LlamaManifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot "llama_runtime_manifest.psd1")
+$LlamaVersion = [string]$LlamaManifest.Version
 Set-Location $Root
 
 function Run-Checked([string]$Label, [scriptblock]$Block) {
@@ -127,18 +128,7 @@ Write-Host "[build] bundled base VAD -> $BootstrapVadDest" -ForegroundColor Gree
 # GGUF runtime matrix.  End users receive all three small backends so runtime
 # selection can follow discrete GPU -> Intel NPU -> integrated GPU -> CPU
 # without downloading executables after installation.
-$LlamaAssets = @(
-    @{
-        Name = "cpu";
-        File = "llama-$LlamaVersion-bin-win-cpu-x64.zip";
-        Sha256 = "A31F1F317813AE7E044BE183E0A20B90E78A80C0E97EE11A8B32A014ECCD5043"
-    },
-    @{
-        Name = "vulkan";
-        File = "llama-$LlamaVersion-bin-win-vulkan-x64.zip";
-        Sha256 = "2E89637B30E0E2F90D4ED486118E8642F60625B1DBEBB9BA3A30BC4100306FC9"
-    }
-)
+$LlamaAssets = $LlamaManifest.Assets
 $LlamaCache = Join-Path $env:TEMP "VoxSub_llama_$LlamaVersion"
 $LlamaDest = Join-Path $Dist "tools\llama"
 New-Item -ItemType Directory -Path $LlamaCache -Force | Out-Null

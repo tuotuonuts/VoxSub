@@ -40,6 +40,8 @@ def test_source_runner_updates_and_prepares_local_environment() -> None:
         "pip install -r $lockFile",
         "run_app.py",
         "import PySide6, onnxruntime, sherpa_onnx, sentry_sdk",
+        "sync_llama_runtime.ps1",
+        "补齐本地质量翻译运行时 (CPU/Vulkan)",
     )
     for marker in required:
         assert marker in text, marker

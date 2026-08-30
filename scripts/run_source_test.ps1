@@ -279,6 +279,20 @@ try {
         & $venvPython -c "import PySide6, onnxruntime, sherpa_onnx, sentry_sdk"
     }
 
+    # Installer builds bundle the llama.cpp runtimes.  Source checkouts need
+    # the same CPU/Vulkan fallback once, without rebuilding or repacking the app.
+    try {
+        Invoke-LoggedStep "补齐本地质量翻译运行时 (CPU/Vulkan)" {
+            & (Join-Path $repoRoot "scripts\sync_llama_runtime.ps1")
+            if ($LASTEXITCODE -ne 0) {
+                throw "llama.cpp 运行时同步失败，退出码 $LASTEXITCODE"
+            }
+        }
+    } catch {
+        Write-RunLog "[警告] 质量翻译运行时未准备完成：$($_.Exception.Message)"
+        Write-Host "质量翻译运行时暂未就绪；基础功能仍可启动，网络恢复后重新运行本脚本即可补齐。" -ForegroundColor Yellow
+    }
+
     # Never inherit a foreign Python runtime configuration into the app.
     Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
     Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
