@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
 
 set "RUNNER=%~dp0scripts\run_source_test.ps1"

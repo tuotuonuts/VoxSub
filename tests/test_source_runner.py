@@ -15,12 +15,14 @@ def test_double_click_launcher_delegates_to_powershell() -> None:
     assert "powershell.exe" in text
     assert "-ExecutionPolicy Bypass" in text
     assert "scripts\\run_source_test.ps1" in text
+    assert "chcp 65001" in text
     assert "pause" in text
 
 
 def test_windows_powershell_script_has_utf8_bom() -> None:
     # Windows PowerShell 5.1 otherwise decodes a UTF-8 script as the system ANSI code page.
     assert PS1.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert '$OutputEncoding = [System.Text.UTF8Encoding]::new($false)' in PS1.read_text(encoding="utf-8")
 
 
 def test_source_runner_updates_and_prepares_local_environment() -> None:

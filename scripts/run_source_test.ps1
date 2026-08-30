@@ -2,6 +2,12 @@
 param()
 
 $ErrorActionPreference = "Stop"
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try {
+    [Console]::OutputEncoding = $OutputEncoding
+} catch {
+    # Keep startup compatible with older Windows PowerShell hosts.
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $repoRoot }
