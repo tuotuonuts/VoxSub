@@ -4,15 +4,14 @@ DESIGN.md『Pipeline 契约（M6，UI 唯一依赖面）』:
     class Pipeline:
         mode: str                       # "a" | "b" | "c"
         def start(self) -> None
-        def stop(self) -> None
+        def stop(self) -> bool
         def set_mode(self, mode: str) -> None
         def on_utterance(self, cb: Callable[[str, str], None]) -> None  # (原文, 译文)
         def on_status(self, cb: Callable[[str], None]) -> None          # 状态文本
         def is_running(self) -> bool
 
-M6 尚未实现：本模块在 import 失败时提供鸭子类型 _PipelineStub，让 UI 壳层可以
-完整联调（按钮启停 / 模式切换 / 回调接线），真实音频/翻译/字幕流由 M6 集成时
-无缝替换 —— UI 只面向 get_pipeline() 返回的对象。
+``_PipelineStub`` 保留给显式注入的 UI 单测。生产路径必须返回真实 Pipeline；
+导入故障会直接暴露给启动流程，不能伪装成“正在识别”。
 """
 from __future__ import annotations
 
@@ -23,15 +22,17 @@ from voxsub.logging_setup import get_logger
 
 logger = get_logger("ui.pipeline_client")
 
-try:  # M6 就绪后可 import；未就绪时走 stub
+_PIPELINE_IMPORT_ERROR: Exception | None = None
+
+try:
     from voxsub.pipeline import Pipeline as _RealPipeline  # type: ignore[import-not-found]
     _REAL_PIPELINE_NAME = getattr(_RealPipeline, "__module__", "voxsub.pipeline")
     _HAS_PIPELINE = True
-except Exception:  # ModuleNotFoundError 等 —— M6 未实现
-    # 鸭子类型 stub 是设计内兜底 → debug 记录, 不当作真实失败
-    logger.debug("M6 真实 Pipeline 不可用, 启用鸭子类型 stub (UI 壳层联调)", exc_info=True)
+except Exception as exc:  # Keep the original import failure for user diagnostics.
+    logger.exception("真实 Pipeline 导入失败，应用不能继续进入识别模式")
     _RealPipeline = None  # type: ignore[assignment]
     _HAS_PIPELINE = False
+    _PIPELINE_IMPORT_ERROR = exc
 
 
 class _PipelineStub:
@@ -73,11 +74,12 @@ class _PipelineStub:
             self._paused = False
             self._emit_status("拾音中")
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         if self._running:
             self._running = False
             self._paused = False
             self._emit_status("待机")
+        return True
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode if mode in ("a", "b", "c") else "a"
@@ -164,11 +166,15 @@ class _PipelineStub:
             self._status_cb(text)
 
 
-def get_pipeline() -> object:
-    """返回 Pipeline 实例：优先真实实现（M6），否则 stub。"""
+def get_pipeline(*, allow_stub: bool = False) -> object:
+    """Return the real Pipeline, with an explicit test-only stub escape hatch."""
     if _RealPipeline is not None:
         return _RealPipeline()
-    return _PipelineStub()
+    if allow_stub:
+        return _PipelineStub()
+    raise RuntimeError(
+        "核心识别管线无法加载；请在诊断页面检查运行时依赖和日志。"
+    ) from _PIPELINE_IMPORT_ERROR
 
 
 __all__ = ["get_pipeline", "_PipelineStub", "_HAS_PIPELINE"]

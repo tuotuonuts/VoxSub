@@ -1062,9 +1062,16 @@ class Pipeline:
         ))
         return threads
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
+        """Request shutdown and return whether every worker has exited.
+
+        The public stop behavior remains best-effort and bounded.  The boolean
+        result gives :meth:`close` the missing ownership signal: native
+        translators must not be destroyed while a timed-out worker can still
+        call them.
+        """
         if not self.is_running() and not any(t.is_alive() for t in self._threads):
-            return
+            return True
         self._set_state(PipelineState.STOPPING)
         self._stop_evt.set()
         source = self._source
@@ -1086,6 +1093,7 @@ class Pipeline:
                     break
                 t.join(timeout=remaining)
         self._threads = [t for t in self._threads if t.is_alive()]
+        workers_stopped = not self._threads
         self._set_state(PipelineState.IDLE)
         self._live_draft.reset()
         self._clear_draft()
@@ -1094,18 +1102,30 @@ class Pipeline:
             self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
         else:
             self._emit_status("已停止")
+        return workers_stopped
 
-    def close(self) -> None:
+    def close(self) -> bool:
         """Stop workers and release process-backed runtime components.
 
         ``stop()`` intentionally keeps lazily-created recognizers and
         translators reusable for the next run.  Application shutdown needs a
         stronger lifecycle boundary: the local llama-server must be closed
         before an installer replaces its DLLs, even when the pipeline is idle.
-        Keep this method idempotent so both the shutdown request and Qt's
-        ``aboutToQuit`` path can safely call it.
+        Keep this method idempotent because Qt's ``aboutToQuit`` path owns
+        application shutdown, while tests and embedding hosts may call it
+        directly.
         """
-        self.stop()
+        if not self.stop():
+            # A worker can still be inside a cloud request or llama-server
+            # completion after the shared shutdown deadline.  Releasing its
+            # client here races the worker and can turn orderly cancellation
+            # into a native-process crash.  A later idempotent close may clean
+            # up once the worker has actually exited.
+            logger.warning(
+                "Pipeline 工作线程仍在收尾，暂不释放运行时组件: threads=%s",
+                ", ".join(thread.name for thread in self._threads),
+            )
+            return False
         cloud_stt, self._cloud_stt = self._cloud_stt, None
         translator, self._translator = self._translator, None
         self._trans_kind = None
@@ -1116,6 +1136,7 @@ class Pipeline:
                 component.close()
             except Exception:
                 logger.debug("关闭%s失败", label, exc_info=True)
+        return True
 
     # ---- A/B 模式线程 ----
     def _make_source(self) -> AudioSource:

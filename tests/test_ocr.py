@@ -101,6 +101,43 @@ def test_translation_service_reuses_a_bounded_line_cache(monkeypatch):
     assert second.translation_text == first.translation_text
 
 
+def test_translation_cache_is_discarded_when_translator_configuration_changes(monkeypatch):
+    created: list[str] = []
+
+    class FakeTranslator:
+        def __init__(self, tier: str) -> None:
+            self.tier = tier
+
+        def warmup(self):
+            return None
+
+        def translate(self, text, source, target, *, timeout_ms):
+            return f"{self.tier}:{text}"
+
+        def close(self):
+            return None
+
+    def create(_kind, config):
+        tier = str(config["translate_tier"])
+        created.append(tier)
+        return FakeTranslator(tier)
+
+    monkeypatch.setattr("voxsub.ocr.TranslatorFactory.create", create)
+    frame = OcrFrame(300, 60, (
+        OcrLine(OcrBox(0, 0, 100, 30), "Hello", 0.99),
+    ), 15)
+    service = OcrTranslationService(cache_size=16)
+
+    fast = service.translate_frame(frame, "en", "zh", {"translate_tier": "fast"})
+    quality = service.translate_frame(
+        frame, "en", "zh", {"translate_tier": "quality"})
+    service.close()
+
+    assert created == ["fast", "quality"]
+    assert fast.lines[0].translation == "fast:Hello"
+    assert quality.lines[0].translation == "quality:Hello"
+
+
 def test_translation_service_batches_unique_lines_and_reuses_cache(monkeypatch):
     calls: list[list[str]] = []
 

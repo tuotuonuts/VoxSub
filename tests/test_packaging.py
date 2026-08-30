@@ -112,3 +112,13 @@ def test_pyinstaller_runs_with_isolated_native_search_path():
     assert "isolated_windows_path" in runner
     assert "run_pyinstaller.py" in build
     assert "Unexpected ICU DLLs in frozen bundle" in build
+
+
+def test_release_build_uses_project_relative_pyinstaller_paths():
+    build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+
+    assert "D:/OneDrive/app_dve/VoxSub" not in build
+    assert '"--icon", $Icon' in build
+    assert '"--distpath", $DistRoot' in build
+    assert '"--workpath", $Work' in build
+    assert '"--specpath", $SpecDir' in build

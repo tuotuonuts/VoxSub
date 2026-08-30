@@ -168,7 +168,13 @@ def test_peer_mode_prewarms_the_selected_language_direction(monkeypatch, tmp_pat
         workspace.deleteLater()
 
 
-def test_workspace_renders_screenshot_result_without_starting_capture(tmp_path):
+def test_workspace_renders_screenshot_result_without_starting_capture(
+    tmp_path, monkeypatch
+):
+    # This test checks the screenshot-result layout and write path, while the
+    # dedicated ocr_cache tests cover the product rule that rejects C:.  pytest
+    # uses C: for tmp_path on this machine, so keep those concerns independent.
+    monkeypatch.setattr("voxsub.ocr_cache.is_system_drive", lambda _path: False)
     _app()
     workspace = OcrWorkspace(ConfigStore(tmp_path / "config.json"))
     workspace._store.update({  # noqa: SLF001

@@ -7,7 +7,7 @@
   与 FluentIcons 播放语义等价；QFW 的 FluentIcon 无 STOP 对偶图标）
 
 Pipeline 依赖面仅限 DESIGN.md『Pipeline 契约（M6）』，经 pipeline_client.get_pipeline()
-获取；M6 未实现时由鸭子类型 stub 顶替（见 pipeline_client.py）。
+获取；UI 测试可显式注入鸭子类型 stub（见 pipeline_client.py）。
 """
 from __future__ import annotations
 

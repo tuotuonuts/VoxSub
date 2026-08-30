@@ -1,0 +1,35 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.5"
+
+      - name: Create Python environment
+        run: uv venv --python 3.11
+
+      - name: Sync locked dependencies
+        run: uv pip sync --python .venv\Scripts\python.exe requirements.lock
+
+      - name: Compile package
+        run: .\.venv\Scripts\python.exe -m compileall -q voxsub
+
+      - name: Run tests
+        run: .\.venv\Scripts\python.exe -m pytest -q

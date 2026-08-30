@@ -170,10 +170,8 @@ def main(argv: list[str] | None = None) -> int:
                 win.activateWindow()
             return False
         app._voxsub_quitting = True  # type: ignore[attr-defined]
-        try:
-            win.pipeline.stop()
-        except AttributeError:
-            pass
+        # ``aboutToQuit`` owns the one-and-only Pipeline close below.  Calling
+        # stop here as well could spend the bounded worker deadline twice.
         app.quit()
         return True
 

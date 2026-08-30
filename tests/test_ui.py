@@ -357,12 +357,14 @@ class TestConfigStore:
 
 
 # ===========================================================================
-# 6. Pipeline stub 契约（DESIGN.md M6）
+# 6. Pipeline stub 契约（仅显式测试注入）
 # ===========================================================================
 class TestPipelineStub:
-    def test_stub_is_used_when_pipeline_missing(self, monkeypatch):
+    def test_stub_requires_explicit_test_escape_hatch(self, monkeypatch):
         monkeypatch.setattr(pipeline_client, "_RealPipeline", None)
-        p = get_pipeline()
+        with pytest.raises(RuntimeError, match="核心识别管线无法加载"):
+            get_pipeline()
+        p = get_pipeline(allow_stub=True)
         assert isinstance(p, _PipelineStub)
 
     def test_real_pipeline_auto_selected_when_available(self):

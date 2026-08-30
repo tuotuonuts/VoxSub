@@ -152,6 +152,40 @@ def test_close_releases_idle_process_backed_components() -> None:
     assert p._translator is None and p._cloud_stt is None  # noqa: SLF001
 
 
+def test_close_keeps_runtime_components_until_timed_out_workers_exit(monkeypatch) -> None:
+    import voxsub.pipeline as pipeline_module
+
+    class _StuckThread:
+        name = "pipeline-translate"
+
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            assert timeout is not None
+
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    ticks = iter((10.0, 11.0))
+    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(ticks))
+    p = Pipeline()
+    p._state = PipelineState.RUNNING  # noqa: SLF001
+    p._threads = [_StuckThread()]  # noqa: SLF001
+    translator = _Closable()
+    cloud_stt = _Closable()
+    p._translator = translator  # noqa: SLF001
+    p._cloud_stt = cloud_stt  # noqa: SLF001
+
+    assert p.close() is False
+    assert translator.closed == 0 and cloud_stt.closed == 0
+    assert p._translator is translator and p._cloud_stt is cloud_stt  # noqa: SLF001
+
+
 def test_start_stop_with_fake_source(monkeypatch) -> None:
     """A 模式伪源启停: 线程不崩, 回调能收到(静音无识别结果, 仅验证生命周期)。"""
     p = Pipeline()

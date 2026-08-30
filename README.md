@@ -12,7 +12,7 @@
 
 Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统声音、本地视频音频 → 实时双语字幕。默认全本地离线，云 STT 与云翻译可独立配置并混合使用。
 
-当前源码候选版本：`0.9.0-beta`；GitHub 当前公开下载仍为 `0.7.2-beta`。实时 OCR 视觉与稳定性修复继续沿用同一候选版本，在用户验收前不会冒充已发布版本。本地最新候选安装包为 `277,285,664` 字节（264.44 MiB），SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`。
+当前源码候选版本：`0.9.0-beta`；GitHub 当前公开下载仍为 `0.7.2-beta`。实时 OCR 视觉与稳定性修复继续沿用同一候选版本，在用户验收前不会冒充已发布版本。本地最新候选安装包为 `277,309,314` 字节（264.46 MiB），SHA256 `59E68EAF93AF2C6D9C1D9D57BBF5BEEE18C891BA516A94E857635A22AAC54C42`。
 
 > **Intel NPU 支持仍有限。** `0.4.1-beta` 已在 Intel AI Boost 真机验证 Hy-MT2 1.8B Q4/Q6/Q8：VoxSub 自动调度和禁止 CPU 回退的强制 NPU 推理均通过。Hy-MT2 7B Q4/Q6/Q8 仅依据 llama.cpp OpenVINO 公开兼容资料列为“NPU 待验证”，启动真实翻译探针失败时会自动改用核显或 CPU；现有 sherpa-onnx ASR 和 OPUS 运行时不支持 NPU。
 
@@ -67,7 +67,13 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 
 ```bash
 uv venv --python 3.11
-uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+uv pip sync --python .venv\Scripts\python.exe requirements.lock
+```
+
+更新直接依赖后，在已验证的 Windows Python 3.11 环境重建锁文件：
+
+```powershell
+uv pip compile requirements.txt --python .venv\Scripts\python.exe --python-platform windows --generate-hashes -o requirements.lock
 ```
 
 Python 3.11+。源码启动：
@@ -82,7 +88,7 @@ Python 3.11+。源码启动：
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。本地最新候选 `0.9.0-beta` 为 277,285,664 字节（264.44 MiB），SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`；本次构建使用本机自签名证书，用户验证前不会创建 GitHub Release。
+安装包默认输出到项目上一级的 `Release` 目录；本项目开发工作区对应 `D:\OneDrive\app_dve\Release`。新安装默认把模型放在安装目录下的 `Models` 文件夹，并按用途分到 `stt`、`translate`、`vad`、`tts`、`ocr`；升级用户保留现有模型根目录，直到主动在设置中更改。模型属于用户数据，不会被安装包重复分发或在更新时删除。当前公开的 `0.7.2-beta` 安装包为 214,817,504 字节，SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。本地最新候选 `0.9.0-beta` 为 277,309,314 字节（264.46 MiB），SHA256 `59E68EAF93AF2C6D9C1D9D57BBF5BEEE18C891BA516A94E857635A22AAC54C42`；本次构建未签名，用户验证前不会创建 GitHub Release。
 
 ## 目录结构
 

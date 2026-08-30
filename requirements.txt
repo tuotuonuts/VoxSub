@@ -8,13 +8,13 @@
 #  3) 目录在 OneDrive 同步盘, 卸载/删除偶发"拒绝访问(os error 5)"锁, 失败后等 1-2s 重试。
 
 # 核心 GPU/统一推理栈 (DirectML 同时提供 CPU EP 兜底)
-onnxruntime-directml
-sherpa-onnx
-soundcard
+onnxruntime-directml==1.24.4
+sherpa-onnx==1.13.5
+soundcard==0.4.6
 PyAudioWPatch==0.2.12.8
 recap-capture==0.6.3
-psutil
-pytest
+psutil==7.2.2
+pytest==9.1.1
 
 # --- 0.8 OCR（PP-OCR 移动端中英模型；复用现有 onnxruntime-directml）---
 # RapidOCR 3.x 不会再拉入第二份标准 onnxruntime，避免与 DirectML 包冲突。
@@ -28,5 +28,7 @@ PySide6-Fluent-Widgets==1.11.3
 # 模型广场 Hy-MT2 质量档: 不在此安装 —— 用 llama.cpp 官方预编译 llama-server.exe
 #   (解压到 %LOCALAPPDATA%\VoxSub\tools\llama\ 附带分发, 见 build.ps1)
 # 诊断内存读数: psutil (M8 已装)
-# 打包: pyinstaller + pillow (scripts/build.ps1 使用)
+# 打包: scripts/build.ps1 使用；和运行时依赖一起锁定，保证本地与 CI 一致。
+pyinstaller==6.22.1
+pillow==12.3.0
 # 众源推理: Xenova OPUS-MT onnx int8 直接经 onnxruntime 运行, 无须额外依赖

@@ -52,7 +52,8 @@ if (-not $SkipTests) {
 
 Set-Location $Root
 Write-Host "[build] root = $Root" -ForegroundColor Cyan
-$Dist = Join-Path $Root "dist\VoxSub"
+$DistRoot = Join-Path $Root "dist"
+$Dist = Join-Path $DistRoot "VoxSub"
 Write-Host "[build] dist = $Dist" -ForegroundColor Cyan
 
 $ReleaseDir = Join-Path $Root "..\Release"
@@ -71,10 +72,10 @@ if (-not $SkipPyInstaller) {
         & $Py $PyInstallerRunner @(
             "--noconfirm", "--clean", "--windowed",
             "--name", "VoxSub",
-            "--icon", "D:/OneDrive/app_dve/VoxSub/assets/icon.ico",
-            "--distpath", "D:/OneDrive/app_dve/VoxSub/dist",
-            "--workpath", "$env:TEMP\VoxSub_pybuild",
-            "--specpath", "D:/OneDrive/app_dve/VoxSub/build",
+            "--icon", $Icon,
+            "--distpath", $DistRoot,
+            "--workpath", $Work,
+            "--specpath", $SpecDir,
             "--collect-all", "sherpa_onnx",
             "--collect-all", "soundcard",
             "--collect-all", "pyaudiowpatch",

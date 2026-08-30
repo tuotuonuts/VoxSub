@@ -3,7 +3,7 @@
 目录结构（对应 DESIGN.md『模块划分』的 ui/）:
 - theme.py            设计令牌表 + QFluentWidgets 主题桥接 (Soft Premium)
 - config_store.py     本地配置读写 (%LOCALAPPDATA%\\VoxSub\\config.json)
-- pipeline_client.py  Pipeline 契约接入点（M6 未实现时以鸭子类型 stub 顶替）
+- pipeline_client.py  Pipeline 契约接入点（单测可显式注入鸭子类型 stub）
 - main_window.py      主窗：左右分栏 + 模式三卡片 + 实时字幕流 + 胶囊 CTA
 - subtitle_overlay.py 无边框置顶半透明字幕浮窗 (Double-Bezel 双层壳)
 - tray.py             系统托盘（模式快捷切换 / 显示主窗 / 退出）

@@ -11,7 +11,7 @@
 
 VoxSub is a Windows 10/11 live translation app designed for general users. It turns microphone conversations, system audio from meetings or online classes, and local audio/video files into bilingual subtitles. It runs locally and offline by default; cloud STT and cloud translation can be configured independently and mixed.
 
-Current source candidate: `0.9.0-beta`; the current public GitHub download remains `0.7.2-beta`. The live-OCR visual and stability fixes continue under the same candidate version and are not presented as released before user acceptance. The latest local candidate installer is 277,285,664 bytes (264.44 MiB), SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`.
+Current source candidate: `0.9.0-beta`; the current public GitHub download remains `0.7.2-beta`. The live-OCR visual and stability fixes continue under the same candidate version and are not presented as released before user acceptance. The latest local candidate installer is 277,309,314 bytes (264.46 MiB), SHA256 `59E68EAF93AF2C6D9C1D9D57BBF5BEEE18C891BA516A94E857635A22AAC54C42`.
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
@@ -70,7 +70,14 @@ Requirements: Windows 10/11, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
 
 ```powershell
 uv venv --python 3.11
-uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+uv pip sync --python .venv\Scripts\python.exe requirements.lock
+```
+
+After changing a direct dependency, refresh the lock from a verified Windows
+Python 3.11 environment:
+
+```powershell
+uv pip compile requirements.txt --python .venv\Scripts\python.exe --python-platform windows --generate-hashes -o requirements.lock
 ```
 
 Run from source:
@@ -85,7 +92,7 @@ Build the Windows installer:
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
-The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. The latest local `0.9.0-beta` candidate is 277,285,664 bytes (264.44 MiB), SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`; this build uses the local self-signed certificate. No GitHub Release will be created before user validation.
+The installer is written to the `Release` directory next to the project directory. In the current development workspace, that path is `D:\OneDrive\app_dve\Release`. Fresh installations store models under `<install directory>\Models`, including `stt`, `translate`, `vad`, `tts`, and `ocr`, while existing installations keep their current model root until changed in Settings. Model files are user data, are not bundled repeatedly, and are not removed by updates. The public `0.7.2-beta` installer is 214,817,504 bytes with SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`. The latest local `0.9.0-beta` candidate is 277,309,314 bytes (264.46 MiB), SHA256 `59E68EAF93AF2C6D9C1D9D57BBF5BEEE18C891BA516A94E857635A22AAC54C42`; this build is unsigned. No GitHub Release will be created before user validation.
 
 ## Project Layout
 

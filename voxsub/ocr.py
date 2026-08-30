@@ -940,6 +940,10 @@ class OcrTranslationService:
     def close(self) -> None:
         translator, self._translator = self._translator, None
         self._translator_config_key = None
+        # A line cache is only valid for the exact translator configuration
+        # that produced it. ``close()`` is also used when that configuration
+        # changes, so retaining entries here would show an old model's result.
+        self._cache.clear()
         if translator is not None:
             try:
                 translator.close()
