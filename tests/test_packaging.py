@@ -46,9 +46,14 @@ def test_installer_uses_bounded_shutdown_instead_of_restart_manager_wait():
     assert "MyAppRunningMutex" in script
     assert "taskkill.exe" in script
     assert '/F /T /IM \"{#MyAppExeName}\"' in script
+    assert "function CleanupBundledRuntimeProcesses" in script
+    assert "Get-CimInstance -ClassName Win32_Process" in script
+    assert "Stop-Process -Id $p.ProcessId" in script
+    assert "\\tools\\llama\\" in script
 
     app = (ROOT / "voxsub" / "ui" / "app.py").read_text(encoding="utf-8")
     assert "app.aboutToQuit.connect(installer_shutdown.close)" not in app
+    assert "app.aboutToQuit.connect(lambda: _close_pipeline(win.pipeline))" in app
 
     build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
     assert 'Run-Checked "packaged installer shutdown smoke"' in build

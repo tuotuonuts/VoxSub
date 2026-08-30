@@ -130,6 +130,28 @@ def test_models_dir_switch_is_rejected_while_running(tmp_path: Path) -> None:
         p.set_models_dir(tmp_path / "new-models")
 
 
+def test_close_releases_idle_process_backed_components() -> None:
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    p = Pipeline()
+    translator = _Closable()
+    cloud_stt = _Closable()
+    p._translator = translator  # noqa: SLF001
+    p._cloud_stt = cloud_stt  # noqa: SLF001
+
+    p.close()
+    p.close()
+
+    assert translator.closed == 1
+    assert cloud_stt.closed == 1
+    assert p._translator is None and p._cloud_stt is None  # noqa: SLF001
+
+
 def test_start_stop_with_fake_source(monkeypatch) -> None:
     """A 模式伪源启停: 线程不崩, 回调能收到(静音无识别结果, 仅验证生命周期)。"""
     p = Pipeline()

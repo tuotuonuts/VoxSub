@@ -65,6 +65,17 @@ def parse_theme(value: str) -> AppTheme:
         return AppTheme.SYSTEM
 
 
+def _close_pipeline(pipeline: object) -> None:
+    """Release pipeline-owned native workers during application teardown."""
+    close = getattr(pipeline, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:
+        logger.exception("应用退出时关闭 Pipeline 失败")
+
+
 def main(argv: list[str] | None = None) -> int:
     # main() 最开头（建 QApplication 前）：幂等重设打包日志配置
     # （正常情况下模块级已完成初始化，此处仅作直接调用 main() 时的保险丝）
@@ -256,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     app.aboutToQuit.connect(model_hub_win.shutdown)
     app.aboutToQuit.connect(ocr_workspace.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
+    app.aboutToQuit.connect(lambda: _close_pipeline(win.pipeline))
     # Keep the running mutex owned until the process has actually terminated.
     # Closing it from aboutToQuit creates a small race where setup starts
     # replacing files while PyInstaller/Python is still finishing teardown.

@@ -1095,6 +1095,28 @@ class Pipeline:
         else:
             self._emit_status("已停止")
 
+    def close(self) -> None:
+        """Stop workers and release process-backed runtime components.
+
+        ``stop()`` intentionally keeps lazily-created recognizers and
+        translators reusable for the next run.  Application shutdown needs a
+        stronger lifecycle boundary: the local llama-server must be closed
+        before an installer replaces its DLLs, even when the pipeline is idle.
+        Keep this method idempotent so both the shutdown request and Qt's
+        ``aboutToQuit`` path can safely call it.
+        """
+        self.stop()
+        cloud_stt, self._cloud_stt = self._cloud_stt, None
+        translator, self._translator = self._translator, None
+        self._trans_kind = None
+        for label, component in (("云 STT", cloud_stt), ("翻译器", translator)):
+            if component is None:
+                continue
+            try:
+                component.close()
+            except Exception:
+                logger.debug("关闭%s失败", label, exc_info=True)
+
     # ---- A/B 模式线程 ----
     def _make_source(self) -> AudioSource:
         if self._mode == "b":

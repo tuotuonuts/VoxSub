@@ -260,3 +260,10 @@
 [x] 完整构建门禁 `309 passed / 7 skipped`；PyInstaller、OCR 冒烟、安装器退出握手（3.53 秒）和 Inno Setup 编译通过
 [x] 重建同版本安装包 277,767,511 字节；SHA256 C17D091B90F85CDD639A30876039A82886195BADCBA8192069F914943DA92DAF；本次构建未签名
 [x] 安装器支持通过 `MyAppSourceDir` 宏切换 staging 输出，避免运行中的旧 llama-server 锁住构建目录
+
+=== 2026-08-30 (v0.9.0-beta 安装升级 DLL 锁修复) ===
+[x] Pipeline 新增幂等 close()，应用退出时主动释放本地翻译器及 llama-server
+[x] 安装器按当前 {app}\tools\llama 路径清理旧版孤儿 llama-server.exe，避免 ggml-cpu.dll 错误 5
+[x] 完整构建门禁 `319 passed / 7 skipped`；QtCore/OCR/安装器退出 smoke 和 Inno Setup 编译通过
+[x] 重建同版本安装包 277,285,664 字节；SHA256 03B51AEF74177A10CEC18A44F29D6B619385C30A144881C43E30D61DCC8656AE；本机自签名
+[ ] 等待用户安装升级验证；不创建 GitHub Release

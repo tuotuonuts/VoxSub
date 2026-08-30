@@ -190,6 +190,37 @@ begin
   Result := Result and ((ResultCode = 0) or (ResultCode = 128));
 end;
 
+function CleanupBundledRuntimeProcesses(): Boolean;
+var
+  PowerShellPath, Script, Parameters, EscapedRoot: String;
+  ResultCode: Integer;
+begin
+  { Older releases could leave llama-server.exe behind after VoxSub exited.
+    It keeps ggml/openvino DLLs mapped and makes [InstallDelete] fail with
+    Windows error 5. Filter by the executable path under this installation;
+  never terminate an unrelated llama-server owned by another application. }
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  EscapedRoot := ExpandConstant('{app}');
+  StringChangeEx(EscapedRoot, '''', '''''', True);
+  Script := '$ErrorActionPreference=''Stop''; ' +
+    '$root=''' + EscapedRoot +
+    '''.TrimEnd(''\'') + ''\tools\llama\''; ' +
+    '$root=$root.ToLowerInvariant(); ' +
+    '$procs=Get-CimInstance -ClassName Win32_Process -Filter ''Name = ''''llama-server.exe''''''; ' +
+    'foreach($p in @($procs)) { ' +
+    '  if($p.ExecutablePath -and ' +
+    '([IO.Path]::GetFullPath([string]$p.ExecutablePath)).ToLowerInvariant().StartsWith($root)) { ' +
+    '    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue ' +
+    '  } ' +
+    '}';
+  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' +
+    AddQuotes(Script);
+  Result := Exec(PowerShellPath, Parameters, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Log(Format('Bundled llama cleanup completed: started=%d exit=%d', [Ord(Result), ResultCode]));
+  Result := Result and (ResultCode = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Signalled: Boolean;
@@ -219,4 +250,13 @@ begin
   if (Result = '') and (not Signalled) then
     if not ForceCloseVoxSub() then
       Result := ExpandConstant('{cm:AppCloseFailed}');
+
+  { Clean up orphaned llama-server processes from this installation even when
+    VoxSub itself was already closed.  Give Windows a short interval to release
+    DLL mappings before [InstallDelete] removes the runtime directories. }
+  if Result = '' then
+  begin
+    CleanupBundledRuntimeProcesses();
+    Sleep(500);
+  end;
 end;
