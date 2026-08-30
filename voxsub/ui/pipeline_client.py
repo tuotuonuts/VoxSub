@@ -8,6 +8,7 @@ DESIGN.md『Pipeline 契约（M6，UI 唯一依赖面）』:
         def set_mode(self, mode: str) -> None
         def on_utterance(self, cb: Callable[[str, str], None]) -> None  # (原文, 译文)
         def on_status(self, cb: Callable[[str], None]) -> None          # 状态文本
+        def on_progress(self, cb: Callable[[int, int, str], None]) -> None
         def is_running(self) -> bool
 
 ``_PipelineStub`` 保留给显式注入的 UI 单测。生产路径必须返回真实 Pipeline；
@@ -49,6 +50,7 @@ class _PipelineStub:
         self._status_cb: Callable[[str], None] | None = None
         self._partial_cb: Callable[[str], None] | None = None
         self._draft_cb: Callable[[str, str], None] | None = None
+        self._progress_cb: Callable[[int, int, str], None] | None = None
         self.langs = ("zh", "en")
         self.input_file = ""
         self.tts_enabled = False
@@ -141,6 +143,9 @@ class _PipelineStub:
     def on_status(self, cb: Callable[[str], None]) -> None:
         self._status_cb = cb
 
+    def on_progress(self, cb: Callable[[int, int, str], None]) -> None:
+        self._progress_cb = cb
+
     def on_partial(self, cb: Callable[[str], None]) -> None:
         self._partial_cb = cb
 
@@ -164,6 +169,10 @@ class _PipelineStub:
     def _emit_status(self, text: str) -> None:
         if self._status_cb is not None:
             self._status_cb(text)
+
+    def _emit_progress(self, completed: int, total: int, stage: str) -> None:
+        if self._progress_cb is not None:
+            self._progress_cb(completed, total, stage)
 
 
 def get_pipeline(*, allow_stub: bool = False) -> object:

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -19,6 +19,7 @@ from voxsub.subtitles import SubtitleLine
 
 logger = get_logger("file_transcriber")
 SAMPLE_RATE = 16_000
+ProgressCallback = Callable[[int, int, str], None]
 
 
 class FileAudioDecoder:
@@ -108,6 +109,20 @@ class FileRecognizer:
     """Pure local/cloud file recognition using already-built runtime objects."""
 
     @staticmethod
+    def _progress(
+        callback: ProgressCallback | None,
+        completed: int,
+        label: str,
+        last_completed: list[int],
+    ) -> None:
+        """Emit at most one UI update per percentage point from worker loops."""
+        value = max(0, min(100, int(completed)))
+        if callback is None or value <= last_completed[0]:
+            return
+        last_completed[0] = value
+        callback(value, 100, label)
+
+    @staticmethod
     def local(
         pcm: np.ndarray,
         *,
@@ -117,6 +132,7 @@ class FileRecognizer:
         source_lang: str,
         target_lang: str,
         validate_translation: bool,
+        progress: ProgressCallback | None = None,
     ) -> list[SubtitleLine]:
         lines: list[SubtitleLine] = []
         stream = asr.create_stream()
@@ -124,6 +140,8 @@ class FileRecognizer:
         silence = 0
         minimum_silence = int(SAMPLE_RATE * 0.5)
         window = vad.window_size
+        last_progress = [-1]
+        FileRecognizer._progress(progress, 10, "正在识别音视频", last_progress)
 
         for index in range(0, pcm.size - window + 1, window):
             chunk = pcm[index:index + window]
@@ -142,11 +160,21 @@ class FileRecognizer:
                     segment_start = None
                     silence = 0
                     vad.reset()
+            FileRecognizer._progress(
+                progress,
+                10 + int(65 * min(index + window, pcm.size) / max(1, pcm.size)),
+                "正在识别音视频",
+                last_progress,
+            )
         if segment_start is not None:
             FileRecognizer._append_local_result(
                 lines, asr, stream, segment_start, source_lang)
+        FileRecognizer._progress(progress, 75, "正在翻译字幕", last_progress)
         FileRecognizer._translate(
-            lines, translator, source_lang, target_lang, validate_translation)
+            lines, translator, source_lang, target_lang, validate_translation,
+            progress=progress, start_progress=75, end_progress=95,
+            last_progress=last_progress,
+        )
         return lines
 
     @staticmethod
@@ -181,6 +209,7 @@ class FileRecognizer:
         target_lang: str,
         tuning: Mapping[str, Any],
         validate_translation: bool,
+        progress: ProgressCallback | None = None,
     ) -> list[SubtitleLine]:
         minimum_silence = int(SAMPLE_RATE * int(tuning["silence_ms"]) / 1000)
         maximum_utterance = int(
@@ -191,6 +220,8 @@ class FileRecognizer:
         current_samples = 0
         start_sample: int | None = None
         silence = 0
+        last_progress = [-1]
+        FileRecognizer._progress(progress, 10, "正在识别音视频", last_progress)
 
         def finish() -> None:
             nonlocal current, current_samples, start_sample, silence
@@ -216,11 +247,18 @@ class FileRecognizer:
                 silence += window
                 if silence >= minimum_silence or current_samples >= maximum_utterance:
                     finish()
+            FileRecognizer._progress(
+                progress,
+                10 + int(25 * min(index + window, pcm.size) / max(1, pcm.size)),
+                "正在识别音视频",
+                last_progress,
+            )
         if start_sample is not None:
             finish()
 
         lines: list[SubtitleLine] = []
-        for start, audio in segments:
+        segment_total = max(1, len(segments))
+        for index, (start, audio) in enumerate(segments, start=1):
             try:
                 text = cloud_stt.transcribe_samples(
                     audio, source_lang=source_lang).strip()
@@ -233,8 +271,16 @@ class FileRecognizer:
                     text=text,
                     ts_ms=int(start * 1000 / SAMPLE_RATE),
                 ))
+            FileRecognizer._progress(
+                progress, 35 + int(40 * index / segment_total),
+                "正在识别音视频", last_progress,
+            )
+        FileRecognizer._progress(progress, 75, "正在翻译字幕", last_progress)
         FileRecognizer._translate(
-            lines, translator, source_lang, target_lang, validate_translation)
+            lines, translator, source_lang, target_lang, validate_translation,
+            progress=progress, start_progress=75, end_progress=95,
+            last_progress=last_progress,
+        )
         return lines
 
     @staticmethod
@@ -244,8 +290,15 @@ class FileRecognizer:
         source_lang: str,
         target_lang: str,
         validate_translation: bool,
+        *,
+        progress: ProgressCallback | None = None,
+        start_progress: int = 0,
+        end_progress: int = 100,
+        last_progress: list[int] | None = None,
     ) -> None:
-        for line in lines:
+        emitted = last_progress if last_progress is not None else [-1]
+        total = max(1, len(lines))
+        for index, line in enumerate(lines, start=1):
             try:
                 line.translation = translator.translate(
                     line.text, source_lang, target_lang)
@@ -254,6 +307,14 @@ class FileRecognizer:
                         line.translation, target_lang, kind="translation")
             except Exception:
                 line.translation = line.text + " 〔翻译失败〕"
+            FileRecognizer._progress(
+                progress,
+                start_progress + int((end_progress - start_progress) * index / total),
+                "正在翻译字幕",
+                emitted,
+            )
+        if not lines:
+            FileRecognizer._progress(progress, end_progress, "正在翻译字幕", emitted)
 
 
 __all__ = ["FileAudioDecoder", "FileRecognizer"]

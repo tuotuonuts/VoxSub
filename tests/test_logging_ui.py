@@ -137,7 +137,7 @@ class TestDiagnosticsLogTab:
             view.setPlainText("塞一段测试文本")  # 可填充, 不崩
             assert view.toPlainText() == "塞一段测试文本"
             btns = {b.text() for b in dw.findChildren(QPushButton)}
-            assert {"刷新", "导出日志", "导出报告 (txt)"} <= btns
+            assert {"刷新", "导出日志", "上传日志到 Sentry", "导出报告 (txt)"} <= btns
             # 1s 轮询 timer 已启动
             assert dw.log_timer.isActive()
             assert dw.log_timer.interval() == 1000
@@ -230,6 +230,32 @@ class TestDiagnosticsLogTab:
             dw.close()
             dw.deleteLater()
 
+    def test_manual_log_upload_uses_filtered_sentry_path(self, qapp, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        captured = {}
+        monkeypatch.setattr(diagnostics_window, "is_error_reporting_enabled",
+                            lambda: True)
+        monkeypatch.setattr(diagnostics_window, "tail_log_file",
+                            lambda _lines: "ERROR local log")
+        monkeypatch.setattr(
+            diagnostics_window,
+            "send_log_snapshot",
+            lambda logs, trigger="": captured.update(logs=logs, trigger=trigger) or True,
+        )
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            dw._send_logs_to_sentry()  # noqa: SLF001
+            _wait_until(qapp, lambda: "sentry_logs" not in dw._export_workers)  # noqa: SLF001
+            assert captured["trigger"] == "diagnostics_logs_tab"
+            assert captured["logs"] == "ERROR local log"
+            assert dw.send_log_sentry_btn.isEnabled()
+            assert "Sentry" in dw.log_live_state.text()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
     def test_report_export_does_not_block_the_ui_thread(self, qapp, tmp_path, monkeypatch):
         import voxsub.ui.diagnostics_window as diagnostics_window
         from voxsub.ui.diagnostics_window import DiagnosticsWindow
@@ -283,8 +309,11 @@ class TestDiagnosticsLogTab:
             assert time.monotonic() - started < 0.08
             assert not dw.selfcheck_refresh_btn.isEnabled()
             assert not dw.selfcheck_progress.isHidden()
+            assert not dw.selfcheck_progress_label.isHidden()
+            assert not dw.selfcheck_progress.isTextVisible()
             _wait_until(qapp, lambda: dw._selfcheck_worker is None)  # noqa: SLF001
             assert dw.selfcheck_progress.isHidden()
+            assert dw.selfcheck_progress_label.isHidden()
             assert dw.selfcheck_refresh_btn.isEnabled()
             assert dw.selfcheck_progress.value() == 100
         finally:

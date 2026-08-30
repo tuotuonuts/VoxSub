@@ -248,6 +248,20 @@ def test_capture_failures_are_swallowed_and_flush_is_best_effort(monkeypatch) ->
     assert fake.flush_calls == [1.5]
 
 
+def test_capture_message_uses_anonymous_category_marker(monkeypatch) -> None:
+    fake = _FakeSentry()
+    monkeypatch.setenv("VOXSUB_SENTRY_DSN", "https://public@example.invalid/1")
+    monkeypatch.setattr(error_reporting, "_load_sdk", lambda: fake)
+    error_reporting.initialize_error_reporting()
+
+    assert error_reporting.capture_message(
+        "recognized='private subtitle'", level="warning", area="model_or_inference",
+    ) == "message-id"
+    assert fake.messages[-1] == (
+        "VoxSub diagnostic event (model_or_inference)", "warning")
+    assert fake.scopes[-1].tags["error_area"] == "model_or_inference"
+
+
 def test_send_diagnostic_report_attaches_filtered_snapshot(monkeypatch) -> None:
     fake = _FakeSentry()
     monkeypatch.setenv("VOXSUB_SENTRY_DSN", "https://public@example.invalid/1")
@@ -269,3 +283,29 @@ def test_send_diagnostic_report_attaches_filtered_snapshot(monkeypatch) -> None:
 def test_send_diagnostic_report_without_sentry_is_noop() -> None:
     assert not error_reporting.is_error_reporting_enabled()
     assert not error_reporting.send_diagnostic_report("report", "logs")
+
+
+def test_send_log_snapshot_attaches_only_filtered_logs(monkeypatch) -> None:
+    fake = _FakeSentry()
+    monkeypatch.setenv("VOXSUB_SENTRY_DSN", "https://public@example.invalid/1")
+    monkeypatch.setattr(error_reporting, "_load_sdk", lambda: fake)
+    error_reporting.initialize_error_reporting()
+
+    assert error_reporting.send_log_snapshot(
+        "ERROR api_key=secret recognized='private subtitle' path=C:\\Users\\Alice\\clip.wav",
+        trigger="diagnostics_logs_tab",
+    )
+    scope = fake.scopes[-1]
+    assert len(scope.attachments) == 1
+    attachment = scope.attachments[0]
+    assert attachment["filename"] == "voxsub-log.txt"
+    rendered = attachment["bytes"]
+    assert b"secret" not in rendered
+    assert b"private subtitle" not in rendered
+    assert b"C:\\Users\\Alice" not in rendered
+    assert scope.tags["diagnostic_trigger"] == "diagnostics_logs_tab"
+
+
+def test_send_log_snapshot_without_sentry_is_noop() -> None:
+    assert not error_reporting.is_error_reporting_enabled()
+    assert not error_reporting.send_log_snapshot("local log")

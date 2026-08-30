@@ -297,6 +297,16 @@ def capture_message(message: str, *, level: str = "error", area: str = "runtime"
     sdk = _SDK
     if sdk is None:
         return None
+    try:
+        with sdk.push_scope() as scope:
+            scope.set_tag("error_area", area)
+            # The local log retains ``message`` for diagnosis.  Sentry only
+            # needs a stable marker because arbitrary log text may contain
+            # subtitle, recognition, audio or user-file content.
+            del message
+            return sdk.capture_message(f"VoxSub diagnostic event ({area})", level=level)
+    except Exception:
+        return None
 
 
 def is_error_reporting_enabled() -> bool:
@@ -354,16 +364,37 @@ def send_diagnostic_report(
     except Exception:
         logger.warning("Sentry 诊断报告上传失败，保留本地日志", exc_info=True)
         return False
+
+
+def send_log_snapshot(logs: str, *, trigger: str = "manual_log_upload") -> bool:
+    """Upload one filtered local-log snapshot without requiring a self-check.
+
+    This is an explicit user action from the Diagnostics log tab.  The local
+    logging path remains authoritative: missing Sentry configuration or a
+    transport failure returns ``False`` and never affects the running app.
+    """
+    sdk = _SDK
+    if sdk is None:
+        return False
+    clean_logs = _sanitize_diagnostic_text(logs)
     try:
         with sdk.push_scope() as scope:
-            scope.set_tag("error_area", area)
-            # The local log retains ``message`` for diagnosis.  Sentry only
-            # needs a stable marker because arbitrary log text may contain
-            # subtitle, recognition, audio or user-file content.
-            del message
-            return sdk.capture_message(f"VoxSub diagnostic event ({area})", level=level)
+            scope.set_tag("error_area", "diagnostics")
+            scope.set_tag("diagnostic_trigger", _SAFE_BUILD_RE.sub(
+                "-", str(trigger))[:32])
+            add_attachment = getattr(scope, "add_attachment", None)
+            if callable(add_attachment):
+                add_attachment(
+                    bytes=clean_logs.encode("utf-8"),
+                    filename="voxsub-log.txt",
+                    content_type="text/plain",
+                )
+            else:
+                scope.set_context("voxsub_diagnostics", {"logs": clean_logs})
+            return bool(sdk.capture_message("VoxSub log upload", level="info"))
     except Exception:
-        return None
+        logger.warning("Sentry 日志上传失败，保留本地日志", exc_info=True)
+        return False
 
 
 class SentryLogHandler(logging.Handler):
@@ -539,5 +570,6 @@ __all__ = [
     "runtime_context",
     "sanitize_event",
     "send_diagnostic_report",
+    "send_log_snapshot",
     "shutdown_error_reporting",
 ]

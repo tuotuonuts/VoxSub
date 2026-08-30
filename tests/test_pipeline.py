@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from voxsub.contextual_text import ContextualTextProcessor
+from voxsub.file_transcriber import FileRecognizer
 from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine
 
 
@@ -72,6 +73,56 @@ def test_write_vtt_and_txt(tmp_path: Path) -> None:
     Pipeline.write_txt(lines, txt)
     assert vtt.read_text(encoding="utf-8").startswith("WEBVTT")
     assert txt.read_text(encoding="utf-8") == "你好\tHello"
+
+
+def test_file_recognizer_reports_monotonic_local_progress() -> None:
+    class _Vad:
+        window_size = 4
+
+        @staticmethod
+        def is_speech(_chunk) -> bool:
+            return True
+
+        @staticmethod
+        def reset() -> None:
+            return None
+
+    class _Asr:
+        @staticmethod
+        def create_stream():
+            return []
+
+        @staticmethod
+        def feed(stream, chunk) -> None:
+            stream.append(chunk)
+
+        @staticmethod
+        def decode(_stream) -> str:
+            return "你好"
+
+        @staticmethod
+        def reset(_stream) -> None:
+            return None
+
+    class _Translator:
+        @staticmethod
+        def translate(_text, _source, _target) -> str:
+            return "Hello"
+
+    events: list[tuple[int, int, str]] = []
+    lines = FileRecognizer.local(
+        np.ones(20, dtype=np.float32), vad=_Vad(), asr=_Asr(),
+        translator=_Translator(), source_lang="zh", target_lang="en",
+        validate_translation=False, progress=lambda done, total, stage:
+        events.append((done, total, stage)),
+    )
+
+    assert lines and lines[0].translation == "Hello"
+    assert events[0][0] == 10
+    assert events[-1][0] == 95
+    assert all(total == 100 for _, total, _ in events)
+    assert [done for done, _, _ in events] == sorted(done for done, _, _ in events)
+    assert {stage for _, _, stage in events} >= {"正在识别音视频", "正在翻译字幕"}
 
 
 # ---------- 状态机 ----------

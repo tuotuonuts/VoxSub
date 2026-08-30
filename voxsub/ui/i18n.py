@@ -201,6 +201,12 @@ TRANSLATIONS: dict[str, str] = {
     "尚未选择文件 · 将自动提取音频并导出同名 SRT":
         "No file selected · audio will be extracted and a matching SRT exported",
     "选择文件": "Choose file",
+    "正在准备音视频": "Preparing audio/video",
+    "正在读取音频": "Reading audio",
+    "正在识别音视频": "Recognizing audio/video",
+    "正在翻译字幕": "Translating subtitles",
+    "正在导出字幕": "Exporting subtitles",
+    "音视频处理完成": "Audio/video processing complete",
     "选择文件后，处理结果与导出位置将显示在这里":
         "Processing results and the export path will appear here after you choose a file",
     "同时录音": "Record simultaneously",
@@ -283,6 +289,7 @@ TRANSLATIONS: dict[str, str] = {
     "重新检查": "Run again",
     "修复": "Repair",
     "正在检查…": "Checking...",
+    "正在修复…": "Repairing...",
     "修复完成": "Repair complete",
     "修复失败": "Repair failed",
     "没有需要修复的项目": "Nothing needs repair",
@@ -417,6 +424,12 @@ TRANSLATIONS: dict[str, str] = {
     "SRT 字幕 (*.srt)": "SRT subtitles (*.srt)",
     "WebVTT 字幕 (*.vtt)": "WebVTT subtitles (*.vtt)",
     "选择要生成字幕的音频或视频": "Choose an audio or video file for subtitles",
+    "上传日志到 Sentry": "Upload logs to Sentry",
+    "正在上传日志…": "Uploading logs...",
+    "手动上传本地日志快照（已过滤隐私信息）":
+        "Manually upload a filtered local log snapshot",
+    "日志已发送到 Sentry": "Logs sent to Sentry",
+    "日志发送失败": "Log upload failed",
     "正在后台保存对话…": "Saving session in the background...",
     "日志页签初始化失败（详见日志文件）": "The log tab could not be initialized (see the log file)",
     "显示音频电平、队列、设备打开与分句等详细事件":

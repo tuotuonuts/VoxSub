@@ -6,7 +6,7 @@
 - 「日志」页签（可观测性改造 P0）：
   - QPlainTextEdit 只读视图：初始调 tail_log_file(300) 灌入最近日志；
   - QTimer(1s) 周期调 drain_events(50)，把新事件按末行指纹去重后 append 到底部并自动滚动；
-  - 顶部按钮：「刷新」（重读 tail_log_file）与「导出日志」（tail_log_file 全文写用户路径）；
+- 顶部按钮：「刷新」「导出日志」与「上传日志到 Sentry」（过滤后的手动上传）；
   - 日志行统一格式 "HH:MM:SS LEVEL [name] message"（文件行去掉日期前缀后与
     内存事件行同一格式，保证指纹去重跨两者生效，避免轮询重复追加）；
   - 日志组件初始化失败时页签内显示占位文案而非崩溃。
@@ -37,7 +37,11 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.file_io import write_text_atomically
-from voxsub.error_reporting import is_error_reporting_enabled, send_diagnostic_report
+from voxsub.error_reporting import (
+    is_error_reporting_enabled,
+    send_diagnostic_report,
+    send_log_snapshot,
+)
 from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
 from voxsub.config_store import ConfigStore
 from voxsub.ui.file_dialogs import choose_save_file
@@ -220,11 +224,17 @@ class DiagnosticsWindow(QWidget):
         head_row.addWidget(self.selfcheck_refresh_btn)
         lay.addLayout(head_row)
 
+        self.selfcheck_progress_label = QLabel("", page)
+        self.selfcheck_progress_label.setObjectName("secondaryLabel")
+        self.selfcheck_progress_label.setWordWrap(True)
+        self.selfcheck_progress_label.hide()
+        lay.addWidget(self.selfcheck_progress_label)
+
         self.selfcheck_progress = QProgressBar(page)
         self.selfcheck_progress.setObjectName("diagnosticsProgress")
         self.selfcheck_progress.setRange(0, 100)
         self.selfcheck_progress.setValue(0)
-        self.selfcheck_progress.setFormat("%p%")
+        self.selfcheck_progress.setTextVisible(False)
         self.selfcheck_progress.hide()
         lay.addWidget(self.selfcheck_progress)
 
@@ -288,6 +298,13 @@ class DiagnosticsWindow(QWidget):
             self.export_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.export_log_btn.clicked.connect(self._export_logs)
             btn_row.addWidget(self.export_log_btn)
+            self.send_log_sentry_btn = QPushButton("上传日志到 Sentry", page)
+            self.send_log_sentry_btn.setObjectName("secondaryButton")
+            self.send_log_sentry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.send_log_sentry_btn.setToolTip("手动上传本地日志快照（已过滤隐私信息）")
+            self.send_log_sentry_btn.setEnabled(is_error_reporting_enabled())
+            self.send_log_sentry_btn.clicked.connect(self._send_logs_to_sentry)
+            btn_row.addWidget(self.send_log_sentry_btn)
             self.clear_log_btn = QPushButton("清空视图", page)
             self.clear_log_btn.setObjectName("ghostButton")
             self.clear_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -483,14 +500,27 @@ class DiagnosticsWindow(QWidget):
 
     # ------------------------------------------------------------------
     def _update_sentry_button(self) -> None:
-        if not hasattr(self, "send_sentry_btn"):
-            return
-        self.send_sentry_btn.setEnabled(
-            self._selfcheck_worker is None
-            and self._repair_worker is None
-            and "sentry" not in self._export_workers
-            and is_error_reporting_enabled()
-        )
+        enabled = is_error_reporting_enabled()
+        upload_busy = ("sentry" in self._export_workers or
+                       "sentry_logs" in self._export_workers)
+        if hasattr(self, "send_sentry_btn"):
+            self.send_sentry_btn.setEnabled(
+                self._selfcheck_worker is None
+                and self._repair_worker is None
+                and not upload_busy
+                and enabled
+            )
+        if hasattr(self, "send_log_sentry_btn"):
+            self.send_log_sentry_btn.setEnabled(
+                not self._log_failed and not upload_busy and enabled)
+
+    def _set_selfcheck_progress(self, value: int, label: str) -> None:
+        """Keep stage text and the visual bar on separate, readable rows."""
+        bounded = max(0, min(100, int(value)))
+        self.selfcheck_progress_label.setText(f"{label} · {bounded}%")
+        self.selfcheck_progress_label.show()
+        self.selfcheck_progress.setValue(bounded)
+        self.selfcheck_progress.show()
 
     def _set_selfcheck_busy(self, busy: bool, text: str = "") -> None:
         self.selfcheck_refresh_btn.setEnabled(not busy)
@@ -498,20 +528,16 @@ class DiagnosticsWindow(QWidget):
         self.export_btn.setEnabled(not busy and "report" not in self._export_workers)
         self._update_sentry_button()
         if busy:
-            self.selfcheck_progress.show()
-            self.selfcheck_progress.setValue(0)
-            self.selfcheck_progress.setFormat("%p%")
-            if text:
-                self.selfcheck_summary.setText(text)
+            self._set_selfcheck_progress(0, text or tr("正在检查…"))
         else:
+            self.selfcheck_progress_label.hide()
             self.selfcheck_progress.hide()
 
     def _on_selfcheck_progress(self, completed: int, total: int, label: str) -> None:
         if self._selfcheck_worker is None:
             return
         value = int(completed / total * 100) if total else 0
-        self.selfcheck_progress.setValue(max(0, min(100, value)))
-        self.selfcheck_progress.setFormat(f"%p% · {label}")
+        self._set_selfcheck_progress(value, label)
         self.selfcheck_summary.setText(label)
 
     def _on_selfcheck_done(self, results: object) -> None:
@@ -580,9 +606,7 @@ class DiagnosticsWindow(QWidget):
         self.selfcheck_refresh_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.send_sentry_btn.setEnabled(False)
-        self.selfcheck_progress.show()
-        self.selfcheck_progress.setValue(0)
-        self.selfcheck_progress.setFormat("%p%")
+        self._set_selfcheck_progress(0, tr("正在修复…"))
 
         def _worker() -> None:
             try:
@@ -606,8 +630,7 @@ class DiagnosticsWindow(QWidget):
         if self._repair_worker is None:
             return
         value = int(completed / total * 100) if total else 0
-        self.selfcheck_progress.setValue(max(0, min(100, value)))
-        self.selfcheck_progress.setFormat(f"%p% · {label}")
+        self._set_selfcheck_progress(value, label)
         self.selfcheck_summary.setText(label)
 
     def _on_repair_done(self, outcome: object) -> None:
@@ -615,7 +638,7 @@ class DiagnosticsWindow(QWidget):
         repaired = list((outcome or {}).get("repaired", []))
         errors = list((outcome or {}).get("errors", []))
         self.selfcheck_progress.setValue(100)
-        self.selfcheck_progress.setFormat("%p%")
+        self.selfcheck_progress_label.hide()
         self.repair_btn.setEnabled(self._selfcheck_worker is None)
         self.selfcheck_refresh_btn.setEnabled(self._selfcheck_worker is None)
         self.export_btn.setEnabled("report" not in self._export_workers)
@@ -657,7 +680,9 @@ class DiagnosticsWindow(QWidget):
 
     def _send_report_to_sentry(self) -> None:
         """Upload the latest visible self-check and local logs off the UI thread."""
-        if "sentry" in self._export_workers or not is_error_reporting_enabled():
+        if ("sentry" in self._export_workers or
+                "sentry_logs" in self._export_workers or
+                not is_error_reporting_enabled()):
             self.selfcheck_summary.setText(tr("Sentry 未配置"))
             return
         module = self._module
@@ -696,6 +721,35 @@ class DiagnosticsWindow(QWidget):
             target=_worker, name="ui-sentry-report", daemon=True,
         )
         self._export_workers["sentry"].start()
+
+    def _send_logs_to_sentry(self) -> None:
+        """Upload a filtered local-log snapshot without requiring a self-check."""
+        if (self._log_failed or "sentry" in self._export_workers or
+                "sentry_logs" in self._export_workers or
+                not is_error_reporting_enabled()):
+            if hasattr(self, "log_live_state"):
+                self.log_live_state.setText(tr("Sentry 未配置"))
+            return
+        self.send_log_sentry_btn.setEnabled(False)
+        self.send_log_sentry_btn.setText(tr("正在上传日志…"))
+
+        def _worker() -> None:
+            try:
+                logs = tail_log_file(10**6)
+                success = bool(send_log_snapshot(
+                    logs, trigger="diagnostics_logs_tab",
+                ))
+                detail = "" if success else "upload-failed"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("后台发送 Sentry 日志失败")
+                success, detail = False, str(exc)
+            self._export_bridge.done.emit("sentry_logs", success, detail)
+
+        self._export_buttons["sentry_logs"] = self.send_log_sentry_btn
+        self._export_workers["sentry_logs"] = threading.Thread(
+            target=_worker, name="ui-sentry-log-upload", daemon=True,
+        )
+        self._export_workers["sentry_logs"].start()
 
     def _start_text_export(self, kind: str, title: str, suggested_name: str,
                            build_text) -> None:
@@ -739,6 +793,9 @@ class DiagnosticsWindow(QWidget):
             elif kind == "sentry":
                 button.setText(tr("发送到 Sentry"))
                 self._update_sentry_button()
+            elif kind == "sentry_logs":
+                button.setText(tr("上传日志到 Sentry"))
+                self._update_sentry_button()
             else:
                 button.setText(tr("导出报告 (txt)"))
         if success:
@@ -746,6 +803,8 @@ class DiagnosticsWindow(QWidget):
                 self.log_live_state.setText(f"{tr('日志已导出')} · {Path(detail).name}")
             elif kind == "sentry":
                 self.selfcheck_summary.setText(tr("诊断报告已发送"))
+            elif kind == "sentry_logs":
+                self.log_live_state.setText(tr("日志已发送到 Sentry"))
             else:
                 self.selfcheck_summary.setText(f"{tr('报告已导出')} · {Path(detail).name}")
         else:
@@ -753,6 +812,8 @@ class DiagnosticsWindow(QWidget):
                 self.log_live_state.setText(tr("日志导出失败"))
             elif kind == "sentry":
                 self.selfcheck_summary.setText(tr("诊断报告发送失败"))
+            elif kind == "sentry_logs":
+                self.log_live_state.setText(tr("日志发送失败"))
             else:
                 self.selfcheck_summary.setText(tr("报告导出失败"))
 

@@ -9,8 +9,9 @@ Pipeline 全链路不因缺模块崩溃 —— 翻译就绪后由 TranslatorFact
 """
 from __future__ import annotations
 
-import queue
+import inspect
 import os
+import queue
 import threading
 import time
 from collections import defaultdict, deque
@@ -179,6 +180,7 @@ class Pipeline:
         self._cb_partial: list[Callable[[str], None]] = []
         self._cb_draft: list[Callable[[str, str], None]] = []
         self._cb_status: list[Callable[[str], None]] = []
+        self._cb_progress: list[Callable[[int, int, str], None]] = []
         self._live_draft = LiveDraftState()
 
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
@@ -435,6 +437,10 @@ class Pipeline:
     def on_status(self, cb: Callable[[str], None]) -> None:
         self._cb_status.append(cb)
 
+    def on_progress(self, cb: Callable[[int, int, str], None]) -> None:
+        """Subscribe to offline audio/video progress (current, total, stage)."""
+        self._cb_progress.append(cb)
+
     def on_partial(self, cb: Callable[[str], None]) -> None:
         self._cb_partial.append(cb)
 
@@ -449,6 +455,18 @@ class Pipeline:
                 cb(msg)
             except Exception:
                 logger.exception("状态回调异常: %r", cb)
+
+    def _emit_progress(self, completed: int, total: int, stage: str) -> None:
+        """Forward bounded file-mode progress without letting UI callbacks fail work."""
+        safe_total = max(1, int(total))
+        safe_completed = max(0, min(safe_total, int(completed)))
+        logger.debug("文件处理进度: completed=%d total=%d stage=%s",
+                     safe_completed, safe_total, stage)
+        for cb in self._cb_progress:
+            try:
+                cb(safe_completed, safe_total, stage)
+            except Exception:
+                logger.exception("进度回调异常: %r", cb)
 
     def _emit_utterance(self, text: str, translation: str) -> None:
         logger.info("字幕已生成: src_chars=%d dst_chars=%d", len(text), len(translation))
@@ -1275,6 +1293,7 @@ class Pipeline:
             return
         wav_path: Optional[Path] = None
         try:
+            self._emit_progress(0, 100, "正在准备音视频")
             self._emit_status(f"正在提取/读取音频: {self._in_path.name}")
             self._ensure_translator()
             warmup = getattr(self._translator, "warmup", None)
@@ -1283,7 +1302,9 @@ class Pipeline:
                 warmup()
             lines, wav_path = self._transcribe_file(self._in_path)
             out = self._in_path.with_suffix(".srt")
+            self._emit_progress(97, 100, "正在导出字幕")
             self.write_srt(lines, out)
+            self._emit_progress(100, 100, "音视频处理完成")
             self._emit_status(f"完成 → {out}")
             self._emit_utterance(f"已导出 {len(lines)} 条字幕", str(out))
         except Exception as exc:
@@ -1301,12 +1322,33 @@ class Pipeline:
 
     def _transcribe_file(self, path: Path) -> tuple[list[SubtitleLine], Optional[Path]]:
         """Decode one file, then delegate recognition to the selected backend."""
+        self._emit_progress(5, 100, "正在读取音频")
         pcm, wav_path = FileAudioDecoder.decode(path)
-        if self._requested_stt_provider == "cloud":
-            return self._recognize_cloud_file(pcm), wav_path
-        return self._recognize_streaming(pcm), wav_path
+        self._emit_progress(10, 100, "正在识别音视频")
+        recognize = (self._recognize_cloud_file if self._requested_stt_provider == "cloud"
+                     else self._recognize_streaming)
+        return self._call_file_recognizer(recognize, pcm), wav_path
 
-    def _recognize_streaming(self, pcm: np.ndarray) -> list[SubtitleLine]:
+    def _call_file_recognizer(
+        self,
+        recognize: Callable[..., list[SubtitleLine]],
+        pcm: np.ndarray,
+    ) -> list[SubtitleLine]:
+        """Pass progress to current recognizers without breaking old adapters."""
+        try:
+            accepts_progress = "progress" in inspect.signature(recognize).parameters
+        except (TypeError, ValueError):
+            accepts_progress = False
+        if accepts_progress:
+            return recognize(pcm, progress=self._emit_progress)
+        return recognize(pcm)
+
+    def _recognize_streaming(
+        self,
+        pcm: np.ndarray,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> list[SubtitleLine]:
         """Build local runtimes and delegate pure file recognition."""
         self._build_real_time()
         self._ensure_translator()
@@ -1318,9 +1360,15 @@ class Pipeline:
             source_lang=self._src_lang,
             target_lang=self._dst_lang,
             validate_translation=self._trans_kind is not None,
+            progress=progress,
         )
 
-    def _recognize_cloud_file(self, pcm: np.ndarray) -> list[SubtitleLine]:
+    def _recognize_cloud_file(
+        self,
+        pcm: np.ndarray,
+        *,
+        progress: Callable[[int, int, str], None] | None = None,
+    ) -> list[SubtitleLine]:
         """Build cloud runtimes and delegate VAD-split recognition."""
         self._build_real_time()
         if self._cloud_stt is None or self._vad is None:
@@ -1335,6 +1383,7 @@ class Pipeline:
             target_lang=self._dst_lang,
             tuning=self._effective_asr_tuning(generative=True),
             validate_translation=self._trans_kind is not None,
+            progress=progress,
         )
 
     # ---- srt / vtt / txt 导出 (模块级函数, 便于单测) ----

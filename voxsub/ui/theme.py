@@ -463,6 +463,13 @@ QFrame#filePickerCard {
     border: 1px solid rgba(@accent_rgb, 0.20);
     border-radius: @radius_card_compact;
 }
+QProgressBar#fileTranslationProgress {
+    min-height: 8px; max-height: 8px; border: none;
+    background: @surface_2; border-radius: 4px;
+}
+QProgressBar#fileTranslationProgress::chunk {
+    background: @accent; border-radius: 4px;
+}
 
 QPushButton#ghostButton, QPushButton#compactGhostButton,
 QPushButton#secondaryButton, QPushButton#inputBox {

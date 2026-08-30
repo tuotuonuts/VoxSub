@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -540,6 +541,7 @@ class _PipelineBridge(QObject):
     partial = Signal(str)
     draft = Signal(str, str)
     status = Signal(str)
+    progress = Signal(int, int, str)
     operation_done = Signal(str, bool, str, bool)
     export_done = Signal(str, bool, str)
 
@@ -583,6 +585,8 @@ class MainWindow(QWidget):
         self._session_export_busy = False
         self._session_export_worker: threading.Thread | None = None
         self._pending_record_flow = False
+        self._file_progress_stage = ""
+        self._file_progress_value = 0
         self._page_history: list[QWidget] = []
         self._page_titles: dict[QWidget, str] = {}
         self._embedded_pages: dict[str, QWidget] = {}
@@ -965,6 +969,18 @@ class MainWindow(QWidget):
         self.file_name_label.setWordWrap(True)
         file_copy.addWidget(file_head)
         file_copy.addWidget(self.file_name_label)
+        self.file_progress_label = QLabel("", self.file_panel)
+        self.file_progress_label.setObjectName("secondaryLabel")
+        self.file_progress_label.setWordWrap(True)
+        self.file_progress_label.hide()
+        file_copy.addWidget(self.file_progress_label)
+        self.file_progress = QProgressBar(self.file_panel)
+        self.file_progress.setObjectName("fileTranslationProgress")
+        self.file_progress.setRange(0, 100)
+        self.file_progress.setValue(0)
+        self.file_progress.setTextVisible(False)
+        self.file_progress.hide()
+        file_copy.addWidget(self.file_progress)
         self.file_pick_btn = QPushButton("选择文件", self.file_panel)
         self.file_pick_btn.setObjectName("secondaryButton")
         self.file_pick_btn.setMinimumWidth(112)
@@ -1008,6 +1024,7 @@ class MainWindow(QWidget):
             self._bridge.partial.connect(self._on_partial)
             self._bridge.draft.connect(self._on_draft)
             self._bridge.status.connect(self._on_status)
+            self._bridge.progress.connect(self._on_file_progress)
             self._bridge.operation_done.connect(self._on_pipeline_operation_done)
             self._bridge.export_done.connect(self._on_export_done)
             self.pipeline.on_utterance(self._bridge.utterance.emit)
@@ -1017,6 +1034,9 @@ class MainWindow(QWidget):
             else:
                 self.pipeline.on_partial(self._bridge.partial.emit)
             self.pipeline.on_status(self._bridge.status.emit)
+            on_progress = getattr(self.pipeline, "on_progress", None)
+            if callable(on_progress):
+                on_progress(self._bridge.progress.emit)
         except AttributeError:
             # 鸭子类型兜底：对象缺方法也不崩壳（设计内行为 → debug）
             logger.debug("Pipeline 缺少 on_utterance/on_status, 跳过订阅 (stub 联调期正常)")
@@ -1089,6 +1109,8 @@ class MainWindow(QWidget):
         self._set_pipeline_mode(norm)
         self._store.set("mode", norm)
         self.file_panel.setVisible(norm == "c")
+        if norm != "c":
+            self._hide_file_progress()
         self.record_panel.setVisible(norm == "a")
         self.cta.setVisible(norm != "d")
         self.pair_label.setText(tr("翻译方向") if norm == "d" else tr("语言对"))
@@ -1329,6 +1351,7 @@ class MainWindow(QWidget):
         self.save_conversation_btn.setEnabled(not busy and not self._session_export_busy)
         self.clear_conversation_btn.setEnabled(not busy)
         self.lang_combo.setEnabled(not busy)
+        self.file_pick_btn.setEnabled(not busy)
         for card in self.mode_cards.values():
             card.setEnabled(not busy)
 
@@ -1339,6 +1362,8 @@ class MainWindow(QWidget):
         self._set_pipeline_busy(True)
         self.cta.set_state("starting")
         self.record_switch.setEnabled(False)
+        if self._mode == "c":
+            self._set_file_progress(0, "正在准备音视频")
         self._on_status("启动中…正在加载识别与翻译模型")
 
         def _worker() -> None:
@@ -1496,6 +1521,11 @@ class MainWindow(QWidget):
         terminal = ("已停止", "完成", "启动失败", "音频设备错误", "识别处理错误",
                     "文件处理失败", "文件不存在")
         if text.startswith(terminal) and not self._pipeline_busy:
+            if self._mode == "c":
+                if text.startswith("完成"):
+                    self._set_file_progress(100, "音视频处理完成")
+                else:
+                    self._hide_file_progress()
             self.cta.set_state("idle")
             self.finish_record_btn.hide()
             self.record_switch.setEnabled(True)
@@ -1504,6 +1534,28 @@ class MainWindow(QWidget):
             if path and self._mode == "a" and self.record_switch.isChecked():
                 self.record_status.setText(f"{tr('录音已保存')}：{Path(path).name}")
                 self.record_status.setToolTip(str(path))
+
+    def _set_file_progress(self, completed: int, stage: str) -> None:
+        """Present C-mode stage text above a separate, text-free progress bar."""
+        if self._mode != "c":
+            return
+        value = max(0, min(100, int(completed)))
+        self._file_progress_stage = stage
+        self._file_progress_value = value
+        self.file_progress_label.setText(f"{tr(stage)} · {value}%")
+        self.file_progress_label.show()
+        self.file_progress.setValue(value)
+        self.file_progress.show()
+
+    def _hide_file_progress(self) -> None:
+        self.file_progress_label.hide()
+        self.file_progress.hide()
+
+    def _on_file_progress(self, completed: int, total: int, stage: str) -> None:
+        if self._mode != "c":
+            return
+        value = int(completed / total * 100) if total else 0
+        self._set_file_progress(value, stage)
 
     def _current_theme_name(self) -> str:
         # 尽量用真实配置主题着色状态灯；取不到回落 dark（QSS 主视觉一致）
@@ -1520,6 +1572,9 @@ class MainWindow(QWidget):
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
         self.set_mode(self._mode)
+        if self.file_progress.isVisible() and self._file_progress_stage:
+            self._set_file_progress(
+                self._file_progress_value, self._file_progress_stage)
         self.status_light.set_status(self.status_light.text.text(), self._current_theme_name())
         self.cta.update()
 

@@ -387,6 +387,8 @@ class TestPipelineStub:
         utters: list[tuple[str, str]] = []
         p.on_status(statuses.append)
         p.on_utterance(lambda s, d: utters.append((s, d)))
+        progress: list[tuple[int, int, str]] = []
+        p.on_progress(lambda done, total, stage: progress.append((done, total, stage)))
 
         p.start()
         assert p.is_running() is True
@@ -398,7 +400,9 @@ class TestPipelineStub:
         p.set_mode("c")
         assert p.mode == "c"
         p._emit_utterance("你好", "Hello")  # noqa: SLF001
+        p._emit_progress(25, 100, "正在识别音视频")  # noqa: SLF001
         assert utters == [("你好", "Hello")]
+        assert progress == [(25, 100, "正在识别音视频")]
 
     def test_stub_mode_validation(self):
         p = _PipelineStub()
@@ -668,6 +672,11 @@ class TestMainWindow:
             assert not win.file_panel.isHidden()
             assert win.workspace_title.text() == "文件字幕"
             assert "选择文件后" in win.subtitle_list._empty_hint.text()  # noqa: SLF001
+            assert win.file_progress.isTextVisible() is False
+            win._on_file_progress(25, 100, "正在识别音视频")  # noqa: SLF001
+            assert win.file_progress.value() == 25
+            assert "正在识别音视频" in win.file_progress_label.text()
+            assert not win.file_progress.isHidden()
         finally:
             win.close()
             win.deleteLater()

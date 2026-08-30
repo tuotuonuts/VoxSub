@@ -124,7 +124,7 @@ Events contain only version, build, environment, OS, CPU, GPU/NPU, memory, drive
 
 Local logs are stored at `%LOCALAPPDATA%\VoxSub\logs\voxsub.log` and can also be viewed/exported from Diagnostics → Logs. Diagnostics → Self-check → Export Report (txt) writes the latest self-check snapshot; Repair only processes targets explicitly declared by that snapshot.
 
-When a DSN is configured, Diagnostics also shows “Send to Sentry”. It uploads the latest self-check report and a filtered local-log snapshot without rerunning the check. Missing DSN or network failure never affects the app.
+When a DSN is configured, Diagnostics → Self-check shows “Send to Sentry”. It uploads the latest self-check report and a filtered local-log snapshot without rerunning the check. Diagnostics → Logs also provides “Upload logs to Sentry” for a manual log upload without first running a self-check. Missing DSN or network failure never affects the app.
 
 You can also enter the DSN, environment, and build identifier in Settings → About → Diagnostic Reporting. Saving reloads the configuration in the current process without a restart.
 
