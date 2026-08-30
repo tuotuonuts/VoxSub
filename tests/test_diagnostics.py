@@ -67,6 +67,22 @@ def test_export_report_plain_text() -> None:
         assert any(c in ln for ln in lines), f"报告缺少检查项 {c}"
 
 
+def test_export_report_uses_supplied_snapshot(monkeypatch) -> None:
+    """导出页面当前快照时不能偷偷再次执行昂贵自检。"""
+    import voxsub.diagnostics as diagnostics
+
+    monkeypatch.setattr(
+        diagnostics, "run_self_check",
+        lambda: pytest.fail("export_report should not rerun self-check"),
+    )
+    report = diagnostics.export_report([
+        {"check": "ASR 冒烟", "status": "fail", "detail": "缺少 encoder onnx",
+         "suggestion": "点击修复"},
+    ])
+    assert "ASR 冒烟" in report
+    assert "缺少 encoder onnx" in report
+
+
 # ---------------------------------------------------------------------------
 # 模型完整性
 # ---------------------------------------------------------------------------

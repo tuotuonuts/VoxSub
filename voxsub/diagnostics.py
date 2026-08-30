@@ -4,7 +4,7 @@
 
     def run_self_check() -> list[dict]   # 每项 {check, status: ok|warn|fail, detail}
     def repair_self_check(results, ...) -> dict  # 只修复结果声明的目标
-    def export_report() -> str           # 纯文本报告(诊断页一键导出)
+    def export_report(results=None) -> str # 纯文本报告(诊断页一键导出)
 
 检查项:
 1. 模型完整性  —— manifest.json 登记条目与磁盘比对 (存在 + 大小一致)
@@ -161,14 +161,25 @@ def _synthetic_tone() -> np.ndarray:
 def _check_asr_smoke() -> dict:
     """加载流式 ASR, 对短音频做一次完整 decode (参考 spike_m1.py 方法)。"""
     asr_dir = _zipformer_dir()
-    if not (asr_dir / "tokens.txt").exists() or not list(asr_dir.glob("*encoder*.onnx")):
+    missing: list[str] = []
+    if not (asr_dir / "tokens.txt").is_file():
+        missing.append("tokens.txt")
+    for pattern, label in (
+        ("*encoder*.onnx", "encoder onnx"),
+        ("*decoder*.onnx", "decoder onnx"),
+        ("*joiner*.onnx", "joiner onnx"),
+    ):
+        if not any(path.is_file() for path in asr_dir.glob(pattern)):
+            missing.append(label)
+    if missing:
+        missing_text = ", ".join(missing)
         logger.warning(
-            "自检[ASR 冒烟] ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): "
-            "model=%s path=%s",
+            "自检[ASR 冒烟] ASR 模型不完整: model=%s path=%s missing=%s",
             "asr-zipformer-bilingual-fast", asr_dir,
+            missing_text,
         )
         return {"check": "ASR 冒烟", "status": "fail",
-                "detail": f"ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): {asr_dir}",
+                "detail": f"ASR 模型不完整 (缺少: {missing_text}): {asr_dir}",
                 "suggestion": "点击修复以补齐 ASR 模型",
                 "repair": {"kind": "models", "model_ids": [
                     "asr-zipformer-bilingual-fast"]}}
@@ -196,7 +207,9 @@ def _check_asr_smoke() -> dict:
         text = recognizer.get_result(stream)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return {"check": "ASR 冒烟", "status": "ok",
-                "detail": f"模型加载+解码通过, 耗时 {elapsed_ms:.0f}ms, 文本={text.strip()!r}",
+                # Keep the smoke result useful without persisting recognized
+                # text in local logs or exported diagnostics.
+                "detail": f"模型加载+解码通过, 耗时 {elapsed_ms:.0f}ms, 文本长度={len(text.strip())}",
                 "suggestion": "无需处理"}
     except Exception as exc:  # noqa: BLE001
         logger.warning("自检[ASR 冒烟] 加载/解码异常: %s", exc, exc_info=True)
@@ -360,7 +373,28 @@ def run_self_check(
     for index, (label, runner) in enumerate(runners):
         if progress:
             progress(index, total, f"正在检查：{label}")
-        checks.append(runner())
+        try:
+            result = runner()
+        except Exception as exc:  # noqa: BLE001 - isolate one failed check
+            logger.warning("自检[%s] 执行异常: %s", label, exc, exc_info=True)
+            result = {
+                "check": label,
+                "status": "fail",
+                "detail": f"执行异常: {type(exc).__name__}: {exc}",
+                "suggestion": "查看诊断日志后重试",
+            }
+        if not isinstance(result, Mapping):
+            logger.error("自检[%s] 返回无效结果类型: %s", label, type(result).__name__)
+            result = {
+                "check": label,
+                "status": "fail",
+                "detail": "检查模块返回了无效结果",
+                "suggestion": "查看诊断日志后重试",
+            }
+        checks.append(dict(result))
+        logger.info("自检结果[%s] status=%s detail=%s",
+                    label, result.get("status", "unknown"),
+                    result.get("detail", ""))
         if progress:
             progress(index + 1, total, f"已完成：{label}")
     logger.info("自检完成 (共 %d 项)", len(checks))
@@ -463,9 +497,14 @@ def repair_self_check(
 _STATUS_ICON = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[fail]"}
 
 
-def export_report() -> str:
-    """生成纯文本自检报告 (诊断页一键导出): 每行一项, 含时间戳/结论/建议。"""
-    items = run_self_check()
+def export_report(results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] | None = None) -> str:
+    """生成纯文本自检报告。
+
+    When ``results`` is supplied, export exactly that snapshot instead of
+    running another expensive check.  The command-line entry point keeps the
+    no-argument behavior for ad-hoc reports.
+    """
+    items = [dict(item) for item in results] if results is not None else run_self_check()
     n_fail = sum(1 for i in items if i["status"] == "fail")
     n_warn = sum(1 for i in items if i["status"] == "warn")
     if n_fail:

@@ -15,6 +15,7 @@ PyAudioWPatch==0.2.12.8
 recap-capture==0.6.3
 psutil==7.2.2
 pytest==9.1.1
+sentry-sdk==2.68.1
 
 # --- 0.8 OCR（PP-OCR 移动端中英模型；复用现有 onnxruntime-directml）---
 # RapidOCR 3.x 不会再拉入第二份标准 onnxruntime，避免与 DirectML 包冲突。

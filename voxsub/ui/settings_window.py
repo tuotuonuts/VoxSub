@@ -39,6 +39,10 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.config_store import ConfigStore
+from voxsub.error_reporting import (
+    is_error_reporting_enabled,
+    reload_error_reporting,
+)
 from voxsub.ui.i18n import (
     LANGUAGE_EN,
     LANGUAGE_SYSTEM,
@@ -955,6 +959,47 @@ class SettingsWindow(QWidget):
         box.addWidget(self.debug_switch)
         lay.addWidget(card)
 
+        sentry_card, sentry_box = self._card("诊断上报")
+        sentry_note = QLabel(
+            "可选：将最新自检报告和本地日志快照发送到 Sentry。上传前会过滤 API Key、"
+            "音频、字幕正文、识别文本和私人路径；不填写 DSN 时保持关闭。",
+            sentry_card,
+        )
+        sentry_note.setObjectName("cardCaption")
+        sentry_note.setWordWrap(True)
+        sentry_box.addWidget(sentry_note)
+        sentry_form = QFormLayout()
+        sentry_form.setHorizontalSpacing(14)
+        sentry_form.setVerticalSpacing(9)
+        self.sentry_dsn_edit = QLineEdit(sentry_card)
+        self.sentry_dsn_edit.setObjectName("inputBox")
+        self.sentry_dsn_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sentry_dsn_edit.setPlaceholderText("https://<public-key>@<host>/<project-id>")
+        self.sentry_environment_combo = QComboBox(sentry_card)
+        self.sentry_environment_combo.setObjectName("inputBox")
+        self.sentry_environment_combo.setMinimumHeight(40)
+        for label, value in (("开发", "development"), ("测试", "testing"),
+                             ("生产", "production")):
+            self.sentry_environment_combo.addItem(label, value)
+        self.sentry_build_edit = QLineEdit(sentry_card)
+        self.sentry_build_edit.setObjectName("inputBox")
+        self.sentry_build_edit.setPlaceholderText("source")
+        sentry_form.addRow("DSN", self.sentry_dsn_edit)
+        sentry_form.addRow("环境", self.sentry_environment_combo)
+        sentry_form.addRow("构建标识", self.sentry_build_edit)
+        sentry_box.addLayout(sentry_form)
+        sentry_action = QHBoxLayout()
+        self.sentry_status_label = QLabel(sentry_card)
+        self.sentry_status_label.setObjectName("secondaryLabel")
+        self.sentry_status_label.setWordWrap(True)
+        sentry_action.addWidget(self.sentry_status_label, 1)
+        self.sentry_save_btn = QPushButton("保存诊断上报设置", sentry_card)
+        self.sentry_save_btn.setObjectName("secondaryButton")
+        self.sentry_save_btn.clicked.connect(self._save_sentry_settings)
+        sentry_action.addWidget(self.sentry_save_btn)
+        sentry_box.addLayout(sentry_action)
+        lay.addWidget(sentry_card)
+
         history_card, history_box = self._card("更新日志")
         history_note = QLabel(
             "每次更新后，首次打开应用会看到一次简短说明。这里可以随时回看最近版本的变化。",
@@ -1009,6 +1054,11 @@ class SettingsWindow(QWidget):
         self.tts_switch.setEnabled(True)
         self._update_tts_status()
         self.debug_switch.setChecked(bool(cfg.get("debug_mode", False)))
+        self.sentry_dsn_edit.setText(str(cfg.get("sentry_dsn", "")))
+        self.sentry_build_edit.setText(str(cfg.get("sentry_build", "source") or "source"))
+        self._select_data(self.sentry_environment_combo,
+                          str(cfg.get("sentry_environment", "production") or "production"))
+        self._update_sentry_status()
         self.overlay_font_spin.setValue(int(cfg.get("overlay_font_size", 20)))
         self.overlay_opacity_spin.setValue(
             int(round(float(cfg.get("overlay_opacity", 0.92)) * 100)))
@@ -1393,6 +1443,29 @@ class SettingsWindow(QWidget):
         self._store.set("debug_mode", bool(checked))
         set_debug_mode(bool(checked))
 
+    def _update_sentry_status(self) -> None:
+        if is_error_reporting_enabled():
+            self.sentry_status_label.setText(tr("Sentry 已启用"))
+        elif self.sentry_dsn_edit.text().strip():
+            self.sentry_status_label.setText(tr("已保存，重载失败；请检查 DSN"))
+        else:
+            self.sentry_status_label.setText(tr("Sentry 未配置"))
+
+    def _save_sentry_settings(self) -> None:
+        if self._loading:
+            return
+        self._store.update({
+            "sentry_dsn": self.sentry_dsn_edit.text().strip(),
+            "sentry_environment": str(
+                self.sentry_environment_combo.currentData() or "development"),
+            "sentry_build": self.sentry_build_edit.text().strip() or "source",
+        })
+        try:
+            reload_error_reporting()
+        except Exception:
+            logger.exception("重新加载 Sentry 配置失败")
+        self._update_sentry_status()
+
     # ------------------------------------------------------------------
     # 模型存储
     # ------------------------------------------------------------------
@@ -1721,6 +1794,7 @@ class SettingsWindow(QWidget):
         self._refresh_model_storage()
         self._refresh_ocr_cache_storage()
         self._update_tts_status()
+        self._update_sentry_status()
         if hasattr(self, "release_history_label"):
             self.release_history_label.setText(release_history_text())
 

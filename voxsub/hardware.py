@@ -224,7 +224,9 @@ def _ort_inventory() -> tuple[set[str], list[tuple[str, str, str]]]:
                 devices.append((str(item.ep_name), kind, vendor))
         return providers, devices
     except Exception:
-        logger.debug("ORT 加速器枚举失败", exc_info=True)
+        # A failed inventory changes routing decisions and is actionable; keep
+        # it visible to both the local diagnostics page and optional Sentry.
+        logger.warning("ORT 加速器枚举失败，设备能力可能不完整", exc_info=True)
         return set(), []
 
 
@@ -239,7 +241,9 @@ def _system_resources() -> tuple[str, int, int, float]:
         logical = psutil.cpu_count(logical=True) or logical
         ram_gb = psutil.virtual_memory().total / GIB
     except Exception:
-        logger.debug("psutil 硬件检测失败", exc_info=True)
+        # Missing/failed resource probing affects routing and should be visible
+        # in diagnostics; the conservative fallback remains unchanged.
+        logger.warning("psutil 硬件检测失败，使用保守资源默认值", exc_info=True)
         ram_gb = _windows_ram_gb() or ram_gb
     cpu_name = platform.processor().strip() or platform.machine() or "未知 CPU"
     return cpu_name, physical, logical, ram_gb

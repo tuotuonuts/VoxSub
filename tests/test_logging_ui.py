@@ -383,3 +383,72 @@ class TestDiagnosticsLogTab:
         finally:
             dw.close()
             dw.deleteLater()
+
+    def test_report_export_uses_latest_snapshot(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        output = tmp_path / "report.txt"
+        captured = {}
+
+        class _Diag:
+            @staticmethod
+            def run_self_check():
+                return [{"check": "最新", "status": "fail", "detail": "当前问题"}]
+
+            @staticmethod
+            def export_report(results=None):
+                captured["results"] = results
+                return "snapshot report"
+
+        monkeypatch.setattr(diagnostics_window, "choose_save_file",
+                            lambda *args, **kwargs: (str(output), "文本文件 (*.txt)"))
+        dw = DiagnosticsWindow(diagnostics_module=_Diag())
+        try:
+            expected = tuple(dict(item) for item in dw._results)  # noqa: SLF001
+            dw._export_report()  # noqa: SLF001
+            _wait_until(qapp, lambda: output.exists() and "results" in captured)
+            assert captured["results"] == expected
+            assert output.read_text(encoding="utf-8") == "snapshot report"
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_send_report_to_sentry_uses_latest_snapshot_and_logs(
+            self, qapp, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        captured = {}
+
+        class _Diag:
+            @staticmethod
+            def run_self_check():
+                return [{"check": "最新", "status": "fail", "detail": "当前问题"}]
+
+            @staticmethod
+            def export_report(results=None):
+                captured["results"] = results
+                return "snapshot report"
+
+        monkeypatch.setattr(diagnostics_window, "is_error_reporting_enabled",
+                            lambda: True)
+        monkeypatch.setattr(diagnostics_window, "tail_log_file",
+                            lambda _lines: "INFO local log")
+        monkeypatch.setattr(
+            diagnostics_window,
+            "send_diagnostic_report",
+            lambda report, logs, trigger="": captured.update(
+                report=report, logs=logs, trigger=trigger) or True,
+        )
+        dw = DiagnosticsWindow(diagnostics_module=_Diag())
+        try:
+            expected = tuple(dict(item) for item in dw._results)  # noqa: SLF001
+            dw._send_report_to_sentry()  # noqa: SLF001
+            _wait_until(qapp, lambda: captured.get("report") == "snapshot report")
+            assert captured["results"] == expected
+            assert captured["logs"] == "INFO local log"
+            assert captured["trigger"] == "diagnostics_page"
+        finally:
+            dw.close()
+            dw.deleteLater()

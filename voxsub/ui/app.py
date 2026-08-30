@@ -32,8 +32,31 @@ from voxsub.logging_setup import get_logger, set_debug_mode, setup_logging
 # ---------------------------------------------------------------------------
 setup_logging(log_to_console=False)
 
+from voxsub.error_reporting import (  # noqa: E402
+    initialize_error_reporting,
+    shutdown_error_reporting,
+)
+
 # 模块级 logger：记录应用启动 / 退出等关键事件
 logger = get_logger("ui.app")
+_RUNTIME_CONTEXT = initialize_error_reporting()
+logger.info(
+    "运行上下文: version=%s build=%s environment=%s os=%s cpu=%s "
+    "memory_gb=%s gpu=%s gpu_provider=%s npu=%s npu_provider=%s "
+    "npu_driver=%s inference_backend=%s",
+    _RUNTIME_CONTEXT.version,
+    _RUNTIME_CONTEXT.build_id,
+    _RUNTIME_CONTEXT.environment,
+    _RUNTIME_CONTEXT.os_name,
+    _RUNTIME_CONTEXT.cpu,
+    _RUNTIME_CONTEXT.memory_gb,
+    _RUNTIME_CONTEXT.gpu or "none",
+    _RUNTIME_CONTEXT.gpu_provider or "none",
+    _RUNTIME_CONTEXT.npu or "none",
+    _RUNTIME_CONTEXT.npu_provider or "none",
+    _RUNTIME_CONTEXT.npu_driver or "unknown",
+    _RUNTIME_CONTEXT.inference_backend,
+)
 
 from voxsub.ui import __version__ as _UI_VERSION  # noqa: E402
 from voxsub import diagnostics as diagnostics_module  # noqa: E402
@@ -266,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     app.aboutToQuit.connect(ocr_workspace.shutdown)
     app.aboutToQuit.connect(settings_win.prepare_for_page_leave)
     app.aboutToQuit.connect(lambda: _close_pipeline(win.pipeline))
+    app.aboutToQuit.connect(shutdown_error_reporting)
     # Keep the running mutex owned until the process has actually terminated.
     # Closing it from aboutToQuit creates a small race where setup starts
     # replacing files while PyInstaller/Python is still finishing teardown.

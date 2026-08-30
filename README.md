@@ -65,8 +65,29 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 
 ## 开发环境
 
-```bash
+要求：Windows 10/11、Python 3.11+、[uv](https://docs.astral.sh/uv/)。源码运行不会把模型或配置写进 Git 工作树。
+
+首次准备（每台电脑只需执行一次）：
+
+```powershell
+git clone https://github.com/tuotuonuts/VoxSub.git
+cd VoxSub
 uv venv --python 3.11
+uv pip sync --python .venv\Scripts\python.exe requirements.lock
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+```
+
+日常更新和源码启动：
+
+```powershell
+git pull --ff-only
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+.\.venv\Scripts\python.exe run_app.py
+```
+
+`run_app.py` 是源码和打包版共用的入口。`git pull` 只更新 Git 跟踪的源码；配置保存在 `%LOCALAPPDATA%\VoxSub\config.json`，模型和缓存由 `model_storage.py` 放在用户模型根目录，不会被拉取、覆盖或删除。只有依赖发生变化时才需要重新同步：
+
+```powershell
 uv pip sync --python .venv\Scripts\python.exe requirements.lock
 ```
 
@@ -76,11 +97,26 @@ uv pip sync --python .venv\Scripts\python.exe requirements.lock
 uv pip compile requirements.txt --python .venv\Scripts\python.exe --python-platform windows --generate-hashes -o requirements.lock
 ```
 
-Python 3.11+。源码启动：
+### Sentry 错误收集（可选）
+
+不设置 DSN 时不会联网，原有本地日志和诊断页照常工作。需要启用时，在启动进程的 PowerShell 会话中设置：
 
 ```powershell
-.\.venv\Scripts\python.exe -m voxsub.ui.app
+$env:VOXSUB_SENTRY_DSN = "https://<public-key>@<host>/<project-id>"
+$env:VOXSUB_ENVIRONMENT = "development"  # development | testing | production
+$env:VOXSUB_BUILD = "source"              # 可选，标识本次源码/构建
+.\.venv\Scripts\python.exe run_app.py
 ```
+
+也可以把 `sentry_dsn`、`sentry_environment` 和 `sentry_build` 写入 `%LOCALAPPDATA%\VoxSub\config.json`；环境变量优先于本地配置。DSN 不要提交到 Git 或写入源码。
+
+Sentry 事件只包含软件版本、构建号、环境、操作系统、CPU、GPU/NPU、内存、驱动和推理后端，以及经过过滤的异常类型；不会上传 API Key、音频、字幕正文、识别文本、用户文件内容或私人路径。网络不可用时事件会丢弃，不会影响应用。
+
+本地日志位于 `%LOCALAPPDATA%\VoxSub\logs\voxsub.log`，也可在应用“诊断 → 日志”页查看和导出。“诊断 → 自检”页的“导出报告 (txt)”会生成当前最新自检结果；修复按钮只处理该结果中明确声明的目标。
+
+配置 DSN 后，诊断页还会显示“发送到 Sentry”。点击后上传当前最新自检报告和本地日志快照（隐私过滤后），不会重新执行自检；未配置或网络失败时不会影响应用。
+
+也可以直接在“设置 → 关于 → 诊断上报”中填写 DSN、环境和构建标识并保存；保存后当前进程立即重载配置，无需重启。
 
 构建安装包：
 

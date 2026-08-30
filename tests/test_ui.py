@@ -1336,6 +1336,33 @@ class TestSettingsWindow:
             sw.close()
             sw.deleteLater()
 
+    def test_sentry_settings_save_through_ui(self, qapp, tmp_path, monkeypatch):
+        import voxsub.ui.settings_window as settings_window
+        from voxsub.ui.settings_window import SettingsWindow
+
+        calls = []
+        monkeypatch.setattr(settings_window, "reload_error_reporting",
+                            lambda: calls.append(True))
+        monkeypatch.setattr(settings_window, "is_error_reporting_enabled",
+                            lambda: True)
+        store = ConfigStore(tmp_path / "config.json")
+        sw = SettingsWindow(store=store)
+        try:
+            sw.sentry_dsn_edit.setText("https://public@example.invalid/1")
+            sw.sentry_environment_combo.setCurrentIndex(
+                sw.sentry_environment_combo.findData("production"))
+            sw.sentry_build_edit.setText("desktop-1")
+            sw.sentry_save_btn.click()
+
+            assert calls == [True]
+            assert store.get("sentry_dsn") == "https://public@example.invalid/1"
+            assert store.get("sentry_environment") == "production"
+            assert store.get("sentry_build") == "desktop-1"
+            assert "启用" in sw.sentry_status_label.text()
+        finally:
+            sw.close()
+            sw.deleteLater()
+
     def test_asr_tuning_has_hover_info_transaction_and_wide_ranges(
         self, qapp, tmp_path, monkeypatch
     ):

@@ -1,0 +1,543 @@
+"""Optional Sentry error reporting with a strict privacy boundary.
+
+Sentry is deliberately a side-channel to the existing local logging system:
+missing SDK/DSN, an invalid DSN, or a network failure must never affect the
+application.  Events are limited to diagnostics metadata and exception
+types; user content and credentials are filtered before transport.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import platform
+import re
+import sys
+import threading
+from dataclasses import asdict, dataclass
+from typing import Any, Mapping
+
+from voxsub import __version__
+from voxsub.config_store import ConfigStore
+from voxsub.logging_setup import get_logger
+
+logger = get_logger("error_reporting")
+
+_VALID_ENVIRONMENTS = frozenset({"development", "testing", "production"})
+_SAFE_BUILD_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_WINDOWS_PATH_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\\\)[^\r\n,;|\"']+")
+_UNIX_PRIVATE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])/(?:Users|home|private|var/folders|tmp|opt)/[^\r\n,;|\"']+",
+    re.IGNORECASE,
+)
+_SECRET_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|dsn)"
+    r"\s*[:=]\s*[^\s,;]+"
+)
+_CONTENT_RE = re.compile(
+    r"(?i)\b(transcri(?:ption|pt)?|recognized?|recognition|subtitle|translation|"
+    r"source[_-]?text|target[_-]?text|prompt|audio|pcm|wave|content|text)"
+    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_PATH_KEY_RE = re.compile(r"(?i)^(?:path|file|filename|directory|folder|cwd|home)$")
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?token|authorization|password|secret|dsn|cookie|"
+    r"audio|pcm|wave|subtitle|transcri|recogn|translation|prompt|content|source[_-]?text|"
+    r"target[_-]?text|filename|filepath|directory|folder|cwd)"
+)
+
+_ORIGINAL_SYS_EXCEPTHOOK = None
+_ORIGINAL_THREADING_EXCEPTHOOK = None
+_SENTRY_HANDLER: logging.Handler | None = None
+_SDK: Any = None
+_CONTEXT: "RuntimeContext | None" = None
+_PENDING_HARDWARE_ERROR: BaseException | None = None
+_INITIALIZED = False
+_HOOK_GUARD = threading.local()
+_STATE_LOCK = threading.RLock()
+_DIAGNOSTIC_MAX_CHARS = 120_000
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    """Stable, non-content metadata shared by logs and Sentry events."""
+
+    version: str
+    build_id: str
+    environment: str
+    release: str
+    os_name: str
+    os_version: str
+    python_version: str
+    cpu: str
+    memory_gb: float | None
+    gpu: str
+    gpu_provider: str
+    npu: str
+    npu_provider: str
+    npu_driver: str
+    inference_backend: str
+
+
+def _local_settings() -> Mapping[str, Any]:
+    """Read optional telemetry settings without making startup fragile."""
+    try:
+        data = ConfigStore().load()
+        return data if isinstance(data, Mapping) else {}
+    except Exception:
+        logger.debug("读取本地 Sentry 配置失败", exc_info=True)
+        return {}
+
+
+def _setting(name: str) -> str:
+    value = _local_settings().get(name, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _environment() -> str:
+    for raw in (
+        os.environ.get("VOXSUB_ENVIRONMENT", ""),
+        os.environ.get("VOXSUB_ENV", ""),
+        _setting("sentry_environment"),
+    ):
+        value = raw.strip().casefold()
+        if value in _VALID_ENVIRONMENTS:
+            return value
+    if "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST"):
+        return "testing"
+    return "production" if getattr(sys, "frozen", False) else "development"
+
+
+def _build_id() -> str:
+    raw = (os.environ.get("VOXSUB_BUILD") or
+           os.environ.get("VOXSUB_BUILD_ID") or
+           _setting("sentry_build") or "source").strip()
+    safe = _SAFE_BUILD_RE.sub("-", raw).strip("-._")
+    return (safe or "source")[:64]
+
+
+def _memory_gb() -> float | None:
+    try:
+        import psutil
+
+        total = float(psutil.virtual_memory().total) / (1024 ** 3)
+        return round(total, 2) if total > 0 else None
+    except Exception:
+        return None
+
+
+def _hardware_context() -> dict[str, str]:
+    """Read the existing hardware profile without making startup fragile."""
+    global _PENDING_HARDWARE_ERROR
+    try:
+        from voxsub.hardware import detect_hardware
+
+        profile = detect_hardware()
+        return {
+            "cpu": profile.cpu_name,
+            "gpu": profile.gpu_name,
+            "gpu_provider": profile.gpu_provider,
+            "npu": profile.npu_name,
+            "npu_provider": profile.npu_provider,
+            "npu_driver": profile.npu_driver_version,
+            "inference_backend": ";".join(filter(None, (
+                profile.gpu_provider,
+                profile.npu_provider,
+                profile.integrated_gpu_provider,
+                "CPU",
+            ))),
+        }
+    except Exception as exc:
+        # Hardware probing is best effort.  The exception itself is retained in
+        # the local log; no telemetry setup failure may block application start.
+        logger.warning("错误报告硬件上下文收集失败", exc_info=True)
+        _PENDING_HARDWARE_ERROR = exc
+        return {
+            "cpu": platform.processor() or platform.machine() or "unknown",
+            "gpu": "",
+            "gpu_provider": "",
+            "npu": "",
+            "npu_provider": "",
+            "npu_driver": "",
+            "inference_backend": "unknown",
+        }
+
+
+def runtime_context() -> RuntimeContext:
+    """Return cached metadata, initializing it without enabling Sentry."""
+    global _CONTEXT
+    with _STATE_LOCK:
+        if _CONTEXT is None:
+            build_id = _build_id()
+            environment = _environment()
+            hardware = _hardware_context()
+            _CONTEXT = RuntimeContext(
+                version=__version__,
+                build_id=build_id,
+                environment=environment,
+                release=f"voxsub@{__version__}+{build_id}",
+                os_name=platform.system() or "unknown",
+                os_version=platform.version() or platform.release() or "unknown",
+                python_version=platform.python_version(),
+                memory_gb=_memory_gb(),
+                **hardware,
+            )
+        return _CONTEXT
+
+
+def _sanitize_string(value: str) -> str:
+    value = _WINDOWS_PATH_RE.sub("<private-path>", str(value))
+    value = _UNIX_PRIVATE_PATH_RE.sub("<private-path>", value)
+    value = _SECRET_RE.sub(lambda match: f"{match.group(1)}=<filtered>", value)
+    value = _CONTENT_RE.sub(lambda match: f"{match.group(1)}=<filtered>", value)
+    return value[:2000]
+
+
+def _sanitize_value(value: Any, key: str = "") -> Any:
+    if _SENSITIVE_KEY_RE.search(key):
+        return "<filtered>"
+    if isinstance(value, str):
+        if _PATH_KEY_RE.match(key):
+            return "<private-path>"
+        return _sanitize_string(value)
+    if isinstance(value, Mapping):
+        return {str(k): _sanitize_value(v, str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_value(item, key) for item in value]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _sanitize_string(repr(value))
+
+
+def sanitize_event(event: Mapping[str, Any], hint: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Return a transport-safe copy suitable for Sentry's ``before_send``."""
+    cleaned = _sanitize_value(dict(event))
+    if not isinstance(cleaned, dict):  # pragma: no cover - defensive contract
+        return {}
+    # Sentry's request/user/server fields can contain hostnames, headers,
+    # cookies, or query strings that are not needed for diagnosing VoxSub.
+    for key in ("request", "user", "server_name"):
+        cleaned.pop(key, None)
+    exception = cleaned.get("exception")
+    if isinstance(exception, dict):
+        for item in exception.get("values", ()):
+            if isinstance(item, dict) and "value" in item:
+                # Exception messages can contain recognition text or user
+                # filenames.  Keep the exception type for grouping, but never
+                # transmit the free-form message itself.
+                item["value"] = "<filtered exception message>"
+    return cleaned
+
+
+def _load_sdk() -> Any:
+    try:
+        import sentry_sdk
+
+        return sentry_sdk
+    except ImportError:
+        return None
+
+
+def _sentry_dsn() -> str:
+    """Resolve DSN with process environment taking precedence over config."""
+    return (os.environ.get("VOXSUB_SENTRY_DSN") or
+            _setting("sentry_dsn")).strip()
+
+
+def _context_payload(context: RuntimeContext) -> dict[str, Any]:
+    payload = asdict(context)
+    # Sentry tags must remain short and scalar; detailed values are attached as
+    # a context while the same summary is emitted to the local log.
+    return payload
+
+
+def _set_sdk_context(sdk: Any, context: RuntimeContext) -> None:
+    try:
+        sdk.set_tag("voxsub_version", context.version)
+        sdk.set_tag("voxsub_build", context.build_id)
+        sdk.set_tag("voxsub_environment", context.environment)
+        sdk.set_context("voxsub_runtime", _context_payload(context))
+    except Exception:
+        # Context enrichment is optional and must never interfere with startup.
+        pass
+
+
+def _area_for_logger(name: str) -> str:
+    lowered = name.casefold()
+    if any(token in lowered for token in ("model", "asr", "tts", "ocr", "translate")):
+        return "model_or_inference"
+    if any(token in lowered for token in ("hardware", "router")):
+        return "device_detection"
+    if "thread" in lowered or lowered.endswith("worker"):
+        return "background_thread"
+    return "runtime"
+
+
+def capture_exception(
+    exc: BaseException,
+    *,
+    area: str = "runtime",
+    logger_name: str = "",
+) -> Any:
+    """Capture one exception if Sentry is active; never raise to the caller."""
+    sdk = _SDK
+    if sdk is None or not isinstance(exc, BaseException):
+        return None
+    try:
+        with sdk.push_scope() as scope:
+            scope.set_tag("error_area", area)
+            if logger_name:
+                scope.set_tag("error_logger", logger_name)
+            return sdk.capture_exception(exc)
+    except Exception:
+        return None
+
+
+def capture_message(message: str, *, level: str = "error", area: str = "runtime") -> Any:
+    """Capture a category marker without exposing the original log message."""
+    sdk = _SDK
+    if sdk is None:
+        return None
+
+
+def is_error_reporting_enabled() -> bool:
+    """Return whether a usable Sentry client is active in this process."""
+    return _SDK is not None
+
+
+def _sanitize_diagnostic_text(value: str) -> str:
+    """Sanitize report/log text before it is attached to a Sentry event."""
+    lines = []
+    for line in str(value).splitlines():
+        lines.append(_sanitize_string(line))
+    return "\n".join(lines)[:_DIAGNOSTIC_MAX_CHARS]
+
+
+def send_diagnostic_report(
+    report: str,
+    logs: str,
+    *,
+    trigger: str = "manual",
+) -> bool:
+    """Upload a filtered self-check report and local log snapshot.
+
+    This is intentionally explicit and best-effort.  Attachments are preferred
+    so the full bounded snapshots remain available without putting user text in
+    event fields; a context fallback keeps compatibility with small SDK fakes.
+    """
+    sdk = _SDK
+    if sdk is None:
+        return False
+    clean_report = _sanitize_diagnostic_text(report)
+    clean_logs = _sanitize_diagnostic_text(logs)
+    try:
+        with sdk.push_scope() as scope:
+            scope.set_tag("error_area", "diagnostics")
+            scope.set_tag("diagnostic_trigger", _SAFE_BUILD_RE.sub("-", str(trigger))[:32])
+            add_attachment = getattr(scope, "add_attachment", None)
+            if callable(add_attachment):
+                add_attachment(
+                    bytes=clean_report.encode("utf-8"),
+                    filename="voxsub-self-check.txt",
+                    content_type="text/plain",
+                )
+                add_attachment(
+                    bytes=clean_logs.encode("utf-8"),
+                    filename="voxsub-log.txt",
+                    content_type="text/plain",
+                )
+            else:
+                scope.set_context("voxsub_diagnostics", {
+                    "report": clean_report,
+                    "logs": clean_logs,
+                })
+            return bool(sdk.capture_message("VoxSub diagnostic report", level="info"))
+    except Exception:
+        logger.warning("Sentry 诊断报告上传失败，保留本地日志", exc_info=True)
+        return False
+    try:
+        with sdk.push_scope() as scope:
+            scope.set_tag("error_area", area)
+            # The local log retains ``message`` for diagnosis.  Sentry only
+            # needs a stable marker because arbitrary log text may contain
+            # subtitle, recognition, audio or user-file content.
+            del message
+            return sdk.capture_message(f"VoxSub diagnostic event ({area})", level=level)
+    except Exception:
+        return None
+
+
+class SentryLogHandler(logging.Handler):
+    """Forward only exceptional log records to Sentry."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if _SDK is None or record.name.startswith("voxsub.error_reporting"):
+            return
+        # Warning records without a traceback are usually expected fallbacks;
+        # exception-bearing warnings still represent model/device failures.
+        if record.levelno < logging.ERROR and not record.exc_info:
+            return
+        try:
+            if record.exc_info and record.exc_info[1] is not None:
+                capture_exception(
+                    record.exc_info[1], area=_area_for_logger(record.name),
+                    logger_name=record.name,
+                )
+            else:
+                capture_message(
+                    record.getMessage(), area=_area_for_logger(record.name),
+                )
+        except Exception:
+            # A telemetry transport must never break logging or the application.
+            return
+
+
+def _install_exception_hooks() -> None:
+    global _ORIGINAL_SYS_EXCEPTHOOK, _ORIGINAL_THREADING_EXCEPTHOOK
+    global _PENDING_HARDWARE_ERROR
+    if _ORIGINAL_SYS_EXCEPTHOOK is None:
+        _ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
+
+        def _sys_hook(exc_type, exc_value, exc_traceback) -> None:
+            if not getattr(_HOOK_GUARD, "active", False):
+                _HOOK_GUARD.active = True
+                try:
+                    if isinstance(exc_value, BaseException):
+                        capture_exception(exc_value, area="unhandled_exception")
+                finally:
+                    _HOOK_GUARD.active = False
+            _ORIGINAL_SYS_EXCEPTHOOK(exc_type, exc_value, exc_traceback)
+
+        sys.excepthook = _sys_hook
+
+    if hasattr(threading, "excepthook") and _ORIGINAL_THREADING_EXCEPTHOOK is None:
+        _ORIGINAL_THREADING_EXCEPTHOOK = threading.excepthook
+
+        def _thread_hook(args) -> None:
+            thread = getattr(args, "thread", None)
+            name = getattr(thread, "name", "unknown")
+            exc = getattr(args, "exc_value", None)
+            if isinstance(exc, BaseException):
+                capture_exception(exc, area="background_thread",
+                                  logger_name=f"thread:{name}")
+            _ORIGINAL_THREADING_EXCEPTHOOK(args)
+
+        threading.excepthook = _thread_hook
+
+
+def initialize_error_reporting() -> RuntimeContext:
+    """Initialize optional Sentry and return the shared runtime context."""
+    global _INITIALIZED, _SDK, _SENTRY_HANDLER, _PENDING_HARDWARE_ERROR
+    with _STATE_LOCK:
+        context = runtime_context()
+        if _INITIALIZED:
+            return context
+        _INITIALIZED = True
+        dsn = _sentry_dsn()
+        sdk = _load_sdk() if dsn else None
+        if sdk is None:
+            if dsn:
+                logger.warning("Sentry SDK 未安装，继续使用本地日志")
+            else:
+                logger.info("Sentry 未配置 DSN，错误仅写入本地日志")
+            return context
+        try:
+            sdk.init(
+                dsn=dsn,
+                environment=context.environment,
+                release=context.release,
+                send_default_pii=False,
+                include_local_variables=False,
+                before_send=sanitize_event,
+                default_integrations=False,
+            )
+            _SDK = sdk
+            _set_sdk_context(sdk, context)
+            _SENTRY_HANDLER = SentryLogHandler(level=logging.WARNING)
+            logging.getLogger("voxsub").addHandler(_SENTRY_HANDLER)
+            _install_exception_hooks()
+            if _PENDING_HARDWARE_ERROR is not None:
+                capture_exception(_PENDING_HARDWARE_ERROR, area="device_detection")
+                _PENDING_HARDWARE_ERROR = None
+            logger.info(
+                "Sentry 已启用: version=%s build=%s environment=%s release=%s",
+                context.version, context.build_id, context.environment, context.release,
+            )
+        except Exception:
+            _SDK = None
+            logger.warning("Sentry 初始化失败，继续使用本地日志", exc_info=True)
+        return context
+
+
+def shutdown_error_reporting(timeout: float = 2.0) -> None:
+    """Best-effort flush during normal application shutdown."""
+    sdk = _SDK
+    if sdk is None:
+        return
+    try:
+        sdk.flush(timeout=max(0.0, float(timeout)))
+    except Exception:
+        pass
+
+
+def reload_error_reporting() -> RuntimeContext:
+    """Reload Sentry settings after the user edits local configuration."""
+    global _INITIALIZED, _SDK, _SENTRY_HANDLER, _CONTEXT
+    global _ORIGINAL_SYS_EXCEPTHOOK, _ORIGINAL_THREADING_EXCEPTHOOK
+    with _STATE_LOCK:
+        sdk = _SDK
+        if sdk is not None:
+            try:
+                sdk.flush(timeout=2.0)
+            except Exception:
+                pass
+        if _SENTRY_HANDLER is not None:
+            logging.getLogger("voxsub").removeHandler(_SENTRY_HANDLER)
+        if _ORIGINAL_SYS_EXCEPTHOOK is not None:
+            sys.excepthook = _ORIGINAL_SYS_EXCEPTHOOK
+        if (_ORIGINAL_THREADING_EXCEPTHOOK is not None and
+                hasattr(threading, "excepthook")):
+            threading.excepthook = _ORIGINAL_THREADING_EXCEPTHOOK
+        _INITIALIZED = False
+        _SDK = None
+        _SENTRY_HANDLER = None
+        _CONTEXT = None
+        _PENDING_HARDWARE_ERROR = None
+        _ORIGINAL_SYS_EXCEPTHOOK = None
+        _ORIGINAL_THREADING_EXCEPTHOOK = None
+        return initialize_error_reporting()
+
+
+def _reset_for_tests() -> None:
+    """Reset process-global state for isolated unit tests."""
+    global _INITIALIZED, _SDK, _SENTRY_HANDLER, _CONTEXT, _PENDING_HARDWARE_ERROR
+    global _ORIGINAL_SYS_EXCEPTHOOK, _ORIGINAL_THREADING_EXCEPTHOOK
+    with _STATE_LOCK:
+        if _SENTRY_HANDLER is not None:
+            logging.getLogger("voxsub").removeHandler(_SENTRY_HANDLER)
+        if _ORIGINAL_SYS_EXCEPTHOOK is not None:
+            sys.excepthook = _ORIGINAL_SYS_EXCEPTHOOK
+        if (_ORIGINAL_THREADING_EXCEPTHOOK is not None and
+                hasattr(threading, "excepthook")):
+            threading.excepthook = _ORIGINAL_THREADING_EXCEPTHOOK
+        _INITIALIZED = False
+        _SDK = None
+        _SENTRY_HANDLER = None
+        _CONTEXT = None
+        _PENDING_HARDWARE_ERROR = None
+        _ORIGINAL_SYS_EXCEPTHOOK = None
+        _ORIGINAL_THREADING_EXCEPTHOOK = None
+
+
+__all__ = [
+    "RuntimeContext",
+    "SentryLogHandler",
+    "capture_exception",
+    "capture_message",
+    "is_error_reporting_enabled",
+    "initialize_error_reporting",
+    "reload_error_reporting",
+    "runtime_context",
+    "sanitize_event",
+    "send_diagnostic_report",
+    "shutdown_error_reporting",
+]

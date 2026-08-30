@@ -21,7 +21,7 @@ from voxsub.logging_setup import get_logger
 logger = get_logger("config_store")
 CONFIG_VERSION = 2
 _CONFIG_LOCK = threading.RLock()
-_URL_KEYS = frozenset({"stt_base_url", "translate_base_url", "base_url"})
+_URL_KEYS = frozenset({"stt_base_url", "translate_base_url", "base_url", "sentry_dsn"})
 
 
 def _normalize_scalar(default: Any, value: Any) -> Any:
@@ -103,6 +103,11 @@ _DEFAULTS: dict[str, Any] = {
     "capture_window_title": "",
     "last_input_file": "",
     "debug_mode": False,
+    # Optional Sentry settings.  The DSN is a public project identifier, but
+    # it remains local-only and is never included in telemetry payloads.
+    "sentry_dsn": "",
+    "sentry_environment": "",
+    "sentry_build": "",
     "overlay_font_size": 20,
     "overlay_width": 560,
     "overlay_height": 132,
@@ -167,6 +172,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             {"auto", "responsive", "balanced", "accuracy", "context", "custom"}),
         "asr_filler_mode": frozenset({"off", "light"}),
         "download_source": frozenset({"auto", "global", "china"}),
+        "sentry_environment": frozenset({"", "development", "testing", "production"}),
         "models_root_mode": frozenset({"", "legacy", "install", "custom"}),
         "overlay_display_mode": frozenset({"bilingual", "source", "translation"}),
     },

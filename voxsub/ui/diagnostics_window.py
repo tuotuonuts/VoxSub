@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from voxsub.file_io import write_text_atomically
+from voxsub.error_reporting import is_error_reporting_enabled, send_diagnostic_report
 from voxsub.logging_setup import drain_events, get_logger, set_debug_mode, tail_log_file
 from voxsub.config_store import ConfigStore
 from voxsub.ui.file_dialogs import choose_save_file
@@ -114,6 +115,19 @@ def _call_repair(module: object, results: tuple[dict, ...], store, progress) -> 
     if "progress" in parameters:
         kwargs["progress"] = progress
     return repair(results, **kwargs)
+
+
+def _call_export_report(module: object, results: tuple[dict, ...]) -> str:
+    """Export the visible snapshot when the module supports that contract."""
+    export = getattr(module, "export_report")
+    try:
+        parameters = inspect.signature(export).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "results" in parameters:
+        return str(export(results=results))
+    # Keep compatibility with older/test modules exposing export_report().
+    return str(export())
 
 
 class DiagnosticsWindow(QWidget):
@@ -237,6 +251,13 @@ class DiagnosticsWindow(QWidget):
         self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_btn.clicked.connect(self._export_report)
         btn_row.addWidget(self.export_btn)
+        self.send_sentry_btn = QPushButton("发送到 Sentry", page)
+        self.send_sentry_btn.setObjectName("secondaryButton")
+        self.send_sentry_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_sentry_btn.setToolTip("发送当前自检报告和本地日志（已过滤隐私信息）")
+        self.send_sentry_btn.setEnabled(is_error_reporting_enabled())
+        self.send_sentry_btn.clicked.connect(self._send_report_to_sentry)
+        btn_row.addWidget(self.send_sentry_btn)
         lay.addLayout(btn_row)
         return page
 
@@ -461,10 +482,21 @@ class DiagnosticsWindow(QWidget):
         self._vbox.insertWidget(self._vbox.count() - 1, card)
 
     # ------------------------------------------------------------------
+    def _update_sentry_button(self) -> None:
+        if not hasattr(self, "send_sentry_btn"):
+            return
+        self.send_sentry_btn.setEnabled(
+            self._selfcheck_worker is None
+            and self._repair_worker is None
+            and "sentry" not in self._export_workers
+            and is_error_reporting_enabled()
+        )
+
     def _set_selfcheck_busy(self, busy: bool, text: str = "") -> None:
         self.selfcheck_refresh_btn.setEnabled(not busy)
         self.repair_btn.setEnabled(not busy and self._repair_worker is None)
         self.export_btn.setEnabled(not busy and "report" not in self._export_workers)
+        self._update_sentry_button()
         if busy:
             self.selfcheck_progress.show()
             self.selfcheck_progress.setValue(0)
@@ -547,6 +579,7 @@ class DiagnosticsWindow(QWidget):
         self.repair_btn.setEnabled(False)
         self.selfcheck_refresh_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
+        self.send_sentry_btn.setEnabled(False)
         self.selfcheck_progress.show()
         self.selfcheck_progress.setValue(0)
         self.selfcheck_progress.setFormat("%p%")
@@ -586,6 +619,7 @@ class DiagnosticsWindow(QWidget):
         self.repair_btn.setEnabled(self._selfcheck_worker is None)
         self.selfcheck_refresh_btn.setEnabled(self._selfcheck_worker is None)
         self.export_btn.setEnabled("report" not in self._export_workers)
+        self._update_sentry_button()
         self.selfcheck_progress.hide()
         if errors:
             self.selfcheck_summary.setText(f"{tr('修复失败')}: {errors[0]}")
@@ -602,7 +636,7 @@ class DiagnosticsWindow(QWidget):
 
         def _build_report() -> str:
             if module is not None and hasattr(module, "export_report"):
-                return str(module.export_report())
+                return _call_export_report(module, results)
             lines = [
                 "语幕 VoxSub 诊断报告（诊断模块未实现，以下为骨架内容）",
                 f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -620,6 +654,48 @@ class DiagnosticsWindow(QWidget):
             f"voxsub_diagnostics_{timestamp}.txt",
             _build_report,
         )
+
+    def _send_report_to_sentry(self) -> None:
+        """Upload the latest visible self-check and local logs off the UI thread."""
+        if "sentry" in self._export_workers or not is_error_reporting_enabled():
+            self.selfcheck_summary.setText(tr("Sentry 未配置"))
+            return
+        module = self._module
+        results = tuple(dict(item) for item in self._results)
+        if not results:
+            self.selfcheck_summary.setText(tr("请先完成一次自检"))
+            return
+        self.send_sentry_btn.setEnabled(False)
+        self.send_sentry_btn.setText(tr("正在发送…"))
+
+        def _worker() -> None:
+            try:
+                report = "语幕 VoxSub 诊断报告\n" + "\n".join(
+                    f"[{item.get('status', 'warn')}] {item.get('check', '')}: "
+                    f"{item.get('detail', '')}" for item in results
+                )
+                if module is not None and hasattr(module, "export_report"):
+                    try:
+                        parameters = inspect.signature(module.export_report).parameters
+                    except (TypeError, ValueError):
+                        parameters = {}
+                    if "results" in parameters:
+                        report = _call_export_report(module, results)
+                logs = tail_log_file(10**6)
+                success = bool(send_diagnostic_report(
+                    report, logs, trigger="diagnostics_page",
+                ))
+                detail = "" if success else "upload-failed"
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("后台发送 Sentry 诊断报告失败")
+                success, detail = False, str(exc)
+            self._export_bridge.done.emit("sentry", success, detail)
+
+        self._export_buttons["sentry"] = self.send_sentry_btn
+        self._export_workers["sentry"] = threading.Thread(
+            target=_worker, name="ui-sentry-report", daemon=True,
+        )
+        self._export_workers["sentry"].start()
 
     def _start_text_export(self, kind: str, title: str, suggested_name: str,
                            build_text) -> None:
@@ -658,15 +734,25 @@ class DiagnosticsWindow(QWidget):
         button = self._export_buttons.pop(kind, None)
         if button is not None:
             button.setEnabled(True)
-            button.setText(tr("导出日志" if kind == "logs" else "导出报告 (txt)"))
+            if kind == "logs":
+                button.setText(tr("导出日志"))
+            elif kind == "sentry":
+                button.setText(tr("发送到 Sentry"))
+                self._update_sentry_button()
+            else:
+                button.setText(tr("导出报告 (txt)"))
         if success:
             if kind == "logs":
                 self.log_live_state.setText(f"{tr('日志已导出')} · {Path(detail).name}")
+            elif kind == "sentry":
+                self.selfcheck_summary.setText(tr("诊断报告已发送"))
             else:
                 self.selfcheck_summary.setText(f"{tr('报告已导出')} · {Path(detail).name}")
         else:
             if kind == "logs":
                 self.log_live_state.setText(tr("日志导出失败"))
+            elif kind == "sentry":
+                self.selfcheck_summary.setText(tr("诊断报告发送失败"))
             else:
                 self.selfcheck_summary.setText(tr("报告导出失败"))
 
@@ -694,3 +780,9 @@ class DiagnosticsWindow(QWidget):
         if timer is not None:
             timer.stop()
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        # Settings can be changed while this window is hidden; refresh the
+        # button state when it becomes visible again.
+        self._update_sentry_button()
+        super().showEvent(event)

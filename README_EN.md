@@ -66,10 +66,29 @@ The detailed engineering documents are currently maintained in Chinese:
 
 ## Development Setup
 
-Requirements: Windows 10/11, Python 3.11+, and [uv](https://docs.astral.sh/uv/).
+Requirements: Windows 10/11, Python 3.11+, and [uv](https://docs.astral.sh/uv/). Source runs keep models and configuration outside the Git worktree.
+
+First-time setup (once per computer):
 
 ```powershell
+git clone https://github.com/tuotuonuts/VoxSub.git
+cd VoxSub
 uv venv --python 3.11
+uv pip sync --python .venv\Scripts\python.exe requirements.lock
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+```
+
+Daily update and source run:
+
+```powershell
+git pull --ff-only
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+.\.venv\Scripts\python.exe run_app.py
+```
+
+`run_app.py` is the shared source and packaged entry point. `git pull` only updates tracked source files. Configuration stays in `%LOCALAPPDATA%\VoxSub\config.json`; models and caches stay in the user model root managed by `model_storage.py` and are never overwritten or deleted by a pull. Resync dependencies only when `requirements.lock` changes:
+
+```powershell
 uv pip sync --python .venv\Scripts\python.exe requirements.lock
 ```
 
@@ -80,11 +99,26 @@ Python 3.11 environment:
 uv pip compile requirements.txt --python .venv\Scripts\python.exe --python-platform windows --generate-hashes -o requirements.lock
 ```
 
-Run from source:
+### Optional Sentry error reporting
+
+Without a DSN, no network request is made and the existing local logs and diagnostics page remain active. To enable it for a PowerShell session:
 
 ```powershell
-.\.venv\Scripts\python.exe -m voxsub.ui.app
+$env:VOXSUB_SENTRY_DSN = "https://<public-key>@<host>/<project-id>"
+$env:VOXSUB_ENVIRONMENT = "development"  # development | testing | production
+$env:VOXSUB_BUILD = "source"              # optional source/build identifier
+.\.venv\Scripts\python.exe run_app.py
 ```
+
+Alternatively, set `sentry_dsn`, `sentry_environment`, and `sentry_build` in `%LOCALAPPDATA%\VoxSub\config.json`. Environment variables take precedence over local configuration. Never commit the DSN or place it in source code.
+
+Events contain only version, build, environment, OS, CPU, GPU/NPU, memory, driver, inference backend, and filtered exception metadata. API keys, audio, subtitle/recognized text, user files, and private paths are not sent. If the network is unavailable, events are dropped without affecting the app.
+
+Local logs are stored at `%LOCALAPPDATA%\VoxSub\logs\voxsub.log` and can also be viewed/exported from Diagnostics → Logs. Diagnostics → Self-check → Export Report (txt) writes the latest self-check snapshot; Repair only processes targets explicitly declared by that snapshot.
+
+When a DSN is configured, Diagnostics also shows “Send to Sentry”. It uploads the latest self-check report and a filtered local-log snapshot without rerunning the check. Missing DSN or network failure never affects the app.
+
+You can also enter the DSN, environment, and build identifier in Settings → About → Diagnostic Reporting. Saving reloads the configuration in the current process without a restart.
 
 Build the Windows installer:
 
