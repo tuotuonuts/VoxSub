@@ -147,6 +147,26 @@ Sentry 事件只包含软件版本、构建号、环境、操作系统、CPU、G
 
 也可以直接在“设置 → 关于 → 诊断上报”中填写 DSN、环境和构建标识并保存；保存后当前进程立即重载配置，无需重启。
 
+### Sentry API 长期排查（仅维护者）
+
+DSN 只负责上报，不能读取 Sentry Issue。需要长期排查时，维护者可创建只读 Sentry API Token，并仅勾选 `org:read`、`project:read`、`event:read`。不要使用写入或管理权限，也不要把 Token 发到聊天、写入源码、`config.json` 或 DSN 文件。
+
+首次在本机执行下列命令；脚本会在隐藏输入提示中请求 Token，随后自动从可访问组织中定位 `voxsub` 项目并写入本机配置：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\initialize_sentry_diagnostics.ps1
+```
+
+令牌保存在 `%LOCALAPPDATA%\VoxSub\sentry_auth_token.txt`，项目定位配置保存在 `%LOCALAPPDATA%\VoxSub\sentry_api.json`，都不进入 Git，也不被 VoxSub 应用读取。默认使用德国数据区 `https://de.sentry.io`；若项目位于其他数据区，可传入 `-SentryBase https://sentry.io`。
+
+配置完成后，可只读查看未解决 Issue：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\get_sentry_issues.ps1
+```
+
+令牌应设置较短有效期。设备不再用于维护或 Token 泄露时，立即在 Sentry 的 Auth Tokens 页面撤销。
+
 构建安装包：
 
 ```powershell

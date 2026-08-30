@@ -29,6 +29,8 @@ diagnostics/
 config.local.json
 *.sentry.local
 sentry_dsn.txt
+sentry_auth_token.txt
+sentry_api.json
 
 # 个人本地辅助脚本（可能包含通知账号配置，不公开）
 scripts/qq_notify.py
