@@ -80,6 +80,37 @@ function Invoke-Python {
     }
 }
 
+function Move-VenvAside {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+
+    if (-not (Test-Path -LiteralPath $VenvDir)) {
+        return
+    }
+    $backup = Join-Path $repoRoot ".venv.invalid-$stamp"
+    if (Test-Path -LiteralPath $backup) {
+        $backup = Join-Path $repoRoot (".venv.invalid-" + (Get-Date -Format "yyyyMMdd-HHmmssfff"))
+    }
+    try {
+        Move-Item -LiteralPath $VenvDir -Destination $backup -ErrorAction Stop
+    } catch {
+        throw "无法替换旧虚拟环境，可能仍被 Python、IDE 或同步软件占用。请关闭相关程序后重试。原始错误：$($_.Exception.Message)"
+    }
+    Write-RunLog "旧虚拟环境已移到备份目录: $backup"
+}
+
+function New-LocalVenv {
+    param([switch]$WithoutPip)
+
+    $arguments = @("-m", "venv")
+    if ($WithoutPip) {
+        $arguments += "--without-pip"
+    }
+    $arguments += $venvDir
+    Invoke-LoggedStep "创建本机独立虚拟环境" {
+        Invoke-Python $python $arguments
+    }
+}
+
 function Get-VoxSubProcesses {
     <# Return only processes that can keep this checkout or its runtime busy. #>
     $repoMarker = $repoRoot.ToLowerInvariant()
@@ -159,6 +190,7 @@ try {
 
     $venvDir = Join-Path $repoRoot ".venv"
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
     $venvReady = $false
     if (Test-Path -LiteralPath $venvPython) {
         try {
@@ -169,13 +201,11 @@ try {
         }
     }
     if (-not $venvReady) {
-        if (Test-Path -LiteralPath $venvDir) {
-            $backup = Join-Path $repoRoot ".venv.invalid-$stamp"
-            Move-Item -LiteralPath $venvDir -Destination $backup
-            Write-RunLog "旧虚拟环境不可用，已移到: $backup"
-        }
-        Invoke-LoggedStep "创建本机独立虚拟环境" {
-            Invoke-Python $python @("-m", "venv", $venvDir)
+        Move-VenvAside $venvDir
+        if ($uv) {
+            New-LocalVenv -WithoutPip
+        } else {
+            New-LocalVenv
         }
     }
 
@@ -183,10 +213,19 @@ try {
     if (-not (Test-Path -LiteralPath $lockFile)) {
         throw "找不到 requirements.lock，无法安全安装依赖。"
     }
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
     if ($uv) {
-        Invoke-LoggedStep "同步锁定依赖 (uv)" {
-            uv pip sync --python $venvPython $lockFile
+        try {
+            Invoke-LoggedStep "同步锁定依赖 (uv)" {
+                uv pip sync --python $venvPython $lockFile
+            }
+        } catch {
+            Write-RunLog "[警告] 现有虚拟环境同步失败，将备份并重建本机环境。"
+            Move-VenvAside $venvDir
+            New-LocalVenv -WithoutPip
+            $venvPython = Join-Path $venvDir "Scripts\python.exe"
+            Invoke-LoggedStep "重建后同步锁定依赖 (uv)" {
+                uv pip sync --python $venvPython $lockFile
+            }
         }
     } else {
         Write-RunLog "未找到 uv，改用虚拟环境 pip 安装 requirements.lock。"
