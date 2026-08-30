@@ -103,6 +103,15 @@ Remove-Item Env:VOXSUB_TEST_PROCESS_AUDIO
 
 脚本优先使用已安装的 `uv`，没有 `uv` 时自动改用虚拟环境内的 `pip`。如果同步时发现 `.venv` 被占用或权限异常，脚本会先将它改名备份，再用当前电脑的 Python 重建后重试；准备或启动失败时，窗口会显示易懂的原因，详细输出保存到 `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`。脚本不会复制其他电脑的 `.venv`，也不会删除模型、配置或用户数据。
 
+启动前脚本还会检查 Git 跟踪的源码是否有未提交修改。发现时会列出文件并停止更新，防止 `git pull` 覆盖本地代码；模型、配置、日志和 `.venv` 不会触发该检查。需要保留本地代码时，请先自行提交到分支；只想临时保留时，可在项目目录执行：
+
+```powershell
+git stash push -u -m "before VoxSub source update"
+git pull --ff-only
+```
+
+之后可用 `git stash list` 查看暂存内容；确认需要恢复时再执行 `git stash pop`。若上游也修改了相同文件，恢复时可能需要手动处理 Git 合并冲突。
+
 脚本每次自动设置 `VOXSUB_ENVIRONMENT=testing`。如果希望朋友的诊断报告进入你的 Sentry，可由你提前把 DSN 放到朋友电脑的 `%LOCALAPPDATA%\VoxSub\sentry_dsn.txt`（一行纯文本）；脚本会自动读取，朋友无需手动配置。没有该文件时仅写本地日志，不会联网。
 
 `run_app.py` 是源码和打包版共用的入口。`git pull` 只更新 Git 跟踪的源码；配置保存在 `%LOCALAPPDATA%\VoxSub\config.json`，模型和缓存由 `model_storage.py` 放在用户模型根目录，不会被拉取、覆盖或删除。只有依赖发生变化时才需要重新同步：

@@ -164,6 +164,25 @@ function Wait-VoxSubProcessesExit {
     return $false
 }
 
+function Get-TrackedWorkingTreeChanges {
+    <#
+    Report only tracked source changes. Runtime data is intentionally outside the
+    repository, and ignored folders such as .venv must not block routine updates.
+    #>
+    $status = @(& git -C $repoRoot status --porcelain --untracked-files=no)
+    if ($LASTEXITCODE -ne 0) {
+        throw "无法检查 Git 工作区状态，退出码 $LASTEXITCODE。"
+    }
+    return @(
+        $status |
+            Where-Object { $_ } |
+            ForEach-Object {
+                $line = [string]$_
+                if ($line.Length -gt 3) { $line.Substring(3) } else { $line }
+            }
+    )
+}
+
 try {
     Write-RunLog "VoxSub 源码测试启动"
     Write-RunLog "项目目录: $repoRoot"
@@ -182,6 +201,19 @@ try {
         Write-Host "请先右键系统托盘图标，选择“退出应用”，然后重新双击本脚本。" -ForegroundColor Yellow
         Write-RunLog "未执行 git pull：请先从托盘菜单选择“退出应用”。"
         exit 2
+    }
+
+    $localChanges = @(Get-TrackedWorkingTreeChanges)
+    if ($localChanges.Count -gt 0) {
+        Write-RunLog "检测到 $($localChanges.Count) 个未提交的 Git 跟踪文件，为避免覆盖，未执行 git pull。"
+        foreach ($path in $localChanges) {
+            Write-RunLog "本地修改: $path"
+        }
+        Write-Host "检测到未提交的 VoxSub 源码修改，已安全停止更新。" -ForegroundColor Yellow
+        Write-Host "请先提交或暂存这些代码修改，再重新双击本脚本。" -ForegroundColor Yellow
+        Write-Host "模型、配置、日志和 .venv 不会触发此检查。详细文件列表已写入诊断日志。" -ForegroundColor Yellow
+        Write-RunLog "未执行 git pull：请先提交或暂存本地源码修改。"
+        exit 4
     }
 
     Invoke-LoggedStep "更新源码 (git pull --ff-only)" {

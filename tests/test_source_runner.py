@@ -80,6 +80,18 @@ def test_runner_checks_processes_before_pull_and_waits_after_exit() -> None:
     assert "taskkill" not in text
 
 
+def test_runner_stops_before_pull_for_tracked_local_source_changes() -> None:
+    text = PS1.read_text(encoding="utf-8")
+
+    assert "function Get-TrackedWorkingTreeChanges" in text
+    assert "git -C $repoRoot status --porcelain --untracked-files=no" in text
+    assert "$localChanges = @(Get-TrackedWorkingTreeChanges)" in text
+    assert "检测到未提交的 VoxSub 源码修改，已安全停止更新。" in text
+    assert "模型、配置、日志和 .venv 不会触发此检查。" in text
+    assert text.index("$localChanges = @(Get-TrackedWorkingTreeChanges)") < text.index(
+        "git -C $repoRoot pull --ff-only")
+
+
 def test_tray_exit_action_is_explicit_and_localized() -> None:
     tray = (ROOT / "voxsub" / "ui" / "tray.py").read_text(encoding="utf-8")
     i18n = (ROOT / "voxsub" / "ui" / "i18n.py").read_text(encoding="utf-8")
