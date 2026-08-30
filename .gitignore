@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv.invalid-*/
 *.egg-info/
 .pytest_cache/
 /.pytest-*/
@@ -20,11 +21,14 @@ dist/
 # 运行时数据（模型/下载缓存不入库）
 models/
 downloads/
+diagnostics/
 
 # 凭据与本地配置
 .env
 *.env
 config.local.json
+*.sentry.local
+sentry_dsn.txt
 
 # 个人本地辅助脚本（可能包含通知账号配置，不公开）
 scripts/qq_notify.py

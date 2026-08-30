@@ -86,6 +86,12 @@ git pull --ff-only
 .\.venv\Scripts\python.exe run_app.py
 ```
 
+For friends, clone the repository once and double-click `更新并启动测试版.bat` in the project root. Every later double-click automatically runs `git pull`, checks for Python 3.11+, creates a local `.venv` when needed, syncs `requirements.lock`, and starts `run_app.py`. The script clears `PYTHONPATH` / `PYTHONHOME`, sets the Sentry environment to `testing`, and requires no manual Python dependency setup.
+
+The script prefers `uv` and falls back to the virtual environment's `pip`. If preparation or startup fails, it shows a plain-language reason and saves detailed output under `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`. It never copies another computer's `.venv` and does not remove models, configuration, or user data; an unusable old `.venv` is renamed as a backup first.
+
+The script sets `VOXSUB_ENVIRONMENT=testing` on every run. If you want a friend's reports in your Sentry project, provision `%LOCALAPPDATA%\VoxSub\sentry_dsn.txt` with the DSN as one line; the script reads it automatically, so the friend does not configure anything. Without that file, only local logs are used and no network request is made.
+
 `run_app.py` is the shared source and packaged entry point. `git pull` only updates tracked source files. Configuration stays in `%LOCALAPPDATA%\VoxSub\config.json`; models and caches stay in the user model root managed by `model_storage.py` and are never overwritten or deleted by a pull. Resync dependencies only when `requirements.lock` changes:
 
 ```powershell
