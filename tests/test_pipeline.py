@@ -49,6 +49,182 @@ def test_quality_translator_falls_back_to_ready_opus(monkeypatch) -> None:
     assert created[0].closed is True
 
 
+def test_quality_translator_does_not_keep_failed_path_when_opus_unavailable(
+        monkeypatch) -> None:
+    """两级本地翻译都不可用时，不得把坏质量档留给后续句子重试。"""
+    import voxsub.translate.factory as factory
+    import voxsub.pipeline as pipeline_module
+
+    class _FakeTranslator:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+            self.closed = False
+
+        def health(self) -> str:
+            return "质量模型损坏" if self.kind == "qwen-quality" else "OPUS 模型缺失"
+
+        def close(self) -> None:
+            self.closed = True
+
+    created: list[_FakeTranslator] = []
+
+    class _Factory:
+        @staticmethod
+        def create(kind, _config=None):
+            item = _FakeTranslator(kind)
+            created.append(item)
+            return item
+
+    monkeypatch.setattr(factory, "TranslatorFactory", _Factory)
+    translator, effective = pipeline_module._load_translator(
+        "qwen-quality", {"translate_model_id": "mt-hy-mt2-1.8b-q8"})
+
+    assert isinstance(translator, pipeline_module._NoopTranslator)
+    assert effective is None
+    assert all(item.closed for item in created)
+
+
+def test_quality_warmup_failure_switches_to_noop_when_opus_unavailable(
+        monkeypatch) -> None:
+    """预热阶段失败也必须清理坏实例，不能让后续句子重复启动它。"""
+    import voxsub.pipeline as pipeline_module
+
+    class _BrokenQuality:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def warmup(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            self.closed = True
+
+    broken = _BrokenQuality()
+    pipe = pipeline_module.Pipeline()
+    pipe._translator = broken  # noqa: SLF001
+    pipe._trans_kind = "qwen-quality"  # noqa: SLF001
+    statuses: list[str] = []
+    pipe.on_status(statuses.append)
+
+    monkeypatch.setattr(
+        pipeline_module, "_load_translator",
+        lambda *_args, **_kwargs: (pipeline_module._NoopTranslator(), None),
+    )
+    pipe._warmup_translator()  # noqa: SLF001
+
+    assert broken.closed is True
+    assert isinstance(pipe._translator, pipeline_module._NoopTranslator)  # noqa: SLF001
+    assert pipe._trans_kind is None  # noqa: SLF001
+    assert statuses == ["本地翻译不可用，暂时显示原文"]
+
+
+def test_quality_warmup_exception_switches_to_fallback(monkeypatch) -> None:
+    """预热抛异常时也要走一次性降级，而不是让线程退出。"""
+    import voxsub.pipeline as pipeline_module
+
+    class _BrokenQuality:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def warmup(self) -> bool:
+            raise RuntimeError("llama-server exited")
+
+        def close(self) -> None:
+            self.closed = True
+
+    broken = _BrokenQuality()
+    fallback = pipeline_module._NoopTranslator()
+    pipe = pipeline_module.Pipeline()
+    pipe._translator = broken  # noqa: SLF001
+    pipe._trans_kind = "qwen-quality"  # noqa: SLF001
+    monkeypatch.setattr(
+        pipeline_module, "_load_translator",
+        lambda *_args, **_kwargs: (fallback, None),
+    )
+
+    pipe._warmup_translator()  # noqa: SLF001
+
+    assert broken.closed is True
+    assert pipe._translator is fallback  # noqa: SLF001
+    assert pipe._trans_kind is None  # noqa: SLF001
+
+
+def test_quality_request_failure_opens_one_way_fallback(monkeypatch) -> None:
+    """运行时崩溃后，后续句子不得再次调用坏质量翻译器。"""
+    import voxsub.pipeline as pipeline_module
+
+    class _BrokenQuality:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.closed = False
+
+        def translate(self, *_args, **_kwargs) -> str:
+            self.calls += 1
+            raise RuntimeError("server exited")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Fallback:
+        def translate(self, *_args, **_kwargs) -> str:
+            return "fallback"
+
+        def close(self) -> None:
+            return None
+
+    broken = _BrokenQuality()
+    pipe = pipeline_module.Pipeline()
+    pipe._translator = broken  # noqa: SLF001
+    pipe._trans_kind = "qwen-quality"  # noqa: SLF001
+    monkeypatch.setattr(
+        pipeline_module, "_load_translator",
+        lambda *_args, **_kwargs: (_Fallback(), "opus-fast"),
+    )
+
+    pipe._translate_sentence("这是第一句")  # noqa: SLF001
+    assert broken.calls == 1
+    assert broken.closed is True
+    assert pipe._trans_kind == "opus-fast"  # noqa: SLF001
+    pipe._translate_sentence("这是第二句")  # noqa: SLF001
+    assert broken.calls == 1
+
+
+def test_quality_draft_failure_opens_one_way_fallback(monkeypatch) -> None:
+    """实时草稿翻译崩溃后，下一次草稿不再调用坏质量模型。"""
+    import voxsub.pipeline as pipeline_module
+    from voxsub.live_draft import DraftTranslationRequest
+
+    class _BrokenQuality:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.closed = False
+
+        def translate(self, *_args, **_kwargs) -> str:
+            self.calls += 1
+            raise RuntimeError("server exited")
+
+        def close(self) -> None:
+            self.closed = True
+
+    broken = _BrokenQuality()
+    fallback = pipeline_module._NoopTranslator()
+    pipe = pipeline_module.Pipeline()
+    pipe._translator = broken  # noqa: SLF001
+    pipe._trans_kind = "qwen-quality"  # noqa: SLF001
+    monkeypatch.setattr(
+        pipeline_module, "_load_translator",
+        lambda *_args, **_kwargs: (fallback, None),
+    )
+
+    pipe._translate_draft(DraftTranslationRequest(1, "第一句"))  # noqa: SLF001
+    pipe._translate_draft(DraftTranslationRequest(2, "第二句"))  # noqa: SLF001
+
+    assert broken.calls == 1
+    assert broken.closed is True
+    assert pipe._translator is fallback  # noqa: SLF001
+    assert pipe._trans_kind is None  # noqa: SLF001
+
+
 # ---------- 工具 ----------
 
 class FakeSource:

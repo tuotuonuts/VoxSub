@@ -145,8 +145,14 @@ def _load_translator(kind: str = "opus-fast", config=None) -> object:
                         close = getattr(fallback, "close", None)
                         if callable(close):
                             close()
-                        logger.warning("OPUS 极速档也不可用，保留质量档错误路径: %s",
-                                       fallback_health)
+                        close = getattr(translator, "close", None)
+                        if callable(close):
+                            close()
+                        logger.error(
+                            "质量翻译和 OPUS 极速档均不可用，改用原文直通: "
+                            "quality=%s opus=%s", health, fallback_health,
+                        )
+                        translator, effective_kind = _NoopTranslator(), None
             return translator, effective_kind
         except Exception as exc:
             logger.error("翻译档位 %s 创建失败，退回原文显示: %s", kind, exc,
@@ -551,23 +557,31 @@ class Pipeline:
         warmup = getattr(self._translator, "warmup", None)
         if not callable(warmup):
             return
-        result = warmup()
+        try:
+            result = warmup()
+        except Exception:
+            logger.exception("翻译引擎预热异常")
+            result = False
         if result is not False or self._trans_kind != "qwen-quality":
             return
         logger.warning("质量翻译预热失败，尝试切换 OPUS 极速档")
+        self._disable_quality_translator()
+
+    def _disable_quality_translator(self) -> None:
+        """Replace a failed quality translator so later sentences do not retry it."""
+        if self._trans_kind != "qwen-quality":
+            return
+        failed = self._translator
         fallback, fallback_kind = _load_translator(
             "opus-fast", self._translator_config)
-        if fallback_kind != "opus-fast":
-            close = getattr(fallback, "close", None)
-            if callable(close):
-                close()
-            return
-        old = self._translator
         self._translator, self._trans_kind = fallback, fallback_kind
-        close = getattr(old, "close", None)
+        close = getattr(failed, "close", None)
         if callable(close):
             close()
-        self._emit_status("质量翻译不可用，已切换极速翻译")
+        if fallback_kind == "opus-fast":
+            self._emit_status("质量翻译不可用，已切换极速翻译")
+        else:
+            self._emit_status("本地翻译不可用，暂时显示原文")
 
     def _start_tts_worker(self) -> None:
         if not self._tts_enabled or self._mode == "c":
@@ -902,6 +916,9 @@ class Pipeline:
                          len(text),
                          f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
                          request_ms, exc, exc_info=True)
+            # A runtime failure after warmup (for example a child process
+            # crash) must open the same one-way fallback circuit as warmup.
+            self._disable_quality_translator()
             translation = text + " 〔翻译失败〕"
             self._emit_status("翻译失败(已保留原文)")
         self._emit_utterance(text, translation)
@@ -928,6 +945,7 @@ class Pipeline:
         except Exception:
             logger.debug("实时草稿翻译失败: source=%r", request.source[:160],
                          exc_info=True)
+            self._disable_quality_translator()
             return
         view = self._live_draft.accept_translation(request, translation)
         if view is not None:
