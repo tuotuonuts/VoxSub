@@ -48,3 +48,4 @@ def test_issue_reader_uses_only_local_api_configuration() -> None:
     assert '"is:unresolved"' in text
     assert '"$base/api/0/projects/$org/$project/issues/' in text
     assert "-Method Get" in text
+    assert "foreach ($issue in $response)" in text

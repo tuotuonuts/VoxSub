@@ -36,7 +36,14 @@ try {
     $headers = @{ Authorization = "Bearer $token" }
     $encodedQuery = [uri]::EscapeDataString($Query)
     $uri = "$base/api/0/projects/$org/$project/issues/?query=$encodedQuery&limit=$Limit"
-    $issues = @(Invoke-RestMethod -Method Get -Headers $headers -Uri $uri)
+    $response = Invoke-RestMethod -Method Get -Headers $headers -Uri $uri
+    # Windows PowerShell can retain a top-level JSON array as one ArrayList,
+    # which otherwise renders an empty table instead of one row per Issue.
+    $issues = @(
+        foreach ($issue in $response) {
+            $issue
+        }
+    )
     if ($AsJson) {
         $issues | ConvertTo-Json -Depth 8
     } elseif ($issues.Count -eq 0) {
