@@ -56,6 +56,8 @@ def test_runner_keeps_runtime_data_outside_git_and_logs_failures() -> None:
     assert "sentry_dsn.txt" in ignore
     assert "VoxSub\\diagnostics\\source-run" in script
     assert "Tee-Object -FilePath $logPath" in script
+    assert '$ErrorActionPreference = "Continue"' in script
+    assert "System.Management.Automation.ErrorRecord" in script
     assert "exit 1" in script
 
 

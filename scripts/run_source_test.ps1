@@ -20,14 +20,30 @@ function Invoke-LoggedStep {
         [Parameter(Mandatory = $true)][scriptblock]$Action
     )
     Write-RunLog "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Name"
+    $previousErrorPreference = $ErrorActionPreference
     try {
-        & $Action 2>&1 | Tee-Object -FilePath $logPath -Append
-        if ($LASTEXITCODE -ne 0) {
-            throw "命令退出码 $LASTEXITCODE"
+        # Native tools such as uv commonly write progress to stderr even on
+        # success. Normalize both streams into the log and judge success only
+        # by the native process exit code.
+        $ErrorActionPreference = "Continue"
+        & $Action 2>&1 |
+            ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                    $_.Exception.Message
+                } else {
+                    [string]$_
+                }
+            } |
+            Tee-Object -FilePath $logPath -Append
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            throw "命令退出码 $exitCode"
         }
     } catch {
         Write-RunLog "[失败] $Name : $($_.Exception.Message)"
         throw
+    } finally {
+        $ErrorActionPreference = $previousErrorPreference
     }
 }
 
