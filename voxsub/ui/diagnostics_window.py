@@ -101,6 +101,21 @@ def _call_self_check(module: object, progress) -> list[dict]:
     return list(run() or [])
 
 
+def _call_repair(module: object, results: tuple[dict, ...], store, progress) -> object:
+    """Call a result-aware repair hook while tolerating small test doubles."""
+    repair = getattr(module, "repair_self_check")
+    try:
+        parameters = inspect.signature(repair).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    kwargs = {}
+    if "store" in parameters:
+        kwargs["store"] = store
+    if "progress" in parameters:
+        kwargs["progress"] = progress
+    return repair(results, **kwargs)
+
+
 class DiagnosticsWindow(QWidget):
     """诊断页：自检结果卡（Tab 1）+ 实时日志（Tab 2）。"""
 
@@ -129,6 +144,7 @@ class DiagnosticsWindow(QWidget):
         self._repair_bridge.progress.connect(self._on_repair_progress)
         self._repair_bridge.done.connect(self._on_repair_done)
         self._repair_worker: threading.Thread | None = None
+        self._selfcheck_generation = 0
         self._last_counts = {"ok": 0, "warn": 0, "fail": 0}
         if diagnostics_module is _AUTO:
             self._load_module()
@@ -379,6 +395,7 @@ class DiagnosticsWindow(QWidget):
 
     def _render_cached_results(self) -> None:
         """Render the last self-check in the current UI language."""
+        self._clear_result_cards()
         counts = {key: sum(1 for item in self._results if item.get("status") == key)
                   for key in ("ok", "warn", "fail")}
         self._last_counts = counts
@@ -466,9 +483,18 @@ class DiagnosticsWindow(QWidget):
         self.selfcheck_summary.setText(label)
 
     def _on_selfcheck_done(self, results: object) -> None:
+        generation = self._selfcheck_generation
+        payload = results
+        if isinstance(results, dict) and "generation" in results:
+            generation = int(results.get("generation", -1))
+            payload = results.get("results", [])
+        if generation != self._selfcheck_generation:
+            logger.debug("忽略过期自检结果: generation=%s current=%s",
+                         generation, self._selfcheck_generation)
+            return
         self._selfcheck_worker = None
         self._set_selfcheck_busy(False)
-        self._results = [dict(item) for item in (results or [])]
+        self._results = [dict(item) for item in (payload or [])]
         self._render_cached_results()
 
     def _start_selfcheck(self) -> None:
@@ -478,6 +504,12 @@ class DiagnosticsWindow(QWidget):
             self._render()
             return
         module = self._module
+        self._selfcheck_generation += 1
+        generation = self._selfcheck_generation
+        # A running check owns the only visible result set.  Do not leave a
+        # previous snapshot on screen while a newer one is being calculated.
+        self._results = []
+        self._clear_result_cards()
         self._set_selfcheck_busy(True, tr("正在检查…"))
 
         def _worker() -> None:
@@ -486,7 +518,10 @@ class DiagnosticsWindow(QWidget):
             except Exception:
                 logger.exception("后台 run_self_check 执行失败")
                 results = [{"check": "自检执行", "status": "fail", "detail": "run_self_check 抛异常"}]
-            self._selfcheck_bridge.done.emit(results)
+            self._selfcheck_bridge.done.emit({
+                "generation": generation,
+                "results": results,
+            })
 
         self._selfcheck_worker = threading.Thread(
             target=_worker, name="ui-self-check", daemon=True
@@ -494,12 +529,20 @@ class DiagnosticsWindow(QWidget):
         self._selfcheck_worker.start()
 
     def _repair(self) -> None:
-        """Repair bundled VAD and missing built-in catalog models in the background."""
+        """Repair only the targets declared by the latest self-check."""
         if self._repair_worker is not None or self._selfcheck_worker is not None:
             return
         module = self._module
         if module is None:
             self.selfcheck_summary.setText(tr("未接入检查模块"))
+            return
+        repair = getattr(module, "repair_self_check", None)
+        if not callable(repair):
+            self.selfcheck_summary.setText(tr("当前检查模块不支持按结果修复"))
+            return
+        latest_results = tuple(dict(item) for item in self._results)
+        if not latest_results:
+            self.selfcheck_summary.setText(tr("请先完成一次自检"))
             return
         self.repair_btn.setEnabled(False)
         self.selfcheck_refresh_btn.setEnabled(False)
@@ -509,47 +552,17 @@ class DiagnosticsWindow(QWidget):
         self.selfcheck_progress.setFormat("%p%")
 
         def _worker() -> None:
-            repaired: list[str] = []
-            errors: list[str] = []
             try:
-                from voxsub.bootstrap_models import ensure_bundled_vad
-                from voxsub.model_catalog import ModelMarketplace, get_model
-                from voxsub.model_storage import resolve_models_root
-
-                root = resolve_models_root(self._store)
-                vad_target = root / "vad" / "silero_vad_v5.onnx"
-                vad_was_missing = not vad_target.is_file()
-                if ensure_bundled_vad(root) is not None and vad_was_missing:
-                    repaired.append("VAD")
-                marketplace = ModelMarketplace(root)
-                config = self._store.load()
-                selected_ids = {
-                    str(config.get("asr_model_id", "asr-zipformer-bilingual-fast")),
-                    str(config.get("translate_model_id", "mt-opus-fast-builtin")),
-                    str(config.get("ocr_model_id", "ocr-rapidocr-v6-small-builtin")),
-                    str(config.get("tts_model_id_zh", "tts-icefall-zh-aishell3")),
-                    str(config.get("tts_model_id_en", "tts-icefall-en-ljspeech-low")),
-                }
-                models = [
-                    model for model_id in selected_ids
-                    if (model := get_model(model_id)) is not None
-                    and marketplace.missing_paths(model)
-                ]
-                total = len(models)
-                for index, model in enumerate(models):
-                    self._repair_bridge.progress.emit(
-                        index, max(1, total), f"正在修复：{model.name}"
-                    )
-                    marketplace.install(model, preference="auto")
-                    repaired.append(model.name)
-                    self._repair_bridge.progress.emit(
-                        index + 1, max(1, total), f"已修复：{model.name}"
-                    )
-                self._repair_bridge.done.emit({"repaired": repaired, "errors": errors})
+                outcome = _call_repair(
+                    module,
+                    latest_results,
+                    self._store,
+                    self._repair_bridge.progress.emit,
+                )
+                self._repair_bridge.done.emit(outcome or {})
             except Exception as exc:  # noqa: BLE001
                 logger.exception("后台自检修复失败")
-                errors.append(str(exc))
-                self._repair_bridge.done.emit({"repaired": repaired, "errors": errors})
+                self._repair_bridge.done.emit({"repaired": [], "errors": [str(exc)]})
 
         self._repair_worker = threading.Thread(
             target=_worker, name="ui-self-check-repair", daemon=True

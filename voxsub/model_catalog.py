@@ -969,9 +969,11 @@ class ModelMarketplace:
 
     def install(self, model: ModelSpec, preference: str = "auto",
                 progress: Callable[[int, int, str], None] | None = None,
-                cancelled: Callable[[], bool] | None = None) -> Path:
+                cancelled: Callable[[], bool] | None = None,
+                force: bool = False) -> Path:
+        """Install a model; ``force`` revalidates every remote asset."""
         missing = self.missing_paths(model)
-        if not missing:
+        if not missing and not force:
             return self.available_model_dir(model)
         sources = self.ordered_sources(model, preference)
         if not sources:
@@ -987,7 +989,8 @@ class ModelMarketplace:
         for source in sources:
             try:
                 target = self._install_from_source(
-                    model, source, progress=progress, cancelled=cancelled)
+                    model, source, progress=progress, cancelled=cancelled,
+                    force=force)
                 remaining = self.missing_paths(model)
                 if remaining:
                     raise RuntimeError("下载完成但仍缺少：" + ", ".join(remaining))
@@ -1008,9 +1011,11 @@ class ModelMarketplace:
 
     def _install_from_source(self, model: ModelSpec, source: ModelSource,
                              progress: Callable[[int, int, str], None] | None,
-                             cancelled: Callable[[], bool] | None) -> Path:
+                             cancelled: Callable[[], bool] | None,
+                             force: bool = False) -> Path:
         if source.files:
-            return self._install_remote_files(model, source, progress, cancelled)
+            return self._install_remote_files(model, source, progress, cancelled,
+                                              force=force)
 
         download = self._downloads / model.asset_name
 
@@ -1040,19 +1045,20 @@ class ModelMarketplace:
 
     def _install_remote_files(self, model: ModelSpec, source: ModelSource,
                               progress: Callable[[int, int, str], None] | None,
-                              cancelled: Callable[[], bool] | None) -> Path:
+                              cancelled: Callable[[], bool] | None,
+                              force: bool = False) -> Path:
         download_root = self._downloads / model.id
         total = sum(item.size for item in source.files) or model.download_bytes
         completed = 0
         for item in source.files:
             target_file = self.model_dir(model) / item.install_rel
             destination = download_root / item.install_rel
-            if self._remote_file_valid(target_file, item):
+            if not force and self._remote_file_valid(target_file, item):
                 completed += item.size or target_file.stat().st_size
                 if progress:
                     progress(completed, total, source.label)
                 continue
-            if self._remote_file_valid(destination, item):
+            if not force and self._remote_file_valid(destination, item):
                 completed += item.size or destination.stat().st_size
                 if progress:
                     progress(completed, total, source.label)

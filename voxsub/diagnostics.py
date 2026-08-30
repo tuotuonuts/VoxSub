@@ -3,6 +3,7 @@
 契约见 DESIGN.md「设备路由与诊断契约」:
 
     def run_self_check() -> list[dict]   # 每项 {check, status: ok|warn|fail, detail}
+    def repair_self_check(results, ...) -> dict  # 只修复结果声明的目标
     def export_report() -> str           # 纯文本报告(诊断页一键导出)
 
 检查项:
@@ -20,12 +21,12 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 
-from voxsub import __version__
 from voxsub.config_store import ConfigStore
-from voxsub.model_catalog import ModelMarketplace, get_model
+from voxsub.model_catalog import CATALOG, ModelMarketplace, get_model
 from voxsub.model_storage import resolve_models_root
 from voxsub.models import ModelManager
 from voxsub.logging_setup import get_logger
@@ -49,6 +50,24 @@ def _zipformer_dir() -> Path:
     return ModelMarketplace(root).available_model_dir(model) if model else root
 
 
+def _model_ids_for_problems(root: Path, problems: list[dict]) -> list[str]:
+    """Map integrity paths to catalog models that the repair action can install."""
+    problem_paths = [str(item.get("rel", "")).replace("\\", "/")
+                     for item in problems]
+    marketplace = ModelMarketplace(root)
+    ids: list[str] = []
+    for model in CATALOG:
+        prefixes = (model.install_rel, *model.legacy_install_rels)
+        if not any(
+            path == prefix or path.startswith(prefix + "/")
+            for path in problem_paths for prefix in prefixes
+        ):
+            continue
+        if marketplace.missing_paths(model) and model.id not in ids:
+            ids.append(model.id)
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # 单项检查
 # ---------------------------------------------------------------------------
@@ -63,13 +82,17 @@ def _check_model_integrity() -> dict:
     if problems:
         sample = ", ".join(f"{p['rel']}({p['reason']})" for p in problems[:5])
         more = f" 等 {len(problems)} 项" if len(problems) > 5 else ""
+        repair_model_ids = _model_ids_for_problems(models_dir(), problems)
         logger.warning("自检[模型完整性] %d/%d 就绪, %d 项异常", ready, total, len(problems))
-        return {
+        result = {
             "check": "模型完整性",
             "status": "fail",
             "detail": f"{ready}/{total} 就绪, 问题项: {sample}{more}",
             "suggestion": "运行 model_fetch.py scan 重扫, 或用 fetch 重新下载缺失/损坏文件 (见 voxsub.models.ModelManager)",
         }
+        if repair_model_ids:
+            result["repair"] = {"kind": "models", "model_ids": repair_model_ids}
+        return result
     logger.info("自检[模型完整性] %d 条登记全部就绪", total)
     return {
         "check": "模型完整性",
@@ -143,7 +166,9 @@ def _check_asr_smoke() -> dict:
                        asr_dir.name)
         return {"check": "ASR 冒烟", "status": "fail",
                 "detail": f"ASR 模型不完整 (缺 tokens.txt 或 encoder onnx): {asr_dir}",
-                "suggestion": "用 model_fetch.py fetch 补齐 asr 模型"}
+                "suggestion": "点击修复以补齐 ASR 模型",
+                "repair": {"kind": "models", "model_ids": [
+                    "asr-zipformer-bilingual-fast"]}}
     try:
         import sherpa_onnx
 
@@ -174,24 +199,21 @@ def _check_asr_smoke() -> dict:
         logger.warning("自检[ASR 冒烟] 加载/解码异常: %s", exc, exc_info=True)
         return {"check": "ASR 冒烟", "status": "fail",
                 "detail": f"加载/解码异常: {type(exc).__name__}: {exc}",
-                "suggestion": "检查 asr 模型文件是否损坏, 重新下载"}
+                "suggestion": "点击修复以重新检查 ASR 模型",
+                "repair": {"kind": "models", "model_ids": [
+                    "asr-zipformer-bilingual-fast"]}}
 
 
 def _check_vad_smoke() -> dict:
     """加载 silero VAD, 合成 220Hz 音应能触发语音检测。"""
     vad_dir = models_dir() / "vad"
-    try:
-        from voxsub.bootstrap_models import ensure_bundled_vad
-
-        ensure_bundled_vad(models_dir())
-    except Exception:
-        logger.warning("自检[VAD 冒烟] 无法修复基础 VAD", exc_info=True)
     hits = sorted(vad_dir.glob("*.onnx"))
     if not hits:
         logger.warning("自检[VAD 冒烟] 缺少 VAD 模型: %s", vad_dir.name)
         return {"check": "VAD 冒烟", "status": "fail",
                 "detail": f"缺少 VAD 模型: {vad_dir}",
-                "suggestion": f"重新安装 VoxSub {__version__} 以修复基础 VAD 模型"}
+                "suggestion": "点击修复以恢复基础 VAD 模型",
+                "repair": {"kind": "vad"}}
     try:
         import sherpa_onnx
 
@@ -221,7 +243,8 @@ def _check_vad_smoke() -> dict:
         logger.warning("自检[VAD 冒烟] 加载/检测异常: %s", exc, exc_info=True)
         return {"check": "VAD 冒烟", "status": "fail",
                 "detail": f"加载/检测异常: {type(exc).__name__}: {exc}",
-                "suggestion": "检查 vad 模型文件是否损坏, 重新下载"}
+                "suggestion": "点击修复以恢复基础 VAD 模型",
+                "repair": {"kind": "vad"}}
 
 
 def _check_tts_smoke() -> dict:
@@ -248,7 +271,10 @@ def _check_tts_smoke() -> dict:
         logger.info("自检[TTS 冒烟] 当前所选朗读模型未安装, 标记 warn")
         return {"check": "TTS 冒烟", "status": "warn",
                 "detail": "当前所选 TTS 模型未安装",
-                "suggestion": "前往模型广场下载中文或英文朗读模型 (缺朗读不影响字幕)"}
+                "suggestion": "点击修复以下载当前所选朗读模型 (缺朗读不影响字幕)",
+                "repair": {"kind": "models", "model_ids": [
+                    model_ids[lang] for lang in candidates
+                    if get_model(model_ids[lang]) is not None]}}
     try:
         from voxsub.tts import TTSEngine
 
@@ -268,7 +294,8 @@ def _check_tts_smoke() -> dict:
         logger.warning("自检[TTS 冒烟] 合成异常: %s", exc, exc_info=True)
         return {"check": "TTS 冒烟", "status": "fail",
                 "detail": f"合成异常: {type(exc).__name__}: {exc}",
-                "suggestion": "检查 tts 模型是否损坏, 重新下载"}
+                "suggestion": "点击修复以重新下载当前朗读模型",
+                "repair": {"kind": "models", "model_ids": [model_ids[lang]]}}
 
 
 def _check_resources() -> dict:
@@ -335,6 +362,90 @@ def run_self_check(
             progress(index + 1, total, f"已完成：{label}")
     logger.info("自检完成 (共 %d 项)", len(checks))
     return checks
+
+
+def _repair_actions(
+    results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+) -> list[tuple[str, str]]:
+    """Extract ordered, de-duplicated repair actions from one result snapshot."""
+    model_ids: list[str] = []
+    repair_vad = False
+    for item in results:
+        if str(item.get("status", "")) not in {"warn", "fail"}:
+            continue
+        descriptor = item.get("repair")
+        if not isinstance(descriptor, Mapping):
+            continue
+        if descriptor.get("kind") == "vad":
+            repair_vad = True
+        if descriptor.get("kind") != "models":
+            continue
+        raw_ids = descriptor.get("model_ids", ())
+        if isinstance(raw_ids, str):
+            raw_ids = (raw_ids,)
+        if isinstance(raw_ids, (list, tuple, set)):
+            for model_id in raw_ids:
+                if str(model_id) not in model_ids:
+                    model_ids.append(str(model_id))
+
+    actions = ([("vad", "基础 VAD")] if repair_vad else [])
+    actions.extend(("model", model_id) for model_id in model_ids)
+    return actions
+
+
+def _repair_one_action(
+    kind: str,
+    target: str,
+    root: Path,
+    marketplace: ModelMarketplace,
+    preference: str,
+) -> None:
+    """Execute one validated repair action and raise a user-facing error."""
+    if kind == "vad":
+        from voxsub.bootstrap_models import ensure_bundled_vad
+
+        if ensure_bundled_vad(root) is None:
+            raise RuntimeError("基础 VAD 文件未生成")
+        return
+    model = get_model(target)
+    if model is None:
+        raise RuntimeError(f"未知模型：{target}")
+    marketplace.install(model, preference=preference, force=True)
+
+
+def repair_self_check(
+    results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+    store: ConfigStore | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, list[str]]:
+    """Repair only targets declared by the latest self-check snapshot.
+
+    Checks that have no explicit repair descriptor are intentionally skipped:
+    reinstalling runtimes or changing hardware settings cannot be made safe by
+    a generic button.  ``force=True`` is used for model failures so a corrupt
+    file with an unchanged size is replaced instead of being treated as ready.
+    """
+    config = store.load() if store is not None else ConfigStore().load()
+    root = resolve_models_root(store)
+    marketplace = ModelMarketplace(root)
+    actions = _repair_actions(results)
+    repaired: list[str] = []
+    errors: list[str] = []
+    total = len(actions)
+    preference = str(config.get("download_source", "auto"))
+    for index, (kind, target) in enumerate(actions):
+        if progress:
+            progress(index, max(1, total), f"正在修复：{target}")
+        try:
+            _repair_one_action(kind, target, root, marketplace, preference)
+            repaired.append(target)
+        except Exception as exc:  # noqa: BLE001 - report each target separately
+            logger.warning("自检修复失败: target=%s error=%s", target, exc,
+                           exc_info=True)
+            errors.append(f"{target}: {exc}")
+        if progress:
+            progress(index + 1, max(1, total), f"已处理：{target}")
+    return {"repaired": repaired, "errors": errors}
 
 
 _STATUS_ICON = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[fail]"}

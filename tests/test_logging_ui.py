@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -286,6 +287,69 @@ class TestDiagnosticsLogTab:
             assert dw.selfcheck_progress.isHidden()
             assert dw.selfcheck_refresh_btn.isEnabled()
             assert dw.selfcheck_progress.value() == 100
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_new_selfcheck_replaces_old_snapshot_immediately(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        release = threading.Event()
+        calls = {"count": 0}
+
+        class _Diag:
+            @staticmethod
+            def run_self_check(progress=None):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return [{"check": "旧结果", "status": "fail", "detail": "旧问题"}]
+                release.wait(2)
+                return [{"check": "新结果", "status": "ok", "detail": "已恢复"}]
+
+        dw = DiagnosticsWindow(diagnostics_module=_Diag())
+        try:
+            assert dw._results[0]["check"] == "旧结果"  # noqa: SLF001
+            dw.refresh()
+            assert dw._results == []  # noqa: SLF001
+            assert not any("旧问题" in label.text() for label in dw.findChildren(type(dw.selfcheck_summary)))
+            release.set()
+            _wait_until(qapp, lambda: dw._selfcheck_worker is None)  # noqa: SLF001
+            assert [item["check"] for item in dw._results] == ["新结果"]  # noqa: SLF001
+        finally:
+            release.set()
+            dw.close()
+            dw.deleteLater()
+
+    def test_repair_receives_latest_selfcheck_snapshot(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        captured = {}
+        calls = {"count": 0}
+
+        class _Diag:
+            @staticmethod
+            def run_self_check(progress=None):
+                calls["count"] += 1
+                return [{
+                    "check": "ASR 冒烟",
+                    "status": "fail",
+                    "detail": "ASR 模型损坏",
+                    "repair": {"kind": "models", "model_ids": ["asr-target"]},
+                }]
+
+            @staticmethod
+            def repair_self_check(results, store=None, progress=None):
+                captured["results"] = results
+                return {"repaired": ["asr-target"], "errors": []}
+
+        dw = DiagnosticsWindow(diagnostics_module=_Diag())
+        try:
+            expected = tuple(dict(item) for item in dw._results)  # noqa: SLF001
+            dw._repair()  # noqa: SLF001
+            _wait_until(qapp, lambda: "results" in captured)
+            assert captured["results"] == expected
+            _wait_until(qapp, lambda: dw._selfcheck_worker is None)  # noqa: SLF001
+            assert calls["count"] >= 2  # 修复完成后仍按既有体验自动复检
         finally:
             dw.close()
             dw.deleteLater()

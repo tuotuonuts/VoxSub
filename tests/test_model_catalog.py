@@ -369,6 +369,41 @@ def test_install_multi_file_source_and_remove_partial_staging(
     assert not staged.exists()
 
 
+def test_force_install_rechecks_all_multi_file_assets(
+        tmp_path: Path, monkeypatch) -> None:
+    """强制修复应重下完整的多文件模型，而不是只绕过快速返回。"""
+    base = get_model("asr-qwen3-0.6b-int8")
+    assert base is not None
+    files = (
+        RemoteFile("https://example.invalid/encoder", "encoder.onnx", 7),
+        RemoteFile("https://example.invalid/vocab", "tokenizer/vocab.json", 2),
+    )
+    source = ModelSource("china", "test multi-file", "https://example.invalid",
+                         "https://example.invalid", files=files)
+    model = replace(base, sources=(source,),
+                    required_paths=("encoder.onnx", "tokenizer/vocab.json"),
+                    install_rel="marketplace/test-force-multi", archive=False)
+    calls: list[str] = []
+
+    def fake_fetch(url, dest, **kwargs):
+        calls.append(url)
+        destination = Path(dest)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"encoder" if url.endswith("encoder") else b"{}")
+        return True
+
+    import voxsub.model_catalog as catalog
+
+    monkeypatch.setattr(catalog, "fetch_file", fake_fetch)
+    market = ModelMarketplace(tmp_path / "models")
+    market.install(model, "china")
+    assert len(calls) == 2
+
+    market.install(model, "china", force=True)
+
+    assert len(calls) == 4
+
+
 def test_source_preference_is_respected_without_probe(tmp_path: Path) -> None:
     market = ModelMarketplace(tmp_path)
     model = get_model("asr-funasr-nano-2512-int8")

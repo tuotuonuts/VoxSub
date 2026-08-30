@@ -92,6 +92,101 @@ def test_model_integrity_detects_missing_file(tmp_path: Path, monkeypatch) -> No
     assert entry["status"] == "ok"
 
 
+def test_vad_check_reports_missing_without_implicit_repair(
+        tmp_path: Path, monkeypatch) -> None:
+    """自检只报告 VAD 状态，修复动作必须由按钮显式触发。"""
+    import voxsub.bootstrap_models as bootstrap_models
+    import voxsub.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "models_dir", lambda: tmp_path)
+    called = []
+    monkeypatch.setattr(
+        bootstrap_models,
+        "ensure_bundled_vad",
+        lambda *_args, **_kwargs: called.append(True),
+    )
+
+    result = diagnostics._check_vad_smoke()  # noqa: SLF001
+
+    assert result["status"] == "fail"
+    assert result["repair"] == {"kind": "vad"}
+    assert called == []
+
+
+def test_repair_self_check_uses_only_declared_targets(tmp_path: Path, monkeypatch) -> None:
+    """修复只消费最新结果里的显式目标，不猜测其它配置或运行时问题。"""
+    from types import SimpleNamespace
+
+    import voxsub.bootstrap_models as bootstrap_models
+    import voxsub.diagnostics as diagnostics
+
+    calls: list[tuple[str, str, bool]] = []
+    vad_calls: list[Path] = []
+
+    class _Marketplace:
+        def __init__(self, root):
+            assert Path(root) == tmp_path
+
+        def install(self, model, preference="auto", force=False):
+            calls.append((model.id, preference, force))
+
+    store = SimpleNamespace(load=lambda: {"download_source": "china"})
+    monkeypatch.setattr(diagnostics, "resolve_models_root", lambda _store=None: tmp_path)
+    monkeypatch.setattr(diagnostics, "ModelMarketplace", _Marketplace)
+    monkeypatch.setattr(
+        diagnostics,
+        "get_model",
+        lambda model_id: SimpleNamespace(id=model_id),
+    )
+    monkeypatch.setattr(
+        bootstrap_models,
+        "ensure_bundled_vad",
+        lambda root: vad_calls.append(Path(root)) or Path(root) / "vad" / "silero_vad_v5.onnx",
+    )
+
+    results = [
+        {"check": "ORT providers", "status": "fail"},
+        {"check": "资源", "status": "warn", "repair": {"kind": "runtime"}},
+        {"check": "ASR 冒烟", "status": "fail",
+         "repair": {"kind": "models", "model_ids": ["asr-broken", "asr-broken"]}},
+        {"check": "VAD 冒烟", "status": "fail", "repair": {"kind": "vad"}},
+        {"check": "已通过", "status": "ok",
+         "repair": {"kind": "models", "model_ids": ["must-not-run"]}},
+    ]
+
+    outcome = diagnostics.repair_self_check(results, store=store)
+
+    assert outcome == {"repaired": ["基础 VAD", "asr-broken"], "errors": []}
+    assert vad_calls == [tmp_path]
+    assert calls == [("asr-broken", "china", True)]
+
+
+def test_repair_self_check_skips_results_without_repair_descriptor(
+        tmp_path: Path, monkeypatch) -> None:
+    """没有明确修复目标的 ORT/资源警告不应触发隐式操作。"""
+    import voxsub.diagnostics as diagnostics
+
+    calls = []
+
+    class _Marketplace:
+        def __init__(self, _root):
+            pass
+
+        def install(self, *args, **kwargs):
+            calls.append((args, kwargs))
+
+    monkeypatch.setattr(diagnostics, "resolve_models_root", lambda _store=None: tmp_path)
+    monkeypatch.setattr(diagnostics, "ModelMarketplace", _Marketplace)
+
+    outcome = diagnostics.repair_self_check([
+        {"check": "ORT providers", "status": "fail"},
+        {"check": "磁盘/内存余量", "status": "warn"},
+    ])
+
+    assert outcome == {"repaired": [], "errors": []}
+    assert calls == []
+
+
 @pytest.mark.skipif(not _has_real_models(), reason="本机无真实模型目录")
 def test_verify_all_real_models_all_ready() -> None:
     """真机清单全部条目 ready (存在 + 大小一致, 无 missing/corrupt)。"""
