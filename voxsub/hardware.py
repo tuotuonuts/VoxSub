@@ -7,6 +7,7 @@ model can run on it; the matching execution provider/runtime must also exist.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import platform
 import re
@@ -25,6 +26,17 @@ INTEL_LLAMA_NPU_MIN_DRIVER = (32, 0, 100, 4778)
 INTEL_NPU_DRIVER_URL = (
     "https://www.intel.com/content/www/us/en/download/794734/"
     "intel-npu-driver-windows.html"
+)
+_NPU_NAME_PATTERN = re.compile(
+    r"\bnpu\b|neural processing|ai boost|ryzen ai|hexagon",
+    re.IGNORECASE,
+)
+_OPENVINO_RUNTIME_FILES = (
+    "llama-server.exe",
+    "ggml-openvino.dll",
+    "openvino.dll",
+    "openvino_intel_npu_plugin.dll",
+    "openvino_intel_npu_compiler_loader.dll",
 )
 
 
@@ -56,6 +68,9 @@ class HardwareProfile:
     integrated_gpu_name: str = ""
     integrated_gpu_provider: str = ""
     npu_driver_version: str = ""
+    # Discovery metadata is diagnostic-only and does not affect routing.
+    npu_detection_source: str = ""
+    npu_detection_error: str = ""
 
     @property
     def has_discrete_gpu(self) -> bool:
@@ -88,6 +103,12 @@ class LlamaRuntime:
     backend: str       # cuda | hip | vulkan | openvino | sycl | cpu
     target: str = ""  # OpenVINO: GPU | NPU | CPU
     selection_reason: str = ""
+    # Runtime provenance is diagnostic metadata.  ``runtime_verified`` only
+    # means that the local build manifest proves the no-NPUW patch; it never
+    # claims that this computer's NPU inference has already succeeded.
+    runtime_source: str = ""
+    runtime_verified: bool = False
+    runtime_fingerprint: str = ""
 
     @property
     def accelerator(self) -> str:
@@ -128,44 +149,116 @@ def _video_controllers() -> list[dict]:
         return []
 
 
-def _npu_devices() -> list[str]:
-    raw = _run_powershell(
-        "$rx='\\bNPU\\b|Neural Processing|AI Boost|Ryzen AI|Hexagon'; "
-        "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match $rx } | "
-        "Select-Object -ExpandProperty Name | ConvertTo-Json -Compress")
+def _json_items(raw: str) -> list[object]:
     if not raw:
         return []
     try:
         value = json.loads(raw)
-        values = value if isinstance(value, list) else [value]
-        pattern = re.compile(
-            r"\bnpu\b|neural processing|ai boost|ryzen ai|hexagon", re.IGNORECASE)
-        return [name for item in values
-                if (name := str(item).strip()) and pattern.search(name)]
     except (json.JSONDecodeError, TypeError):
         return []
+    return value if isinstance(value, list) else [value]
+
+
+def _filter_npu_names(values: list[object]) -> list[str]:
+    names: list[str] = []
+    for item in values:
+        if isinstance(item, dict):
+            value = item.get("FriendlyName") or item.get("Name") or item.get("DeviceName")
+        else:
+            value = item
+        name = str(value or "").strip()
+        if name and _NPU_NAME_PATTERN.search(name) and name not in names:
+            names.append(name)
+    return names
+
+
+def _pnputil_npu_devices() -> list[str]:
+    """Enumerate present devices when WMI and the PowerShell PnP cmdlet fail."""
+    if os.name != "nt":
+        return []
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            ["pnputil.exe", "/enum-devices", "/connected"],
+            capture_output=True, text=True, timeout=8, check=False,
+            creationflags=flags,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        if not _NPU_NAME_PATTERN.search(line):
+            continue
+        value = line.split(":", 1)[-1].strip()
+        if value and value not in names:
+            names.append(value)
+    return names
+
+
+def _npu_device_inventory() -> tuple[list[str], str, str]:
+    """Return NPU names, probe source and a human-readable failure detail."""
+    rx = r"\bNPU\b|Neural Processing|AI Boost|Ryzen AI|Hexagon"
+    wmi = _run_powershell(
+        f"$rx='{rx}'; Get-CimInstance Win32_PnPEntity | "
+        "Where-Object { $_.Name -match $rx } | "
+        "Select-Object -ExpandProperty Name | ConvertTo-Json -Compress")
+    names = _filter_npu_names(_json_items(wmi))
+    if names:
+        return names, "wmi", ""
+
+    pnp = _run_powershell(
+        f"$rx='{rx}'; Get-PnpDevice -PresentOnly | "
+        "Where-Object { $_.FriendlyName -match $rx -or $_.Name -match $rx } | "
+        "Select-Object FriendlyName,Name | ConvertTo-Json -Compress")
+    names = _filter_npu_names(_json_items(pnp))
+    if names:
+        logger.warning("WMI 未返回 NPU，已使用 Get-PnpDevice 备用探测")
+        return names, "pnp", "wmi returned no matching device"
+
+    names = _pnputil_npu_devices()
+    if names:
+        logger.warning("WMI/Get-PnpDevice 未返回 NPU，已使用 pnputil 备用探测")
+        return names, "pnputil", "wmi and Get-PnpDevice returned no matching device"
+    return [], "none", "WMI, Get-PnpDevice and pnputil returned no matching NPU"
+
+
+def _npu_devices() -> list[str]:
+    """Return present NPU names while keeping the legacy helper contract."""
+    return _npu_device_inventory()[0]
 
 
 def _npu_drivers() -> list[dict[str, str]]:
+    rx = r"\bNPU\b|Neural Processing|AI Boost|Ryzen AI|Hexagon"
     raw = _run_powershell(
-        "$rx='\\bNPU\\b|Neural Processing|AI Boost|Ryzen AI|Hexagon'; "
-        "Get-CimInstance Win32_PnPSignedDriver | "
+        f"$rx='{rx}'; Get-CimInstance Win32_PnPSignedDriver | "
         "Where-Object { $_.DeviceName -match $rx } | "
         "Select-Object DeviceName,DriverVersion | ConvertTo-Json -Compress")
-    if not raw:
-        return []
-    try:
-        value = json.loads(raw)
-        values = value if isinstance(value, list) else [value]
-        return [
-            {
-                "name": str(item.get("DeviceName") or "").strip(),
-                "version": str(item.get("DriverVersion") or "").strip(),
-            }
-            for item in values if isinstance(item, dict)
-        ]
-    except (json.JSONDecodeError, TypeError):
-        return []
+    values = _json_items(raw)
+    drivers = [
+        {
+            "name": str(item.get("DeviceName") or "").strip(),
+            "version": str(item.get("DriverVersion") or "").strip(),
+        }
+        for item in values if isinstance(item, dict)
+    ]
+    if drivers:
+        return drivers
+    # Win32_PnPSignedDriver is commonly blocked by endpoint policy.  The PnP
+    # property provider can read the same version without administrator access.
+    fallback = _run_powershell(
+        f"$rx='{rx}'; Get-PnpDevice -PresentOnly | "
+        "Where-Object { $_.FriendlyName -match $rx -or $_.Name -match $rx } | "
+        "ForEach-Object { $p=Get-PnpDeviceProperty -InstanceId $_.InstanceId "
+        "-KeyName 'DEVPKEY_Device_DriverVersion' -ErrorAction SilentlyContinue; "
+        "[pscustomobject]@{DeviceName=$(if ($_.FriendlyName) {$_.FriendlyName} else {$_.Name}); "
+        "DriverVersion=([string]$p.Data)} } | ConvertTo-Json -Compress")
+    return [
+        {
+            "name": str(item.get("DeviceName") or "").strip(),
+            "version": str(item.get("DriverVersion") or "").strip(),
+        }
+        for item in _json_items(fallback) if isinstance(item, dict)
+    ]
 
 
 def _windows_ram_gb() -> float | None:
@@ -339,7 +432,7 @@ def detect_hardware() -> HardwareProfile:
     providers, ep_devices = _ort_inventory()
     gpu_name, vram_gb = _nvidia_inventory()
     gpu_name, vram_gb, integrated_name = _controller_inventory(gpu_name, vram_gb)
-    npu_names = _npu_devices()
+    npu_names, npu_source, npu_error = _npu_device_inventory()
     npu_name = npu_names[0] if npu_names else ""
     profile = HardwareProfile(
         cpu_name=cpu_name,
@@ -355,6 +448,8 @@ def detect_hardware() -> HardwareProfile:
         integrated_gpu_name=integrated_name,
         integrated_gpu_provider=_integrated_gpu_provider(providers, integrated_name),
         npu_driver_version=_newest_npu_driver(npu_name),
+        npu_detection_source=npu_source,
+        npu_detection_error=npu_error,
     )
     logger.info(
         "硬件画像: gpu=%s/%s npu=%s/%s driver=%s igpu=%s/%s cpu=%s",
@@ -364,7 +459,19 @@ def detect_hardware() -> HardwareProfile:
         profile.integrated_gpu_name or "none",
         profile.integrated_gpu_provider or "no-runtime", profile.cpu_name,
     )
+    if profile.npu_detection_source != "wmi":
+        logger.warning(
+            "NPU 探测来源=%s detail=%s",
+            profile.npu_detection_source or "none",
+            profile.npu_detection_error or "none",
+        )
     return profile
+
+
+def refresh_hardware() -> HardwareProfile:
+    """Clear the process-local inventory cache and probe devices again."""
+    detect_hardware.cache_clear()
+    return detect_hardware()
 
 
 def _runtime_roots() -> list[Path]:
@@ -418,6 +525,52 @@ def _classify_llama_backend(directory: Path) -> str:
     return "cpu"
 
 
+def _runtime_metadata(directory: Path, backend: str) -> tuple[str, bool, str]:
+    """Return provenance, verification state and a path-free fingerprint.
+
+    Runtime DLL presence is only a loader check.  A ``runtime-build.json``
+    manifest with an empty private-option list is the stronger no-NPUW build
+    proof.  Fingerprints contain names/sizes and manifest identity only, so
+    diagnostics never need to upload binaries or user paths.
+    """
+    manifest_path = directory / "runtime-build.json"
+    manifest: dict[str, object] = {}
+    if manifest_path.is_file():
+        try:
+            value = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+            if isinstance(value, dict):
+                manifest = value
+        except (OSError, ValueError, TypeError):
+            logger.warning("llama 运行时构建清单无法读取: %s", directory,
+                           exc_info=True)
+    private_options = manifest.get("private_options")
+    verified = (
+        backend == "openvino"
+        and manifest.get("patch_status") == "no-npuw"
+        and isinstance(private_options, list)
+        and len(private_options) == 0
+    )
+    if verified:
+        source = "no-npuw-build"
+    elif backend == "openvino":
+        source = "openvino-runtime-unverified"
+    else:
+        source = "discovered"
+
+    digest = hashlib.sha256()
+    if manifest:
+        digest.update(json.dumps(manifest, sort_keys=True,
+                                 ensure_ascii=True).encode("utf-8"))
+    for name in _OPENVINO_RUNTIME_FILES if backend == "openvino" else ("llama-server.exe",):
+        path = directory / name
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = -1
+        digest.update(f"{name}:{size};".encode("ascii"))
+    return source, verified, digest.hexdigest()[:16]
+
+
 def discover_llama_runtimes() -> list[LlamaRuntime]:
     found: list[LlamaRuntime] = []
     seen: set[Path] = set()
@@ -430,7 +583,12 @@ def discover_llama_runtimes() -> list[LlamaRuntime]:
             if resolved in seen or not exe.is_file():
                 continue
             seen.add(resolved)
-            found.append(LlamaRuntime(exe, _classify_llama_backend(exe.parent)))
+            backend = _classify_llama_backend(exe.parent)
+            source, verified, fingerprint = _runtime_metadata(exe.parent, backend)
+            found.append(LlamaRuntime(
+                exe, backend, runtime_source=source,
+                runtime_verified=verified, runtime_fingerprint=fingerprint,
+            ))
     return found
 
 
@@ -447,9 +605,23 @@ class _RuntimeCatalog:
     def has_openvino(self) -> bool:
         return any(runtime.backend == "openvino" for runtime in self.runtimes)
 
+    @property
+    def has_verified_openvino(self) -> bool:
+        return any(runtime.backend == "openvino" and runtime.runtime_verified
+                   for runtime in self.runtimes)
+
     def first(self, backends: tuple[str, ...], target: str = "", *,
               reason: str = "") -> LlamaRuntime | None:
-        for runtime in self.runtimes:
+        matching = [runtime for runtime in self.runtimes
+                    if runtime.backend in backends and
+                    (runtime.backend, target) not in self.excluded]
+        # A verified no-NPUW runtime is preferred, but an unverified official
+        # archive remains a valid candidate: the real inference probe decides
+        # whether this machine can execute it, and failure then triggers the
+        # existing per-instance fallback path.
+        matching.sort(key=lambda item: (item.backend == "openvino" and
+                                        item.runtime_verified), reverse=True)
+        for runtime in matching:
             if runtime.backend not in backends:
                 continue
             if (runtime.backend, target) in self.excluded:
@@ -461,6 +633,9 @@ class _RuntimeCatalog:
             return LlamaRuntime(
                 runtime.server_exe, runtime.backend, target,
                 selection_reason=reason,
+                runtime_source=runtime.runtime_source,
+                runtime_verified=runtime.runtime_verified,
+                runtime_fingerprint=runtime.runtime_fingerprint,
             )
         return None
 
@@ -512,6 +687,9 @@ def _npu_runtime(profile: HardwareProfile, catalog: _RuntimeCatalog,
     if not catalog.has_openvino:
         logger.info("llama NPU 跳过: 检测到 Intel NPU，但未找到随包 OpenVINO 运行时")
         return None
+    if not catalog.has_verified_openvino:
+        logger.warning(
+            "llama NPU 候选运行时缺少 no-NPUW 构建清单，将依赖真实推理探针验证")
     if profile.ram_gb < required_gb + 4.0:
         logger.info(
             "llama NPU 跳过: 内存不足 required_gb=%.2f ram_gb=%.2f",
@@ -598,7 +776,8 @@ def _fallback_runtime(profile: HardwareProfile, catalog: _RuntimeCatalog,
 def select_llama_runtime(profile: HardwareProfile,
                          explicit: Path | str | None = None,
                          required_gb: float = 0.0,
-                         excluded: set[tuple[str, str]] | None = None) -> LlamaRuntime | None:
+                         excluded: set[tuple[str, str]] | None = None,
+                         preferred_target: str | None = None) -> LlamaRuntime | None:
     """Select a GGUF runtime and explain accelerator/fallback decisions.
 
     A discrete GPU and Intel NPU retain product priority.  Once those are not
@@ -615,6 +794,21 @@ def select_llama_runtime(profile: HardwareProfile,
             selection_reason="用户指定 llama-server，禁用自动后端选择",
         )
     catalog = _RuntimeCatalog.discover(excluded)
+    requested = str(preferred_target or "").strip().casefold()
+    if requested in {"npu", "gpu", "cpu"}:
+        if requested == "npu":
+            # Diagnostic callers can request a strict NPU attempt.  Returning
+            # None here is intentional: the caller must report the failure
+            # instead of silently claiming that a GPU/CPU run was NPU.
+            selected = _npu_runtime(profile, catalog, required_gb)
+            return _log_selected(selected) if selected is not None else None
+        if requested == "gpu":
+            selected = _discrete_runtime(profile, catalog, required_gb)
+            return _log_selected(selected) if selected is not None else None
+        selected = catalog.first(("cpu",), "CPU", reason="诊断请求强制 CPU")
+        return _log_selected(selected) if selected is not None else None
+    if requested:
+        logger.warning("忽略未知 llama 目标: %s (允许 npu/gpu/cpu)", preferred_target)
     selected = _discrete_runtime(profile, catalog, required_gb)
     if selected is None:
         # The bundled llama.cpp OpenVINO runtime is independent from the
@@ -654,6 +848,7 @@ def llama_accelerators(profile: HardwareProfile) -> tuple[str, ...]:
 
 __all__ = [
     "HardwareProfile", "LlamaRuntime", "detect_hardware",
+    "refresh_hardware",
     "discover_llama_runtimes", "select_llama_runtime", "llama_accelerators",
     "INTEL_LLAMA_NPU_MIN_DRIVER", "INTEL_NPU_DRIVER_URL",
     "intel_llama_npu_driver_outdated",

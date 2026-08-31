@@ -22,17 +22,72 @@ function Require-File([string]$Path) {
     }
 }
 
+$PrivateNpuOptionPattern = 'NPU_COMPILER_DYNAMIC_QUANTIZATION|NPU_USE_NPUW|NPUW_[A-Z_]+'
+$SourceExtensions = @('.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.cmake')
+
+function Find-PrivateNpuOptions([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return @() }
+    $hits = @()
+    $files = Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension.ToLowerInvariant() -in $SourceExtensions -or $_.Name -like 'CMakeLists*' }
+    foreach ($file in $files) {
+        $matches = Select-String -LiteralPath $file.FullName -Pattern $PrivateNpuOptionPattern -AllMatches -ErrorAction SilentlyContinue
+        foreach ($match in @($matches)) {
+            $hits += "{0}:{1}: {2}" -f $file.FullName, $match.LineNumber, $match.Line.Trim()
+        }
+    }
+    return $hits
+}
+
+function Find-PrivateNpuOptionsInBinary([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+        if ($text -match $PrivateNpuOptionPattern) {
+            return @($Path)
+        }
+    }
+    catch {
+        throw "Could not inspect runtime binary $Path`: $($_.Exception.Message)"
+    }
+    return @()
+}
+
+function Test-ReusableRuntime([string]$Path) {
+    if (@($Required | Where-Object {
+        Test-Path -LiteralPath (Join-Path $Path $_) -PathType Leaf
+    }).Count -ne $Required.Count) { return $false }
+    try {
+        $manifest = Get-Content -LiteralPath (Join-Path $Path 'runtime-build.json') -Raw -Encoding utf8 | ConvertFrom-Json
+        if ($manifest.patch_status -ne 'no-npuw' -or @($manifest.private_options).Count -ne 0) { return $false }
+    }
+    catch { return $false }
+    # OpenVINO's own plugin may legitimately contain option names in
+    # diagnostics. The stale llama.cpp code we must reject lives in these two
+    # binaries, so keep the verification scoped to the code we build.
+    $binaries = Get-ChildItem -LiteralPath $Path -File |
+        Where-Object { $_.Name -in @('llama-server.exe', 'ggml-openvino.dll') }
+    foreach ($binary in $binaries) {
+        if (@(Find-PrivateNpuOptionsInBinary $binary.FullName).Count -gt 0) { return $false }
+    }
+    return $true
+}
+
 $Required = @(
     "llama-server.exe",
     "ggml-openvino.dll",
     "openvino_intel_npu_plugin.dll",
-    "runtime-dependencies.txt"
+    "runtime-dependencies.txt",
+    "runtime-build.json"
 )
-if ((@($Required | Where-Object {
-    Test-Path -LiteralPath (Join-Path $OutputDir $_) -PathType Leaf
-}).Count) -eq $Required.Count) {
+if (Test-ReusableRuntime $OutputDir) {
     Write-Host "[npu-runtime] reuse existing runtime: $OutputDir" -ForegroundColor Green
     exit 0
+}
+if (Test-Path -LiteralPath $OutputDir -PathType Container) {
+    Write-Host "[npu-runtime] existing runtime is unverified; rebuilding: $OutputDir" -ForegroundColor Yellow
+    Get-ChildItem -LiteralPath $OutputDir -Force | Remove-Item -Recurse -Force
 }
 
 Require-Command "git"
@@ -73,7 +128,8 @@ if ($patchedSource -ne $source) {
     throw "Could not remove the private NPUW compile configuration."
 }
 $finalSource = Get-Content -LiteralPath $extra -Raw
-if ($finalSource -match 'NPU_COMPILER_DYNAMIC_QUANTIZATION|NPU_USE_NPUW|NPUW_[A-Z_]+') {
+$sourceOptionHits = @(Find-PrivateNpuOptions $sourceRoot)
+if ($sourceOptionHits.Count -gt 0) {
     throw "A private NPUW compile option remains after patching."
 }
 
@@ -84,7 +140,7 @@ if (-not (Test-Path -LiteralPath $openVinoZip -PathType Leaf)) {
         --max-time 1800 --output $openVinoZip $openVinoUrl
     if ($LASTEXITCODE -ne 0) { throw "OpenVINO SDK download failed (exit $LASTEXITCODE)." }
 }
-if (-not (Test-Path -LiteralPath (Join-Path $openVinoRoot "*"))) {
+if (-not (Get-ChildItem -LiteralPath $openVinoRoot -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
     Expand-Archive -LiteralPath $openVinoZip -DestinationPath $openVinoRoot -Force
 }
 $ovConfig = Get-ChildItem -LiteralPath $openVinoRoot -Filter "OpenVINOConfig.cmake" -File -Recurse |
@@ -159,6 +215,28 @@ if (-not (Test-Path -LiteralPath (Join-Path $OutputDir "tbb12.dll") -PathType Le
     if (-not $tbbDll) { throw "The OpenVINO x64 tbb12.dll dependency was not found." }
     Copy-Item -LiteralPath $tbbDll.FullName -Destination $OutputDir -Force
 }
+
+$runtimeBinaries = Get-ChildItem -LiteralPath $OutputDir -File |
+    Where-Object { $_.Name -in @('llama-server.exe', 'ggml-openvino.dll') } | Sort-Object Name
+$binaryOptionHits = @()
+foreach ($runtimeBinary in $runtimeBinaries) {
+    $binaryOptionHits += Find-PrivateNpuOptionsInBinary $runtimeBinary.FullName
+}
+if ($binaryOptionHits.Count -gt 0) {
+    throw "The built runtime still contains private NPUW option strings: $($binaryOptionHits -join '; ')"
+}
+$sourceHash = (Get-FileHash -LiteralPath $extra -Algorithm SHA256).Hash
+$buildManifest = [ordered]@{
+    schema_version = 1
+    patch_status = 'no-npuw'
+    private_options = @()
+    llama_version = $LlamaVersion
+    openvino_version = $OpenVinoVersion
+    source_file = $extra
+    source_sha256 = $sourceHash
+    built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+}
+$buildManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDir 'runtime-build.json') -Encoding utf8
 
 $dumpbin = Get-ChildItem -LiteralPath (Join-Path $vsInstall "VC\Tools\MSVC") `
     -Filter "dumpbin.exe" -File -Recurse |

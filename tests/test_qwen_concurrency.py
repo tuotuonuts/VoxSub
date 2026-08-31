@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from voxsub.hardware import HardwareProfile, LlamaRuntime  # noqa: E402
 from voxsub.translate._http_client import OpenAICompatError  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
-from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
+from voxsub.translate.qwen import QwenQualityTranslator, _requested_llama_target  # noqa: E402
 from voxsub.translate.qwen import _clean, _invalid_translation  # noqa: E402
 from voxsub.translate import qwen as qwen_module  # noqa: E402
 from voxsub.llama_runtime import RuntimeStatus  # noqa: E402
@@ -324,6 +324,42 @@ def test_select_runtime_falls_back_when_openvino_repair_fails(
     assert q._runtime == cpu_runtime
     assert q._server_exe == cpu_server
     assert calls == ["bootstrap"]
+
+
+def test_requested_llama_target_accepts_known_values_and_ignores_invalid(
+        monkeypatch) -> None:
+    monkeypatch.delenv("VOXSUB_LLAMA_TARGET", raising=False)
+    assert _requested_llama_target() is None
+    monkeypatch.setenv("VOXSUB_LLAMA_TARGET", " NPU ")
+    assert _requested_llama_target() == "npu"
+    monkeypatch.setenv("VOXSUB_LLAMA_TARGET", "auto")
+    assert _requested_llama_target() is None
+    monkeypatch.setenv("VOXSUB_LLAMA_TARGET", "tpu")
+    assert _requested_llama_target() is None
+
+
+def test_forced_npu_reports_unavailable_runtime_without_cpu_fallback(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    profile = HardwareProfile("test cpu", 4, 8, 16.0, npu_name="Intel AI Boost")
+    select_calls: list[dict] = []
+    monkeypatch.setenv("VOXSUB_LLAMA_TARGET", "npu")
+    monkeypatch.setattr(qwen_module, "detect_hardware", lambda: profile)
+    monkeypatch.setattr(qwen_module, "discover_llama_runtimes", lambda: [])
+
+    def select_none(*_args, **kwargs):
+        select_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(qwen_module, "select_llama_runtime", select_none)
+    monkeypatch.setattr(
+        qwen_module, "ensure_openvino_runtime",
+        lambda: RuntimeStatus(tmp_path / "openvino", False, "error", "unavailable"),
+    )
+
+    with pytest.raises(TranslationError, match="强制 llama 目标 NPU"):
+        q._select_runtime()
+    assert select_calls[0]["preferred_target"] == "npu"
 
 
 def test_translation_retries_same_sentence_after_accelerator_failure(

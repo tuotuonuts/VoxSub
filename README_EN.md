@@ -54,6 +54,32 @@ Current source candidate: `0.9.0-beta`; the current public GitHub download remai
 
 The Model Hub is a curated compatibility catalog, not a complete mirror of every model repository. It lists only models for which VoxSub has a working runtime integration, a clear license, and a useful quality/resource trade-off: Fun-ASR-Nano, Qwen3-ASR, SenseVoice Small, Hy-MT2 1.8B/7B in Q4/Q6/Q8 variants, and MeloTTS bilingual, AISHELL3 Chinese lightweight, and LJSpeech English lightweight voices. Built-in Zipformer and OPUS models remain only as very-low-resource fallbacks. Every model card shows an explicit NPU availability label; “NPU available” is reserved for exact model files that pass both forced-NPU inference and VoxSub's automatic application route.
 
+### Intel NPU real-device loop diagnostics
+
+The current development computer has no Intel NPU, so a CPU/GPU result cannot stand in for real NPU inference. On a Windows computer with Intel AI Boost, first exit VoxSub, then run this probe. Each iteration runs `llama-server` with CPU fallback disabled and VoxSub's forced-NPU startup path. The first iteration also records the normal automatic route; that route may intentionally choose a discrete GPU before NPU and is informational:
+
+```powershell
+$runtime = (Get-ChildItem "$env:TEMP\VoxSub_npu_runtime_*\llama-server.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
+powershell -ExecutionPolicy Bypass -File .\scripts\npu_probe_matrix.ps1 `
+  -ModelPath "C:\path\to\Hy-MT2-1.8B-Q8_0.gguf" `
+  -LlamaDir $runtime -Iterations 3
+```
+
+If the runtime is not under TEMP, set `-LlamaDir` to the directory containing `llama-server.exe`, `ggml-openvino.dll`, and `openvino_intel_npu_plugin.dll`. The first OpenVINO compile can be slow; use `-StartupTimeoutSeconds 1200` if needed. Results are written to `%LOCALAPPDATA%\VoxSub\diagnostics\npu-matrix\<timestamp>\matrix-summary.json`. Send that JSON, each `run-*` directory's `probe.log`, `llama-server.stdout.log`, `llama-server.stderr.log`, and `app-path.json`; do not upload GGUF models, audio, or subtitle text. `PASS` requires every iteration's production path (`production_openvino0_env_npu`) and forced VoxSub path to pass; the other two direct variants only diagnose argument differences and never change application routing. Failed iterations continue so driver, compile-cache, and process-state differences remain comparable. For device/driver preflight only, run `scripts\npu_probe.ps1 -DriverCheckOnly`; discovery tries WMI, `Get-PnpDevice`, and `pnputil` in order.
+
+Run the first pass without extra switches so the script checks the device and driver. If it reports `npu_device_not_detected` or `npu_device_inventory_access_denied` on a computer that you have confirmed contains Intel NPU hardware, repeat the same matrix command with `-SkipHardwarePreflight`. This only bypasses Windows inventory; the probe still starts the real `llama-server`, performs health and translation requests, disables CPU fallback, and requires an explicit OpenVINO NPU log marker. Do not treat a bypassed probe as successful on a computer without Intel NPU hardware.
+
+The `voxsub_forced_npu` case sets `VOXSUB_LLAMA_TARGET=npu` and exercises the same runtime-selection code used by the application. To run that application-path check directly:
+
+```powershell
+$env:VOXSUB_LLAMA_DIR = $runtime
+$env:VOXSUB_LLAMA_TARGET = "npu"
+python .\scripts\npu_app_probe.py --model-path "C:\path\to\Hy-MT2-1.8B-Q8_0.gguf" --runtime-dir $runtime --force npu
+Remove-Item Env:VOXSUB_LLAMA_TARGET
+```
+
+Forced mode succeeds only when VoxSub selects `openvino/NPU` and both health and real translation checks pass. Missing runtime, unavailable hardware/driver, or inference failure is reported as a failure; GPU/CPU fallback is never reported as NPU. Normal startup leaves this variable unset, preserving the existing automatic routing and fallback behavior.
+
 ## Documentation
 
 The detailed engineering documents are currently maintained in Chinese:

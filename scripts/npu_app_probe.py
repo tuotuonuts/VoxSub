@@ -76,28 +76,22 @@ def main() -> int:
     os.environ["VOXSUB_LOG"] = "INFO"
 
     sys.path.insert(0, str(REPO_ROOT))
-    import voxsub.translate.qwen as qwen_module
-    from voxsub.hardware import LlamaRuntime
     from voxsub.translate.qwen import QwenQualityTranslator
 
-    server_exe = runtime_dir / "llama-server.exe"
-    if args.force == "npu":
-        def select_forced_npu(*_args, **kwargs):
-            runtime = LlamaRuntime(server_exe, "openvino", "NPU")
-            if (runtime.backend, runtime.target) in (kwargs.get("excluded") or set()):
-                raise RuntimeError("The forced OpenVINO NPU runtime already failed.")
-            return runtime
-
-        qwen_module.select_llama_runtime = select_forced_npu
-    elif args.force == "cpu":
-        qwen_module.select_llama_runtime = lambda *_args, **_kwargs: LlamaRuntime(
-            server_exe, "cpu", "CPU")
+    # Exercise the same environment contract used by the application.  Do not
+    # monkeypatch runtime selection here: that would prove only a test double,
+    # not that VoxSub selected and launched OpenVINO NPU on this computer.
+    if args.force == "auto":
+        os.environ.pop("VOXSUB_LLAMA_TARGET", None)
+    else:
+        os.environ["VOXSUB_LLAMA_TARGET"] = args.force
 
     report: dict[str, object] = {
         "model_id": args.model_id,
         "model": str(model),
         "runtime_dir": str(runtime_dir),
         "mode": args.force,
+        "requested_target": os.environ.get("VOXSUB_LLAMA_TARGET", "auto"),
         "result": "FAIL",
     }
     translator = QwenQualityTranslator(
@@ -118,9 +112,13 @@ def main() -> int:
             "startup_seconds": round(elapsed, 3),
             "backend": runtime.backend if runtime else "cpu",
             "target": runtime.target if runtime else "CPU",
+            "runtime_source": runtime.runtime_source if runtime else "",
+            "runtime_verified": runtime.runtime_verified if runtime else False,
+            "runtime_fingerprint": runtime.runtime_fingerprint if runtime else "",
+            "selection_reason": runtime.selection_reason if runtime else "",
             "failed_runtimes": [list(item) for item in sorted(translator._failed_runtimes)],
         })
-        if args.force in {"auto", "npu"} and (
+        if args.force == "npu" and (
                 runtime is None or runtime.backend != "openvino" or runtime.target != "NPU"):
             raise RuntimeError(
                 "VoxSub application path did not select OpenVINO NPU: "
@@ -132,7 +130,7 @@ def main() -> int:
                 "CPU baseline did not select CPU runtime: "
                 f"backend={report['backend']} target={report['target']}"
             )
-        if ("openvino", "NPU") in translator._failed_runtimes:
+        if args.force == "npu" and ("openvino", "NPU") in translator._failed_runtimes:
             raise RuntimeError("OpenVINO NPU was incorrectly marked as failed.")
         inference_started = time.monotonic()
         translation = translator.translate(

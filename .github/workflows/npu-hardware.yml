@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .npu-assets/patched-openvino-no-npuw-b10470
-          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v4
+          key: npu-runtime-b10470-openvino-2026.2.1-no-npuw-v5
 
       - name: Build NPU-compatible OpenVINO llama runtime
         shell: powershell
@@ -201,6 +201,36 @@ jobs:
             Stop-Transcript | Out-Null
           }
           exit 0
+
+      - name: Validate NPU runtime patch fingerprint
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -File {0}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assetRoot = Join-Path $PWD '.npu-assets'
+          $sourceRoot = Join-Path $assetRoot 'llama-src-b10470'
+          $runtimeRoot = Join-Path $assetRoot 'patched-openvino-no-npuw-b10470'
+          $privatePattern = 'NPU_COMPILER_DYNAMIC_QUANTIZATION|NPU_USE_NPUW|NPUW_[A-Z_]+'
+          $sourceHits = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.c','.cc','.cpp','.cxx','.h','.hh','.hpp','.cmake') -or $_.Name -like 'CMakeLists*' } |
+            Select-String -Pattern $privatePattern -AllMatches -ErrorAction SilentlyContinue)
+          if ($sourceHits.Count -gt 0) {
+            throw "Private NPUW options remain in source: $($sourceHits -join '; ')"
+          }
+          foreach ($name in @('llama-server.exe','ggml-openvino.dll')) {
+            $path = Join-Path $runtimeRoot $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing patched runtime binary: $name" }
+            $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($path))
+            if ($text -match $privatePattern) { throw "Private NPUW option remains in binary: $name" }
+          }
+          $manifest = [ordered]@{
+            schema_version = 1
+            patch_status = 'no-npuw'
+            private_options = @()
+            llama_version = 'b10470'
+            openvino_version = '2026.2.1'
+            built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runtimeRoot 'runtime-build.json') -Encoding utf8
 
       - name: Upload NPU-compatible runtime
         uses: actions/upload-artifact@v4

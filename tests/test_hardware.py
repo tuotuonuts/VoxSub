@@ -75,6 +75,40 @@ def test_physical_npu_uses_bundled_openvino_without_ort_provider(
     assert selected and selected.backend == "openvino" and selected.target == "NPU"
 
 
+def test_preferred_target_npu_bypasses_discrete_gpu(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "vulkan", "ggml-vulkan.dll")
+    _runtime(tmp_path, "openvino", "ggml-openvino.dll")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    profile = HardwareProfile(
+        "Core Ultra", 8, 16, 32.0,
+        gpu_name="NVIDIA RTX 4060", vram_gb=8.0,
+        npu_name="Intel AI Boost", npu_driver_version="32.0.100.4841",
+    )
+
+    selected = select_llama_runtime(profile, preferred_target="npu")
+
+    assert selected and selected.backend == "openvino"
+    assert selected.target == "NPU"
+
+
+def test_preferred_target_npu_returns_none_without_openvino(
+        tmp_path: Path, monkeypatch) -> None:
+    _runtime(tmp_path, "vulkan", "ggml-vulkan.dll")
+    monkeypatch.setenv("VOXSUB_LLAMA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "voxsub.hardware.tempfile.gettempdir",
+        lambda: str(tmp_path / "empty-temp"),
+    )
+    profile = HardwareProfile(
+        "Core Ultra", 8, 16, 32.0,
+        gpu_name="NVIDIA RTX 4060", vram_gb=8.0,
+        npu_name="Intel AI Boost", npu_driver_version="32.0.100.4841",
+    )
+
+    assert select_llama_runtime(profile, preferred_target="npu") is None
+
+
 def test_npu_runtime_override_is_discovered_outside_repo(
         tmp_path: Path, monkeypatch) -> None:
     _runtime(tmp_path, "openvino", "ggml-openvino.dll")

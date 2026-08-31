@@ -96,6 +96,25 @@ _TRANSLATION_STOP_TOKENS = [
     "<|endoftext|>", "<|end_of_text|>", "<|eot_id|>", "<|im_end|>",
 ]
 
+_LLAMA_TARGETS = frozenset({"npu", "gpu", "cpu"})
+
+
+def _requested_llama_target() -> str | None:
+    """Return the optional process-local diagnostic runtime target.
+
+    With no variable set, normal product routing remains unchanged.  An
+    explicit target is used by the NPU matrix to exercise the application's
+    real launch path without changing saved user preferences.
+    """
+    value = os.environ.get("VOXSUB_LLAMA_TARGET", "").strip().casefold()
+    if not value or value in {"auto", "default"}:
+        return None
+    if value in _LLAMA_TARGETS:
+        return value
+    logger.warning(
+        "忽略无效 VOXSUB_LLAMA_TARGET=%r (允许 npu/gpu/cpu/auto)", value)
+    return None
+
 
 class QwenQualityTranslator(Translator):
     """质量档: 通过 llama-server 子进程运行所选 GGUF 翻译模型。"""
@@ -210,8 +229,13 @@ class QwenQualityTranslator(Translator):
     def _runtime_summary(runtime: LlamaRuntime | None) -> str:
         if runtime is None:
             return "backend=cpu target=CPU"
-        return (f"backend={runtime.backend} target={runtime.target or 'CPU'} "
-                f"available={runtime.server_exe.exists()}")
+        return (
+            f"backend={runtime.backend} target={runtime.target or 'CPU'} "
+            f"available={runtime.server_exe.exists()} "
+            f"source={runtime.runtime_source or 'unknown'} "
+            f"verified={runtime.runtime_verified} "
+            f"fingerprint={runtime.runtime_fingerprint or 'unknown'}"
+        )
 
     def _drain_server_output(self, proc: subprocess.Popen) -> None:
         """Drain llama-server output so a verbose crash cannot block the pipe."""
@@ -280,6 +304,75 @@ class QwenQualityTranslator(Translator):
                     attempt + 1, exc,
                 )
 
+    def _discover_runtime_candidates(self) -> list[LlamaRuntime]:
+        try:
+            discovered = discover_llama_runtimes()
+            logger.info(
+                "质量翻译运行时探测: candidates=%s",
+                ";".join(self._runtime_summary(item) for item in discovered) or "none",
+            )
+            return discovered
+        except Exception:
+            logger.debug("质量翻译运行时探测失败", exc_info=True)
+            return []
+
+    def _repair_openvino_runtime(
+            self, profile: HardwareProfile, requested_target: str | None,
+            required_gb: float, discovered: list[LlamaRuntime],
+            runtime: LlamaRuntime | None) -> tuple[list[LlamaRuntime], LlamaRuntime | None]:
+        """Provision OpenVINO only when NPU is requested or detected."""
+        should_repair = (
+            self._explicit_server_exe is None and
+            (profile.has_llama_npu or requested_target == "npu") and
+            not any(item.backend == "openvino" for item in discovered) and
+            (runtime is None or runtime.backend != "openvino")
+        )
+        if not should_repair:
+            return discovered, runtime
+        try:
+            status = ensure_openvino_runtime()
+            if not status.ready:
+                logger.warning(
+                    "质量翻译 OpenVINO 运行时修复失败，将继续选择可用后端: reason=%s",
+                    status.reason,
+                )
+                return discovered, runtime
+            logger.info(
+                "质量翻译 OpenVINO 运行时已准备: source=%s path=%s",
+                status.source, status.directory,
+            )
+            discovered = discover_llama_runtimes()
+            runtime = select_llama_runtime(
+                profile, self._explicit_server_exe, required_gb=required_gb,
+                excluded=self._failed_runtimes,
+                preferred_target=requested_target)
+        except Exception:
+            logger.exception("质量翻译 OpenVINO 运行时自动修复异常")
+        return discovered, runtime
+
+    def _validate_requested_runtime(
+            self, requested_target: str | None, runtime: LlamaRuntime | None,
+            discovered: list[LlamaRuntime]) -> None:
+        if requested_target is None:
+            return
+        if runtime is None:
+            available = ";".join(self._runtime_summary(item) for item in discovered)
+            raise TranslationError(
+                "已强制 llama 目标 "
+                f"{requested_target.upper()}，但没有可用的匹配运行时；"
+                f"候选={available or 'none'}。请先完成运行时自动修复或检查设备/驱动。"
+            )
+        matches = {
+            "npu": runtime.backend == "openvino" and runtime.target == "NPU",
+            "gpu": runtime.target == "GPU",
+            "cpu": runtime.target == "CPU",
+        }
+        if not matches.get(requested_target, False):
+            raise TranslationError(
+                f"已强制 llama 目标 {requested_target.upper()}，但选择结果不匹配："
+                f"{self._runtime_summary(runtime)}"
+            )
+
     def _select_runtime(self) -> tuple[HardwareProfile, LlamaRuntime | None]:
         if self._model_path is None or not self._model_path.exists():
             logger.warning("质量档模型缺失, 拒绝 spawn: %s (请用 scripts/model_fetch.py 下载)",
@@ -289,47 +382,14 @@ class QwenQualityTranslator(Translator):
         self._validate_model_file()
         profile = detect_hardware()
         required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
-        discovered: list[LlamaRuntime] = []
-        try:
-            discovered = discover_llama_runtimes()
-            logger.info(
-                "质量翻译运行时探测: candidates=%s",
-                ";".join(self._runtime_summary(item) for item in discovered) or "none",
-            )
-        except Exception:
-            logger.debug("质量翻译运行时探测失败", exc_info=True)
+        requested_target = _requested_llama_target()
+        discovered = self._discover_runtime_candidates()
         runtime = select_llama_runtime(
             profile, self._explicit_server_exe, required_gb=required_gb,
-            excluded=self._failed_runtimes)
-        # A missing accelerator runtime is repairable.  First perform the
-        # normal selection so an already-available runtime (and unit-test
-        # substitutes) is never downloaded over; only an Intel-NPU profile
-        # that still lacks an OpenVINO candidate triggers bootstrap.  If the
-        # repair succeeds, select again and let the existing real inference
-        # probe decide whether NPU execution is genuinely usable.
-        if (self._explicit_server_exe is None and profile.has_llama_npu and
-                not any(item.backend == "openvino" for item in discovered) and
-                (runtime is None or runtime.backend != "openvino")):
-            try:
-                status = ensure_openvino_runtime()
-                if status.ready:
-                    logger.info(
-                        "质量翻译 OpenVINO 运行时已准备: source=%s path=%s",
-                        status.source, status.directory,
-                    )
-                    discovered = discover_llama_runtimes()
-                    runtime = select_llama_runtime(
-                        profile, self._explicit_server_exe, required_gb=required_gb,
-                        excluded=self._failed_runtimes)
-                else:
-                    logger.warning(
-                        "质量翻译 OpenVINO 运行时修复失败，将继续选择可用后端: reason=%s",
-                        status.reason,
-                    )
-            except Exception:
-                # Runtime bootstrap must never turn a recoverable accelerator
-                # issue into an application crash.
-                logger.exception("质量翻译 OpenVINO 运行时自动修复异常")
+            excluded=self._failed_runtimes, preferred_target=requested_target)
+        discovered, runtime = self._repair_openvino_runtime(
+            profile, requested_target, required_gb, discovered, runtime)
+        self._validate_requested_runtime(requested_target, runtime, discovered)
         if runtime is not None:
             self._runtime = runtime
             self._server_exe = runtime.server_exe
@@ -340,8 +400,8 @@ class QwenQualityTranslator(Translator):
                            self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
-        logger.info("质量翻译运行时已选择: %s reason=%s",
-                    self._runtime_summary(runtime),
+        logger.info("质量翻译运行时已选择: %s requested_target=%s reason=%s",
+                    self._runtime_summary(runtime), requested_target or "auto",
                     runtime.selection_reason if runtime else "CPU fallback")
         return profile, runtime
 
@@ -541,6 +601,12 @@ class QwenQualityTranslator(Translator):
                         except TranslationError as exc:
                             last_error = exc
                             key = self._runtime_key(self._runtime)
+                            requested_target = _requested_llama_target()
+                            if requested_target is not None:
+                                raise TranslationError(
+                                    "强制 llama 目标 "
+                                    f"{requested_target.upper()} 启动或真实推理失败: {exc}"
+                                ) from exc
                             if (self._explicit_server_exe is not None or
                                     key is None or key[0] == "cpu"):
                                 raise
@@ -594,7 +660,7 @@ class QwenQualityTranslator(Translator):
                 key = self._runtime_key(self._runtime)
                 can_fallback = (
                     self._explicit_server_exe is None and key is not None
-                    and key[0] != "cpu"
+                    and key[0] != "cpu" and _requested_llama_target() is None
                 )
                 if not can_fallback:
                     raise TranslationError(f"本地翻译引擎调用失败: {exc}") from exc
@@ -650,7 +716,7 @@ class QwenQualityTranslator(Translator):
                 key = self._runtime_key(self._runtime)
                 can_fallback = (
                     self._explicit_server_exe is None and key is not None
-                    and key[0] != "cpu"
+                    and key[0] != "cpu" and _requested_llama_target() is None
                 )
                 if not can_fallback:
                     raise TranslationError(

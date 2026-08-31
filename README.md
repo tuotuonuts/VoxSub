@@ -55,6 +55,32 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 
 模型广场不是模型仓库的全量镜像。目录只保留 VoxSub 已有运行时适配、许可证明确，并在相近资源档位仍有价值的模型：Fun-ASR-Nano、Qwen3-ASR、SenseVoice Small，Hy-MT2 1.8B/7B 的 Q4/Q6/Q8 量化档，以及 MeloTTS 中英双语、AISHELL3 中文轻量、LJSpeech 英文轻量朗读模型。内置 Zipformer/OPUS 仅作为极低资源兜底。每张模型卡都会明确显示 NPU 可用性；“NPU 可用”只用于已完成强制 NPU 推理和应用自动调度双重验证的精确模型文件。
 
+### Intel NPU 真机循环诊断
+
+当前开发机没有 Intel NPU 时不能验证真实 NPU 推理，不能用 CPU/GPU 结果代替。请在装有 Intel AI Boost、已退出 VoxSub 的 Windows 电脑上执行下面的探针；它会在每一轮分别运行禁止 CPU 回退的 `llama-server`，以及 VoxSub 的强制 NPU 启动路径。第一轮还会记录默认自动路由，默认路由可能因为独显优先而选择 GPU，这不算失败：
+
+```powershell
+$runtime = (Get-ChildItem "$env:TEMP\VoxSub_npu_runtime_*\llama-server.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
+powershell -ExecutionPolicy Bypass -File .\scripts\npu_probe_matrix.ps1 `
+  -ModelPath "C:\path\to\Hy-MT2-1.8B-Q8_0.gguf" `
+  -LlamaDir $runtime -Iterations 3
+```
+
+如果运行时不在 TEMP，请把 `-LlamaDir` 改成包含 `llama-server.exe`、`ggml-openvino.dll` 和 `openvino_intel_npu_plugin.dll` 的目录。首次 OpenVINO 编译可能较慢，可用 `-StartupTimeoutSeconds 1200` 延长等待。结果保存在 `%LOCALAPPDATA%\VoxSub\diagnostics\npu-matrix\<时间>\matrix-summary.json`；请把该 JSON、每个 `run-*` 目录中的 `probe.log`、`llama-server.stdout.log`、`llama-server.stderr.log` 和 `app-path.json` 发给我，不要上传 GGUF 模型、音频或字幕内容。`PASS` 要求每轮的生产路径（`production_openvino0_env_npu`）和强制 VoxSub 路径都成功；另外两个直接变体仅用于定位参数差异，不会改变应用路由。失败时每轮仍会继续，便于比较驱动、编译缓存和进程状态的变化。只检查设备和驱动时可运行 `scripts\npu_probe.ps1 -DriverCheckOnly`，探测会依次尝试 WMI、`Get-PnpDevice` 和 `pnputil`。
+
+建议先不加额外参数运行，让脚本验证设备和驱动。如果日志显示 `npu_device_not_detected` 或 `npu_device_inventory_access_denied`，但你确认这是 Intel NPU 真机，可再运行同一命令并加 `-SkipHardwarePreflight`：该参数只跳过 Windows 设备枚举，仍会启动真实 `llama-server`、执行健康检查和翻译，并且禁止 CPU 回退；只有日志出现明确的 OpenVINO NPU 标志才算通过。不要在没有 Intel NPU 的电脑上用这个参数把结果当成成功。
+
+探针中的 `voxsub_forced_npu` 会设置 `VOXSUB_LLAMA_TARGET=npu`，调用与应用完全相同的运行时选择代码。也可以单独验证应用路径：
+
+```powershell
+$env:VOXSUB_LLAMA_DIR = $runtime
+$env:VOXSUB_LLAMA_TARGET = "npu"
+python .\scripts\npu_app_probe.py --model-path "C:\path\to\Hy-MT2-1.8B-Q8_0.gguf" --runtime-dir $runtime --force npu
+Remove-Item Env:VOXSUB_LLAMA_TARGET
+```
+
+强制模式只有在应用实际选择 `openvino/NPU`、健康检查和真实翻译都通过时才返回成功；运行时缺失、设备/驱动不可用或推理失败都会明确失败，绝不会把 GPU/CPU 回落伪报为 NPU。普通启动不设置该变量，现有自动路由和回退逻辑不变。
+
 ## 文档体系（按阅读顺序）
 
 - [STATUS.md](STATUS.md) — **项目状态书 / 交接单（先读这个）**
