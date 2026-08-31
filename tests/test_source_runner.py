@@ -28,23 +28,32 @@ def test_windows_powershell_script_has_utf8_bom() -> None:
 def test_source_runner_updates_and_prepares_local_environment() -> None:
     text = PS1.read_text(encoding="utf-8")
     required = (
-        "git -C $repoRoot pull --ff-only",
+        "pull --ff-only",
         "Python 3.11",
         "3.11.0",
-        "-m", "venv",
+        "Get-PortableCommand",
+        "uv-x86_64-pc-windows-msvc.zip",
+        "MinGit-",
+        "--managed-python",
+        '"venv", "--python"',
         "requirements.lock",
-        "uv pip sync",
-        "--without-pip",
+        "pip sync",
         "Move-VenvAside",
         "重建后同步锁定依赖",
         "pip install -r $lockFile",
         "run_app.py",
         "import PySide6, onnxruntime, sherpa_onnx, sentry_sdk",
         "sync_llama_runtime.ps1",
-        "补齐本地质量翻译运行时 (CPU/Vulkan)",
+        "补齐本地质量翻译运行时 (CPU/Vulkan/OpenVINO)",
     )
     for marker in required:
         assert marker in text, marker
+
+    assert "Get-VerifiedDownload" in text
+    assert "Get-FileHash" in text
+    assert "--managed-python" in text
+    assert "$bootstrapRoot" in text
+    assert "SHA256 校验失败" in text
 
 
 def test_source_runner_cleans_python_environment_and_sets_testing() -> None:
@@ -72,7 +81,7 @@ def test_runner_checks_processes_before_pull_and_waits_after_exit() -> None:
     text = PS1.read_text(encoding="utf-8")
     assert "Get-CimInstance -ClassName Win32_Process" in text
     assert "Get-VoxSubProcesses" in text
-    assert "git -C $repoRoot pull --ff-only" in text
+    assert "pull --ff-only" in text
     assert "退出应用" in text
     assert "Wait-VoxSubProcessesExit" in text
     assert "Start-Sleep -Milliseconds 500" in text
@@ -82,16 +91,28 @@ def test_runner_checks_processes_before_pull_and_waits_after_exit() -> None:
     assert "taskkill" not in text
 
 
+def test_runner_bootstraps_only_pinned_portable_tools() -> None:
+    text = PS1.read_text(encoding="utf-8")
+
+    assert '"0.12.5"' in text
+    assert "uv-x86_64-pc-windows-msvc.zip" in text
+    assert "uv-aarch64-pc-windows-msvc.zip" in text
+    assert "MinGit-" in text
+    assert "Invoke-WebRequest -Uri $Url -OutFile $partial" in text
+    assert "Get-FileSha256 $partial" in text
+    assert "bootstrap" in text.casefold()
+
+
 def test_runner_stops_before_pull_for_tracked_local_source_changes() -> None:
     text = PS1.read_text(encoding="utf-8")
 
     assert "function Get-TrackedWorkingTreeChanges" in text
-    assert "git -C $repoRoot status --porcelain --untracked-files=no" in text
+    assert "status --porcelain --untracked-files=no" in text
     assert "$localChanges = @(Get-TrackedWorkingTreeChanges)" in text
     assert "检测到未提交的 VoxSub 源码修改，已安全停止更新。" in text
     assert "模型、配置、日志和 .venv 不会触发此检查。" in text
     assert text.index("$localChanges = @(Get-TrackedWorkingTreeChanges)") < text.index(
-        "git -C $repoRoot pull --ff-only")
+        "pull --ff-only")
 
 
 def test_tray_exit_action_is_explicit_and_localized() -> None:

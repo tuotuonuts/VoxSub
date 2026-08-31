@@ -22,6 +22,7 @@ from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
 from voxsub.translate.qwen import _clean, _invalid_translation  # noqa: E402
 from voxsub.translate import qwen as qwen_module  # noqa: E402
+from voxsub.llama_runtime import RuntimeStatus  # noqa: E402
 
 
 class _FakeProc:
@@ -256,6 +257,73 @@ def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None
     assert ("openvino", "NPU") in q._failed_runtimes
     q._proc = None
     q._endpoint = None
+
+
+def test_select_runtime_repairs_missing_openvino_before_npu_selection(
+        tmp_path: Path, monkeypatch) -> None:
+    """An Intel NPU first provisions OpenVINO, then is selected after rediscovery."""
+    q = _make_qwen(tmp_path)
+    server = tmp_path / "openvino" / "llama-server.exe"
+    server.parent.mkdir(parents=True)
+    server.write_bytes(b"MZ")
+    npu_runtime = LlamaRuntime(server, "openvino", "NPU")
+    profile = HardwareProfile(
+        "test cpu", 4, 8, 16.0, npu_name="Intel AI Boost",
+        npu_driver_version="32.0.101.5763",
+    )
+    discovered = iter(([], [npu_runtime]))
+    selected = iter((None, npu_runtime))
+    calls: list[str] = []
+
+    monkeypatch.setattr(qwen_module, "detect_hardware", lambda: profile)
+    monkeypatch.setattr(
+        qwen_module, "discover_llama_runtimes", lambda: next(discovered))
+    monkeypatch.setattr(
+        qwen_module, "select_llama_runtime", lambda *_args, **_kwargs: next(selected))
+    monkeypatch.setattr(
+        qwen_module, "ensure_openvino_runtime",
+        lambda: (calls.append("bootstrap") or RuntimeStatus(
+            server.parent, True, "download")),
+    )
+
+    selected_runtime = q._select_runtime()[1]
+
+    assert selected_runtime == npu_runtime
+    assert q._runtime == npu_runtime
+    assert q._server_exe == server
+    assert calls == ["bootstrap"]
+
+
+def test_select_runtime_falls_back_when_openvino_repair_fails(
+        tmp_path: Path, monkeypatch) -> None:
+    """A failed bootstrap is logged and leaves the normal CPU fallback intact."""
+    q = _make_qwen(tmp_path)
+    cpu_server = tmp_path / "cpu" / "llama-server.exe"
+    cpu_server.parent.mkdir(parents=True)
+    cpu_server.write_bytes(b"MZ")
+    cpu_runtime = LlamaRuntime(cpu_server, "cpu", "CPU")
+    profile = HardwareProfile(
+        "test cpu", 4, 8, 16.0, npu_name="Intel AI Boost",
+        npu_driver_version="32.0.101.5763",
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(qwen_module, "detect_hardware", lambda: profile)
+    monkeypatch.setattr(qwen_module, "discover_llama_runtimes", lambda: [])
+    monkeypatch.setattr(
+        qwen_module, "select_llama_runtime", lambda *_args, **_kwargs: cpu_runtime)
+    monkeypatch.setattr(
+        qwen_module, "ensure_openvino_runtime",
+        lambda: (calls.append("bootstrap") or RuntimeStatus(
+            tmp_path / "openvino", False, "error", "network unavailable")),
+    )
+
+    selected_runtime = q._select_runtime()[1]
+
+    assert selected_runtime == cpu_runtime
+    assert q._runtime == cpu_runtime
+    assert q._server_exe == cpu_server
+    assert calls == ["bootstrap"]
 
 
 def test_translation_retries_same_sentence_after_accelerator_failure(

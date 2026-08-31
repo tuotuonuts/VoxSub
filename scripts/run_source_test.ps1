@@ -14,6 +14,25 @@ $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $repoRoot }
 $diagnosticDir = Join-Path $localAppData "VoxSub\diagnostics\source-run"
 $null = New-Item -ItemType Directory -Force -Path $diagnosticDir
 $logPath = Join-Path $diagnosticDir "source-run-$stamp.log"
+$bootstrapRoot = Join-Path $localAppData "VoxSub\bootstrap"
+$uvVersion = "0.12.5"
+$gitVersion = "2.55.0.5"
+$isArm64 = $env:PROCESSOR_ARCHITECTURE -eq "ARM64"
+if ($isArm64) {
+    $uvAsset = "uv-aarch64-pc-windows-msvc.zip"
+    $uvSha256 = "724279317FEE6E5FA8AD1908E4EBA2BBE764EF1ECE5B3F4597927B62B1FE562A"
+    $gitAsset = "MinGit-$gitVersion-arm64.zip"
+    $gitSha256 = "05843F9D6E60306C3AB886799E2C67200CAAB921571F10512DF3493049179DDB"
+} else {
+    $uvAsset = "uv-x86_64-pc-windows-msvc.zip"
+    $uvSha256 = "4C4D49D8738847D9B71BA319E49A5688C93EAC0FE6204B1DF24E98528DDDF39A"
+    $gitAsset = "MinGit-$gitVersion-64-bit.zip"
+    $gitSha256 = "56D7B226B7693196CFC71FEF26568F536C4A021AB6C37FF2DB4287BED908E96E"
+}
+$uvUrl = "https://github.com/astral-sh/uv/releases/download/$uvVersion/$uvAsset"
+$gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/$gitAsset"
+$script:gitExe = $null
+$script:uvExe = $null
 
 function Write-RunLog {
     param([string]$Message)
@@ -53,6 +72,105 @@ function Invoke-LoggedStep {
     }
 }
 
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+}
+
+function Get-VerifiedDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Sha256
+    )
+    $parent = Split-Path -Parent $Destination
+    $null = New-Item -ItemType Directory -Force -Path $parent
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        if ((Get-FileSha256 $Destination) -eq $Sha256.ToUpperInvariant()) {
+            return $Destination
+        }
+        Remove-Item -LiteralPath $Destination -Force
+    }
+    $partial = "$Destination.part"
+    if (Test-Path -LiteralPath $partial) {
+        Remove-Item -LiteralPath $partial -Force
+    }
+    Write-RunLog "下载引导工具: $([System.IO.Path]::GetFileName($Destination))"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing
+        $actual = Get-FileSha256 $partial
+        if ($actual -ne $Sha256.ToUpperInvariant()) {
+            throw "下载文件 SHA256 校验失败 (expected=$($Sha256.Substring(0, 12)) actual=$($actual.Substring(0, 12)))"
+        }
+        Move-Item -LiteralPath $partial -Destination $Destination -Force
+        return $Destination
+    } catch {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Get-PortableCommand {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("git", "uv")][string]$Name
+    )
+    $existing = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($existing) {
+        return $existing.Source
+    }
+    if ($Name -eq "uv") {
+        $root = Join-Path $bootstrapRoot "uv"
+        $exe = Join-Path $root "uv.exe"
+        $archive = Join-Path $bootstrapRoot $uvAsset
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Get-VerifiedDownload $uvUrl $archive $uvSha256 | Out-Null
+            $staging = Join-Path $bootstrapRoot ("uv-extract-" + [guid]::NewGuid().ToString("N"))
+            try {
+                Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+                $found = Get-ChildItem -LiteralPath $staging -Filter "uv.exe" -File -Recurse |
+                    Select-Object -First 1
+                if (-not $found) { throw "uv 压缩包中没有 uv.exe。" }
+                New-Item -ItemType Directory -Force -Path $root | Out-Null
+                Copy-Item -LiteralPath $found.FullName -Destination $exe -Force
+            } finally {
+                if (Test-Path -LiteralPath $staging) {
+                    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        $script:uvExe = $exe
+        return $exe
+    }
+    $root = Join-Path $bootstrapRoot "git"
+    $exe = Join-Path $root "cmd\git.exe"
+    $archive = Join-Path $bootstrapRoot $gitAsset
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        Get-VerifiedDownload $gitUrl $archive $gitSha256 | Out-Null
+        $staging = Join-Path $bootstrapRoot ("git-extract-" + [guid]::NewGuid().ToString("N"))
+        try {
+            Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+            $found = Get-ChildItem -LiteralPath $staging -Filter "git.exe" -File -Recurse |
+                Where-Object { $_.Directory.Name -eq "cmd" } |
+                Select-Object -First 1
+            if (-not $found) { throw "MinGit 压缩包中没有 cmd\\git.exe。" }
+            $foundRoot = $found.Directory.Parent
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+            Copy-Item -Path (Join-Path $foundRoot.FullName "*") -Destination $root -Recurse -Force
+        } finally {
+            if (Test-Path -LiteralPath $staging) {
+                Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        throw "便携 Git 安装后仍找不到 git.exe。"
+    }
+    $env:Path = "$(Split-Path -Parent $exe);$(Join-Path $root 'mingw64\bin');$env:Path"
+    $script:gitExe = $exe
+    return $exe
+}
+
 function Get-PythonCandidate {
     $launchers = @(
         @{ Exe = "py"; Args = @("-3.11") },
@@ -63,10 +181,12 @@ function Get-PythonCandidate {
         $command = Get-Command $launcher.Exe -ErrorAction SilentlyContinue
         if (-not $command) { continue }
         try {
-            $versionText = (& $command.Source @($launcher.Args) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null).Trim()
+            $probe = @(& $command.Source @($launcher.Args) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}'); print(sys.executable)" 2>$null)
+            $versionText = ([string]$probe[0]).Trim()
             $version = [version]::Parse("$versionText.0")
             if ($version -ge [version]::Parse("3.11.0")) {
-                return @{ Exe = $command.Source; Args = @($launcher.Args); Version = $versionText }
+                $pythonPath = if ($probe.Count -gt 1) { ([string]$probe[1]).Trim() } else { "" }
+                return @{ Exe = $command.Source; Args = @($launcher.Args); Path = $pythonPath; Version = $versionText }
             }
         } catch {
             continue
@@ -83,6 +203,14 @@ function Invoke-Python {
     & $Python.Exe @($Python.Args) @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "Python 命令失败，退出码 $LASTEXITCODE"
+    }
+}
+
+function Invoke-Uv {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    & $script:uvExe @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "uv 命令失败，退出码 $LASTEXITCODE"
     }
 }
 
@@ -105,15 +233,16 @@ function Move-VenvAside {
 }
 
 function New-LocalVenv {
-    param([switch]$WithoutPip)
-
-    $arguments = @("-m", "venv")
-    if ($WithoutPip) {
-        $arguments += "--without-pip"
-    }
-    $arguments += $venvDir
     Invoke-LoggedStep "创建本机独立虚拟环境" {
-        Invoke-Python $python $arguments
+        if ($script:uvExe) {
+            $request = if ($python -and $python.Path) { $python.Path } else { "3.11" }
+            $venvArgs = @("venv", "--python", $request)
+            if (-not $python) { $venvArgs += "--managed-python" }
+            $venvArgs += $venvDir
+            Invoke-Uv $venvArgs
+        } else {
+            Invoke-Python $python @("-m", "venv", $venvDir)
+        }
     }
 }
 
@@ -169,7 +298,7 @@ function Get-TrackedWorkingTreeChanges {
     Report only tracked source changes. Runtime data is intentionally outside the
     repository, and ignored folders such as .venv must not block routine updates.
     #>
-    $status = @(& git -C $repoRoot status --porcelain --untracked-files=no)
+    $status = @(& $script:gitExe -c "safe.directory=$repoRoot" -C $repoRoot status --porcelain --untracked-files=no)
     if ($LASTEXITCODE -ne 0) {
         throw "无法检查 Git 工作区状态，退出码 $LASTEXITCODE。"
     }
@@ -188,8 +317,23 @@ try {
     Write-RunLog "项目目录: $repoRoot"
     Write-RunLog "诊断日志: $logPath"
 
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        throw "未找到 Git。请先安装 Git for Windows 后重试。"
+    $script:gitExe = Get-PortableCommand "git"
+    Write-RunLog "Git: $script:gitExe"
+    $python = Get-PythonCandidate
+    if ($python) {
+        Write-RunLog "系统 Python: $($python.Exe) $($python.Version)"
+    } else {
+        Write-RunLog "未找到系统 Python 3.11+，将使用 uv 管理的 Python 3.11。"
+    }
+    try {
+        $script:uvExe = Get-PortableCommand "uv"
+        Write-RunLog "uv: $script:uvExe"
+    } catch {
+        if (-not $python) {
+            throw "未找到 Python 3.11+，且无法自动下载 uv 管理工具：$($_.Exception.Message)"
+        }
+        Write-RunLog "[警告] uv 自动准备失败，将使用系统 Python 和 pip：$($_.Exception.Message)"
+        $script:uvExe = $null
     }
 
     $running = @(Get-VoxSubProcesses)
@@ -217,18 +361,11 @@ try {
     }
 
     Invoke-LoggedStep "更新源码 (git pull --ff-only)" {
-        git -C $repoRoot pull --ff-only
+        & $script:gitExe -c "safe.directory=$repoRoot" -C $repoRoot pull --ff-only
     }
-
-    $python = Get-PythonCandidate
-    if (-not $python) {
-        throw "未找到 Python 3.11 或更高版本。请安装 Python 3.11+ 并勾选加入 PATH。"
-    }
-    Write-RunLog "Python: $($python.Exe) $($python.Version)"
 
     $venvDir = Join-Path $repoRoot ".venv"
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
     $venvReady = $false
     if (Test-Path -LiteralPath $venvPython) {
         try {
@@ -240,29 +377,25 @@ try {
     }
     if (-not $venvReady) {
         Move-VenvAside $venvDir
-        if ($uv) {
-            New-LocalVenv -WithoutPip
-        } else {
-            New-LocalVenv
-        }
+        New-LocalVenv
     }
 
     $lockFile = Join-Path $repoRoot "requirements.lock"
     if (-not (Test-Path -LiteralPath $lockFile)) {
         throw "找不到 requirements.lock，无法安全安装依赖。"
     }
-    if ($uv) {
+    if ($script:uvExe) {
         try {
             Invoke-LoggedStep "同步锁定依赖 (uv)" {
-                uv pip sync --python $venvPython $lockFile
+                & $script:uvExe pip sync --python $venvPython $lockFile
             }
         } catch {
             Write-RunLog "[警告] 现有虚拟环境同步失败，将备份并重建本机环境。"
             Move-VenvAside $venvDir
-            New-LocalVenv -WithoutPip
+            New-LocalVenv
             $venvPython = Join-Path $venvDir "Scripts\python.exe"
             Invoke-LoggedStep "重建后同步锁定依赖 (uv)" {
-                uv pip sync --python $venvPython $lockFile
+                & $script:uvExe pip sync --python $venvPython $lockFile
             }
         }
     } else {
@@ -279,10 +412,13 @@ try {
         & $venvPython -c "import PySide6, onnxruntime, sherpa_onnx, sentry_sdk"
     }
 
-    # Installer builds bundle the llama.cpp runtimes.  Source checkouts need
-    # the same CPU/Vulkan fallback once, without rebuilding or repacking the app.
+    # Installer builds bundle the llama.cpp runtimes. Source checkouts need
+    # the same CPU/Vulkan/OpenVINO runtime set once, without rebuilding or
+    # repacking the app. OpenVINO is downloaded to LocalAppData and is never
+    # copied into Git. If the network is unavailable, keep the CPU/Vulkan
+    # fallback usable and record the exact reason in the diagnostic log.
     try {
-        Invoke-LoggedStep "补齐本地质量翻译运行时 (CPU/Vulkan)" {
+        Invoke-LoggedStep "补齐本地质量翻译运行时 (CPU/Vulkan/OpenVINO)" {
             & (Join-Path $repoRoot "scripts\sync_llama_runtime.ps1")
             if ($LASTEXITCODE -ne 0) {
                 throw "llama.cpp 运行时同步失败，退出码 $LASTEXITCODE"
@@ -290,7 +426,7 @@ try {
         }
     } catch {
         Write-RunLog "[警告] 质量翻译运行时未准备完成：$($_.Exception.Message)"
-        Write-Host "质量翻译运行时暂未就绪；基础功能仍可启动，网络恢复后重新运行本脚本即可补齐。" -ForegroundColor Yellow
+        Write-Host "质量翻译运行时暂未完整就绪；基础功能仍可启动，网络恢复后重新运行本脚本即可补齐。" -ForegroundColor Yellow
     }
 
     # Never inherit a foreign Python runtime configuration into the app.
@@ -299,7 +435,8 @@ try {
     $env:VOXSUB_ENVIRONMENT = "testing"
 
     # A source checkout may have a verified no-NPUW OpenVINO runtime produced
-    # by build.ps1 in TEMP. Reuse it when present; never copy it into Git.
+    # by build.ps1 in TEMP. Prefer it over the downloaded bootstrap runtime;
+    # never copy either runtime into Git.
     if (-not $env:VOXSUB_NPU_RUNTIME_DIR) {
         $npuCandidate = Join-Path $env:TEMP "VoxSub_npu_runtime_b10470"
         if (Test-Path -LiteralPath (Join-Path $npuCandidate "llama-server.exe") -PathType Leaf) {

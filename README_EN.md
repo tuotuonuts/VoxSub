@@ -66,9 +66,9 @@ The detailed engineering documents are currently maintained in Chinese:
 
 ## Development Setup
 
-Requirements: Windows 10/11, Python 3.11+, and [uv](https://docs.astral.sh/uv/). Source runs keep models and configuration outside the Git worktree.
+Requirements: Windows 10/11. Source runs keep models and configuration outside the Git worktree; the one-click launcher provisions portable Python, uv, and Git in the user profile when they are missing.
 
-First-time setup (once per computer):
+Optional manual developer setup:
 
 ```powershell
 git clone https://github.com/tuotuonuts/VoxSub.git
@@ -86,11 +86,11 @@ git pull --ff-only
 .\.venv\Scripts\python.exe run_app.py
 ```
 
-For friends, clone the repository once and double-click `更新并启动测试版.bat` in the project root. Every later double-click automatically runs `git pull`, checks for Python 3.11+, creates a local `.venv` when needed, syncs `requirements.lock`, and starts `run_app.py`. If a verified no-NPUW OpenVINO runtime was built with `build.ps1`, set `VOXSUB_NPU_RUNTIME_DIR` to that directory and the source launcher will reuse it; without that runtime the app explicitly falls back to GPU/CPU instead of claiming NPU execution. The script clears `PYTHONPATH` / `PYTHONHOME`, sets the Sentry environment to `testing`, and requires no manual Python dependency setup.
+For friends, first obtain a source copy with its `.git` directory (a maintainer can clone it once, or GitHub Desktop can do it), then double-click `更新并启动测试版.bat` in the project root. Each later double-click updates the source, prepares local Python/uv, creates a computer-local `.venv`, syncs `requirements.lock`, and starts `run_app.py`. If Python, uv, or Git is missing, the launcher downloads a pinned, SHA256-verified portable copy into `%LOCALAPPDATA%\VoxSub\bootstrap` without administrator privileges. When quality translation is first requested, the application repairs missing CPU/Vulkan/OpenVINO runtimes and performs a real inference probe before it can fall back to GPU and then CPU; detecting an NPU or downloading a runtime never by itself claims NPU execution. The script clears `PYTHONPATH` / `PYTHONHOME` and sets the Sentry environment to `testing`. A GitHub ZIP has no `.git` directory, so it cannot receive later `git pull` source updates.
 
 Closing the main window normally only hides VoxSub in the system tray; it does not end the process. To really exit the source test build, right-click the tray icon and choose “退出应用” (Exit application). Before `git pull`, the launcher checks for VoxSub, source Python, and `llama-server` processes. If any remain, it only asks you to choose “退出应用” and never force-kills them. After the app returns, it waits for related child processes to finish before the script returns.
 
-The script prefers `uv` and falls back to the virtual environment's `pip`. If syncing finds that `.venv` is locked or permission-blocked, it renames the old environment as a backup, recreates it with the current computer's Python, and retries. If preparation or startup still fails, it shows a plain-language reason and saves detailed output under `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`. It never copies another computer's `.venv` and does not remove models, configuration, or user data.
+The script prefers installed `uv`, otherwise downloads and verifies portable uv; when no system Python exists, uv downloads and manages Python 3.11. If syncing finds that `.venv` is locked or permission-blocked, it renames the old environment as a backup, recreates it on the current computer, and retries. Preparation failures show a plain-language reason and save detailed output under `%LOCALAPPDATA%\VoxSub\diagnostics\source-run\`. It never copies another computer's `.venv` and does not remove models, configuration, or user data.
 
 The script sets `VOXSUB_ENVIRONMENT=testing` on every run. If you want a friend's reports in your Sentry project, provision `%LOCALAPPDATA%\VoxSub\sentry_dsn.txt` with the DSN as one line; the script reads it automatically, so the friend does not configure anything. Without that file, only local logs are used and no network request is made.
 

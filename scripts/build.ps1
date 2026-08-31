@@ -134,6 +134,9 @@ $LlamaDest = Join-Path $Dist "tools\llama"
 New-Item -ItemType Directory -Path $LlamaCache -Force | Out-Null
 New-Item -ItemType Directory -Path $LlamaDest -Force | Out-Null
 foreach ($Asset in $LlamaAssets) {
+    if ($Asset.SourceOnly) {
+        continue
+    }
     $Zip = Join-Path $LlamaCache $Asset.File
     $Url = "https://github.com/ggml-org/llama.cpp/releases/download/$LlamaVersion/$($Asset.File)"
     if ((-not (Test-Path $Zip)) -or

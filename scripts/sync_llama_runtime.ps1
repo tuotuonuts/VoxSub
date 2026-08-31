@@ -21,6 +21,12 @@ function Test-LlamaRuntime {
         -not (Test-Path -LiteralPath (Join-Path $Directory $Asset.RequiredDll) -PathType Leaf)) {
         return $false
     }
+    foreach ($requiredDll in @($Asset.RequiredDlls)) {
+        if ($requiredDll -and
+            -not (Test-Path -LiteralPath (Join-Path $Directory $requiredDll) -PathType Leaf)) {
+            return $false
+        }
+    }
     return @(Get-ChildItem -LiteralPath $Directory -Filter "*.dll" -File -ErrorAction SilentlyContinue).Count -gt 0
 }
 

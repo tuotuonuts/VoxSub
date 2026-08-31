@@ -34,6 +34,7 @@ from voxsub.hardware import (
     discover_llama_runtimes,
     select_llama_runtime,
 )
+from voxsub.llama_runtime import ensure_openvino_runtime
 from voxsub.language_guard import detect_text_language, normalize_language
 from voxsub.model_storage import resolve_models_root
 from voxsub.text_cleaning import strip_model_control_tokens
@@ -288,6 +289,7 @@ class QwenQualityTranslator(Translator):
         self._validate_model_file()
         profile = detect_hardware()
         required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
+        discovered: list[LlamaRuntime] = []
         try:
             discovered = discover_llama_runtimes()
             logger.info(
@@ -299,6 +301,35 @@ class QwenQualityTranslator(Translator):
         runtime = select_llama_runtime(
             profile, self._explicit_server_exe, required_gb=required_gb,
             excluded=self._failed_runtimes)
+        # A missing accelerator runtime is repairable.  First perform the
+        # normal selection so an already-available runtime (and unit-test
+        # substitutes) is never downloaded over; only an Intel-NPU profile
+        # that still lacks an OpenVINO candidate triggers bootstrap.  If the
+        # repair succeeds, select again and let the existing real inference
+        # probe decide whether NPU execution is genuinely usable.
+        if (self._explicit_server_exe is None and profile.has_llama_npu and
+                not any(item.backend == "openvino" for item in discovered) and
+                (runtime is None or runtime.backend != "openvino")):
+            try:
+                status = ensure_openvino_runtime()
+                if status.ready:
+                    logger.info(
+                        "质量翻译 OpenVINO 运行时已准备: source=%s path=%s",
+                        status.source, status.directory,
+                    )
+                    discovered = discover_llama_runtimes()
+                    runtime = select_llama_runtime(
+                        profile, self._explicit_server_exe, required_gb=required_gb,
+                        excluded=self._failed_runtimes)
+                else:
+                    logger.warning(
+                        "质量翻译 OpenVINO 运行时修复失败，将继续选择可用后端: reason=%s",
+                        status.reason,
+                    )
+            except Exception:
+                # Runtime bootstrap must never turn a recoverable accelerator
+                # issue into an application crash.
+                logger.exception("质量翻译 OpenVINO 运行时自动修复异常")
         if runtime is not None:
             self._runtime = runtime
             self._server_exe = runtime.server_exe
@@ -814,18 +845,9 @@ class QwenQualityTranslator(Translator):
 
     def health(self) -> str:
         try:
-            self._validate_model_file()
+            self._select_runtime()
         except TranslationError as exc:
             return str(exc)
-        required_gb = self._model_path.stat().st_size / (1024 ** 3) * 1.18 + 0.5
-        runtime = select_llama_runtime(
-            detect_hardware(), self._explicit_server_exe, required_gb=required_gb,
-            excluded=self._failed_runtimes)
-        if runtime is not None:
-            self._runtime = runtime
-            self._server_exe = runtime.server_exe
-        if not self._server_exe.exists():
-            return f"llama-server 缺失: {self._server_exe}"
         return "ok"
 
     def __del__(self):
