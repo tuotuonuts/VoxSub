@@ -929,56 +929,59 @@ class DiagnosticsWindow(QWidget):
         self._export_workers[kind] = worker
         worker.start()
 
+    def _restore_export_button(self, kind: str, button: QPushButton | None) -> None:
+        if button is None:
+            return
+        button.setEnabled(True)
+        labels = {
+            "logs": "导出日志",
+            "sentry": "发送到 Sentry",
+            "sentry_logs": "上传日志到 Sentry",
+            "local_log_cleanup": "清除本机日志",
+        }
+        button.setText(tr(labels.get(kind, "导出报告 (txt)")))
+        if kind in {"sentry", "sentry_logs"}:
+            self._update_sentry_button()
+
+    def _handle_export_success(self, kind: str, detail: object) -> None:
+        if kind == "logs":
+            self.log_live_state.setText(f"{tr('日志已导出')} · {Path(str(detail)).name}")
+        elif kind == "sentry":
+            label = ("诊断报告已发送（日志为部分上传）"
+                     if _log_upload_is_partial(detail) else "诊断报告已发送")
+            self.selfcheck_summary.setText(tr(label))
+            self._show_log_upload_summary(detail)
+        elif kind == "sentry_logs":
+            label = ("日志已部分上传到 Sentry"
+                     if _log_upload_is_partial(detail) else "日志已发送到 Sentry")
+            self.log_live_state.setText(tr(label))
+            self._show_log_upload_summary(detail)
+        elif kind == "local_log_cleanup":
+            self.log_view.clear()
+            self._last_seen = None
+            self.log_live_state.setText(tr("本机日志已清除"))
+            self._show_log_cleanup_summary(detail)
+        else:
+            self.selfcheck_summary.setText(
+                f"{tr('报告已导出')} · {Path(str(detail)).name}")
+
+    def _handle_export_failure(self, kind: str) -> None:
+        labels = {
+            "logs": ("log_live_state", "日志导出失败"),
+            "sentry": ("selfcheck_summary", "诊断报告发送失败"),
+            "sentry_logs": ("log_live_state", "日志发送失败"),
+            "local_log_cleanup": ("log_live_state", "本机日志清除失败"),
+        }
+        attr, label = labels.get(kind, ("selfcheck_summary", "报告导出失败"))
+        getattr(self, attr).setText(tr(label))
+
     def _on_export_done(self, kind: str, success: bool, detail: object) -> None:
         self._export_workers.pop(kind, None)
-        button = self._export_buttons.pop(kind, None)
-        if button is not None:
-            button.setEnabled(True)
-            if kind == "logs":
-                button.setText(tr("导出日志"))
-            elif kind == "sentry":
-                button.setText(tr("发送到 Sentry"))
-                self._update_sentry_button()
-            elif kind == "sentry_logs":
-                button.setText(tr("上传日志到 Sentry"))
-                self._update_sentry_button()
-            elif kind == "local_log_cleanup":
-                button.setText(tr("清除本机日志"))
-            else:
-                button.setText(tr("导出报告 (txt)"))
+        self._restore_export_button(kind, self._export_buttons.pop(kind, None))
         if success:
-            if kind == "logs":
-                self.log_live_state.setText(f"{tr('日志已导出')} · {Path(str(detail)).name}")
-            elif kind == "sentry":
-                self.selfcheck_summary.setText(
-                    tr("诊断报告已发送（日志为部分上传）")
-                    if _log_upload_is_partial(detail)
-                    else tr("诊断报告已发送"))
-                self._show_log_upload_summary(detail)
-            elif kind == "sentry_logs":
-                self.log_live_state.setText(
-                    tr("日志已部分上传到 Sentry")
-                    if _log_upload_is_partial(detail)
-                    else tr("日志已发送到 Sentry"))
-                self._show_log_upload_summary(detail)
-            elif kind == "local_log_cleanup":
-                self.log_view.clear()
-                self._last_seen = None
-                self.log_live_state.setText(tr("本机日志已清除"))
-                self._show_log_cleanup_summary(detail)
-            else:
-                self.selfcheck_summary.setText(f"{tr('报告已导出')} · {Path(detail).name}")
+            self._handle_export_success(kind, detail)
         else:
-            if kind == "logs":
-                self.log_live_state.setText(tr("日志导出失败"))
-            elif kind == "sentry":
-                self.selfcheck_summary.setText(tr("诊断报告发送失败"))
-            elif kind == "sentry_logs":
-                self.log_live_state.setText(tr("日志发送失败"))
-            elif kind == "local_log_cleanup":
-                self.log_live_state.setText(tr("本机日志清除失败"))
-            else:
-                self.selfcheck_summary.setText(tr("报告导出失败"))
+            self._handle_export_failure(kind)
 
     def _show_log_upload_summary(self, detail: object) -> None:
         """Render the exact safe range/count metadata returned by an upload."""

@@ -44,6 +44,7 @@ from voxsub.logging_setup import (
     stop_diagnostic_session,
     tail_log_file,
 )  # noqa: E402
+from voxsub.ui.i18n import language_manager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +55,9 @@ def qapp():
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
+    language_manager.set_language("zh")
     yield app
+    language_manager.set_language("zh")
 
 
 def _wait_until(qapp, predicate, timeout: float = 2.0) -> None:

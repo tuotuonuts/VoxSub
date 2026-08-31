@@ -500,6 +500,17 @@ def test_start_stop_with_fake_source(monkeypatch) -> None:
     msgs: list[str] = []
     p.on_status(msgs.append)
     monkeypatch.setattr(p, "_make_source", lambda: FakeSource())
+    # CI has no user model directory. Isolate this lifecycle test from model
+    # loading so it verifies thread start/stop rather than local model assets.
+    class _Segmenter:
+        def feed(self, _chunk) -> None:
+            return
+
+        def flush(self) -> None:
+            return
+
+    monkeypatch.setattr(p, "_build_real_time", lambda: setattr(p, "_seg", _Segmenter()))
+    monkeypatch.setattr(p, "_start_tts_worker", lambda: None)
     p.start()
     assert p.is_running()
     assert p.state is PipelineState.RUNNING

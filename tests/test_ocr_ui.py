@@ -25,10 +25,13 @@ from voxsub.ui.ocr_overlay import (  # noqa: E402
 from voxsub.ui.ocr_workspace import OcrWorkspace  # noqa: E402
 from voxsub.ui.screen_capture import CapturedRegion, qimage_to_bgr  # noqa: E402
 from voxsub.ui import screen_capture  # noqa: E402
+from voxsub.ui.i18n import language_manager  # noqa: E402
 
 
 def _app():
-    return QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication([])
+    language_manager.set_language("zh")
+    return app
 
 
 def _frame():
