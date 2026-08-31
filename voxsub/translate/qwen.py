@@ -91,6 +91,10 @@ _PROMPT_ECHO_PREFIXES = (
     "Do not translate it into any other language. Only output the translated result.",
 )
 
+_TRANSLATION_STOP_TOKENS = [
+    "<|endoftext|>", "<|end_of_text|>", "<|eot_id|>", "<|im_end|>",
+]
+
 
 class QwenQualityTranslator(Translator):
     """质量档: 通过 llama-server 子进程运行所选 GGUF 翻译模型。"""
@@ -544,14 +548,16 @@ class QwenQualityTranslator(Translator):
             try:
                 with self._lock:
                     out = self._request_translation(endpoint, text, names, timeout_ms)
-                    cleaned = _clean(out)
-                    if _invalid_translation(text, cleaned, src_lang, dst_lang):
+                    cleaned = _clean(out, source=text)
+                    reason = _translation_invalid_reason(
+                        text, cleaned, src_lang, dst_lang)
+                    if reason is not None:
                         logger.warning(
-                            "质量档输出越界，使用更严格提示重试: src_chars=%d out_chars=%d",
-                            len(text), len(cleaned))
+                            "质量档输出被拒绝，使用严格请求重试: reason=%s src_chars=%d out_chars=%d",
+                            reason, len(text), len(cleaned))
                         out = self._request_translation(
                             endpoint, text, names, timeout_ms, retry=True)
-                        cleaned = _clean(out)
+                        cleaned = _clean(out, source=text)
             except OpenAICompatError as exc:
                 last_error = exc
                 key = self._runtime_key(self._runtime)
@@ -569,8 +575,13 @@ class QwenQualityTranslator(Translator):
                 )
                 self.close()
                 continue
-            if _invalid_translation(text, cleaned, src_lang, dst_lang):
-                raise TranslationError("质量档返回了说明性或异常长度内容，已拒绝显示")
+            reason = _translation_invalid_reason(text, cleaned, src_lang, dst_lang)
+            if reason is not None:
+                logger.warning(
+                    "质量档严格请求后仍被拒绝: reason=%s src_chars=%d out_chars=%d",
+                    reason, len(text), len(cleaned),
+                )
+                raise TranslationError(f"质量档输出无效: {reason}")
             return cleaned
         raise TranslationError(f"本地翻译引擎所有后端均失败: {last_error}")
 
@@ -602,7 +613,7 @@ class QwenQualityTranslator(Translator):
                 with self._lock:
                     raw = self._request_translation_batch(
                         endpoint, sources, names, timeout_ms)
-                translated = parse_translation_batch(raw, len(sources))
+                translated = [_clean(item) for item in parse_translation_batch(raw, len(sources))]
             except OpenAICompatError as exc:
                 last_error = exc
                 key = self._runtime_key(self._runtime)
@@ -635,14 +646,17 @@ class QwenQualityTranslator(Translator):
                 return [self.translate(
                     source, src_lang, dst_lang, timeout_ms=timeout_ms)
                     for source in sources]
-            if any(
-                _invalid_translation(source, target, src_lang, dst_lang)
+            invalid_reasons = [
+                _translation_invalid_reason(source, target, src_lang, dst_lang)
                 for source, target in zip(sources, translated)
-            ):
+            ]
+            if any(invalid_reasons):
                 if not allow_single_fallback:
                     raise TranslationError("批量译文存在越界项")
                 logger.warning(
-                    "OCR 批量译文存在越界项，回退逐行: lines=%d", len(sources))
+                    "OCR 批量译文被拒绝，回退逐行: lines=%d reasons=%s",
+                    len(sources), ",".join(sorted({reason for reason in invalid_reasons if reason})),
+                )
                 return [self.translate(
                     source, src_lang, dst_lang, timeout_ms=timeout_ms)
                     for source in sources]
@@ -668,26 +682,33 @@ class QwenQualityTranslator(Translator):
             f"character mistakes. Translate every item only into {dst_name}. "
             "Keep one output item for each input item. Return only one valid JSON array "
             f"with exactly {len(texts)} translated strings in the same order. "
-            "Do not add explanations, labels, or change the array length.\n"
-            f"<source>\n{payload}\n</source>"
+            "Do not add explanations, labels, or change the array length.\n\n"
+            f"{payload}"
         )
-        messages = [
-            {"role": "system", "content": (
-                _BATCH_SYSTEM_PROMPT if self._prompt_style == "hy-mt2" else
-                "You are a machine-translation engine. Return only the valid "
-                "JSON array requested by the user, with no surrounding prose.")},
-            {"role": "user", "content": instruction},
-        ]
+        if self._prompt_style == "hy-mt2":
+            # Hy-MT2 is trained for a direct user instruction. System/source
+            # wrappers caused request echoing in captured translation logs.
+            messages = [{"role": "user", "content": instruction}]
+        else:
+            messages = [
+                {"role": "system", "content": (
+                    "You are a machine-translation engine. Return only the valid "
+                    "JSON array requested by the user, with no surrounding prose.")},
+                {"role": "user", "content": instruction},
+            ]
         output_budget = min(
             768,
             max(96, sum(max(4, len(text) * 2) for text in texts) + 32),
         )
+        request_options = (self._hy_mt2_request_options()
+                           if self._prompt_style == "hy-mt2" else {"temperature": 0.1})
         return chat_completion(
             endpoint,
             messages=messages,
-            temperature=0.1,
             max_tokens=output_budget,
+            stop=_TRANSLATION_STOP_TOKENS,
             timeout_sec=timeout_ms / 1000.0,
+            **request_options,
         )
 
     def _request_translation(self, endpoint: str, text: str,
@@ -696,24 +717,35 @@ class QwenQualityTranslator(Translator):
         src_name, dst_name = names
         source_auto = src_name == _AUTO_SOURCE_NAME
         if self._prompt_style == "hy-mt2":
-            if source_auto:
-                instruction = (
-                    "Detect the source language from the text between <source> tags, then translate "
-                    f"it only into {dst_name}. Do not translate it into any other "
-                    "language. Only output the translated result and do not add "
-                    f"explanations:\n<source>\n{text}\n</source>"
-                )
-            else:
-                instruction = (
-                    f"The source text between <source> tags is written in {src_name}. Translate it only into {dst_name}. "
-                    "Do not identify, rewrite, or translate it into any other language. "
-                    "Only output the translated result and do not add explanations:\n"
-                    f"<source>\n{text}\n</source>"
-                )
+            source_clause = (
+                "Detect the source language. " if source_auto else
+                f"The source language is {src_name}. "
+            )
+            retry_clause = (
+                " Return only the translation, with no additional explanation."
+                if retry else ""
+            )
+            instruction = (
+                f"{source_clause}Translate the following segment into {dst_name}, "
+                f"without additional explanation.{retry_clause}\n\n{text}"
+            )
+            # Hy-MT2's official GGUF guidance is one user message with no
+            # default system prompt. XML source wrappers were echoed verbatim.
+            messages = [{"role": "user", "content": instruction}]
+            output_budget = min(768, max(self._max_tokens, 48, len(text) * 2))
+            request_options = self._hy_mt2_request_options()
+        elif retry:
+            instruction = (
+                f"Translate only the content between <source> tags into {dst_name}. "
+                "Return one translated sentence only. No notes, no labels, no source text.\n"
+                f"<source>\n{text}\n</source>"
+            )
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": instruction},
             ]
+            output_budget = min(self._max_tokens, max(24, len(text) * 2))
+            request_options = {"temperature": 0.0}
         else:
             if source_auto:
                 instruction = (
@@ -734,17 +766,26 @@ class QwenQualityTranslator(Translator):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": instruction},
             ]
-        if retry:
-            instruction += ("\nIMPORTANT: Your entire response must be only the translated "
-                            "sentence. Do not say 'translation' or explain anything.")
-            messages[-1]["content"] = instruction
+            output_budget = min(self._max_tokens, max(24, len(text) * 2))
+            request_options = {"temperature": 0.0}
         return chat_completion(
             endpoint,
             messages=messages,
-            temperature=0.2 if self._prompt_style == "hy-mt2" else 0.0,
-            max_tokens=min(self._max_tokens, max(32, len(text) * 2)),
+            max_tokens=output_budget,
+            stop=_TRANSLATION_STOP_TOKENS,
             timeout_sec=timeout_ms / 1000.0,
+            **request_options,
         )
+
+    @staticmethod
+    def _hy_mt2_request_options() -> dict[str, float | int]:
+        """Sampling parameters published with the Hy-MT2 GGUF release."""
+        return {
+            "temperature": 0.7,
+            "top_p": 0.6,
+            "top_k": 20,
+            "repeat_penalty": 1.05,
+        }
 
     def close(self) -> None:
         with self._lock:
@@ -797,9 +838,8 @@ class QwenQualityTranslator(Translator):
             pass
 
 
-def _clean(text: str) -> str:
+def _clean(text: str, *, source: str = "") -> str:
     text = strip_model_control_tokens(text)
-    text = _strip_prompt_echo(text)
     text = text.strip()
     if text.startswith("```") and text.endswith("```"):
         text = text[3:-3].strip()
@@ -809,6 +849,7 @@ def _clean(text: str) -> str:
         if len(text) > 1 and text.startswith(q) and text.endswith(q):
             text = text[1:-1].strip()
             break
+    text = _strip_prompt_echo(text, source=source)
     for pref in ("Here's the English translation:", "Here's the Chinese translation:",
                  "English translation:", "Chinese translation:", "English:", "Chinese:",
                  "Translation:", "译文:", "翻译:"):
@@ -817,14 +858,66 @@ def _clean(text: str) -> str:
     return text
 
 
-def _strip_prompt_echo(text: str) -> str:
+def _strip_prompt_echo(text: str, *, source: str = "") -> str:
     """Remove instruction text echoed by a small local translation model."""
     candidate = str(text or "").strip()
+    # Some chat templates echo the complete request, including the protected
+    # source block, before producing the translation. Keep only the response
+    # after the echoed source block; outputs that contain only the block remain
+    # invalid and are rejected below.
+    close_tag = candidate.find("</source>")
+    if close_tag >= 0:
+        remainder = candidate[close_tag + len("</source>"):].strip()
+        if remainder:
+            candidate = remainder
+    # Hy-MT2 can repeat a direct one-message request before its translation.
+    # Use the known source boundary only after a recognised prompt prefix, so
+    # ordinary translations which quote source wording are left unchanged.
+    source_value = str(source or "").strip()
+    prompt_starts = (
+        "translate the following segment", "detect the source language",
+        "the source language is", "translate only the content between",
+        "the source text between", "从输入文本中检测源语言",
+    )
+    if source_value and candidate.casefold().startswith(prompt_starts):
+        source_index = candidate.find(source_value)
+        if source_index >= 0:
+            remainder = candidate[source_index + len(source_value):].strip()
+            if remainder:
+                candidate = remainder.lstrip(":：- \n\t")
     folded = candidate.casefold()
     for prefix in _PROMPT_ECHO_PREFIXES:
         if folded.startswith(prefix.casefold()):
             return candidate[len(prefix):].lstrip(" \t\r\n:：")
     return candidate
+
+
+def _translation_invalid_reason(source: str, output: str,
+                                src_lang: str, dst_lang: str) -> str | None:
+    """Return a stable, privacy-safe reason when output must be rejected."""
+    if not output:
+        return "empty"
+    lower = output.casefold()
+    forbidden = (
+        "here's the", "here is the", "this translation", "the original text",
+        "appears to be", "translation attempts", "note:", "译文如下", "翻译如下",
+        "从输入文本中检测源语言", "只输出翻译结果", "detect the source language",
+        "only output the translated result", "translate the following segment",
+        "return only the translation", "<source>", "</source>",
+    )
+    if any(marker in lower for marker in forbidden):
+        return "prompt_echo_or_explanation"
+    if "\n\n" in output:
+        return "multiple_paragraphs"
+    # 中译英字符通常会膨胀，但超过 5.5 倍基本已是解释/续写；英译中应更短。
+    limit = max(64, int(len(source) * (5.5 if dst_lang == "en" else 2.2)))
+    if len(output) > limit:
+        return "length_limit"
+    if dst_lang in {"zh", "en"}:
+        from voxsub.language_guard import text_matches_language
+        if not text_matches_language(output, dst_lang):
+            return "language_mismatch"
+    return None
 
 
 def _can_passthrough_batch(sources: list[str], src_lang: str, dst_lang: str) -> bool:
@@ -840,25 +933,4 @@ def _can_passthrough_batch(sources: list[str], src_lang: str, dst_lang: str) -> 
 def _invalid_translation(source: str, output: str,
                          src_lang: str, dst_lang: str) -> bool:
     """拦截解释型回答、空结果和明显失控的长度，避免污染字幕。"""
-    if not output:
-        return True
-    lower = output.casefold()
-    forbidden = (
-        "here's the", "here is the", "this translation", "the original text",
-        "appears to be", "translation attempts", "note:", "译文如下", "翻译如下",
-        "从输入文本中检测源语言", "只输出翻译结果", "detect the source language",
-        "only output the translated result", "<source>", "</source>",
-    )
-    if any(marker in lower for marker in forbidden):
-        return True
-    if "\n\n" in output:
-        return True
-    # 中译英字符通常会膨胀，但超过 5.5 倍基本已是解释/续写；英译中应更短。
-    limit = max(64, int(len(source) * (5.5 if dst_lang == "en" else 2.2)))
-    if len(output) > limit:
-        return True
-    if dst_lang == "en" and len(source) >= 4:
-        cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in output)
-        if cjk / max(1, len(output)) > 0.25:
-            return True
-    return False
+    return _translation_invalid_reason(source, output, src_lang, dst_lang) is not None

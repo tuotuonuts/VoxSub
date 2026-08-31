@@ -12,6 +12,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -377,6 +378,18 @@ def _runtime_roots() -> list[Path]:
     npu_override = os.environ.get("VOXSUB_NPU_RUNTIME_DIR")
     if npu_override:
         roots.append(Path(npu_override))
+    # build_npu_runtime.ps1 deliberately keeps the large, local-only OpenVINO
+    # runtime outside Git. Source launches can also start via run_app.py (not
+    # only the helper script), so discover the project's verified build output
+    # directly instead of requiring callers to propagate an environment var.
+    temp_root = Path(tempfile.gettempdir())
+    try:
+        roots.extend(
+            candidate.parent
+            for candidate in temp_root.glob("VoxSub_npu_runtime_*/llama-server.exe")
+        )
+    except OSError:
+        logger.debug("扫描本机 OpenVINO NPU 运行时失败", exc_info=True)
     roots.extend([
         Path(sys.executable).resolve().parent / "tools" / "llama",
         Path(__file__).resolve().parents[1] / "tools" / "llama",

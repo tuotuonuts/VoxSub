@@ -46,7 +46,11 @@ def chat_completion(
     api_key: str | None = None,
     model: str | None = None,
     temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    repeat_penalty: float | None = None,
     max_tokens: int | None = None,
+    stop: list[str] | None = None,
     timeout_sec: float = 15.0,
 ) -> str:
     """POST 一条 chat completion, 返回 ``choices[0].message.content`` 文本。
@@ -65,8 +69,16 @@ def chat_completion(
         payload["model"] = model
     if temperature is not None:
         payload["temperature"] = temperature
+    if top_p is not None:
+        payload["top_p"] = top_p
+    if top_k is not None:
+        payload["top_k"] = top_k
+    if repeat_penalty is not None:
+        payload["repeat_penalty"] = repeat_penalty
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if stop:
+        payload["stop"] = [str(item) for item in stop if str(item)]
 
     headers = {"Content-Type": "application/json"}
     if api_key:

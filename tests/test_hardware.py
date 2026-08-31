@@ -86,6 +86,23 @@ def test_npu_runtime_override_is_discovered_outside_repo(
     assert any(item.backend == "openvino" for item in runtimes)
 
 
+def test_project_temp_npu_runtime_is_discovered_without_environment_variable(
+        tmp_path: Path, monkeypatch) -> None:
+    temp_root = tmp_path / "temp"
+    _runtime(temp_root, "VoxSub_npu_runtime_b10470", "ggml-openvino.dll")
+    monkeypatch.delenv("VOXSUB_NPU_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("VOXSUB_LLAMA_DIR", raising=False)
+    monkeypatch.setattr("voxsub.hardware.tempfile.gettempdir", lambda: str(temp_root))
+    from voxsub.hardware import discover_llama_runtimes
+
+    runtimes = discover_llama_runtimes()
+    assert any(
+        item.backend == "openvino" and
+        item.server_exe.parent.name == "VoxSub_npu_runtime_b10470"
+        for item in runtimes
+    )
+
+
 def test_fallback_scores_cpu_when_shared_memory_headroom_is_too_small(
         tmp_path: Path, monkeypatch) -> None:
     _runtime(tmp_path, "openvino", "ggml-openvino.dll")

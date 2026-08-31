@@ -363,7 +363,7 @@ def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch)
     assert "only the translated text" in captured["messages"][0]["content"]
 
 
-def test_hy_mt2_prompt_uses_system_role_and_source_boundary(
+def test_hy_mt2_uses_official_single_user_prompt_and_sampling(
         tmp_path: Path, monkeypatch) -> None:
     q = _make_qwen(tmp_path)
     q._prompt_style = "hy-mt2"
@@ -371,15 +371,48 @@ def test_hy_mt2_prompt_uses_system_role_and_source_boundary(
     q._proc = _FakeProc(1)
     captured: dict = {}
 
-    def fake_chat(_endpoint, *, messages, **_kwargs):
+    def fake_chat(_endpoint, *, messages, **kwargs):
         captured["messages"] = messages
+        captured.update(kwargs)
         return "Hello."
 
     monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
     assert q.translate("你好。", "zh", "en") == "Hello."
-    assert captured["messages"][0]["role"] == "system"
-    assert "<source>" in captured["messages"][1]["content"]
-    assert "</source>" in captured["messages"][1]["content"]
+    assert captured["messages"] == [
+        {"role": "user", "content": (
+            "The source language is Chinese. Translate the following segment into English, "
+            "without additional explanation.\n\n你好。"
+        )},
+    ]
+    assert "<source>" not in captured["messages"][0]["content"]
+    assert captured["temperature"] == 0.7
+    assert captured["top_p"] == 0.6
+    assert captured["top_k"] == 20
+    assert captured["repeat_penalty"] == 1.05
+    assert captured["stop"]
+
+
+def test_hy_mt2_retry_keeps_direct_prompt_and_expands_long_output_budget(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._prompt_style = "hy-mt2"
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    calls: list[dict] = []
+    answers = iter(["This translation has an explanation.", "Hello."])
+
+    def fake_chat(_endpoint, **kwargs):
+        calls.append(kwargs)
+        return next(answers)
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+    source = "你好" * 240
+    assert q.translate(source, "zh", "en") == "Hello."
+    assert len(calls) == 2
+    assert all(len(call["messages"]) == 1 for call in calls)
+    assert all(call["messages"][0]["role"] == "user" for call in calls)
+    assert all("<source>" not in call["messages"][0]["content"] for call in calls)
+    assert calls[0]["max_tokens"] > 128
 
 
 def test_selected_gpu_backend_offloads_layers(tmp_path: Path) -> None:
@@ -401,6 +434,11 @@ def test_clean_removes_prompt_echo_and_control_tokens() -> None:
     assert _clean("创造发明，实现，而这些。<|endoftext|>Humanity。") == (
         "创造发明，实现，而这些。"
     )
+    assert _clean(
+        "The source language is English. Translate the following segment into Chinese, "
+        "without additional explanation.\n\nHumanity.\n人类。",
+        source="Humanity.",
+    ) == "人类。"
     assert _invalid_translation("これは文です", echoed, "ja", "zh")
 
 
@@ -458,3 +496,23 @@ def test_quality_ocr_single_paragraph_uses_large_batch_budget(
     assert len(calls) == 1
     assert calls[0]["max_tokens"] > 128
     assert "exactly 1" in calls[0]["messages"][-1]["content"]
+
+
+def test_hy_mt2_ocr_batch_avoids_system_role_and_source_tags(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._prompt_style = "hy-mt2"
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    captured: dict = {}
+
+    def fake_chat(_endpoint, **kwargs):
+        captured.update(kwargs)
+        return '["Hello."]'
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+    assert q.translate_many(["你好。"], "zh", "en") == ["Hello."]
+    assert [message["role"] for message in captured["messages"]] == ["user"]
+    assert "<source>" not in captured["messages"][0]["content"]
+    assert captured["temperature"] == 0.7
+    assert captured["top_p"] == 0.6
