@@ -663,6 +663,34 @@ class TestMainWindow:
             win.close()
             win.deleteLater()
 
+    @pytest.mark.parametrize("mode", ("a", "b", "c"))
+    def test_recognition_tuning_applies_to_every_audio_mode(
+        self, qapp, tmp_path, mode
+    ):
+        store = ConfigStore(tmp_path / "config.json")
+        store.update({
+            "asr_tuning_profile": "custom",
+            "asr_vad_threshold": 0.23,
+            "asr_silence_ms": 1230,
+            "asr_max_utterance_ms": 17_000,
+            "asr_beam_paths": 7,
+            "asr_hotwords": "VoxSub",
+        })
+        pipeline = _PipelineStub()
+        win = MainWindow(store=store, pipeline=pipeline)
+        try:
+            win.set_mode(mode)
+            win._apply_pipeline_config()  # noqa: SLF001
+            assert pipeline.asr_tuning["profile"] == "custom"
+            assert pipeline.asr_tuning["vad_threshold"] == 0.23
+            assert pipeline.asr_tuning["silence_ms"] == 1230
+            assert pipeline.asr_tuning["max_utterance_ms"] == 17_000
+            assert pipeline.asr_tuning["beam_paths"] == 7
+            assert pipeline.asr_tuning["hotwords"] == "VoxSub"
+        finally:
+            win.close()
+            win.deleteLater()
+
     def test_file_mode_uses_right_workspace_import_card(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:

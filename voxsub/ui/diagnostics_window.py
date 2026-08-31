@@ -21,12 +21,14 @@ import inspect
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -39,10 +41,12 @@ from PySide6.QtWidgets import (
 from voxsub.file_io import write_text_atomically
 from voxsub.error_reporting import (
     is_error_reporting_enabled,
+    preview_log_snapshot_metadata,
     send_diagnostic_report,
     send_log_snapshot,
 )
 from voxsub.logging_setup import (
+    clear_local_logs,
     diagnostic_session_log_snapshot,
     diagnostic_session_snapshot,
     drain_events,
@@ -75,6 +79,49 @@ _LOG_POLL_EVENTS = 50
 _DIAGNOSTIC_SESSION_SECONDS = 20 * 60
 
 
+def _as_non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_log_upload_summary(metadata: Mapping[str, Any]) -> str:
+    """Format safe upload metadata for the diagnostics page."""
+    source = _as_non_negative_int(metadata.get("source_log_lines"))
+    uploaded = _as_non_negative_int(metadata.get("uploaded_log_lines"))
+    redacted = _as_non_negative_int(metadata.get("privacy_redacted_lines"))
+    removed = _as_non_negative_int(metadata.get("privacy_removed_lines"))
+    replacements = _as_non_negative_int(metadata.get("privacy_filter_replacements"))
+    omitted = _as_non_negative_int(metadata.get("omitted_log_lines"))
+    source_first = str(metadata.get("source_first_log_at") or tr("未检测到时间戳"))
+    source_last = str(metadata.get("source_last_log_at") or tr("未检测到时间戳"))
+    uploaded_first = str(metadata.get("uploaded_first_log_at") or tr("未检测到时间戳"))
+    uploaded_last = str(metadata.get("uploaded_last_log_at") or tr("未检测到时间戳"))
+    rows = [
+        tr("Sentry 日志已上传：{uploaded}/{source} 行").format(
+            uploaded=uploaded, source=source),
+        tr("来源时间：{first} 至 {last}").format(
+            first=source_first, last=source_last),
+        tr("上传范围：{first} 至 {last}").format(
+            first=uploaded_first, last=uploaded_last),
+        tr("已脱敏 {redacted} 行（{replacements} 处），移除 {removed} 行").format(
+            redacted=redacted, replacements=replacements, removed=removed),
+    ]
+    if omitted:
+        rows.append(tr("已因大小省略 {omitted} 行（保留最新日志）").format(
+            omitted=omitted))
+    elif _as_non_negative_int(metadata.get("line_length_limited_lines")):
+        rows.append(tr("部分超长日志行已按安全限制截断"))
+    return "\n".join(rows)
+
+
+def _log_upload_is_partial(metadata: object) -> bool:
+    """Whether the submitted snapshot intentionally omitted any source lines."""
+    return (isinstance(metadata, Mapping) and
+            _as_non_negative_int(metadata.get("omitted_log_lines")) > 0)
+
+
 def _fmt_log_line(ev: dict) -> str:
     """"HH:MM:SS LEVEL [name] [session=id] message" —— 与文件 formatter 对齐。"""
     ts = str(ev.get("ts", ""))
@@ -95,7 +142,7 @@ def _strip_file_ts(line: str) -> str:
 class _ExportBridge(QObject):
     """Deliver worker results back to the diagnostics window's Qt thread."""
 
-    done = Signal(str, bool, str)
+    done = Signal(str, bool, object)
 
 
 class _SelfCheckBridge(QObject):
@@ -321,6 +368,13 @@ class DiagnosticsWindow(QWidget):
             self.clear_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self.clear_log_btn.clicked.connect(lambda: self.log_view.clear())
             btn_row.addWidget(self.clear_log_btn)
+            self.clear_local_log_btn = QPushButton("清除本机日志", page)
+            self.clear_local_log_btn.setObjectName("ghostButton")
+            self.clear_local_log_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.clear_local_log_btn.setToolTip(
+                "删除本机历史日志；不会删除模型、配置、用户数据或 Sentry 配置")
+            self.clear_local_log_btn.clicked.connect(self._clear_local_logs)
+            btn_row.addWidget(self.clear_local_log_btn)
             btn_row.addStretch(1)
             self.log_live_state = QLabel("实时 · 自动跟随", page)
             self.log_live_state.setObjectName("logLiveState")
@@ -335,6 +389,12 @@ class DiagnosticsWindow(QWidget):
             self.debug_switch.toggled.connect(self._toggle_debug)
             btn_row.addWidget(self.debug_switch)
             lay.addWidget(toolbar)
+
+            self.log_operation_state = QLabel("", page)
+            self.log_operation_state.setObjectName("secondaryLabel")
+            self.log_operation_state.setWordWrap(True)
+            self.log_operation_state.hide()
+            lay.addWidget(self.log_operation_state)
 
             self.log_view = QPlainTextEdit(page)
             self.log_view.setObjectName("logView")
@@ -392,6 +452,37 @@ class DiagnosticsWindow(QWidget):
         minutes, seconds = divmod(remaining, 60)
         self.diagnostic_session_state.setText(
             f"{tr('诊断调试剩余')} {minutes:02d}:{seconds:02d}")
+
+    def _clear_local_logs(self) -> None:
+        """Ask before clearing only VoxSub's historical local log files."""
+        if self._log_failed or "local_log_cleanup" in self._export_workers:
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("清除本机日志"),
+            tr("这会删除本机历史日志和诊断启动日志，无法恢复。不会删除模型、配置、用户数据或 Sentry 配置。是否继续？"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.clear_local_log_btn.setEnabled(False)
+        self.clear_local_log_btn.setText(tr("正在清除…"))
+
+        def _worker() -> None:
+            try:
+                detail: object = clear_local_logs()
+                success = True
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("后台清除本机日志失败")
+                detail, success = str(exc), False
+            self._export_bridge.done.emit("local_log_cleanup", success, detail)
+
+        self._export_buttons["local_log_cleanup"] = self.clear_local_log_btn
+        self._export_workers["local_log_cleanup"] = threading.Thread(
+            target=_worker, name="ui-local-log-cleanup", daemon=True,
+        )
+        self._export_workers["local_log_cleanup"].start()
 
     def _poll_events(self) -> None:
         """drain 内存队列最新事件, 按末行指纹增量追加, 自动滚底。"""
@@ -757,8 +848,10 @@ class DiagnosticsWindow(QWidget):
                 upload_kwargs = {"trigger": "diagnostics_page"}
                 if session_metadata is not None:
                     upload_kwargs["session_metadata"] = session_metadata
+                upload_metadata = preview_log_snapshot_metadata(
+                    logs, session_metadata=session_metadata)
                 success = bool(send_diagnostic_report(report, logs, **upload_kwargs))
-                detail = "" if success else "upload-failed"
+                detail: object = upload_metadata if success else "upload-failed"
             except Exception as exc:  # noqa: BLE001
                 logger.exception("后台发送 Sentry 诊断报告失败")
                 success, detail = False, str(exc)
@@ -789,8 +882,10 @@ class DiagnosticsWindow(QWidget):
                 upload_kwargs = {"trigger": "diagnostics_logs_tab"}
                 if session_metadata is not None:
                     upload_kwargs["session_metadata"] = session_metadata
+                upload_metadata = preview_log_snapshot_metadata(
+                    logs, session_metadata=session_metadata)
                 success = bool(send_log_snapshot(logs, **upload_kwargs))
-                detail = "" if success else "upload-failed"
+                detail: object = upload_metadata if success else "upload-failed"
             except Exception as exc:  # noqa: BLE001
                 logger.exception("后台发送 Sentry 日志失败")
                 success, detail = False, str(exc)
@@ -834,7 +929,7 @@ class DiagnosticsWindow(QWidget):
         self._export_workers[kind] = worker
         worker.start()
 
-    def _on_export_done(self, kind: str, success: bool, detail: str) -> None:
+    def _on_export_done(self, kind: str, success: bool, detail: object) -> None:
         self._export_workers.pop(kind, None)
         button = self._export_buttons.pop(kind, None)
         if button is not None:
@@ -847,15 +942,30 @@ class DiagnosticsWindow(QWidget):
             elif kind == "sentry_logs":
                 button.setText(tr("上传日志到 Sentry"))
                 self._update_sentry_button()
+            elif kind == "local_log_cleanup":
+                button.setText(tr("清除本机日志"))
             else:
                 button.setText(tr("导出报告 (txt)"))
         if success:
             if kind == "logs":
-                self.log_live_state.setText(f"{tr('日志已导出')} · {Path(detail).name}")
+                self.log_live_state.setText(f"{tr('日志已导出')} · {Path(str(detail)).name}")
             elif kind == "sentry":
-                self.selfcheck_summary.setText(tr("诊断报告已发送"))
+                self.selfcheck_summary.setText(
+                    tr("诊断报告已发送（日志为部分上传）")
+                    if _log_upload_is_partial(detail)
+                    else tr("诊断报告已发送"))
+                self._show_log_upload_summary(detail)
             elif kind == "sentry_logs":
-                self.log_live_state.setText(tr("日志已发送到 Sentry"))
+                self.log_live_state.setText(
+                    tr("日志已部分上传到 Sentry")
+                    if _log_upload_is_partial(detail)
+                    else tr("日志已发送到 Sentry"))
+                self._show_log_upload_summary(detail)
+            elif kind == "local_log_cleanup":
+                self.log_view.clear()
+                self._last_seen = None
+                self.log_live_state.setText(tr("本机日志已清除"))
+                self._show_log_cleanup_summary(detail)
             else:
                 self.selfcheck_summary.setText(f"{tr('报告已导出')} · {Path(detail).name}")
         else:
@@ -865,8 +975,30 @@ class DiagnosticsWindow(QWidget):
                 self.selfcheck_summary.setText(tr("诊断报告发送失败"))
             elif kind == "sentry_logs":
                 self.log_live_state.setText(tr("日志发送失败"))
+            elif kind == "local_log_cleanup":
+                self.log_live_state.setText(tr("本机日志清除失败"))
             else:
                 self.selfcheck_summary.setText(tr("报告导出失败"))
+
+    def _show_log_upload_summary(self, detail: object) -> None:
+        """Render the exact safe range/count metadata returned by an upload."""
+        if not isinstance(detail, Mapping) or not hasattr(self, "log_operation_state"):
+            return
+        self.log_operation_state.setText(_format_log_upload_summary(detail))
+        self.log_operation_state.show()
+
+    def _show_log_cleanup_summary(self, detail: object) -> None:
+        """Show cleanup counts without exposing any local file path."""
+        if not isinstance(detail, Mapping) or not hasattr(self, "log_operation_state"):
+            return
+        cleared = _as_non_negative_int(detail.get("cleared_files"))
+        failed = _as_non_negative_int(detail.get("failed_files"))
+        text = tr("已清除 {cleared} 个本机日志文件").format(cleared=cleared)
+        if failed:
+            text += "\n" + tr("仍有 {failed} 个日志文件未能清除，请关闭占用程序后再试").format(
+                failed=failed)
+        self.log_operation_state.setText(text)
+        self.log_operation_state.show()
 
     def refresh(self) -> None:
         # The module is imported once during construction.  Re-importing it on

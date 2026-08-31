@@ -34,6 +34,7 @@ import pytest  # noqa: E402
 
 import voxsub.logging_setup as logging_setup  # noqa: E402
 from voxsub.logging_setup import (
+    clear_local_logs,
     diagnostic_session_log_snapshot,
     diagnostic_session_snapshot,
     drain_events,
@@ -125,6 +126,32 @@ class TestTailLogFile:
         (tmp_path / "voxsub.log").mkdir()
         assert tail_log_file(5).startswith("<读取日志失败")
 
+    def test_clear_local_logs_keeps_models_settings_and_reports(self, monkeypatch, tmp_path):
+        local_root = tmp_path / "VoxSub"
+        logs_dir = local_root / "logs"
+        diagnostics_dir = local_root / "diagnostics" / "source-run"
+        logs_dir.mkdir(parents=True)
+        diagnostics_dir.mkdir(parents=True)
+        (logs_dir / "voxsub.log").write_text("current", encoding="utf-8")
+        (logs_dir / "voxsub.log.1").write_text("historic", encoding="utf-8")
+        (diagnostics_dir / "source-run.log").write_text("source test", encoding="utf-8")
+        (diagnostics_dir / "keep.txt").write_text("export", encoding="utf-8")
+        (local_root / "config.json").write_text("settings", encoding="utf-8")
+        models_dir = local_root / "models"
+        models_dir.mkdir()
+        (models_dir / "model.bin").write_bytes(b"model")
+        monkeypatch.setattr(logging_setup, "_log_dir", lambda: logs_dir)
+
+        result = clear_local_logs()
+
+        assert (logs_dir / "voxsub.log").read_text(encoding="utf-8") == ""
+        assert not (logs_dir / "voxsub.log.1").exists()
+        assert not (diagnostics_dir / "source-run.log").exists()
+        assert (diagnostics_dir / "keep.txt").read_text(encoding="utf-8") == "export"
+        assert (local_root / "config.json").read_text(encoding="utf-8") == "settings"
+        assert (models_dir / "model.bin").read_bytes() == b"model"
+        assert result == {"cleared_files": 3, "failed_files": 0}
+
 
 class TestDiagnosticSession:
     def test_session_is_bounded_and_tags_logs(self, monkeypatch, tmp_path):
@@ -184,7 +211,7 @@ class TestDiagnosticsLogTab:
             view.setPlainText("塞一段测试文本")  # 可填充, 不崩
             assert view.toPlainText() == "塞一段测试文本"
             btns = {b.text() for b in dw.findChildren(QPushButton)}
-            assert {"刷新", "导出日志", "上传日志到 Sentry", "导出报告 (txt)"} <= btns
+            assert {"刷新", "导出日志", "上传日志到 Sentry", "清除本机日志", "导出报告 (txt)"} <= btns
             # 1s 轮询 timer 已启动
             assert dw.log_timer.isActive()
             assert dw.log_timer.interval() == 1000
@@ -299,6 +326,49 @@ class TestDiagnosticsLogTab:
             assert captured["logs"] == "ERROR local log"
             assert dw.send_log_sentry_btn.isEnabled()
             assert "Sentry" in dw.log_live_state.text()
+            assert "Sentry" in dw.log_operation_state.text()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_partial_log_upload_is_labelled_as_partial(self, qapp):
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            dw._on_export_done("sentry_logs", True, {
+                "source_log_lines": 10,
+                "uploaded_log_lines": 4,
+                "omitted_log_lines": 6,
+            })
+            assert "部分上传" in dw.log_live_state.text()
+            assert "4/10" in dw.log_operation_state.text()
+        finally:
+            dw.close()
+            dw.deleteLater()
+
+    def test_clear_local_logs_requires_confirmation_and_reports_counts(
+            self, qapp, monkeypatch):
+        import voxsub.ui.diagnostics_window as diagnostics_window
+        from voxsub.ui.diagnostics_window import DiagnosticsWindow
+
+        monkeypatch.setattr(
+            diagnostics_window.QMessageBox,
+            "question",
+            lambda *args, **kwargs: diagnostics_window.QMessageBox.StandardButton.Yes,
+        )
+        monkeypatch.setattr(
+            diagnostics_window,
+            "clear_local_logs",
+            lambda: {"cleared_files": 3, "failed_files": 0},
+        )
+        dw = DiagnosticsWindow(diagnostics_module=None)
+        try:
+            dw._clear_local_logs()  # noqa: SLF001
+            _wait_until(qapp, lambda: "local_log_cleanup" not in dw._export_workers)  # noqa: SLF001
+            assert dw.clear_local_log_btn.isEnabled()
+            assert "3" in dw.log_operation_state.text()
+            assert "清除" in dw.log_live_state.text()
         finally:
             dw.close()
             dw.deleteLater()

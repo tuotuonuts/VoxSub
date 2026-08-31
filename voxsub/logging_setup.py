@@ -285,6 +285,89 @@ def tail_log_file(lines: int = 200) -> str:
         return f"<读取日志失败: {exc}>"
 
 
+def _same_file_path(left: str | Path, right: Path) -> bool:
+    """Compare file paths without requiring either path to exist."""
+    return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(
+        os.path.abspath(str(right)))
+
+
+def _truncate_active_log_file(path: Path) -> tuple[int, int]:
+    """Empty the live log in place so its active handler remains usable."""
+    root = logging.getLogger("voxsub")
+    matched_handler = False
+    for handler in root.handlers:
+        if not isinstance(handler, logging.FileHandler):
+            continue
+        filename = getattr(handler, "baseFilename", "")
+        if not filename or not _same_file_path(filename, path):
+            continue
+        matched_handler = True
+        try:
+            handler.acquire()
+            stream = handler.stream
+            if stream is None:
+                return 0, 1
+            stream.flush()
+            stream.seek(0)
+            stream.truncate()
+            stream.seek(0, 2)
+            return 1, 0
+        except OSError:
+            return 0, 1
+        finally:
+            handler.release()
+    if not matched_handler and path.is_file():
+        try:
+            path.write_text("", encoding="utf-8")
+            return 1, 0
+        except OSError:
+            return 0, 1
+    return 0, 0
+
+
+def clear_local_logs() -> dict[str, int]:
+    """Clear VoxSub's on-disk logs and the in-memory log view buffer.
+
+    Model files, configuration, user data, Sentry credentials, downloaded
+    tools, and exported reports are intentionally outside this operation. The
+    current log is truncated in place so a running application can continue to
+    write it; historical rotations and source-test ``.log`` files are removed.
+    """
+    setup_logging()
+    log_dir = _log_dir()
+    cleared, failed = _truncate_active_log_file(log_dir / "voxsub.log")
+
+    candidates: list[Path] = []
+    try:
+        candidates.extend(path for path in log_dir.glob("voxsub.log.*") if path.is_file())
+    except OSError:
+        failed += 1
+
+    diagnostics_dir = log_dir.parent / "diagnostics"
+    try:
+        candidates.extend(path for path in diagnostics_dir.rglob("*.log") if path.is_file())
+    except OSError:
+        failed += 1
+
+    for path in candidates:
+        try:
+            path.unlink()
+            cleared += 1
+        except OSError:
+            failed += 1
+
+    # The diagnostics page is backed by this queue as well as the log file.
+    # Drop the previous session's in-memory entries so cleared logs do not
+    # immediately reappear in the view.
+    with _QUEUE_LOCK:
+        while True:
+            try:
+                _EVENT_QUEUE.get_nowait()
+            except queue.Empty:
+                break
+    return {"cleared_files": cleared, "failed_files": failed}
+
+
 def diagnostic_session_log_snapshot() -> tuple[str, dict[str, Any] | None]:
     """Return only the active session's on-disk logs plus bounded metadata.
 
@@ -309,6 +392,7 @@ def diagnostic_session_log_snapshot() -> tuple[str, dict[str, Any] | None]:
 
 __all__ = [
     "DiagnosticSession",
+    "clear_local_logs",
     "diagnostic_session_log_snapshot",
     "diagnostic_session_snapshot",
     "drain_events",

@@ -58,6 +58,8 @@ _DIAGNOSTIC_MAX_CHARS = 120_000
 _SAFE_SESSION_ID_RE = re.compile(r"^[a-f0-9]{8,32}$", re.IGNORECASE)
 _SAFE_TIMESTAMP_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:\+00:00)?$")
+_LOG_TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+_LOG_UPLOAD_RETENTION = "latest_complete_lines"
 
 
 @dataclass(frozen=True)
@@ -376,30 +378,81 @@ def is_error_reporting_enabled() -> bool:
     return _SDK is not None
 
 
-def _sanitize_diagnostic_text_with_stats(value: str) -> tuple[str, dict[str, int | bool]]:
-    """Sanitize an upload attachment and expose only aggregate filter stats."""
+def _log_timestamp_range(lines: list[str]) -> tuple[str, str]:
+    """Return first/last standard log timestamp without copying log content."""
+    timestamps = [match.group(1) for line in lines
+                  if (match := _LOG_TIMESTAMP_RE.match(line))]
+    return (timestamps[0], timestamps[-1]) if timestamps else ("", "")
+
+
+def _sanitize_diagnostic_text_with_stats(
+    value: str,
+) -> tuple[str, dict[str, int | str | bool]]:
+    """Sanitize an attachment and retain newest complete lines within its cap.
+
+    The cap is intentionally applied after privacy filtering. Selecting from
+    the end makes a manual upload useful for the issue currently under
+    investigation, while retaining whole lines keeps Sentry records readable.
+    """
     rendered_lines: list[str] = []
     replacements = 0
     filtered_lines = 0
-    truncated = False
+    redacted_lines = 0
+    line_length_limited_lines = 0
     source_lines = str(value).splitlines()
     for line in source_lines:
         cleaned, count, line_truncated = _sanitize_string_with_stats(line)
         rendered_lines.append(cleaned)
         replacements += count
-        truncated = truncated or line_truncated
         if count or line_truncated:
             filtered_lines += 1
-    rendered = "\n".join(rendered_lines)
-    if len(rendered) > _DIAGNOSTIC_MAX_CHARS:
-        rendered = rendered[:_DIAGNOSTIC_MAX_CHARS]
-        truncated = True
+        if count:
+            redacted_lines += 1
+        if line_truncated:
+            line_length_limited_lines += 1
+
+    # Work backwards so an oversized attachment retains the newest contiguous
+    # records. The delimiter is counted to ensure the cap never creates a
+    # partial first line.
+    retained_reversed: list[str] = []
+    rendered_length = 0
+    for line in reversed(rendered_lines):
+        line_length = len(line) + (1 if retained_reversed else 0)
+        if rendered_length + line_length > _DIAGNOSTIC_MAX_CHARS:
+            break
+        retained_reversed.append(line)
+        rendered_length += line_length
+    retained_lines = list(reversed(retained_reversed))
+    omitted_lines = len(rendered_lines) - len(retained_lines)
+    rendered = "\n".join(retained_lines)
+    source_first, source_last = _log_timestamp_range(source_lines)
+    uploaded_first, uploaded_last = _log_timestamp_range(retained_lines)
+    truncation_reason = ""
+    if omitted_lines and line_length_limited_lines:
+        truncation_reason = "attachment_size_and_line_length_limits"
+    elif omitted_lines:
+        truncation_reason = "attachment_size_limit"
+    elif line_length_limited_lines:
+        truncation_reason = "line_length_limit"
     return rendered, {
         "source_lines": len(source_lines),
-        "uploaded_lines": len(rendered.splitlines()),
+        "uploaded_lines": len(retained_lines),
         "filtered_lines": filtered_lines,
+        "privacy_redacted_lines": redacted_lines,
+        # Lines are redacted in place rather than silently removed. Keep this
+        # explicit so an upload can account for every source log line.
+        "privacy_removed_lines": 0,
+        "line_length_limited_lines": line_length_limited_lines,
         "privacy_filter_replacements": replacements,
-        "truncated": truncated,
+        "omitted_lines": omitted_lines,
+        "attachment_char_limit": _DIAGNOSTIC_MAX_CHARS,
+        "retention": _LOG_UPLOAD_RETENTION,
+        "source_first_log_at": source_first,
+        "source_last_log_at": source_last,
+        "uploaded_first_log_at": uploaded_first,
+        "uploaded_last_log_at": uploaded_last,
+        "truncation_reason": truncation_reason,
+        "truncated": bool(omitted_lines or line_length_limited_lines),
     }
 
 
@@ -410,18 +463,45 @@ def _sanitize_diagnostic_text(value: str) -> str:
 
 def _upload_metadata(
     session_metadata: Mapping[str, Any] | None,
-    log_stats: Mapping[str, int | bool],
+    log_stats: Mapping[str, int | str | bool],
 ) -> dict[str, Any]:
     """Build a compact, non-content Sentry context for a diagnostic upload."""
     metadata = _safe_session_metadata(session_metadata)
     metadata.update({
+        "source_log_lines": int(log_stats.get("source_lines", 0)),
         "uploaded_log_lines": int(log_stats.get("uploaded_lines", 0)),
+        "omitted_log_lines": int(log_stats.get("omitted_lines", 0)),
         "privacy_filtered_lines": int(log_stats.get("filtered_lines", 0)),
+        "privacy_redacted_lines": int(log_stats.get("privacy_redacted_lines", 0)),
+        "privacy_removed_lines": int(log_stats.get("privacy_removed_lines", 0)),
+        "line_length_limited_lines": int(
+            log_stats.get("line_length_limited_lines", 0)),
         "privacy_filter_replacements": int(
             log_stats.get("privacy_filter_replacements", 0)),
+        "attachment_char_limit": int(log_stats.get("attachment_char_limit", 0)),
+        "log_retention": str(log_stats.get("retention", "")),
+        "source_first_log_at": str(log_stats.get("source_first_log_at", "")),
+        "source_last_log_at": str(log_stats.get("source_last_log_at", "")),
+        "uploaded_first_log_at": str(log_stats.get("uploaded_first_log_at", "")),
+        "uploaded_last_log_at": str(log_stats.get("uploaded_last_log_at", "")),
+        "log_truncation_reason": str(log_stats.get("truncation_reason", "")),
         "log_truncated": bool(log_stats.get("truncated", False)),
     })
     return metadata
+
+
+def preview_log_snapshot_metadata(
+    logs: str,
+    *,
+    session_metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the safe metadata that a manual log upload will include.
+
+    The UI can therefore tell the user exactly which range was retained
+    without exposing raw or filtered log content outside this module.
+    """
+    _clean_logs, log_stats = _sanitize_diagnostic_text_with_stats(logs)
+    return _upload_metadata(session_metadata, log_stats)
 
 
 def _metadata_header(metadata: Mapping[str, Any]) -> str:
@@ -430,8 +510,12 @@ def _metadata_header(metadata: Mapping[str, Any]) -> str:
         return ""
     ordered = (
         "session_id", "started_at", "expires_at", "first_log_at", "last_log_at",
-        "line_count", "uploaded_log_lines", "privacy_filtered_lines",
-        "privacy_filter_replacements", "log_truncated",
+        "line_count", "source_log_lines", "uploaded_log_lines", "omitted_log_lines",
+        "source_first_log_at", "source_last_log_at", "uploaded_first_log_at",
+        "uploaded_last_log_at", "privacy_filtered_lines", "privacy_redacted_lines",
+        "privacy_removed_lines", "line_length_limited_lines",
+        "privacy_filter_replacements", "attachment_char_limit", "log_retention",
+        "log_truncation_reason", "log_truncated",
     )
     rows = [f"# {key}: {metadata[key]}" for key in ordered if key in metadata]
     return "# VoxSub diagnostic upload\n" + "\n".join(rows) + "\n\n"
@@ -701,6 +785,7 @@ __all__ = [
     "capture_message",
     "is_error_reporting_enabled",
     "initialize_error_reporting",
+    "preview_log_snapshot_metadata",
     "reload_error_reporting",
     "runtime_context",
     "sanitize_event",

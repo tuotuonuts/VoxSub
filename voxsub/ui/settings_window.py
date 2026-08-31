@@ -456,7 +456,8 @@ class SettingsWindow(QWidget):
         intro_card, intro = self._card("识别模型调优")
         note = QLabel(
             "这里调整的是模型如何听、何时断句以及一次考虑多少候选，"
-            "不是重新训练模型。没有 AI 背景时保持“自动”即可。",
+            "不是重新训练模型。该设置同时用于 A 麦克风、B 系统声音和 C 音视频文件模式；"
+            "没有 AI 背景时保持“自动”即可。",
             intro_card,
         )
         note.setObjectName("secondaryLabel")

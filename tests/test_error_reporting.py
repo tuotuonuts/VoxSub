@@ -284,6 +284,44 @@ def test_send_diagnostic_report_attaches_filtered_snapshot(monkeypatch) -> None:
     assert b"C:\\Users\\Alice" not in rendered
 
 
+def test_snapshot_retains_newest_complete_lines_and_reports_safe_range(monkeypatch) -> None:
+    monkeypatch.setattr(error_reporting, "_DIAGNOSTIC_MAX_CHARS", 70)
+    logs = "\n".join((
+        "2026-08-31 01:00:00 old-record",
+        "2026-08-31 01:01:00 kept-middle",
+        "2026-08-31 01:02:00 kept-latest",
+    ))
+
+    rendered, stats = error_reporting._sanitize_diagnostic_text_with_stats(logs)  # noqa: SLF001
+    metadata = error_reporting.preview_log_snapshot_metadata(logs)
+
+    assert "old-record" not in rendered
+    assert rendered.splitlines() == [
+        "2026-08-31 01:01:00 kept-middle",
+        "2026-08-31 01:02:00 kept-latest",
+    ]
+    assert stats["source_lines"] == 3
+    assert stats["uploaded_lines"] == 2
+    assert stats["omitted_lines"] == 1
+    assert stats["truncation_reason"] == "attachment_size_limit"
+    assert metadata["source_first_log_at"] == "2026-08-31 01:00:00"
+    assert metadata["uploaded_first_log_at"] == "2026-08-31 01:01:00"
+    assert metadata["uploaded_last_log_at"] == "2026-08-31 01:02:00"
+    assert metadata["log_retention"] == "latest_complete_lines"
+
+
+def test_snapshot_metadata_accounts_for_redaction_without_removing_lines() -> None:
+    logs = "2026-08-31 01:00:00 api_key=secret\n2026-08-31 01:01:00 plain"
+
+    metadata = error_reporting.preview_log_snapshot_metadata(logs)
+
+    assert metadata["source_log_lines"] == 2
+    assert metadata["uploaded_log_lines"] == 2
+    assert metadata["privacy_redacted_lines"] == 1
+    assert metadata["privacy_removed_lines"] == 0
+    assert metadata["privacy_filter_replacements"] >= 1
+
+
 def test_send_diagnostic_report_without_sentry_is_noop() -> None:
     assert not error_reporting.is_error_reporting_enabled()
     assert not error_reporting.send_diagnostic_report("report", "logs")
@@ -308,6 +346,8 @@ def test_send_log_snapshot_attaches_only_filtered_logs(monkeypatch) -> None:
     assert b"private subtitle" not in rendered
     assert b"C:\\Users\\Alice" not in rendered
     assert scope.tags["diagnostic_trigger"] == "diagnostics_logs_tab"
+    assert b"source_log_lines" in rendered
+    assert b"log_retention" in rendered
 
 
 def test_send_log_snapshot_without_sentry_is_noop() -> None:

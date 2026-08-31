@@ -297,6 +297,7 @@ TRANSLATIONS: dict[str, str] = {
     "发送到 Sentry": "Send to Sentry",
     "正在发送…": "Sending...",
     "诊断报告已发送": "Diagnostic report sent",
+    "诊断报告已发送（日志为部分上传）": "Diagnostic report sent (logs partially uploaded)",
     "诊断报告发送失败": "Diagnostic report upload failed",
     "Sentry 未配置": "Sentry is not configured",
     "Sentry 已启用": "Sentry is enabled",
@@ -382,6 +383,8 @@ TRANSLATIONS: dict[str, str] = {
     "刷新设备与窗口": "Refresh devices and windows",
     "翻译": "Translation",
     "识别调优": "Recognition tuning",
+    "这里调整的是模型如何听、何时断句以及一次考虑多少候选，不是重新训练模型。该设置同时用于 A 麦克风、B 系统声音和 C 音视频文件模式；没有 AI 背景时保持“自动”即可。":
+        "These settings control how the model listens, segments sentences, and considers candidates; they do not retrain it. They apply to A microphone, B system audio, and C audio/video file modes. Keep Automatic unless you need to tune them.",
     "语音": "Voice",
     "语音朗读": "Text-to-speech",
     "设备": "Devices",
@@ -432,7 +435,28 @@ TRANSLATIONS: dict[str, str] = {
     "手动上传本地日志快照（已过滤隐私信息）":
         "Manually upload a filtered local log snapshot",
     "日志已发送到 Sentry": "Logs sent to Sentry",
+    "日志已部分上传到 Sentry": "Logs partially uploaded to Sentry",
     "日志发送失败": "Log upload failed",
+    "Sentry 日志已上传：{uploaded}/{source} 行":
+        "Sentry logs uploaded: {uploaded}/{source} lines",
+    "来源时间：{first} 至 {last}": "Source range: {first} to {last}",
+    "上传范围：{first} 至 {last}": "Uploaded range: {first} to {last}",
+    "已脱敏 {redacted} 行（{replacements} 处），移除 {removed} 行":
+        "Redacted {redacted} lines ({replacements} replacements); removed {removed} lines",
+    "已因大小省略 {omitted} 行（保留最新日志）":
+        "Omitted {omitted} lines for size; retained the latest logs",
+    "部分超长日志行已按安全限制截断":
+        "Some oversized log lines were shortened by the safety limit",
+    "未检测到时间戳": "No timestamp found",
+    "清除本机日志": "Clear local logs",
+    "正在清除…": "Clearing...",
+    "这会删除本机历史日志和诊断启动日志，无法恢复。不会删除模型、配置、用户数据或 Sentry 配置。是否继续？":
+        "This permanently deletes local history and source-test logs. Models, settings, user data, and Sentry configuration are not affected. Continue?",
+    "本机日志已清除": "Local logs cleared",
+    "本机日志清除失败": "Could not clear local logs",
+    "已清除 {cleared} 个本机日志文件": "Cleared {cleared} local log files",
+    "仍有 {failed} 个日志文件未能清除，请关闭占用程序后再试":
+        "Could not clear {failed} log files. Close the app using them and try again.",
     "正在后台保存对话…": "Saving session in the background...",
     "日志页签初始化失败（详见日志文件）": "The log tab could not be initialized (see the log file)",
     "显示音频电平、队列、设备打开与分句等详细事件":
