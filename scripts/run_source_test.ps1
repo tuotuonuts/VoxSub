@@ -298,6 +298,16 @@ try {
     Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
     $env:VOXSUB_ENVIRONMENT = "testing"
 
+    # A source checkout may have a verified no-NPUW OpenVINO runtime produced
+    # by build.ps1 in TEMP. Reuse it when present; never copy it into Git.
+    if (-not $env:VOXSUB_NPU_RUNTIME_DIR) {
+        $npuCandidate = Join-Path $env:TEMP "VoxSub_npu_runtime_b10470"
+        if (Test-Path -LiteralPath (Join-Path $npuCandidate "llama-server.exe") -PathType Leaf) {
+            $env:VOXSUB_NPU_RUNTIME_DIR = $npuCandidate
+            Write-RunLog "发现本机 OpenVINO NPU 运行时: $npuCandidate"
+        }
+    }
+
     # DSN is optional and never stored in this repository.  An owner may place
     # it once in the user profile so friends do not need to type it manually.
     $dsnFile = Join-Path $localAppData "VoxSub\sentry_dsn.txt"

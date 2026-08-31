@@ -20,7 +20,7 @@ from voxsub.hardware import HardwareProfile, LlamaRuntime  # noqa: E402
 from voxsub.translate._http_client import OpenAICompatError  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
 from voxsub.translate.qwen import QwenQualityTranslator  # noqa: E402
-from voxsub.translate.qwen import _invalid_translation  # noqa: E402
+from voxsub.translate.qwen import _clean, _invalid_translation  # noqa: E402
 from voxsub.translate import qwen as qwen_module  # noqa: E402
 
 
@@ -361,6 +361,47 @@ def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch)
     assert out == "Hello, world."
     assert captured["messages"][0]["role"] == "system"
     assert "only the translated text" in captured["messages"][0]["content"]
+
+
+def test_hy_mt2_prompt_uses_system_role_and_source_boundary(
+        tmp_path: Path, monkeypatch) -> None:
+    q = _make_qwen(tmp_path)
+    q._prompt_style = "hy-mt2"
+    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    q._proc = _FakeProc(1)
+    captured: dict = {}
+
+    def fake_chat(_endpoint, *, messages, **_kwargs):
+        captured["messages"] = messages
+        return "Hello."
+
+    monkeypatch.setattr("voxsub.translate.qwen.chat_completion", fake_chat)
+    assert q.translate("你好。", "zh", "en") == "Hello."
+    assert captured["messages"][0]["role"] == "system"
+    assert "<source>" in captured["messages"][1]["content"]
+    assert "</source>" in captured["messages"][1]["content"]
+
+
+def test_selected_gpu_backend_offloads_layers(tmp_path: Path) -> None:
+    q = _make_qwen(tmp_path)
+    profile = HardwareProfile(
+        "Intel Core Ultra", 4, 8, 16.0,
+        integrated_gpu_name="Intel Arc Graphics",
+    )
+    runtime = LlamaRuntime(tmp_path / "llama-server.exe", "vulkan", "GPU")
+    assert q._auto_gpu_layers(profile, runtime) == 999
+
+
+def test_clean_removes_prompt_echo_and_control_tokens() -> None:
+    echoed = (
+        "从输入文本中检测源语言，然后仅将其翻译为中文。不要翻译成其他任何语言。"
+        "只输出翻译结果。 关于此事的某些事情。"
+    )
+    assert _clean(echoed) == "关于此事的某些事情。"
+    assert _clean("创造发明，实现，而这些。<|endoftext|>Humanity。") == (
+        "创造发明，实现，而这些。"
+    )
+    assert _invalid_translation("これは文です", echoed, "ja", "zh")
 
 
 def test_quality_translation_rejects_explanatory_answer(tmp_path: Path, monkeypatch) -> None:

@@ -97,7 +97,7 @@ $env:VOXSUB_TEST_PROCESS_AUDIO = "1"
 Remove-Item Env:VOXSUB_TEST_PROCESS_AUDIO
 ```
 
-给朋友使用时，首次把仓库克隆到本机后，直接双击项目根目录的 `更新并启动测试版.bat`。以后每次双击同一个文件即可自动 `git pull`、检查 Python 3.11+、创建本机独立 `.venv`、同步 `requirements.lock` 并启动 `run_app.py`。首次启动还会校验并补齐本地质量翻译所需的 llama.cpp CPU/Vulkan 运行时；下载包和 SHA256 都固定，后续不会重复下载。脚本会清理 `PYTHONPATH` / `PYTHONHOME`，测试环境自动使用 `testing` 标记；不需要手动配置 Python 依赖。
+给朋友使用时，首次把仓库克隆到本机后，直接双击项目根目录的 `更新并启动测试版.bat`。以后每次双击同一个文件即可自动 `git pull`、检查 Python 3.11+、创建本机独立 `.venv`、同步 `requirements.lock` 并启动 `run_app.py`。首次启动还会校验并补齐本地质量翻译所需的 llama.cpp CPU/Vulkan 运行时；下载包和 SHA256 都固定，后续不会重复下载。若已通过 `build.ps1` 生成 no-NPUW OpenVINO 运行时，可将其目录设置到 `VOXSUB_NPU_RUNTIME_DIR`，源码启动脚本会自动复用并在日志中确认 NPU 路径；未准备该运行时时会明确降级到 GPU/CPU，不会伪报 NPU。脚本会清理 `PYTHONPATH` / `PYTHONHOME`，测试环境自动使用 `testing` 标记；不需要手动配置 Python 依赖。
 
 关闭主窗口右上角通常只是隐藏到系统托盘，并不会结束 VoxSub。真正退出源码测试版时，必须右键托盘图标并选择“退出应用”。启动脚本会在 `git pull` 前检查 VoxSub、源码 Python 和 `llama-server` 进程；发现仍在运行时只提示先执行“退出应用”，不会强制杀进程。应用返回后，脚本还会等待相关子进程结束，确认干净退出后才返回。
 

@@ -371,6 +371,12 @@ def _runtime_roots() -> list[Path]:
     override = os.environ.get("VOXSUB_LLAMA_DIR")
     if override:
         roots.append(Path(override))
+    # The source build keeps the verified no-NPUW OpenVINO runtime outside
+    # the repository. Honour the same override used by build.ps1 so a source
+    # checkout can use that runtime without copying DLLs into Git.
+    npu_override = os.environ.get("VOXSUB_NPU_RUNTIME_DIR")
+    if npu_override:
+        roots.append(Path(npu_override))
     roots.extend([
         Path(sys.executable).resolve().parent / "tools" / "llama",
         Path(__file__).resolve().parents[1] / "tools" / "llama",

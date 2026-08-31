@@ -30,6 +30,7 @@ import sherpa_onnx
 from voxsub.language_guard import language_name, normalize_language
 from voxsub.logging_setup import get_logger
 from voxsub.model_storage import resolve_models_root
+from voxsub.text_cleaning import strip_model_control_tokens
 
 logger = get_logger("asr")
 
@@ -40,6 +41,18 @@ SAMPLE_RATE = 16000
 #: 注意 1.13.5 实际生效窗口以 VadModel.window_size() 为准 (本机实测 576,
 #: 非 512) —— 所有切窗循环必须读取 window_size 属性, 勿硬编码。
 _VAD_WINDOW_SIZE = 512
+
+
+def _clean_asr_result(value: object) -> str:
+    """Normalize decoder protocol markers before text reaches the UI/SRT."""
+    raw = str(value or "").strip()
+    cleaned = strip_model_control_tokens(raw)
+    if cleaned != raw:
+        logger.warning(
+            "ASR 输出包含模型控制标记，已清理 (raw_chars=%d cleaned_chars=%d)",
+            len(raw), len(cleaned),
+        )
+    return cleaned
 
 
 def models_dir() -> Path:
@@ -141,11 +154,11 @@ class StreamingASR:
         except Exception:
             logger.exception("ASR 解码循环异常 (decode_stream)")
             raise  # 行为不变: 原样上抛, 仅补 traceback 记录
-        return self._recognizer.get_result(stream)
+        return _clean_asr_result(self._recognizer.get_result(stream))
 
     def get_result(self, stream) -> str:
         """直接读取当前累计结果, 不触发解码 (轻量, 适合高频调用)。"""
-        return self._recognizer.get_result(stream)
+        return _clean_asr_result(self._recognizer.get_result(stream))
 
     def is_endpoint(self, stream) -> bool:
         """sherpa 端点检测 (供需要时使用; 句子切分由 Segmenter 的静音阈值负责)。"""
@@ -290,7 +303,7 @@ class OfflineGenerativeASR:
         self._recognizer.decode_stream(native)
         result = native.result
         text = getattr(result, "text", result)
-        stream.result = str(text or "").strip()
+        stream.result = _clean_asr_result(text)
         logger.info(
             "生成式 ASR 解码完成: runtime=%s provider=%s audio_ms=%.1f "
             "decode_ms=%.1f chars=%d",

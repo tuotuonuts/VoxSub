@@ -357,7 +357,13 @@ class FileRecognizer:
                 if validate_translation:
                     line.translation = guard_text(
                         line.translation, target_lang, kind="translation")
-            except Exception:
+            except Exception as exc:
+                # Keep diagnostics actionable without writing subtitle/audio
+                # contents to logs or Sentry.
+                logger.warning(
+                    "文件字幕翻译失败: segment=%d error_type=%s error=%s",
+                    index, type(exc).__name__, exc, exc_info=True,
+                )
                 line.translation = line.text + " 〔翻译失败〕"
             FileRecognizer._progress(
                 progress,
