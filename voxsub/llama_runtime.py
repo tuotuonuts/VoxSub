@@ -28,6 +28,8 @@ OPENVINO_ASSET = "llama-b10470-bin-win-openvino-2026.2.1-x64.zip"
 OPENVINO_SHA256 = (
     "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE"
 )
+OPENVINO_SIZE = 80_730_898
+DOWNLOAD_ATTEMPTS = 3
 OPENVINO_URL = (
     "https://github.com/ggml-org/llama.cpp/releases/download/"
     f"{LLAMA_VERSION}/{OPENVINO_ASSET}"
@@ -95,35 +97,91 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
+def _archive_diagnostics(path: Path) -> tuple[int, str, str, bool]:
+    """Return size, full digest, and a short header for safe download logs."""
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        prefix_bytes = handle.read(16)
+    prefix = prefix_bytes.hex(" ").upper() or "<empty>"
+    return size, _sha256(path), prefix, prefix_bytes[:2] == b"PK"
+
+
 def _download_verified(archive: Path) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     partial = archive.with_suffix(archive.suffix + ".part")
-    if archive.is_file() and _sha256(archive) == OPENVINO_SHA256:
-        return
-    if partial.exists():
-        partial.unlink()
-    logger.info("开始准备 OpenVINO llama-server 运行时: asset=%s", OPENVINO_ASSET)
-    request = urllib.request.Request(
-        OPENVINO_URL,
-        headers={"User-Agent": "VoxSub-runtime-bootstrap/0.9"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response, partial.open("wb") as target:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                target.write(chunk)
-    except Exception:
+    if archive.is_file():
+        try:
+            size, digest, prefix, is_zip = _archive_diagnostics(archive)
+            if size == OPENVINO_SIZE and digest == OPENVINO_SHA256 and is_zip:
+                return
+            logger.warning(
+                "OpenVINO 缓存资产无效，将重新下载: size=%s sha256=%s prefix=%s",
+                size,
+                digest[:12],
+                prefix,
+            )
+            archive.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"无法读取或替换 OpenVINO 缓存文件: {exc}") from exc
+
+    last_failure = "未知错误"
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         partial.unlink(missing_ok=True)
-        raise
-    actual = _sha256(partial)
-    if actual != OPENVINO_SHA256:
-        partial.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"OpenVINO 运行时 SHA256 校验失败 (expected={OPENVINO_SHA256[:12]} actual={actual[:12]})"
+        logger.info(
+            "开始准备 OpenVINO llama-server 运行时: asset=%s attempt=%s/%s",
+            OPENVINO_ASSET,
+            attempt,
+            DOWNLOAD_ATTEMPTS,
         )
-    os.replace(partial, archive)
+        retry_url = OPENVINO_URL
+        if attempt > 1:
+            retry_url += f"?voxsub_retry={attempt}"
+        request = urllib.request.Request(
+            retry_url,
+            headers={
+                "Accept": "application/octet-stream",
+                "Cache-Control": "no-cache",
+                "User-Agent": "VoxSub-runtime-bootstrap/0.9",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response, partial.open("wb") as target:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    target.write(chunk)
+            size, actual, prefix, is_zip = _archive_diagnostics(partial)
+            if size != OPENVINO_SIZE:
+                raise RuntimeError(
+                    "OpenVINO 运行时大小不符 "
+                    f"(expected={OPENVINO_SIZE} actual={size} sha256={actual[:12]} prefix={prefix})"
+                )
+            if not is_zip:
+                raise RuntimeError(
+                    f"OpenVINO 下载响应不是 ZIP (size={size} sha256={actual[:12]} prefix={prefix})"
+                )
+            if actual != OPENVINO_SHA256:
+                raise RuntimeError(
+                    "OpenVINO 运行时 SHA256 校验失败 "
+                    f"(expected={OPENVINO_SHA256} actual={actual} size={size} prefix={prefix})"
+                )
+            os.replace(partial, archive)
+            return
+        except Exception as exc:
+            last_failure = str(exc)
+            partial.unlink(missing_ok=True)
+            if attempt < DOWNLOAD_ATTEMPTS:
+                logger.warning(
+                    "OpenVINO 运行时下载校验失败，将重试: attempt=%s/%s reason=%s",
+                    attempt,
+                    DOWNLOAD_ATTEMPTS,
+                    last_failure,
+                )
+                time.sleep(attempt)
+    raise RuntimeError(
+        f"OpenVINO 运行时同步失败（已重试 {DOWNLOAD_ATTEMPTS} 次）: {last_failure}"
+    )
 
 
 def _acquire_bootstrap_lock(lock: Path) -> bool:
@@ -220,6 +278,7 @@ __all__ = [
     "LLAMA_VERSION",
     "OPENVINO_ASSET",
     "OPENVINO_SHA256",
+    "OPENVINO_SIZE",
     "OPENVINO_URL",
     "RuntimeStatus",
     "find_openvino_runtime",

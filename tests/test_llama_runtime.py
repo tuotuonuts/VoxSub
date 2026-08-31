@@ -11,6 +11,23 @@ import pytest
 import voxsub.llama_runtime as runtime
 
 
+def test_openvino_asset_metadata_matches_pinned_release() -> None:
+    assert runtime.OPENVINO_SIZE == 80_730_898
+    assert runtime.OPENVINO_SHA256 == (
+        "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE"
+    )
+
+
+def test_archive_diagnostics_reports_zip_header_and_digest(tmp_path: Path) -> None:
+    archive = tmp_path / "runtime.zip"
+    archive.write_bytes(b"PK\x03\x04runtime")
+    size, digest, prefix, is_zip = runtime._archive_diagnostics(archive)
+    assert size == archive.stat().st_size
+    assert digest == runtime._sha256(archive)
+    assert prefix.startswith("50 4B")
+    assert is_zip
+
+
 def _write_runtime_archive(archive: Path, *, unsafe: bool = False) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive, "w") as bundle:
