@@ -13,8 +13,9 @@ import voxsub.llama_runtime as runtime
 
 def test_openvino_asset_metadata_matches_pinned_release() -> None:
     assert runtime.OPENVINO_SIZE == 80_730_898
+    assert len(runtime.OPENVINO_SHA256) == 64
     assert runtime.OPENVINO_SHA256 == (
-        "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE"
+        "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD"
     )
 
 

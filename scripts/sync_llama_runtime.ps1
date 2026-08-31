@@ -115,7 +115,9 @@ function Get-VerifiedArchive {
         Write-Host "下载 llama.cpp $($Asset.Name) 运行时 (第 $attempt/$maxDownloadAttempts 次)..."
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $downloadUrl = if ($attempt -eq 1) { $url } else { "$url?voxsub_retry=$attempt" }
+            # Keep the canonical release URL on retries.  Some Windows curl
+            # builds reject a query suffix on GitHub's signed redirect URL.
+            $downloadUrl = $url
             Invoke-LlamaDownload -Url $downloadUrl -Destination $partial -Attempt $attempt
             if (-not (Test-Path -LiteralPath $partial -PathType Leaf)) {
                 throw "下载命令未生成文件"

@@ -23,7 +23,7 @@ def test_manifest_pins_source_runtime_matrix() -> None:
     assert "2E89637B30E0E2F90D4ED486118E8642F60625B1DBEBB9BA3A30BC4100306FC9" in text
     assert 'Name = "openvino"' in text
     assert 'llama-b10470-bin-win-openvino-2026.2.1-x64.zip' in text
-    assert '671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE' in text
+    assert '671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD' in text
     assert 'Size = 80730898' in text
     assert 'SourceOnly = $true' in text
     assert 'openvino_intel_npu_compiler_loader.dll' in text
@@ -41,7 +41,7 @@ def test_source_runtime_sync_validates_and_installs_openvino_without_user_data_l
     assert "下载响应不是 ZIP" in text
     assert "下载大小不符" in text
     assert "maxDownloadAttempts = 3" in text
-    assert "voxsub_retry=" in text
+    assert "canonical release URL" in text
     assert "Expand-Archive" in text
     assert "llama-server.exe" in text
     assert "RequiredDll" in text

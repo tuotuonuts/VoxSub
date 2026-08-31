@@ -22,7 +22,7 @@
         @{
             Name = "openvino"
             File = "llama-b10470-bin-win-openvino-2026.2.1-x64.zip"
-            Sha256 = "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE"
+            Sha256 = "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD"
             Size = 80730898
             RequiredDll = "ggml-openvino.dll"
             RequiredDlls = @(

@@ -26,7 +26,7 @@ logger = get_logger("llama_runtime")
 LLAMA_VERSION = "b10470"
 OPENVINO_ASSET = "llama-b10470-bin-win-openvino-2026.2.1-x64.zip"
 OPENVINO_SHA256 = (
-    "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBDE"
+    "671B0A0C8D5F58E20DA178732435617B182D7127E62080D2CBE270A7A0D69EBD"
 )
 OPENVINO_SIZE = 80_730_898
 DOWNLOAD_ATTEMPTS = 3
@@ -133,9 +133,9 @@ def _download_verified(archive: Path) -> None:
             attempt,
             DOWNLOAD_ATTEMPTS,
         )
+        # Keep GitHub's canonical release URL on retries. Some Windows curl
+        # builds reject query suffixes on the signed redirect URL.
         retry_url = OPENVINO_URL
-        if attempt > 1:
-            retry_url += f"?voxsub_retry={attempt}"
         request = urllib.request.Request(
             retry_url,
             headers={
