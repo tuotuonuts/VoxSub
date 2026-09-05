@@ -13,6 +13,8 @@ from voxsub.language_guard import (
 def test_language_aliases_are_normalized() -> None:
     assert normalize_language("zh-CN") == "zh"
     assert normalize_language("en_US") == "en"
+    assert normalize_language("ja-JP") == "ja"
+    assert normalize_language("kr") == "ko"
     assert normalize_language("Hindi") == "auto"
 
 
@@ -43,3 +45,17 @@ def test_auto_language_detection_is_conservative() -> None:
     assert detect_text_language("这是中文") == "zh"
     assert detect_text_language("This is English") == "en"
     assert detect_text_language("...") == "auto"
+
+
+def test_japanese_and_korean_detection_and_matching() -> None:
+    assert detect_text_language("これは日本語です") == "ja"
+    assert detect_text_language("한국어 자막입니다") == "ko"
+    assert text_matches_language("これは日本語です", "ja")
+    assert text_matches_language("한국어 자막입니다", "ko")
+    assert not text_matches_language("한국어 자막입니다", "ja")
+    assert not text_matches_language("これは日本語です", "ko")
+
+
+def test_japanese_allows_kanji_only_short_labels() -> None:
+    assert text_matches_language("映画", "ja")
+    assert not text_matches_language("映画", "en")

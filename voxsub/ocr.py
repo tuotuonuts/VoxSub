@@ -669,13 +669,21 @@ def _select_translation_lines(
 def _matches_source_script(text: str, source_lang: str) -> bool:
     """Skip target-language UI chrome that would only add clutter and latency."""
     language = str(source_lang or "").lower().split("-", 1)[0]
-    ascii_letters = sum(
-        ("a" <= character.lower() <= "z") for character in text)
+    ascii_letters = sum("a" <= character.lower() <= "z" for character in text)
     cjk = sum("\u3400" <= character <= "\u9fff" for character in text)
+    kana = sum(
+        ("\u3040" <= character <= "\u30ff") or
+        ("\uff66" <= character <= "\uff9f")
+        for character in text)
+    hangul = sum("\uac00" <= character <= "\ud7af" for character in text)
     if language == "en":
-        return ascii_letters >= max(2, cjk * 2)
+        return ascii_letters >= max(2, (cjk + kana + hangul) * 2)
     if language == "zh":
-        return cjk > 0
+        return cjk > 0 and kana == 0 and hangul == 0
+    if language == "ja":
+        return kana > 0 or (cjk > 0 and hangul == 0)
+    if language == "ko":
+        return hangul > 0
     return True
 
 

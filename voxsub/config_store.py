@@ -165,7 +165,11 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "language": frozenset({"system", "zh", "en"}),
         "theme": frozenset({"system", "light", "dark"}),
         "mode": frozenset({"a", "b", "c", "d"}),
-        "lang_pair": frozenset({"zh-en", "en-zh", "auto-zh", "auto-en"}),
+        "lang_pair": frozenset({
+            "zh-en", "en-zh", "zh-ja", "ja-zh", "zh-ko", "ko-zh",
+            "en-ja", "ja-en", "en-ko", "ko-en", "ja-ko", "ko-ja",
+            "auto-zh", "auto-en", "auto-ja", "auto-ko",
+        }),
         "translate_tier": frozenset({"fast", "quality", "cloud"}),
         "stt_provider": frozenset({"local", "cloud"}),
         "asr_tuning_profile": frozenset(

@@ -1234,16 +1234,19 @@ class SettingsWindow(QWidget):
             and target in model.tts_languages
             and ModelMarketplace(resolve_models_root(self._store)).is_installed(model)
         )
-        language = "中文" if target == "zh" else "英文"
+        language_names = {"zh": "中文", "en": "英文", "ja": "日文", "ko": "韩文"}
+        english_names = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean"}
+        language = language_names.get(target, target)
+        english_language = english_names.get(target, "selected")
         if ready:
             state = tr(
                 f"当前{language}译文将使用 {model.name} 朗读。",
-                f"The current {'Chinese' if target == 'zh' else 'English'} translation will be read with {model.name}.",
+                f"The current {english_language} translation will be read with {model.name}.",
             )
         else:
             state = tr(
                 f"尚未安装当前{language}译文所需的朗读模型，请前往模型广场下载。",
-                f"No installed voice is available for the current {'Chinese' if target == 'zh' else 'English'} translation. Download one from Model Hub.",
+                f"No installed voice is available for the current {english_language} translation. Download one from Model Hub.",
             )
         self.tts_status_label.setText(state)
 

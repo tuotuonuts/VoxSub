@@ -71,8 +71,20 @@ MODE_ORDER = ("a", "b", "c", "d")
 LANG_PAIRS = [
     ("zh-en", "中 → 英"),
     ("en-zh", "英 → 中"),
+    ("zh-ja", "中 → 日"),
+    ("ja-zh", "日 → 中"),
+    ("zh-ko", "中 → 韩"),
+    ("ko-zh", "韩 → 中"),
+    ("en-ja", "英 → 日"),
+    ("ja-en", "日 → 英"),
+    ("en-ko", "英 → 韩"),
+    ("ko-en", "韩 → 英"),
+    ("ja-ko", "日 → 韩"),
+    ("ko-ja", "韩 → 日"),
     ("auto-zh", "自动 → 中文"),
     ("auto-en", "自动 → 英文"),
+    ("auto-ja", "自动 → 日文"),
+    ("auto-ko", "自动 → 韩文"),
 ]
 _LANG_LABEL_TO_VALUE = {label: value for value, label in LANG_PAIRS}
 _LANG_VALUE_TO_LABEL = {value: label for value, label in LANG_PAIRS}

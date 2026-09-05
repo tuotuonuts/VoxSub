@@ -19,6 +19,8 @@ import unicodedata
 LANGUAGE_NAMES: dict[str, str] = {
     "zh": "Chinese",
     "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
     # ``auto`` is used by N→1 translation: the recognizer/OCR may emit more
     # than one source language while the target remains fixed.
     "auto": "the detected source language",
@@ -35,6 +37,12 @@ def normalize_language(value: object) -> str:
         "eng": "en",
         "en-us": "en",
         "en-gb": "en",
+        "jp": "ja",
+        "jpn": "ja",
+        "ja-jp": "ja",
+        "kr": "ko",
+        "kor": "ko",
+        "ko-kr": "ko",
     }
     value = aliases.get(value, value)
     return value if value in {*LANGUAGE_NAMES, "auto"} else "auto"
@@ -46,13 +54,23 @@ def language_name(language: str) -> str:
 
 
 def _script_counts(text: str) -> dict[str, int]:
-    counts = {"cjk": 0, "latin": 0, "other": 0}
+    """Count writing-system signals used by the language safety gate.
+
+    Japanese commonly mixes kanji with hiragana/katakana, so kana must be
+    tracked separately from the shared CJK ideographs.  Korean likewise needs
+    a Hangul signal because Korean text may contain Latin product names.
+    """
+    counts = {"cjk": 0, "kana": 0, "hangul": 0, "latin": 0, "other": 0}
     for char in text:
         if not char.isalpha():
             continue
         name = unicodedata.name(char, "")
         if "CJK UNIFIED IDEOGRAPH" in name:
             counts["cjk"] += 1
+        elif "HIRAGANA" in name or "KATAKANA" in name:
+            counts["kana"] += 1
+        elif "HANGUL" in name:
+            counts["hangul"] += 1
         elif "LATIN" in name:
             counts["latin"] += 1
         else:
@@ -63,14 +81,15 @@ def _script_counts(text: str) -> dict[str, int]:
 def detect_text_language(text: str) -> str:
     """Best-effort detection for scripts supported by the fast translator.
 
-    This intentionally returns only ``zh``, ``en`` or ``auto``. It is not a
-    general language detector; its purpose is to resolve ``auto`` for the
-    bundled Chinese↔English OPUS models and avoid needless same-language
-    translation calls in other backends.
+    This is a script detector, not a full statistical language detector.
+    Kana and Hangul are strong signals for Japanese and Korean respectively;
+    otherwise CJK and Latin text are classified as Chinese and English.
     """
     counts = _script_counts(str(text or ""))
-    # CJK takes precedence when it is present: Chinese OCR/audio often mixes
-    # Latin product names, URLs, or numbers into an otherwise Chinese line.
+    if counts["hangul"]:
+        return "ko"
+    if counts["kana"]:
+        return "ja"
     if counts["cjk"] and counts["cjk"] >= counts["latin"]:
         return "zh"
     if counts["latin"] and counts["other"] == 0:
@@ -95,14 +114,26 @@ def text_matches_language(text: str, language: str, *, require_signal: bool = Tr
 
     if language == "zh":
         # Latin words are common in Chinese product names, but a Chinese
-        # sentence must still contain CJK and may not contain another script.
-        if counts["cjk"] == 0 or counts["other"] > 0:
+        # sentence must still contain CJK and may not contain Japanese/Korean
+        # script or another alphabet.
+        if counts["cjk"] == 0 or counts["kana"] or counts["hangul"] or counts["other"]:
             return False
         return counts["latin"] <= max(12, counts["cjk"] * 2)
+    if language == "ja":
+        # Kana is the reliable Japanese signal.  Kanji-only snippets are also
+        # accepted because short UI labels can be indistinguishable from
+        # Chinese at the script level.
+        if counts["hangul"] or counts["other"]:
+            return False
+        return bool(counts["kana"] or counts["cjk"])
+    if language == "ko":
+        if counts["hangul"] == 0 or counts["other"]:
+            return False
+        return True
     if language == "en":
-        # For English, any CJK or non-Latin alphabetic script is a strong sign
-        # that a multilingual decoder selected the wrong language.
-        return counts["latin"] > 0 and counts["cjk"] == 0 and counts["other"] == 0
+        # For English, any CJK, kana, Hangul, or non-Latin alphabetic script is
+        # a strong sign that a multilingual decoder selected the wrong language.
+        return counts["latin"] > 0 and not (counts["cjk"] or counts["kana"] or counts["hangul"] or counts["other"])
     return True
 
 

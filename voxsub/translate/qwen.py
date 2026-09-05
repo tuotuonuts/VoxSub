@@ -62,13 +62,17 @@ def _default_tools_dir() -> Path:
 
 #: 语言对 → 人类可读名称。质量档必须使用 chat system role 约束输出；旧版只有
 #: ``Translate to ...`` 一句用户提示，1.5B 模型很容易追加说明和自我评价。
-_LANG_NAMES = {
-    ("zh", "en"): ("Chinese", "English"),
-    ("en", "zh"): ("English", "Chinese"),
-    ("auto", "zh"): ("the detected source language", "Chinese"),
-    ("auto", "en"): ("the detected source language", "English"),
-}
 _AUTO_SOURCE_NAME = "the detected source language"
+_LANGUAGE_NAMES = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean"}
+_LANG_NAMES = {
+    (source, target): (
+        _AUTO_SOURCE_NAME if source == "auto" else _LANGUAGE_NAMES[source],
+        _LANGUAGE_NAMES[target],
+    )
+    for source in ("zh", "en", "ja", "ko", "auto")
+    for target in ("zh", "en", "ja", "ko")
+    if source != target
+}
 
 _SYSTEM_PROMPT = (
     "You are a professional machine-translation engine. Translate faithfully and "
@@ -120,7 +124,7 @@ class QwenQualityTranslator(Translator):
     """质量档: 通过 llama-server 子进程运行所选 GGUF 翻译模型。"""
 
     name = "qwen-quality"
-    langs = ("zh", "en")
+    langs = ("zh", "en", "ja", "ko")
     local = True
 
     def __init__(self, model_path: Path | str | None = None,
@@ -1001,7 +1005,7 @@ def _translation_invalid_reason(source: str, output: str,
     limit = max(64, int(len(source) * (5.5 if dst_lang == "en" else 2.2)))
     if len(output) > limit:
         return "length_limit"
-    if dst_lang in {"zh", "en"}:
+    if dst_lang in {"zh", "en", "ja", "ko"}:
         from voxsub.language_guard import text_matches_language
         if not text_matches_language(output, dst_lang):
             return "language_mismatch"

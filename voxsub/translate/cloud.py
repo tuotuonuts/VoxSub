@@ -63,7 +63,7 @@ class CloudTranslator(Translator):
     """云档: 把句子交给 OpenAI 兼容 /v1/chat/completions 端点翻译。"""
 
     name = "cloud"
-    langs = ("zh", "en")
+    langs = ("zh", "en", "ja", "ko")
     local = False
 
     def __init__(self, config=None, *, allowlist: set[str] | None = None,
