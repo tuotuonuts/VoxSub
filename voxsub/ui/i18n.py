@@ -151,6 +151,12 @@ TRANSLATIONS: dict[str, str] = {
     "查看设备、模型和运行时状态；需要排障时直接打开实时日志。":
         "Inspect devices, models, and runtime health; open live logs when troubleshooting.",
     "模式": "Mode",
+    "识别语言": "Recognition language",
+    "翻译为": "Translate to",
+    "自动识别": "Auto-detect",
+    "英文": "English",
+    "日文": "Japanese",
+    "韩文": "Korean",
     "语言对": "Language pair",
     "翻译方向": "Translation direction",
     "中 → 英": "Chinese -> English",

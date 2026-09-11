@@ -51,9 +51,16 @@ def test_installer_uses_bounded_shutdown_instead_of_restart_manager_wait():
     assert "Stop-Process -Id $p.ProcessId" in script
     assert "\\tools\\llama\\" in script
 
-    app = (ROOT / "voxsub" / "ui" / "app.py").read_text(encoding="utf-8")
-    assert "app.aboutToQuit.connect(installer_shutdown.close)" not in app
-    assert "app.aboutToQuit.connect(lambda: _close_pipeline(win.pipeline))" in app
+    # 退出编排已从 app.py 迁到 app_runtime.py + shutdown_coordinator.py
+    # （见 CODE_REVIEW_2026-09.md 阶段 1）。此处断言新的落点，而不是旧闭包。
+    app_runtime = (ROOT / "voxsub" / "ui" / "app_runtime.py").read_text(encoding="utf-8")
+    assert "ApplicationShutdownCoordinator" in app_runtime
+    assert "shutdown.connect()" in app_runtime
+
+    coordinator = (ROOT / "voxsub" / "ui" / "shutdown_coordinator.py").read_text(
+        encoding="utf-8")
+    assert "aboutToQuit" in coordinator
+    assert "_close_pipeline" in coordinator
 
     build = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
     assert 'Run-Checked "packaged installer shutdown smoke"' in build

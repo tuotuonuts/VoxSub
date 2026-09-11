@@ -1,7 +1,7 @@
 """主窗（M7 组件清单 #1）：编辑式左右分栏。
 
 - 左栏：模式四卡片（A 麦克风 / B 系统声音 / C 文件 / D OCR，选中高亮）
-  + 语言对下拉（中→英 / 英→中）+ 状态灯（待机 / 拾音中 / 推理中，推理中脉冲）
+  + 识别语言与目标语言独立选择 + 状态灯（待机 / 拾音中 / 推理中，推理中脉冲）
 - 右栏：实时字幕流列表（原文 + 译文两行，自动滚动，最新行短暂高亮）
 - 底部：胶囊 CTA「开始 / 停止」，内嵌圆形箭头小岛（QPainter 自绘矢量，
   与 FluentIcons 播放语义等价；QFW 的 FluentIcon 无 STOP 对偶图标）
@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -26,7 +26,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QGraphicsBlurEffect,
     QGraphicsOpacityEffect,
@@ -56,6 +55,20 @@ from voxsub.logging_setup import get_logger
 
 logger = get_logger("ui.main_window")
 
+
+class _LanguageCombo(Protocol):
+    """语言下拉框所需的最小接口，兼容 QFluentWidgets ComboBox。"""
+
+    def currentIndex(self) -> int:  # noqa: N802
+        ...
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802
+        ...
+
+    def blockSignals(self, block: bool) -> bool:  # noqa: N802
+        ...
+
+
 # ---------------------------------------------------------------------------
 # 模式元信息 + 纯函数（可单测）
 # ---------------------------------------------------------------------------
@@ -67,27 +80,22 @@ MODE_INFO: dict[str, dict[str, str]] = {
 }
 MODE_ORDER = ("a", "b", "c", "d")
 
-# 语言对（value, 显示标签）—— QFW ComboBox 用文本定位，不依赖 itemData
-LANG_PAIRS = [
-    ("zh-en", "中 → 英"),
-    ("en-zh", "英 → 中"),
-    ("zh-ja", "中 → 日"),
-    ("ja-zh", "日 → 中"),
-    ("zh-ko", "中 → 韩"),
-    ("ko-zh", "韩 → 中"),
-    ("en-ja", "英 → 日"),
-    ("ja-en", "日 → 英"),
-    ("en-ko", "英 → 韩"),
-    ("ko-en", "韩 → 英"),
-    ("ja-ko", "日 → 韩"),
-    ("ko-ja", "韩 → 日"),
-    ("auto-zh", "自动 → 中文"),
-    ("auto-en", "自动 → 英文"),
-    ("auto-ja", "自动 → 日文"),
-    ("auto-ko", "自动 → 韩文"),
-]
-_LANG_LABEL_TO_VALUE = {label: value for value, label in LANG_PAIRS}
-_LANG_VALUE_TO_LABEL = {value: label for value, label in LANG_PAIRS}
+# 识别语言和目标语言独立展示；持久化仍沿用 ``lang_pair``，兼容旧配置与 Pipeline。
+SOURCE_LANGUAGES: tuple[tuple[str, str], ...] = (
+    ("auto", "自动识别"),
+    ("zh", "中文"),
+    ("en", "英文"),
+    ("ja", "日文"),
+    ("ko", "韩文"),
+)
+TARGET_LANGUAGES: tuple[tuple[str, str], ...] = (
+    ("zh", "中文"),
+    ("en", "英文"),
+    ("ja", "日文"),
+    ("ko", "韩文"),
+)
+_SOURCE_LANGUAGE_VALUES = frozenset(value for value, _label in SOURCE_LANGUAGES)
+_TARGET_LANGUAGE_VALUES = frozenset(value for value, _label in TARGET_LANGUAGES)
 
 STATUS_STYLES: dict[str, dict[str, str]] = {
     "idle": {"color": "neutral"},
@@ -648,13 +656,10 @@ class MainWindow(QWidget):
         title_row = QHBoxLayout()
         title_row.setSpacing(12)
         brand = QVBoxLayout()
-        brand.setSpacing(2)
-        eyebrow = QLabel("VOXSUB  /  LIVE TRANSLATION", self)
-        eyebrow.setObjectName("eyebrowLabel")
+        brand.setSpacing(4)
         title = QLabel("语幕", self)
         title.setObjectName("sectionTitle")
         title.setStyleSheet("font-size: 32px; font-weight: 650;")
-        brand.addWidget(eyebrow)
         brand.addWidget(title)
         subtitle = QLabel("让对话、会议和视频，落成清晰的双语文幕。", self)
         subtitle.setObjectName("secondaryLabel")
@@ -881,19 +886,45 @@ class MainWindow(QWidget):
         lay.addLayout(mode_grid)
 
         lay.addSpacing(4)
-        self.pair_label = QLabel("语言对", panel)
-        self.pair_label.setObjectName("sectionTitle")
-        lay.addWidget(self.pair_label)
         # QFluentWidgets ComboBox（随 QFW 主题自动着色，见 DESIGN 组件清单 #1）
         from qfluentwidgets import ComboBox as FComboBox
 
-        self.lang_combo: QComboBox = FComboBox(panel)
-        self.lang_combo.setObjectName("langCombo")
-        self.lang_combo.setCursor(Qt.CursorShape.PointingHandCursor)
-        for value, label in LANG_PAIRS:
-            self.lang_combo.addItem(label, value)
-        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
-        lay.addWidget(self.lang_combo)
+        language_grid = QGridLayout()
+        language_grid.setContentsMargins(0, 0, 0, 0)
+        language_grid.setHorizontalSpacing(8)
+        language_grid.setVerticalSpacing(6)
+        language_grid.setColumnStretch(0, 1)
+        language_grid.setColumnStretch(1, 1)
+
+        self.source_lang_label = QLabel("识别语言", panel)
+        self.source_lang_label.setObjectName("sectionTitle")
+        language_grid.addWidget(self.source_lang_label, 0, 0)
+        self.target_lang_label = QLabel("翻译为", panel)
+        self.target_lang_label.setObjectName("sectionTitle")
+        language_grid.addWidget(self.target_lang_label, 0, 1)
+
+        self.source_lang_combo = FComboBox(panel)
+        self.source_lang_combo.setObjectName("sourceLangCombo")
+        self.source_lang_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.source_lang_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        for value, label in SOURCE_LANGUAGES:
+            self.source_lang_combo.addItem(label, userData=value)
+        self.source_lang_combo.currentIndexChanged.connect(
+            self._on_source_lang_changed)
+        language_grid.addWidget(self.source_lang_combo, 1, 0)
+
+        self.target_lang_combo = FComboBox(panel)
+        self.target_lang_combo.setObjectName("targetLangCombo")
+        self.target_lang_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.target_lang_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        for value, label in TARGET_LANGUAGES:
+            self.target_lang_combo.addItem(label, userData=value)
+        self.target_lang_combo.currentIndexChanged.connect(
+            self._on_target_lang_changed)
+        language_grid.addWidget(self.target_lang_combo, 1, 1)
+        lay.addLayout(language_grid)
 
         lay.addSpacing(4)
         self.status_light = StatusLight(panel)
@@ -1125,7 +1156,6 @@ class MainWindow(QWidget):
             self._hide_file_progress()
         self.record_panel.setVisible(norm == "a")
         self.cta.setVisible(norm != "d")
-        self.pair_label.setText(tr("翻译方向") if norm == "d" else tr("语言对"))
         if norm == "d":
             self._activate_ocr_workspace()
             return
@@ -1140,30 +1170,97 @@ class MainWindow(QWidget):
         self.set_mode(nxt)
         return nxt
 
-    def set_lang_pair(self, value: str) -> None:
-        if value not in _LANG_VALUE_TO_LABEL:
-            value = "zh-en"
-        idx = next((i for i, (candidate, _label) in enumerate(LANG_PAIRS)
-                    if candidate == value), -1)
-        if idx >= 0 and self.lang_combo.currentIndex() != idx:
-            self.lang_combo.blockSignals(True)
-            self.lang_combo.setCurrentIndex(idx)
-            self.lang_combo.blockSignals(False)
+    @staticmethod
+    def _set_combo_value(
+        combo: _LanguageCombo,
+        options: tuple[tuple[str, str], ...],
+        value: str,
+    ) -> None:
+        """按稳定的选项顺序更新 QFW 下拉框，且不触发中间态回调。"""
+        index = next((
+            index for index, (candidate, _label) in enumerate(options)
+            if candidate == value
+        ), -1)
+        if index < 0 or combo.currentIndex() == index:
+            return
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    @staticmethod
+    def _valid_language_selection(source: str, target: str) -> bool:
+        return (
+            source in _SOURCE_LANGUAGE_VALUES
+            and target in _TARGET_LANGUAGE_VALUES
+            and source != target
+        )
+
+    def _apply_language_selection(self, source: str, target: str) -> None:
+        """原子更新 UI、旧版 lang_pair 配置和 Pipeline。"""
+        if not self._valid_language_selection(source, target):
+            source, target = "zh", "en"
+        self._set_combo_value(
+            self.source_lang_combo, SOURCE_LANGUAGES, source)
+        self._set_combo_value(
+            self.target_lang_combo, TARGET_LANGUAGES, target)
+        value = f"{source}-{target}"
         self._lang_pair = value
         self._store.set("lang_pair", value)
-        src, dst = value.split("-", 1)
         try:
-            self.pipeline.set_langs(src, dst)
+            self.pipeline.set_langs(source, target)
         except AttributeError:
             logger.debug("Pipeline 缺少 set_langs")
 
+    def set_lang_pair(self, value: str) -> None:
+        """兼容旧调用方：把 source-target 还原到两个下拉框。"""
+        try:
+            source, target = str(value).split("-", 1)
+        except ValueError:
+            source, target = "zh", "en"
+        self._apply_language_selection(source, target)
+
+    def current_source_language(self) -> str:
+        index = self.source_lang_combo.currentIndex()
+        return (
+            SOURCE_LANGUAGES[index][0]
+            if 0 <= index < len(SOURCE_LANGUAGES) else "zh"
+        )
+
+    def current_target_language(self) -> str:
+        index = self.target_lang_combo.currentIndex()
+        return (
+            TARGET_LANGUAGES[index][0]
+            if 0 <= index < len(TARGET_LANGUAGES) else "en"
+        )
+
     def current_lang_pair(self) -> str:
         """当前语言对 value（供托盘 / 测试 / M6 集成读取）。"""
-        index = self.lang_combo.currentIndex()
-        return LANG_PAIRS[index][0] if 0 <= index < len(LANG_PAIRS) else "zh-en"
+        source = self.current_source_language()
+        target = self.current_target_language()
+        return f"{source}-{target}" if source != target else "zh-en"
 
-    def _on_lang_changed(self, index: int) -> None:
-        self.set_lang_pair(self.current_lang_pair())
+    def set_source_language(self, value: str) -> None:
+        source = value if value in _SOURCE_LANGUAGE_VALUES else "zh"
+        target = self.current_target_language()
+        if source == target:
+            target = next(
+                candidate for candidate, _label in TARGET_LANGUAGES
+                if candidate != source
+            )
+        self._apply_language_selection(source, target)
+
+    def set_target_language(self, value: str) -> None:
+        target = value if value in _TARGET_LANGUAGE_VALUES else "en"
+        source = self.current_source_language()
+        if source == target:
+            source = "auto"
+        self._apply_language_selection(source, target)
+
+    def _on_source_lang_changed(self, _index: int) -> None:
+        self.set_source_language(self.current_source_language())
+
+    def _on_target_lang_changed(self, _index: int) -> None:
+        self.set_target_language(self.current_target_language())
 
     def select_input_file(self) -> bool:
         """打开音视频选择器并把路径交给 C 模式 Pipeline。"""
@@ -1362,7 +1459,8 @@ class MainWindow(QWidget):
         self.finish_record_btn.setEnabled(not busy)
         self.save_conversation_btn.setEnabled(not busy and not self._session_export_busy)
         self.clear_conversation_btn.setEnabled(not busy)
-        self.lang_combo.setEnabled(not busy)
+        self.source_lang_combo.setEnabled(not busy)
+        self.target_lang_combo.setEnabled(not busy)
         self.file_pick_btn.setEnabled(not busy)
         for card in self.mode_cards.values():
             card.setEnabled(not busy)
@@ -1583,6 +1681,14 @@ class MainWindow(QWidget):
 
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
+        # QFluentWidgets ComboBox 继承 QPushButton，不会被通用 QComboBox
+        # 翻译逻辑遍历选项，因此这里按稳定的语言表刷新全部条目。
+        for combo, options in (
+            (self.source_lang_combo, SOURCE_LANGUAGES),
+            (self.target_lang_combo, TARGET_LANGUAGES),
+        ):
+            for index, (_value, label) in enumerate(options):
+                combo.setItemText(index, tr(label))
         self.set_mode(self._mode)
         if self.file_progress.isVisible() and self._file_progress_stage:
             self._set_file_progress(

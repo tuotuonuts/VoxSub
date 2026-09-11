@@ -97,6 +97,46 @@ def detect_text_language(text: str) -> str:
     return "auto"
 
 
+def _matches_zh(counts: dict[str, int]) -> bool:
+    """中文：必须有 CJK，且不得混入日文假名/韩文/其他字母表。
+
+    Latin words are common in Chinese product names, but a Chinese sentence
+    must still contain CJK and may not contain Japanese/Korean script.
+    """
+    if counts["cjk"] == 0 or counts["kana"] or counts["hangul"] or counts["other"]:
+        return False
+    return counts["latin"] <= max(12, counts["cjk"] * 2)
+
+
+def _matches_ja(counts: dict[str, int]) -> bool:
+    """日文：假名是可靠信号；纯汉字短标签与中文在字面上无法区分，也接受。"""
+    if counts["hangul"] or counts["other"]:
+        return False
+    return bool(counts["kana"] or counts["cjk"])
+
+
+def _matches_ko(counts: dict[str, int]) -> bool:
+    """韩文：必须含谚文，且不得混入其他字母表。"""
+    return counts["hangul"] > 0 and not counts["other"]
+
+
+def _matches_en(counts: dict[str, int]) -> bool:
+    """英文：出现任何 CJK/假名/谚文/其他字母表都视为解码选错了语言。"""
+    if counts["latin"] == 0:
+        return False
+    return not (counts["cjk"] or counts["kana"]
+                or counts["hangul"] or counts["other"])
+
+
+# 语种 → 判定函数（查表取代 if 阶梯，新增语种只加一行）
+_LANGUAGE_MATCHERS = {
+    "zh": _matches_zh,
+    "ja": _matches_ja,
+    "ko": _matches_ko,
+    "en": _matches_en,
+}
+
+
 def text_matches_language(text: str, language: str, *, require_signal: bool = True) -> bool:
     """Return whether text is plausibly written in ``language``.
 
@@ -108,33 +148,10 @@ def text_matches_language(text: str, language: str, *, require_signal: bool = Tr
     if language == "auto" or not text:
         return True
     counts = _script_counts(text)
-    letters = sum(counts.values())
-    if letters == 0:
+    if sum(counts.values()) == 0:
         return not require_signal
-
-    if language == "zh":
-        # Latin words are common in Chinese product names, but a Chinese
-        # sentence must still contain CJK and may not contain Japanese/Korean
-        # script or another alphabet.
-        if counts["cjk"] == 0 or counts["kana"] or counts["hangul"] or counts["other"]:
-            return False
-        return counts["latin"] <= max(12, counts["cjk"] * 2)
-    if language == "ja":
-        # Kana is the reliable Japanese signal.  Kanji-only snippets are also
-        # accepted because short UI labels can be indistinguishable from
-        # Chinese at the script level.
-        if counts["hangul"] or counts["other"]:
-            return False
-        return bool(counts["kana"] or counts["cjk"])
-    if language == "ko":
-        if counts["hangul"] == 0 or counts["other"]:
-            return False
-        return True
-    if language == "en":
-        # For English, any CJK, kana, Hangul, or non-Latin alphabetic script is
-        # a strong sign that a multilingual decoder selected the wrong language.
-        return counts["latin"] > 0 and not (counts["cjk"] or counts["kana"] or counts["hangul"] or counts["other"])
-    return True
+    matcher = _LANGUAGE_MATCHERS.get(language)
+    return matcher(counts) if matcher else True
 
 
 def guard_text(text: str, language: str, *, kind: str = "text") -> str:

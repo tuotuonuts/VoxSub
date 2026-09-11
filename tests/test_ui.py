@@ -75,39 +75,106 @@ def _wait_until(qapp, predicate, timeout: float = 2.0) -> None:
 # ===========================================================================
 # 1. 设计令牌表（DESIGN.md 逐项校验）
 # ===========================================================================
+class _Palette:
+    """WCAG 相对亮度与对比度计算（令牌契约校验用）。"""
+
+    @staticmethod
+    def _srgb(channel: float) -> float:
+        c = channel / 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    @classmethod
+    def luminance(cls, hex_color: str) -> float:
+        h = hex_color.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return (0.2126 * cls._srgb(r) + 0.7152 * cls._srgb(g)
+                + 0.0722 * cls._srgb(b))
+
+    @classmethod
+    def contrast(cls, first: str, second: str) -> float:
+        a, b = cls.luminance(first), cls.luminance(second)
+        hi, lo = max(a, b), min(a, b)
+        return (hi + 0.05) / (lo + 0.05)
+
+
 class TestDesignTokens:
     def test_both_themes_present(self):
         assert set(DESIGN_TOKENS) == {"dark", "light"}
 
-    def test_dark_token_values_match_design(self):
-        d = DESIGN_TOKENS["dark"]
-        # 基底 / surface 分层
-        assert d["bg_base"] == "#050505"
-        assert d["surface_1"] == "#131313"
-        assert d["surface_2"] == "#1A1A1A"
-        # 文本主 / 次
-        assert d["text_primary"] == "#F2F2F2"
-        assert d["text_secondary"] == "#9CA3AF"
-        # border 白 8%
-        assert d["border"] == "rgba(255,255,255,0.08)"
-        # accent 唯一 teal
-        assert d["accent"] == "#14B8A6"
-        assert d["accent_deep"] == "#0D9488"
-        # 语义低饱和三色
-        assert d["success"] == "#34D399"
-        assert d["warning"] == "#FBBF24"
-        assert d["error"] == "#F87171"
+    def test_required_keys_exist_in_both_themes(self):
+        required = {
+            "bg_base", "surface_1", "surface_2",
+            "text_primary", "text_secondary", "border", "border_strong",
+            "accent", "accent_deep", "accent_rgb", "on_accent",
+            "success", "warning", "error", "neutral",
+            "radius_capsule", "radius_card", "radius_input", "radius_dialog",
+            "font_family", "font_mono",
+        }
+        for theme in ("dark", "light"):
+            assert required <= set(DESIGN_TOKENS[theme]), theme
 
-    def test_light_token_values_match_design(self):
-        l = DESIGN_TOKENS["light"]
-        assert l["bg_base"] == "#F7F7F5"
-        assert l["surface_1"] == "#FFFFFF"
-        assert l["surface_2"] == "#F2F2F2"
-        assert l["text_primary"] == "#1A1A1A"
-        assert l["text_secondary"] == "#6B7280"
-        assert l["border"] == "rgba(0,0,0,0.08)"
-        # accent 两档同值
-        assert l["accent"] == DESIGN_TOKENS["dark"]["accent"] == "#14B8A6"
+    def test_surface_layers_are_distinguishable(self):
+        """相邻表面必须可辨——这是"卡片能看出层次"的硬契约。
+
+        2026-09-12 回归：旧值 #050505/#131313/#1A1A1A 仅 1.07–1.17:1，
+        低于人眼可辨阈值，界面退化成一坨近黑。此测试锁死该属性，
+        允许自由改色，但不允许改回"看不见"的组合。
+        """
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            background_to_card = _Palette.contrast(t["bg_base"], t["surface_1"])
+            card_to_nested = _Palette.contrast(t["surface_1"], t["surface_2"])
+            assert background_to_card >= 1.15, (
+                f"{theme}: 背景↔卡片 {background_to_card:.3f}:1 不可辨")
+            assert card_to_nested >= 1.15, (
+                f"{theme}: 卡片↔嵌套 {card_to_nested:.3f}:1 不可辨")
+
+    def test_text_meets_wcag_aa_on_every_surface(self):
+        """正文文字在每个表面上都需 >=4.5:1（craft floor）。"""
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            for surface in ("bg_base", "surface_1", "surface_2"):
+                for text in ("text_primary", "text_secondary"):
+                    ratio = _Palette.contrast(t[text], t[surface])
+                    assert ratio >= 4.5, (
+                        f"{theme}: {text} on {surface} 仅 {ratio:.2f}:1")
+
+    def test_accent_readable_on_every_surface(self):
+        """accent 作为无文字控件（图标/指示条）需 >=3:1。"""
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            for surface in ("bg_base", "surface_1", "surface_2"):
+                ratio = _Palette.contrast(t["accent"], t[surface])
+                assert ratio >= 3.0, (
+                    f"{theme}: accent on {surface} 仅 {ratio:.2f}:1")
+
+    def test_on_accent_is_readable_over_accent(self):
+        """按钮文字压在 accent 填充上必须可读。"""
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            ratio = _Palette.contrast(t["on_accent"], t["accent"])
+            assert ratio >= 4.5, f"{theme}: on_accent {ratio:.2f}:1"
+
+    def test_surfaces_carry_a_hue_rather_than_pure_neutral(self):
+        """craft floor「always tint」：灰阶应带色相，避免死板纯中性灰。"""
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            for key in ("bg_base", "surface_1", "surface_2"):
+                h = t[key].lstrip("#")
+                r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+                assert not (r == g == b), f"{theme}.{key} 是纯中性灰 {t[key]}"
+
+    def test_semantic_colors_shared_across_themes(self):
+        for key in ("success", "warning", "error"):
+            assert (DESIGN_TOKENS["dark"][key]
+                    == DESIGN_TOKENS["light"][key])
+
+    def test_radius_scale_is_ordered(self):
+        for theme in ("dark", "light"):
+            t = DESIGN_TOKENS[theme]
+            to_px = lambda v: int(v.replace("999px", "999").replace("px", ""))
+            assert to_px(t["radius_input"]) < to_px(t["radius_card_compact"])
+            assert to_px(t["radius_card_compact"]) < to_px(t["radius_card"])
 
     def test_radius_spacing_and_font_tokens(self):
         for name in ("dark", "light"):
@@ -162,8 +229,12 @@ class TestQss:
         assert "border-radius: 17px;" in checked_hover
 
     def test_qss_theme_specific_colors(self):
-        assert "#050505" in build_qss("dark")
-        assert "#F7F7F5" in build_qss("light")
+        """两档主题必须生成不同的 QSS——用各自的 bg_base 令牌验证，而非写死旧值。"""
+        dark_qss = build_qss("dark")
+        light_qss = build_qss("light")
+        assert DESIGN_TOKENS["dark"]["bg_base"] in dark_qss
+        assert DESIGN_TOKENS["light"]["bg_base"] in light_qss
+        assert dark_qss != light_qss
 
 
 # ===========================================================================
@@ -207,12 +278,14 @@ class TestThemeSwitching:
         monkeypatch.setitem(_sys.modules, "darkdetect", _FakeDarkDetect)
         load_theme(qapp, AppTheme.SYSTEM)
         ss = qapp.styleSheet()
-        assert ss and "#050505" in ss
+        assert ss and DESIGN_TOKENS["dark"]["bg_base"] in ss
         # 深/浅档直接生效
         load_theme(qapp, AppTheme.DARK)
-        assert qapp.styleSheet() and "#050505" in qapp.styleSheet()
+        assert (qapp.styleSheet()
+                and DESIGN_TOKENS["dark"]["bg_base"] in qapp.styleSheet())
         load_theme(qapp, AppTheme.LIGHT)
-        assert qapp.styleSheet() and "#F7F7F5" in qapp.styleSheet()
+        assert (qapp.styleSheet()
+                and DESIGN_TOKENS["light"]["bg_base"] in qapp.styleSheet())
 
 
 # ===========================================================================
@@ -424,8 +497,14 @@ class TestMainWindow:
             assert win.windowTitle() == "语幕 VoxSub"
             assert set(win.mode_cards) == {"a", "b", "c", "d"}
             assert all(isinstance(c, ModeCard) for c in win.mode_cards.values())
-            assert win.lang_combo.count() == 4
-            assert win.lang_combo.itemText(0) == "中 → 英"
+            assert win.source_lang_combo.count() == 5
+            assert win.source_lang_combo.itemText(0) == "自动识别"
+            assert win.target_lang_combo.count() == 4
+            assert win.target_lang_combo.itemText(0) == "中文"
+            assert [
+                win.target_lang_combo.itemText(index)
+                for index in range(win.target_lang_combo.count())
+            ] == ["中文", "英文", "日文", "韩文"]
             assert isinstance(win.subtitle_list, SubtitleList)
             assert win.subtitle_list.count() == 0
             # CTA 初始态
@@ -489,8 +568,10 @@ class TestMainWindow:
 
             win.set_mode("d")
             assert win._workspace_stack.currentWidget() is ocr  # noqa: SLF001
-            assert win.pair_label.text() == "翻译方向"
-            assert win.lang_combo.isVisible()
+            assert win.source_lang_label.text() == "识别语言"
+            assert win.target_lang_label.text() == "翻译为"
+            assert win.source_lang_combo.isVisible()
+            assert win.target_lang_combo.isVisible()
             assert not win.cta.isVisible()
             assert ocr.prepare_calls == 1
             win.set_lang_pair("en-zh")
@@ -591,28 +672,47 @@ class TestMainWindow:
                 not first.intersects(second)
                 for first, second in combinations(card_rects, 2)
             )
-            pair_top = win.pair_label.parentWidget().mapTo(
-                win, win.pair_label.geometry().topLeft()).y()
-            assert max(rect.bottom() for rect in card_rects) < pair_top
+            language_top = win.source_lang_label.parentWidget().mapTo(
+                win, win.source_lang_label.geometry().topLeft()).y()
+            assert max(rect.bottom() for rect in card_rects) < language_top
         finally:
             win.close()
             win.deleteLater()
 
-    def test_lang_pair(self, qapp, tmp_path):
+    def test_language_selectors_keep_legacy_pair_config_in_sync(self, qapp, tmp_path):
         win = self._make_win(tmp_path)
         try:
             win.set_lang_pair("en-zh")
+            assert win.current_source_language() == "en"
+            assert win.current_target_language() == "zh"
             assert win.current_lang_pair() == "en-zh"
             assert win._store.get("lang_pair") == "en-zh"  # noqa: SLF001
-            # 模拟用户下拉切换
-            idx = win.lang_combo.findText("中 → 英")
-            win.lang_combo.setCurrentIndex(idx)
+            assert win.pipeline.langs == ("en", "zh")
+
+            # 用户把识别语言改成与目标语言相同时，目标自动切换到其他语言。
+            win.source_lang_combo.setCurrentIndex(
+                win.source_lang_combo.findText("中文"))
             assert win.current_lang_pair() == "zh-en"
-            win.set_lang_pair("bogus")  # 非法值回落 zh-en
-            assert win.current_lang_pair() == "zh-en"
-            win.set_lang_pair("auto-zh")
+
+            # 用户把目标语言改成与识别语言相同时，识别改为自动检测。
+            win.target_lang_combo.setCurrentIndex(
+                win.target_lang_combo.findText("中文"))
             assert win.current_lang_pair() == "auto-zh"
             assert win._store.get("lang_pair") == "auto-zh"  # noqa: SLF001
+            assert win.pipeline.langs == ("auto", "zh")
+
+            win.set_lang_pair("ja-ko")
+            assert win.current_source_language() == "ja"
+            assert win.current_target_language() == "ko"
+            assert win.current_lang_pair() == "ja-ko"
+
+            win.set_lang_pair("zh-zh")  # 相同语言与非法值都回落 zh-en
+            assert win.current_lang_pair() == "zh-en"
+            win.set_lang_pair("bogus")
+            assert win.current_lang_pair() == "zh-en"
+            win.set_lang_pair("auto-ko")
+            assert win.current_lang_pair() == "auto-ko"
+            assert win._store.get("lang_pair") == "auto-ko"  # noqa: SLF001
         finally:
             win.close()
             win.deleteLater()
@@ -1213,6 +1313,11 @@ class TestSettingsWindow:
             language_manager.set_language("en")
             qapp.processEvents()
             assert win.windowTitle() == "VoxSub"
+            assert win.source_lang_label.text() == "Recognition language"
+            assert win.target_lang_label.text() == "Translate to"
+            assert win.source_lang_combo.itemText(0) == "Auto-detect"
+            assert win.target_lang_combo.itemText(3) == "Korean"
+            assert win.current_lang_pair() == "zh-en"
             assert win.source_hint.text() == "Input: microphone selected in Settings"
             assert overlay._lock_btn.text() == "Lock"  # noqa: SLF001
             assert overlay._locked_panel.unlock.text() == "Unlock"  # noqa: SLF001
@@ -1300,9 +1405,9 @@ class TestSettingsWindow:
         try:
             sw.theme_dark.setChecked(True)
             assert sw._store.get("theme") == "dark"  # noqa: SLF001
-            assert "#050505" in qapp.styleSheet()
+            assert DESIGN_TOKENS["dark"]["bg_base"] in qapp.styleSheet()
             sw.theme_light.setChecked(True)
-            assert "#F7F7F5" in qapp.styleSheet()
+            assert DESIGN_TOKENS["light"]["bg_base"] in qapp.styleSheet()
             # 容器恢复深色，避免影响后续用例
             from voxsub.ui.theme import load_theme as _lt
 
