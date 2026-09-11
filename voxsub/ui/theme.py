@@ -37,13 +37,15 @@ _ACTIVE_THEME_NAME = "light"
 # ---------------------------------------------------------------------------
 DESIGN_TOKENS: dict[str, dict[str, str]] = {
     "dark": {
-        # 基底 / surface 分层（OLED 玻璃）
-        "bg_base": "#050505",
-        "surface_1": "#131313",
-        "surface_2": "#1A1A1A",
+        # 基底 / surface 分层（冷青灰；抬离纯黑并带色相，相邻层 >=1.2:1 可辨）
+        # 2026-09-12 修正：原 #050505/#131313/#1A1A1A 三层相互对比度仅 1.07-1.17:1，
+        # 低于人眼可辨阈值，导致卡片与背景无法区分、界面呈一坨近黑。
+        "bg_base": "#0D1111",
+        "surface_1": "#1D2727",
+        "surface_2": "#293535",
         # 文本主 / 次
-        "text_primary": "#F2F2F2",
-        "text_secondary": "#9CA3AF",
+        "text_primary": "#F0F4F4",
+        "text_secondary": "#9DB0B4",
         # 边框（白 8% 透明度）
         "border": "rgba(255,255,255,0.08)",
         "border_strong": "rgba(255,255,255,0.16)",
@@ -51,7 +53,7 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "accent": "#14B8A6",
         "accent_deep": "#0D9488",
         "accent_rgb": "20,184,166",
-        "on_accent": "#FFFFFF",
+        "on_accent": "#04211E",
         # 语义色（低饱和）
         "success": "#34D399",
         "warning": "#FBBF24",
@@ -73,23 +75,24 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "font_family": '"Segoe UI Variable","Microsoft YaHei UI","Microsoft YaHei"',
         "font_mono": '"Cascadia Code","Consolas"',
         # 状态灯中性色（待机）
-        "neutral": "#9CA3AF",
+        "neutral": "#9DB0B4",
     },
     "light": {
-        # 基底 / surface 分层（柔和结构主义）
-        "bg_base": "#F7F7F5",
-        "surface_1": "#FFFFFF",
-        "surface_2": "#F2F2F2",
+        # 基底 / surface 分层（结构灰底 + 近白卡；卡片靠明度跃升浮起）
+        # 2026-09-12 修正：原 #F7F7F5/#FFFFFF/#F2F2F2 相互对比度仅 1.04-1.12:1，同一问题。
+        "bg_base": "#DFE2E2",
+        "surface_1": "#F3F4F4",
+        "surface_2": "#D6DBDB",
         # 文本主 / 次
-        "text_primary": "#1A1A1A",
-        "text_secondary": "#6B7280",
+        "text_primary": "#12181A",
+        "text_secondary": "#455454",
         # 边框（黑 8% 透明度）
         "border": "rgba(0,0,0,0.08)",
         "border_strong": "rgba(0,0,0,0.16)",
-        # accent（唯一 teal，两档同值）
-        "accent": "#14B8A6",
-        "accent_deep": "#0D9488",
-        "accent_rgb": "20,184,166",
+        # accent：深色档 teal 在浅底上仅 1.9:1（无文字控件需 >=3:1），故浅色档用深 teal
+        "accent": "#1F6C6C",
+        "accent_deep": "#174F4F",
+        "accent_rgb": "31,108,108",
         "on_accent": "#FFFFFF",
         # 语义色（低饱和，两档同值）
         "success": "#34D399",
@@ -112,7 +115,7 @@ DESIGN_TOKENS: dict[str, dict[str, str]] = {
         "font_family": '"Segoe UI Variable","Microsoft YaHei UI","Microsoft YaHei"',
         "font_mono": '"Cascadia Code","Consolas"',
         # 状态灯中性色（待机）
-        "neutral": "#9CA3AF",
+        "neutral": "#6B7A7A",
     },
 }
 
