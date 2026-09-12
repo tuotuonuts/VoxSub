@@ -1,0 +1,314 @@
+/* ==========================================================================
+   旧版迁移向导样式
+   设计语言与主界面一致：细线分区、密铺格、无实心色块堆叠。
+   向导承担的是"要用户看懂风险并做决定"，所以信息密度高于主界面，
+   但层级仍靠线与留白而非背景色差。
+   ========================================================================== */
+
+.wiz-host {
+  max-width: 940px;
+  margin: 0 auto;
+}
+
+.wiz {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ------------------------------------------------------------ 步骤指示器 */
+.wiz__steps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.wiz__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--ink2);
+}
+
+/* 已完成的步骤：打勾 + 描边收窄，表示"过去了" */
+.wiz__step.is-done {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--rule));
+}
+
+/* 当前步骤：笔圈，与主界面选中态同一语言 */
+.wiz__step.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.wiz__step-no {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* ---------------------------------------------------------------- 标题 */
+.wiz__head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.wiz__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.wiz__sub {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--ink2);
+  line-height: 1.55;
+  max-width: 72ch;
+}
+
+.wiz__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.wiz__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.wiz__summary {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------ 结论横幅 */
+/* 风险结论用左侧竖条 + 文字色区分，不用整块背景色 —— 
+   大面积红/黄底会把文字可读性拉低，也与本产品的纸面语言不符。 */
+.wiz__verdict {
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.wiz__verdict p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.wiz__verdict.is-ok {
+  border-left-color: var(--ok);
+}
+
+.wiz__verdict.is-warn {
+  border-left-color: var(--warn);
+}
+
+.wiz__verdict.is-fail {
+  border-left-color: var(--err);
+}
+
+.wiz__verdict.is-fail p {
+  color: var(--err);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------ 目标位置 */
+.wiz__target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--sunken);
+}
+
+.wiz__target code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------ 迁移清单 */
+.mig-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mig-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 11px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 120ms ease-out;
+}
+
+.mig-item:hover {
+  border-color: var(--ink2);
+}
+
+/* 勾选态：笔圈，与主界面选中语言一致 */
+.mig-item:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.mig-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.mig-item__info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mig-item__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.mig-item__size {
+  font-size: 11px;
+  color: var(--ink2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 可重建标记：虚线框，提示"这项其实可以不迁" */
+.mig-item__tag {
+  font-size: 10px;
+  padding: 0 6px;
+  border: 1px dashed var(--ink2);
+  border-radius: 2px;
+  color: var(--ink2);
+}
+
+.mig-item__path {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.mig-item__path code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+
+.mig-item__arrow {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.mig-item__purpose {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.mig-item__note {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--ink2);
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------ 迁移进度 */
+.mig-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.mig-progress__row {
+  display: grid;
+  grid-template-columns: minmax(84px, 132px) minmax(0, 1fr) 62px;
+  gap: 11px;
+  align-items: center;
+}
+
+.mig-progress__name {
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ 失败摘要 */
+.wiz__log {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 11px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--sunken);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* 用户要复制这段给开发者，所以必须能选中（全局 user-select 不适用于此） */
+  user-select: text;
+  cursor: text;
+}
+
+/* --------------------------------------------------------- 窄窗适配 */
+@media (max-width: 820px) {
+  .mig-progress__row {
+    grid-template-columns: minmax(70px, 100px) minmax(0, 1fr) 52px;
+  }
+
+  .wiz__step-label {
+    display: none;
+  }
+
+  .wiz__step {
+    padding: 4px 6px;
+  }
+}

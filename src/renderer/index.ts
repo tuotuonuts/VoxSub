@@ -20,6 +20,7 @@ import { buildModelCatalog, refreshDownloads } from "./views/catalog";
 import { buildSettings } from "./views/settings";
 import { buildDiagnostics, detachDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
+import { buildMigrationWizard, shouldOfferMigration } from "./views/migration";
 
 type Mode = "a" | "b" | "c" | "d";
 
@@ -283,6 +284,14 @@ function boot(): void {
   // 晚一步启动会让首屏所有请求落空（见 store.ts 的"后端就绪门"）。
   connectBackend();
   render();
+
+  // 首次启动：检测旧版数据风险，需要时弹出迁移向导。
+  // 放在 render 之后异步执行 —— 检测要读注册表与遍历目录，不能阻塞首屏。
+  void shouldOfferMigration().then((result) => {
+    if (!result || !pageLayer) return;
+    pageLayer.hidden = false;
+    pageLayer.replaceChildren(buildMigrationWizard(result));
+  });
 
   // store 变化 → 增量刷新；不做整页重建，避免输入框失焦与滚动跳动
   let pending = false;

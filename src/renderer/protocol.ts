@@ -67,6 +67,15 @@ export const CMD = {
   renderOcrImage: "render_ocr_image",
   copyFile: "copy_file",
   ocrCacheDir: "ocr_cache_dir",
+
+  // 旧版迁移
+  detectLegacy: "detect_legacy",
+  planMigration: "plan_migration",
+  startMigration: "start_migration",
+  verifyCopy: "verify_copy",
+  writeModelSnapshot: "write_model_snapshot",
+  cleanupMigratedSource: "cleanup_migrated_source",
+  migrationDecision: "migration_decision",
   ocrTranslate: "ocr_translate",
 } as const;
 
@@ -172,6 +181,7 @@ export type BackendEvent =
   | { type: "ready"; version: string }
   | { type: "status"; text: string }
   | { type: "session"; action: "start" | "stop" }
+  | { type: "migration"; phase: string; key?: string; index?: number; total?: number; error?: string; target?: string }
   | { type: "utterance"; source: string; translation: string }
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }

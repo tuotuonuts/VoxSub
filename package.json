@@ -21,7 +21,10 @@
     "test:ocr": "python tools/test-ocr-e2e.py",
     "i18n:add": "python tools/add-i18n-entries.py",
     "i18n:page-back": "python tools/i18n-page-back.py",
-    "verify": "npm run check && npm run probe:backend && npm run test:ocr"
+    "verify": "npm run check && npm run probe:backend && npm run test:ocr && npm run test:migration",
+    "test:migration": "python tools/test-migration.py",
+    "i18n:migration": "python tools/i18n-migration.py",
+    "check:uninstaller": "python tools/check-uninstaller-risk.py"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

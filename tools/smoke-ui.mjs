@@ -175,6 +175,20 @@ console.log("\n=== 主窗：设置页 7 分页 ===");
   check("设置页含「存储与模型」", info.tabs.includes("存储与模型"), info.tabs.join("/"));
   check("设置页 7 个分页", info.tabs.length === 7, `${info.tabs.length}`);
 
+  // 旧版数据入口：用户跳过向导后的反悔通道
+  const legacyEntry = await ev(`(async () => {
+    const tabs = [...document.querySelectorAll('.settings__tab')];
+    const storage = tabs.find(t => t.textContent === '存储与模型');
+    storage?.click();
+    await new Promise(r => setTimeout(r, 900));
+    const cards = [...document.querySelectorAll('.card__title')].map(t => t.textContent);
+    const buttons = [...document.querySelectorAll('.settings__panes button')].map(b => b.textContent);
+    return { cards, buttons };
+  })()`);
+  check("设置页有「旧版数据」卡片", legacyEntry.cards.includes("旧版数据"), legacyEntry.cards.join("/"));
+  check("有「检查旧版数据」入口", legacyEntry.buttons.includes("检查旧版数据"), "");
+  check("有「打开迁移向导」入口", legacyEntry.buttons.includes("打开迁移向导"), "");
+
   // 逐页点开，确认每页都能渲染出内容
   const perTab = await ev(`(async () => {
     const tabs = [...document.querySelectorAll('.settings__tab')];

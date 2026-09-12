@@ -74,6 +74,24 @@ def _dir_size(directory: Path) -> int:
     return total
 
 
+def _free_bytes(path: str) -> int:
+    """目标路径所在卷的可用空间。用于迁移前判断空间是否够。
+
+    路径可能还不存在（新建目标目录），所以逐级向上找第一个存在的父目录。
+    """
+    import shutil  # noqa: PLC0415
+
+    probe = Path(path)
+    while True:
+        try:
+            return shutil.disk_usage(probe).free
+        except OSError:
+            parent = probe.parent
+            if parent == probe:
+                return 0
+            probe = parent
+
+
 # ---------------------------------------------------------------- OCR 渲染辅助
 
 def _box_to_list(box: Any) -> list[int]:
@@ -784,6 +802,207 @@ class BackendService:
         fallback.mkdir(parents=True, exist_ok=True)
         return {"path": str(fallback), "fallback": True}
 
+    # ================================================================== 旧版迁移
+    def _cmd_detect_legacy(self, args: dict[str, Any]) -> dict[str, Any]:
+        """检测旧版（Qt 版）安装与数据风险。只读，不写任何文件。"""
+        from legacy_migration import (  # noqa: PLC0415
+            assess_storage, asdict, detect_legacy_install, overall_risk, read_state,
+        )
+
+        legacy = detect_legacy_install()
+        checks = assess_storage(legacy)
+        state = read_state()
+        return {
+            "legacy": asdict(legacy),
+            "storage": [asdict(c) for c in checks],
+            "overallRisk": overall_risk(checks),
+            "state": state,
+        }
+
+    def _cmd_migration_decision(self, args: dict[str, Any]) -> dict[str, Any]:
+        """记录用户对迁移向导的决定（跳过 / 完成），避免反复打扰。"""
+        from legacy_migration import write_state  # noqa: PLC0415
+
+        decision = str(args.get("decision", ""))
+        if decision == "dismiss":
+            return write_state(dismissed=True)
+        if decision == "complete":
+            return write_state(completed=True, dismissed=True)
+        if decision == "reset":
+            return write_state(dismissed=False, completed=False)
+        raise ValueError(f"未知决定：{decision}")
+
+    def _cmd_plan_migration(self, args: dict[str, Any]) -> dict[str, Any]:
+        """规划迁移步骤（纯计算，不碰文件系统）。"""
+        from legacy_migration import (  # noqa: PLC0415
+            assess_storage, asdict, detect_legacy_install, plan_migration,
+        )
+
+        legacy = detect_legacy_install()
+        checks = assess_storage(legacy)
+        target = str(args.get("target_root") or "").strip()
+        if not target:
+            drive = Path(legacy.install_location).drive if legacy.install_location else "D:"
+            target = f"{drive}\\VoxSub\\Data"
+        keys = args.get("keys")
+        steps = plan_migration(checks, target, keys=keys or None)
+        return {
+            "targetRoot": target,
+            "steps": [asdict(s) for s in steps],
+            "totalBytes": sum(s.bytes for s in steps),
+            "freeBytes": _free_bytes(target),
+        }
+
+    def _cmd_write_model_snapshot(self, args: dict[str, Any]) -> dict[str, Any]:
+        """写入模型快照（逃生舱：数据丢了也知道曾经有什么）。"""
+        from legacy_migration import write_model_snapshot  # noqa: PLC0415
+
+        root = str(args.get("models_root") or "") or str(_resolve_models_root())
+        return write_model_snapshot(root)
+
+    def _cmd_verify_copy(self, args: dict[str, Any]) -> dict[str, Any]:
+        """校验一份复制是否完整（三层校验）。"""
+        from legacy_migration import verify_copy  # noqa: PLC0415
+
+        return verify_copy(Path(str(args.get("source", ""))), Path(str(args.get("target", ""))))
+
+    def _cmd_start_migration(self, args: dict[str, Any]) -> dict[str, Any]:
+        """执行迁移。**复制优先，绝不删源。**
+
+        安全纪律（本命令的最高优先级）：
+          · 同卷用原子 rename；跨卷用复制
+          · 搬迁前先记录源目录的"期望状态"（字节数/文件数/manifest 哈希）
+          · 搬迁后拿目标与期望比对 —— 不能拿 source 比，同卷 rename 后 source 已经没了
+          · 校验不过就保留现场并报错，不删任何东西
+          · 源目录的清理必须由用户单独确认（另有命令），不在本命令里做
+        """
+        import shutil  # noqa: PLC0415
+        import time  # noqa: PLC0415
+
+        from legacy_migration import (  # noqa: PLC0415
+            _same_volume, capture_expectation, verify_against_expectation,
+        )
+
+        steps = args.get("steps") or []
+        if not steps:
+            raise ValueError("没有要迁移的项目")
+
+        started = time.monotonic()
+        done: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+
+        for index, step in enumerate(steps):
+            source = Path(str(step.get("source", "")))
+            target = Path(str(step.get("target", "")))
+            key = str(step.get("key", f"item{index}"))
+
+            if not source.is_dir():
+                failures.append({"key": key, "error": f"源目录不存在：{source}"})
+                continue
+            if target.exists() and any(target.iterdir()):
+                failures.append({"key": key, "error": f"目标已存在且非空：{target}"})
+                continue
+
+            _event("migration", phase="start", key=key, index=index,
+                   total=len(steps), source=str(source), target=str(target))
+
+            try:
+                # 关键顺序：先记期望，再动文件。同卷 rename 之后源就没了。
+                expectation = capture_expectation(source)
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                if _same_volume(source, target):
+                    source.rename(target)
+                    mode = "move_same_volume"
+                else:
+                    shutil.copytree(
+                        source, target,
+                        ignore_dangling_symlinks=True,
+                        dirs_exist_ok=True,
+                    )
+                    mode = "copy"
+
+                _event("migration", phase="progress", key=key, completed=100, total=100)
+
+                check = verify_against_expectation(expectation, target)
+                if not check.get("ok"):
+                    failures.append({
+                        "key": key,
+                        "error": "校验未通过，已保留现场（未删除任何数据）",
+                        "verify": check,
+                    })
+                    _event("migration", phase="failed", key=key, error="校验未通过")
+                    continue
+
+                done.append({"key": key, "mode": mode, "target": str(target),
+                             "verify": check})
+                _event("migration", phase="done", key=key, target=str(target))
+
+            except Exception as error:  # noqa: BLE001 - 逐步报告，不中断整体
+                failures.append({"key": key, "error": f"{type(error).__name__}: {error}"})
+                _event("migration", phase="failed", key=key, error=str(error))
+
+        elapsed = int((time.monotonic() - started) * 1000)
+
+        # 关键收尾：把配置指针指到新位置。
+        # 不更新配置的话，文件搬走了但应用仍去旧路径找 —— "迁移成功"却不可用，
+        # 这比迁移失败更难排查（用户看到成功提示，功能却是空的）。
+        config_updates: dict[str, Any] = {}
+        for item in done:
+            key = item["key"]
+            target = item["target"]
+            if key == "models":
+                config_updates["models_root"] = target
+                config_updates["models_root_mode"] = "custom"
+            elif key == "cache":
+                config_updates["ocr_cache_root"] = target
+
+        config_error = ""
+        if config_updates:
+            try:
+                from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+                ConfigStore().update(config_updates)
+                _event("migration", phase="config", keys=list(config_updates))
+            except Exception as error:  # noqa: BLE001 - 文件已迁好，配置失败要单独报
+                config_error = f"{type(error).__name__}: {error}"
+                failures.append({
+                    "key": "config",
+                    "error": f"文件已迁移，但配置未能更新（{config_error}）。"
+                             f"请在设置里手动把路径改到：{config_updates}",
+                })
+                print(f"[migration] 配置更新失败: {config_error}", file=sys.stderr)
+
+        return {
+            "done": done,
+            "failed": failures,
+            "elapsedMs": elapsed,
+            "configUpdates": config_updates,
+            "ok": not failures,
+        }
+
+    def _cmd_cleanup_migrated_source(self, args: dict[str, Any]) -> dict[str, Any]:
+        """删除迁移后的源目录 —— **必须由用户单独二次确认**。
+
+        单独一个命令而不是放在 start_migration 里自动做：删除是不可逆的，
+        校验通过也不代表用户此刻就想删原件。
+        """
+        import shutil  # noqa: PLC0415
+
+        path = Path(str(args.get("path", "")))
+        if not path.is_dir():
+            return {"deleted": False, "detail": f"目录不存在：{path}"}
+
+        # 安全阀：拒绝删除明显的系统/用户关键目录
+        guard = str(path.resolve()).lower()
+        for forbidden in ("c:\\", "c:\\windows", "c:\\users", "c:\\program files"):
+            if guard.rstrip("\\") == forbidden:
+                raise ValueError(f"拒绝删除受保护目录：{path}")
+
+        shutil.rmtree(path)
+        return {"deleted": True, "path": str(path)}
+
     def _cmd_render_ocr_image(self, args: dict[str, Any]) -> dict[str, Any]:
         """把译文画回原图，生成「译后图片」（Qt 版 render_translated_image 的等价实现）。
 
@@ -923,6 +1142,8 @@ for _name in (
     "list_models", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
     "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",
+    "detect_legacy", "plan_migration", "start_migration", "verify_copy",
+    "write_model_snapshot", "cleanup_migrated_source", "migration_decision",
     "list_devices", "hardware_profile", "list_audio_devices",
     "list_capture_targets", "export_subtitles", "ocr_recognize",
 ):

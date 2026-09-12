@@ -8,6 +8,7 @@ import { h, on } from "../dom";
 import { call, store } from "../store";
 import { CMD, type AudioDevice, type HardwareProfile } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
+import { reopenWizard } from "./migration";
 
 type Config = Record<string, unknown>;
 
@@ -505,6 +506,55 @@ function storageTab(): HTMLElement {
         text: tr("如果以前把模型放在其他磁盘或手动复制过模型，可从这里把它们并入当前位置。"),
       }),
       h("div", { class: "tuning-actions" }, [importBtn, importState]),
+    ]),
+  );
+
+  // ---- 旧版数据检查 ----
+  // 用户跳过首次向导后反悔的入口。放在这里而不是"关于"：它与数据位置同类。
+  const legacyState = h("span", { class: "tuning-actions__state", text: "" });
+  const legacyBtn = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("检查旧版数据"),
+  });
+  on(legacyBtn, "click", async () => {
+    legacyState.textContent = tr("正在检查…");
+    const result = await call<{
+      legacy: { found: boolean; version: string; install_location: string };
+      overallRisk: string;
+      storage: Array<{ key: string; risk: string; path: string; bytes: number }>;
+    }>(CMD.detectLegacy);
+    if (!result) {
+      legacyState.textContent = tr("检查失败，详见日志");
+      return;
+    }
+    if (!result.legacy.found) {
+      legacyState.textContent = tr("未检测到旧版");
+      return;
+    }
+    const risky = result.storage.filter((s) => s.risk !== "safe");
+    legacyState.textContent = risky.length
+      ? `${tr("旧版")} ${result.legacy.version} · ${risky.length} ${tr("项需注意")}`
+      : `${tr("旧版")} ${result.legacy.version} · ${tr("数据位置安全")}`;
+  });
+
+  const legacyOpen = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("打开迁移向导"),
+  });
+  on(legacyOpen, "click", () => {
+    const host = document.querySelector<HTMLElement>(".page-layer");
+    if (host) void reopenWizard(host);
+  });
+
+  page.append(
+    card(tr("旧版数据"), [
+      h("p", {
+        class: "field__hint",
+        text: tr("检查旧版（Qt 版）留下的数据位置，必要时迁移到独立目录。卸载旧版前建议先做这一步。"),
+      }),
+      h("div", { class: "tuning-actions" }, [legacyBtn, legacyOpen, legacyState]),
     ]),
   );
 
