@@ -34,6 +34,9 @@ runtime/
 Thumbs.db
 .DS_Store
 
+# 启动器日志
+logs/
+
 # 截图产物（验证用，不入库）
 VoxSub/
 captures/

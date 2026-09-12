@@ -20,7 +20,7 @@
  * 而这个脚本经常在双击的 cmd 窗口里跑，没法保证代码页。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,10 +28,44 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const args = new Set(process.argv.slice(2));
 
-const step = (n, text) => console.log(`[${n}] ${text}`);
-const ok = (text) => console.log(`    OK   ${text}`);
-const warn = (text) => console.log(`    WARN ${text}`);
-const fail = (text) => console.error(`    FAIL ${text}`);
+/* ------------------------------------------------------------------ 自写日志 */
+
+/**
+ * 启动器自带日志文件。
+ *
+ * 为什么不让调用方用 shell 重定向：实测在某些托管环境里
+ * `node launch.mjs > log 2>&1` 会让包装器的消息混进日志、而 node 自身的
+ * 输出反而丢失（表现为日志只有一行无关报错、应用没起来）。
+ * 自己写日志就没有这层依赖，后台跑也能事后回看。
+ */
+const LOG_DIR = join(ROOT, "logs");
+const LOG_FILE = join(LOG_DIR, "launcher.log");
+
+function logLine(text) {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(LOG_FILE, text + "\n", "utf-8");
+  } catch {
+    // 日志写不进去不该阻断启动
+  }
+}
+
+const step = (n, text) => {
+  console.log(`[${n}] ${text}`);
+  logLine(`[${n}] ${text}`);
+};
+const ok = (text) => {
+  console.log(`    OK   ${text}`);
+  logLine(`    OK   ${text}`);
+};
+const warn = (text) => {
+  console.log(`    WARN ${text}`);
+  logLine(`    WARN ${text}`);
+};
+const fail = (text) => {
+  console.error(`    FAIL ${text}`);
+  logLine(`    FAIL ${text}`);
+};
 
 /* -------------------------------------------------------------- 依赖检查 */
 
@@ -235,6 +269,8 @@ function launch() {
 
 /* ---------------------------------------------------------------- 主流程 */
 
+logLine("");
+logLine(`--- launch ${new Date().toISOString()} args=${[...args].join(" ") || "(none)"} ---`);
 console.log("========================================");
 console.log("  VoxSub Electron - dev launcher");
 console.log("========================================\n");
