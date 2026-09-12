@@ -494,7 +494,37 @@ function wireBackendEvents(source: BackendBridge): void {
   });
 }
 
+/**
+ * 单实例锁 —— 防止双开。
+ *
+ * 不锁的后果（实测）：第二个实例会以一堆看不懂的错误退出：
+ *   bind() returned an error: 每个套接字地址(协议/网络地址/端口)只允许使用一次
+ *   Cannot start http server for devtools
+ *   Unable to move the cache: 拒绝访问 / Unable to create cache
+ * 根因是两个实例共用同一 userData 目录与调试端口，互相踩。
+ *
+ * 拿到锁的实例在收到 second-instance 事件时把已有窗口带到前台 ——
+ * 但无头模式下不这么做：那正是要避免的"抢用户焦点"。
+ */
+const HAS_SINGLE_INSTANCE = app.requestSingleInstanceLock();
+
+if (!HAS_SINGLE_INSTANCE) {
+  // 已有实例在运行：立刻退出，不去争 userData 与端口
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (HEADLESS) return; // 无头模式不抢焦点
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
 void app.whenReady().then(() => {
+  // 第二个实例：不建任何窗口（app.quit() 已在上面发起）
+  if (!HAS_SINGLE_INSTANCE) return;
+
   // 移除 Electron 默认菜单栏（File/Edit/View/…）：本应用有自己的界面语言，
   // 残留的默认菜单会让成品显得未完成。快捷键改用 globalShortcut / 页面内绑定。
   Menu.setApplicationMenu(null);
