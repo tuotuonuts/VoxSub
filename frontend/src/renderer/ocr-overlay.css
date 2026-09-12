@@ -1,0 +1,41 @@
+/* OCR 覆盖层：把译文画在原文的位置上。
+   纪律（原 Qt 版设计）：覆盖框之间严格不重叠；字号以原框高度为基准。 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+  font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+#blocks {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* 单个覆盖块：半透明底衬 + 白色译文，模拟原位替换 */
+.block {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: rgba(10, 14, 16, 0.86);
+  color: #F0F4F4;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  /* 覆盖框之间不重叠由 JS 保证，这里只负责呈现 */
+}
+
+/* 空结果时保留上一帧，避免闪烁：由 JS 控制 hidden */
+.block.is-stale {
+  opacity: 0.55;
+}

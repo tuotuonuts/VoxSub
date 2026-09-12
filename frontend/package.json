@@ -1,0 +1,42 @@
+{
+  "name": "voxsub-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "语幕 VoxSub — Electron 前端（IPC 接现有 Python 后端）",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "prebuild": "node scripts/sanitize.mjs",
+    "build:main": "esbuild src/main/main.ts src/main/preload.ts src/main/backend.ts src/main/capture.ts --bundle --platform=node --target=node20 --external:electron --outdir=dist/main",
+    "build:renderer": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer",
+    "build:assets": "node scripts/copy-assets.mjs",
+    "build": "npm run build:main && npm run build:renderer && npm run build:assets",
+    "typecheck": "tsc --noEmit",
+    "verify:palette": "node tools/verify-palette.mjs",
+    "check": "npm run typecheck && npm run verify:palette",
+    "start": "npm run build && electron .",
+    "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch",
+    "probe:backend": "python tools/probe-backend.py",
+    "smoke:ui": "node tools/smoke-ui.mjs",
+    "verify:features": "python tools/compare-qt-features.py",
+    "test:ocr": "python tools/test-ocr-e2e.py",
+    "i18n:add": "python tools/add-i18n-entries.py",
+    "i18n:page-back": "python tools/i18n-page-back.py",
+    "verify": "npm run check && npm run probe:backend && npm run test:ocr && npm run test:migration",
+    "test:migration": "python tools/test-migration.py",
+    "i18n:migration": "python tools/i18n-migration.py",
+    "check:uninstaller": "python tools/check-uninstaller-risk.py",
+    "launch": "node scripts/launch.mjs",
+    "launch:clean": "node scripts/launch.mjs --clean",
+    "launch:dev": "node scripts/launch.mjs --dev",
+    "launch:debug": "node scripts/launch.mjs --debug",
+    "probe:resize": "node tools/probe-resize.mjs",
+    "css:px2rem": "python tools/px-to-rem.py",
+    "launch:silent": "node scripts/launch.mjs --silent --debug"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.1",
+    "electron": "44.3.0",
+    "esbuild": "0.25.0",
+    "typescript": "5.7.3"
+  }
+}

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+    />
+    <title>字幕浮窗</title>
+    <link rel="stylesheet" href="overlay.css" />
+  </head>
+  <body class="overlay">
+    <!-- 双层壳：外壳 + 内芯，与原 Qt 的 Double-Bezel 一致 -->
+    <div class="shell" id="shell">
+      <div class="shell__inner" id="inner">
+        <!-- 历史区：滚轮或按钮回溯（原 Qt 用法一致） -->
+        <div class="history" id="history"></div>
+        <p class="line line--src is-current" id="src">等待识别…</p>
+        <p class="line line--dst is-current" id="dst"></p>
+      </div>
+
+      <!-- 工具条：悬停显示，锁定后隐藏（与原 Qt 一致） -->
+      <div class="controls" id="controls">
+        <div class="controls__group">
+          <button type="button" class="ctl" id="font-down" title="减小字号">A−</button>
+          <span class="ctl__value" id="font-value">20</span>
+          <button type="button" class="ctl" id="font-up" title="增大字号">A+</button>
+        </div>
+
+        <div class="controls__group">
+          <button type="button" class="ctl ctl--wide" id="display-btn" title="显示内容">双语</button>
+          <div class="menu" id="display-menu" hidden>
+            <button type="button" class="menu__item" data-mode="source">仅原文</button>
+            <button type="button" class="menu__item" data-mode="translation">仅译文</button>
+            <button type="button" class="menu__item" data-mode="bilingual">双语对照</button>
+          </div>
+        </div>
+
+        <div class="controls__group">
+          <button type="button" class="ctl" id="spacing-toggle" title="行距与内边距">间距</button>
+          <div class="controls__sub" id="spacing-controls" hidden>
+            <span class="ctl__label">边距</span>
+            <button type="button" class="ctl ctl--mini" id="padding-down">−</button>
+            <span class="ctl__value" id="padding-value">18</span>
+            <button type="button" class="ctl ctl--mini" id="padding-up">+</button>
+            <span class="ctl__label">行距</span>
+            <button type="button" class="ctl ctl--mini" id="gap-down">−</button>
+            <span class="ctl__value" id="gap-value">6</span>
+            <button type="button" class="ctl ctl--mini" id="gap-up">+</button>
+          </div>
+        </div>
+
+        <div class="controls__group">
+          <button type="button" class="ctl" id="history-prev" title="上一条">↑</button>
+          <button type="button" class="ctl" id="history-next" title="下一条">↓</button>
+          <button type="button" class="ctl" id="history-live" title="回到最新" hidden>最新</button>
+        </div>
+
+        <div class="controls__group controls__group--end">
+          <button type="button" class="ctl" id="lock" title="锁定后鼠标穿透，内容不可点击">锁定</button>
+          <button type="button" class="ctl" id="close" title="隐藏浮窗">隐藏</button>
+        </div>
+      </div>
+
+      <!-- 锁定后的悬浮解锁钮：穿透状态下唯一的可点击入口 -->
+      <div class="locked-panel" id="locked-panel" hidden>
+        <button type="button" class="ctl" id="unlock">已锁定 · 点击解锁</button>
+      </div>
+    </div>
+    <script src="overlay.js"></script>
+  </body>
+</html>
