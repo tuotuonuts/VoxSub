@@ -69,9 +69,33 @@ def die(text: str) -> None:
 
 
 def run(cmd: list[str], cwd: Path, *, timeout: int = 1800) -> subprocess.CompletedProcess[str]:
+    """运行外部命令。
+
+    Windows 上 npm/npx/electron-builder 都是 .cmd 脚本，不带 shell=True 时
+    subprocess 找不到它们（报 WinError 2「系统找不到指定的文件」）。
+    这个坑实测踩过：build-release.py 因此在第二步就崩，从没跑完过。
+
+    统一在这里补 .cmd 后缀 + shell=True，调用点不必各自处理。
+    同时清掉 PYTHONPATH/PYTHONHOME —— 宿主环境注入的那两个会让 Python 侧
+    import 到错位的包（AGENTS.md 记录过）。
+    """
+    is_windows = sys.platform == "win32"
+    resolved = list(cmd)
+    if is_windows and resolved:
+        head = resolved[0]
+        # npx / npm / electron-builder 这类 shim 在 Windows 上是 .cmd
+        if head in ("npm", "npx", "pnpm", "yarn", "electron-builder"):
+            resolved[0] = f"{head}.cmd"
+
     return subprocess.run(
-        cmd, cwd=str(cwd), capture_output=True, text=True,
-        timeout=timeout, encoding="utf-8", errors="replace",
+        resolved,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
+        shell=is_windows,  # .cmd 需要 shell 才能解析
         env={**os.environ, "PYTHONPATH": "", "PYTHONHOME": ""},
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
