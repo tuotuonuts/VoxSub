@@ -48,17 +48,30 @@ export class BackendBridge {
   }
 
   private resolvePython(): { command: string; args: string[] } {
-    // Electron 前端已并入 VoxSub 仓库，布局是：
+    // 两种运行形态，解析方式完全不同：
+    //
+    // **源码运行**（开发期）
     //   <repo>/frontend/          ← 本项目的 package.json 与 src/
     //   <repo>/voxsub/            ← Python 包
     //   <repo>/.venv/             ← 解释器与依赖
-    // 所以"仓库根"就是 frontend 的上一级。
+    //   用仓库自带的 venv 跑 backend/ipc_server.py。
+    //   不写死相对层级：逐级向上找，这样仓库调整结构时不会静默失效。
     //
-    // 不写死相对层级：逐级向上找同时含 voxsub/ 与 .venv/ 的目录，
-    // 这样仓库再次调整目录结构时不会静默失效。
+    // **打包运行**（安装后）
+    //   <安装目录>/resources/backend/VoxSubBackend.exe
+    //   sidecar 是 PyInstaller 产物，自带解释器，不需要 venv，
+    //   也不能去找"仓库根" —— 装完的机器上没有仓库。
     const explicit = process.env["VOXSUB_ROOT"];
     const appPath = app.getAppPath();
 
+    // ---- 打包形态：优先用 sidecar ----
+    const resourcesPath = process.resourcesPath ?? "";
+    const packaged = path.join(resourcesPath, "backend", "VoxSubBackend.exe");
+    if (fs.existsSync(packaged)) {
+      return { command: packaged, args: [] };
+    }
+
+    // ---- 源码形态 ----
     const looksLikeRepoRoot = (dir: string): boolean =>
       fs.existsSync(path.join(dir, "voxsub", "__init__.py")) ||
       fs.existsSync(path.join(dir, ".venv", "Scripts", "python.exe"));
@@ -87,13 +100,13 @@ export class BackendBridge {
     // 开发期：源码目录；打包后：extraResources 里的 backend/
     const candidates = [
       path.join(appPath, "backend", "ipc_server.py"),
-      path.join(process.resourcesPath ?? "", "backend", "ipc_server.py"),
+      path.join(resourcesPath, "backend", "ipc_server.py"),
     ];
     const entry = candidates.find((candidate) => fs.existsSync(candidate));
 
     if (!entry) {
       throw new Error(
-        `找不到 backend/ipc_server.py（已查找：${candidates.join(" | ")}）`,
+        `找不到后端入口。已查找 sidecar：${packaged}；脚本：${candidates.join(" | ")}`,
       );
     }
     if (!fs.existsSync(python)) {

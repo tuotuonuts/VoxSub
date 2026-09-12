@@ -25,19 +25,28 @@ from typing import Any, Callable
 
 # ---- 接入现有 voxsub 包 ----------------------------------------------------
 def _install_backend_path() -> str:
-    """定位并注入 voxsub 包的导入路径。
+    """定位并注入 voxsub 的导入路径。
 
-    约定：voxsub 包一行不改，只把它的仓库根目录加进 sys.path。
+    两种运行形态，走不同的分支：
 
-    布局（Electron 前端已并入 VoxSub 仓库）：
+    **源码运行**（开发期）
         <repo>/frontend/backend/ipc_server.py   ← 本文件
         <repo>/voxsub/__init__.py               ← 要找的包
-        <repo>/.venv/                           ← Python 解释器
+        把 <repo> 加进 sys.path。
+        不写死"上跳几层"：那对目录调整很脆弱（迁入仓库时就是因为写死了
+        parents[2] / "VoxSub" 而失效）。改为逐级向上找含 voxsub/__init__.py 的目录。
 
-    实现上不写死"上跳几层"：那对目录调整很脆弱（迁入仓库时就是
-    因为写死了 parents[2] / "VoxSub" 而失效）。改为从脚本位置逐级
-    向上找含 voxsub/__init__.py 的目录。
+    **打包运行**（PyInstaller onedir）
+        voxsub 已被打进 bundle，Python 包在 sys._MEIPASS/pyz 里，
+        会随 sys.path 自动可见 —— 这里不需要做任何事。
+        此时也不能再去找"仓库根"：安装后的机器上没有仓库。
     """
+    if getattr(sys, "frozen", False):
+        # 打包形态：voxsub 随 bundle 一起加载。
+        # 返回 bundle 目录，仅用于诊断输出与日志。
+        bundle = getattr(sys, "_MEIPASS", str(Path(sys.executable).parent))
+        return bundle
+
     explicit = os.environ.get("VOXSUB_ROOT")
     if explicit and (Path(explicit) / "voxsub" / "__init__.py").is_file():
         if explicit not in sys.path:
@@ -60,8 +69,22 @@ def _install_backend_path() -> str:
 
 
 VOXSUB_ROOT = _install_backend_path()
+FROZEN = bool(getattr(sys, "frozen", False))
 
 # ---- 保护协议通道 -----------------------------------------------------------
+# 关键：stdout/stderr 在 Windows 上默认按控制台代码页（CP936/GBK）编码，
+# 而协议是 UTF-8 JSON 行。不显式指定 encoding 的话，中文日志与字幕
+# 会写成乱码（实测 sidecar 的 stderr 里中文日志全部变成问号与方块）。
+#
+# 顺序要紧：先拿到真实 stdout 的句柄，再把 sys.stdout 指向 stderr ——
+# 这样 print() 不会污染协议通道。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    # 老解释器或被重定向到不可配置的流时跳过；不影响协议本身
+    pass
+
 _PROTOCOL_OUT = sys.stdout
 sys.stdout = sys.stderr
 
@@ -387,14 +410,35 @@ class BackendService:
         return {"microphones": mics, "loopbacks": loops}
 
     def _cmd_list_capture_targets(self, args: dict[str, Any]) -> dict[str, Any]:
-        """可捕获的可见窗口（用于 B 模式按应用隔离）。"""
-        try:
-            from voxsub.ui.view_models import list_capture_targets  # noqa: PLC0415
+        """可捕获的可见窗口（用于 B 模式按应用隔离）。
 
-            targets = list_capture_targets()  # type: ignore[attr-defined]
-            return {"targets": targets}
-        except Exception:  # noqa: BLE001 - 接口不存在时退回空列表
-            return {"targets": []}
+        正确位置是 voxsub.process_audio。原先写的是 voxsub.ui.view_models ——
+        那个模块并不导出此函数，ImportError 被下面的 except 静默吞掉，
+        导致"按应用隔离"从未真正生效（界面永远只有空列表）。
+        """
+        try:
+            from voxsub.process_audio import list_capture_targets  # noqa: PLC0415
+        except ImportError as error:
+            print(f"[capture] 无法导入窗口枚举: {error}", file=sys.stderr)
+            return {"targets": [], "error": str(error)}
+
+        try:
+            targets = list_capture_targets()
+        except Exception as error:  # noqa: BLE001 - 枚举失败不应中断命令
+            print(f"[capture] 枚举窗口失败: {error}", file=sys.stderr)
+            return {"targets": [], "error": str(error)}
+
+        return {
+            "targets": [
+                {
+                    "pid": int(getattr(t, "pid", 0) or 0),
+                    "processName": str(getattr(t, "process_name", "")),
+                    "windowTitle": str(getattr(t, "window_title", "")),
+                    "label": str(getattr(t, "label", "") or getattr(t, "process_name", "")),
+                }
+                for t in targets
+            ],
+        }
 
     def _cmd_set_audio_devices(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_audio_devices(
@@ -652,7 +696,9 @@ class BackendService:
 
     def _cmd_release_notes(self, args: dict[str, Any]) -> dict[str, Any]:
         """更新日志（默认只回最近一版；include_history=True 回全部）。"""
-        from voxsub.ui.release_notes import RELEASE_HISTORY  # noqa: PLC0415
+        # 从 voxsub.release_notes 导入，而不是 voxsub.ui.release_notes ——
+        # 后者在导入时就需要 PySide6，会让"打包时不带 Qt"直接失败。
+        from voxsub.release_notes import RELEASE_HISTORY  # noqa: PLC0415
 
         english = str(args.get("language", "zh")).startswith("en")
         include_history = bool(args.get("include_history", False))
@@ -1201,16 +1247,80 @@ def _human_size(num: int) -> str:
     return f"{value:.1f} GB"
 
 
+def _ensure_first_run_defaults() -> dict[str, Any]:
+    """首次运行时确定模型目录，并写进配置。
+
+    为什么需要这一步：打包安装后 voxsub 的 install_models_root() 会算出
+    ``<安装目录>/Models``，也就是 ``C:\\Program Files\\VoxSub\\Models``。那有两个问题：
+      1. 需要管理员权限才能写 —— 普通用户下载模型会失败或被 UAC 打断
+      2. 违背本项目"绝不写入系统盘"的既有原则（OCR 缓存那条注释就写明了）
+
+    所以新装用户默认落到非系统盘：
+
+        D:\\VoxSub\\Models            （D 盘存在时）
+          ↓ D 盘不可用
+        %LOCALAPPDATA%\\VoxSub\\models
+
+    这样也顺带让新老用户路径统一 —— 老用户的配置里就是 D:\\VoxSub\\Models，
+    将来从 Qt 版迁移到 Electron 版时那条绝对路径正好还能用。
+
+    **只在配置里没有 models_root 时才写。** 已有配置的用户（包括所有老用户）
+    一个字节都不动 —— 他们的模型库位置不能因为我们换前端而改变。
+    """
+    try:
+        from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+        store = ConfigStore()
+        config = dict(store.load())
+    except Exception as error:  # noqa: BLE001 - 初始化失败不该阻断启动
+        print(f"[init] 读取配置失败: {error}", file=sys.stderr)
+        return {"applied": False, "reason": str(error)}
+
+    if str(config.get("models_root") or "").strip():
+        # 老用户：位置已定，不动
+        return {"applied": False, "reason": "configured", "models_root": config["models_root"]}
+
+    # 选一个可写的非系统盘位置
+    candidate_drives = []
+    for letter in ("D", "E", "F"):
+        drive = Path(f"{letter}:\\")
+        if drive.exists():
+            candidate_drives.append(drive / "VoxSub" / "Models")
+
+    if candidate_drives:
+        target = candidate_drives[0]
+    else:
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        target = Path(local) / "VoxSub" / "models"
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        store.update({"models_root": str(target), "models_root_mode": "custom"})
+        print(f"[init] 首次运行：模型目录设为 {target}", file=sys.stderr)
+        _event("first_run", modelsRoot=str(target))
+        return {"applied": True, "models_root": str(target)}
+    except Exception as error:  # noqa: BLE001
+        print(f"[init] 创建模型目录失败: {error}", file=sys.stderr)
+        return {"applied": False, "reason": str(error)}
+
+
 def main() -> int:
     service = BackendService()
     service._install_log_sink()  # noqa: SLF001
     try:
         from voxsub import __version__  # noqa: PLC0415
 
-        _event("ready", version=__version__)
+        _event("ready", version=__version__, frozen=FROZEN)
     except Exception as exc:  # noqa: BLE001
         _event("error", message=f"后端初始化失败: {type(exc).__name__}: {exc}")
         return 2
+
+    # 打包安装的首次运行：确定模型目录（源码运行不做，避免污染开发环境）
+    if FROZEN:
+        try:
+            _ensure_first_run_defaults()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[init] 首启动初始化异常: {exc}", file=sys.stderr)
 
     for raw in sys.stdin:
         line = raw.strip()

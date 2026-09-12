@@ -1,8 +1,8 @@
 {
   "name": "voxsub-electron",
-  "version": "0.1.0",
+  "version": "0.9.0-beta",
   "private": true,
-  "description": "语幕 VoxSub — Electron 前端（IPC 接现有 Python 后端）",
+  "description": "语幕 VoxSub — Electron 前端（IPC 接 Python 核心）",
   "main": "dist/main/main.js",
   "scripts": {
     "prebuild": "node scripts/sanitize.mjs",
@@ -31,11 +31,15 @@
     "launch:debug": "node scripts/launch.mjs --debug",
     "probe:resize": "node tools/probe-resize.mjs",
     "css:px2rem": "python tools/px-to-rem.py",
-    "launch:silent": "node scripts/launch.mjs --silent --debug"
+    "launch:silent": "node scripts/launch.mjs --silent --debug",
+    "build:backend": "python ../.venv/Scripts/pyinstaller-run.py",
+    "package": "npm run build && electron-builder --config electron-builder.config.cjs --win --x64",
+    "package:dir": "npm run build && electron-builder --config electron-builder.config.cjs --win --x64 --dir"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
     "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "0.25.0",
     "typescript": "5.7.3"
   }

@@ -17,6 +17,8 @@ build/
 dist/
 /Release/
 *.spec
+# 例外：手写的打包配置要入库（自动生成的才忽略）
+!frontend/backend/ipc_server.spec
 
 # 运行时数据（模型/下载缓存不入库）
 models/
@@ -53,3 +55,11 @@ frontend/logs/
 
 # 启动器日志
 logs/
+
+# PyInstaller 中间产物与 sidecar 输出
+frontend/backend/build/
+frontend/backend/dist/
+*.spec.bak
+
+# electron-builder 输出
+frontend/release/
