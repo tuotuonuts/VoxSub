@@ -538,7 +538,9 @@ function storageTab(): HTMLElement {
   const openFolder = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开文件夹") });
   on(openFolder, "click", () => {
     const target = modelsRoot || store.get().modelsRoot || "";
-    if (target) void window.voxsub?.dialog.openExternal(`file:///${target.replace(/\\/g, "/")}`);
+    // 传原始路径给主进程，不要再拼 file:/// —— 主进程的 open-external 只放行
+    // http/https，file:// 会被直接拒掉，表现就是"点了没反应"。
+    if (target) void window.voxsub?.dialog.openPath(target);
   });
 
   const changeFolder = h("button", {
@@ -591,7 +593,8 @@ function storageTab(): HTMLElement {
 
   const openCache = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开缓存") });
   on(openCache, "click", () => {
-    if (cacheRoot) void window.voxsub?.dialog.openExternal(`file:///${cacheRoot.replace(/\\/g, "/")}`);
+    // 同「打开文件夹」：必须走 openPath，openExternal 只认 http/https
+    if (cacheRoot) void window.voxsub?.dialog.openPath(cacheRoot);
   });
 
   const changeCache = h("button", {

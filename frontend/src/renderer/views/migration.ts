@@ -539,7 +539,8 @@ function viewReport(): HTMLElement {
     const openLogBtn = button(tr("打开日志文件夹"), "ghost", async () => {
       const result = await call<{ path: string }>(CMD.logPath);
       if (result?.path) {
-        await window.voxsub?.dialog.openExternal(`file:///${result.path.replace(/\\/g, "/")}`);
+        // 同诊断页：目标是一个日志**文件**，用 revealInFolder 定位它
+        await window.voxsub?.dialog.revealInFolder(result.path);
       }
     });
     box.append(h("div", { class: "tuning-actions" }, [copyBtn, openLogBtn]));

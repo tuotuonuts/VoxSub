@@ -287,7 +287,9 @@ function buildLogTab(): HTMLElement {
   on(openBtn, "click", async () => {
     const result = await call<{ path: string }>(CMD.logPath);
     if (result?.path) {
-      await window.voxsub?.dialog.openExternal(`file:///${result.path.replace(/\\/g, "/")}`);
+      // 按钮文案是「打开文件夹」，用 revealInFolder 在资源管理器里选中该日志文件。
+      // 原先走 openExternal 拼 file:/// —— 主进程只放行 http/https，调用必然失败。
+      await window.voxsub?.dialog.revealInFolder(result.path);
     }
   });
 

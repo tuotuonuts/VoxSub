@@ -49,8 +49,10 @@ const api = {
     saveImage: () => ipcRenderer.invoke("dialog:save-image"),
     /** 保存会话字幕（SRT/VTT/TXT）。 */
     saveSession: (payload: { lines: unknown[] }) => ipcRenderer.invoke("dialog:save-session", payload),
-    /** 打开外部链接。 */
+    /** 打开外部链接（仅 http/https）。 */
     openExternal: (url: string) => ipcRenderer.invoke("dialog:open-external", url),
+    /** 用系统默认程序打开本地路径（目录或文件）。 */
+    openPath: (target: string) => ipcRenderer.invoke("dialog:open-path", target),
     /** 在资源管理器里定位文件（保存录音/图片后的收尾动作） */
     revealInFolder: (path: string) => ipcRenderer.invoke("dialog:reveal-in-folder", path),
   },

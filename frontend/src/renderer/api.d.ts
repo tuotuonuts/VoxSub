@@ -61,6 +61,7 @@ export interface VoxSubApi {
     saveImage(): Promise<string | null>;
     saveSession(payload: { lines: unknown[] }): Promise<string | null>;
     openExternal(url: string): Promise<boolean>;
+    openPath(target: string): Promise<boolean>;
     revealInFolder(path: string): Promise<boolean>;
   };
   ocr: {

@@ -415,6 +415,26 @@ function registerIpc(): void {
     return false;
   });
 
+  /**
+   * 用系统默认程序打开一个本地路径（目录或文件）。
+   *
+   * 为什么不复用 dialog:open-external：那个只放行 http/https，
+   * 渲染层传 file:///D:/... 会被直接拒掉、返回 false，用户看到的就是
+   * "点了打开文件夹没反应"。这是实际踩到的缺陷。
+   *
+   * 这里只接受**绝对**本地路径，并先确认它存在 —— 避免把任意字符串
+   * 交给 shell（相对路径会被解释成相对于当前工作目录，容易打开意外位置）。
+   */
+  ipcMain.handle("dialog:open-path", async (_e, target: string) => {
+    if (typeof target !== "string" || !target.trim()) return false;
+    const resolved = path.resolve(target);
+    if (!path.isAbsolute(resolved)) return false;
+    if (!fs.existsSync(resolved)) return false;
+    // openPath 返回空字符串表示成功，非空是错误描述
+    const error = await shell.openPath(resolved);
+    return error === "";
+  });
+
   ipcMain.handle("dialog:open-external", async (_e, url: string) => {
     if (typeof url === "string" && /^https?:\/\//i.test(url)) {
       await shell.openExternal(url);

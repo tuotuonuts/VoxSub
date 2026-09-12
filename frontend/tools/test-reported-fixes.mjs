@@ -188,6 +188,24 @@ try {
     check("#6", "有「打开文件夹」按钮", d.buttons.includes("打开文件夹"));
   }
 
+  if (!JSON_OUT) console.log("\n=== #6 打开本地路径通道 ===\n");
+  {
+    // 主进程的 open-external 只放行 http/https，渲染层原先拼 file:/// 会被
+    // 直接拒掉 —— 用户看到"点了打开文件夹没反应"。这条断言盯住那个通道。
+    const d = await main.ev(`(async () => {
+      const api = window.voxsub?.dialog;
+      if (!api || typeof api.openPath !== 'function') return { missing: true };
+      return {
+        missing: false,
+        empty: await api.openPath(''),
+        nonexistent: await api.openPath('D:/__voxsub_不存在的目录__' + Date.now()),
+      };
+    })()`);
+    check("#6", "openPath 通道已暴露", d.missing === false);
+    check("#6", "拒绝空路径", d.empty === false, String(d.empty));
+    check("#6", "拒绝不存在的路径", d.nonexistent === false, String(d.nonexistent));
+  }
+
   if (!JSON_OUT) console.log("\n=== #7 识别调优 ===\n");
   {
     const d = await main.ev(`(async () => {
@@ -274,11 +292,14 @@ try {
       [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '诊断')?.click();
       await new Promise(r => setTimeout(r, 2000));
       [...document.querySelectorAll('.settings__tab')].find(t => t.textContent === '硬件')?.click();
-      await new Promise(r => setTimeout(r, 6000));
-      return {
-        kv: [...document.querySelectorAll('.kv')].map(k => k.textContent),
-      };
-    })()`);
+      // 轮询而不是固定等待：硬件探测要跑 PowerShell 查 WMI，耗时随机器负载波动
+      // （实测 3~15 秒）。写死 6 秒会随机假失败。
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline && document.querySelectorAll('.kv').length === 0) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      return { kv: [...document.querySelectorAll('.kv')].map(k => k.textContent) };
+    })()`, 45000);
     check("#11", "硬件画像已渲染", d.kv.length > 0, `${d.kv.length} 条`);
     const joined = d.kv.join(" ");
     check("#11", "含 CPU 信息", joined.includes("CPU"));
