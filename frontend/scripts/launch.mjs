@@ -204,11 +204,21 @@ function killRunning() {
 
 function resolveVoxSubRoot() {
   const fromEnv = process.env.VOXSUB_ROOT;
-  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  if (fromEnv && existsSync(join(fromEnv, "voxsub", "__init__.py"))) return fromEnv;
 
-  // 默认找仓库同级目录 —— 本机布局是 app_dve/VoxSub
+  // Electron 前端已并入 VoxSub 仓库，仓库根就是 frontend 的上一级。
+  // 逐级向上找含 voxsub/__init__.py 的目录，不写死层级。
+  let probe = ROOT;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (existsSync(join(probe, "voxsub", "__init__.py"))) return probe;
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+
+  // 兜底：同级目录（前端尚未并入仓库时的旧布局）
   const sibling = join(ROOT, "..", "VoxSub");
-  if (existsSync(sibling)) return sibling;
+  if (existsSync(join(sibling, "voxsub", "__init__.py"))) return sibling;
 
   return "";
 }

@@ -25,14 +25,38 @@ from typing import Any, Callable
 
 # ---- 接入现有 voxsub 包 ----------------------------------------------------
 def _install_backend_path() -> str:
-    """约定：voxsub 包一行不改，通过 VOXSUB_ROOT 指向其仓库根目录。"""
-    root = os.environ.get("VOXSUB_ROOT")
-    if not root:
-        # 开发期布局：与本项目同级的 VoxSub
-        root = str(Path(__file__).resolve().parents[2] / "VoxSub")
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    return root
+    """定位并注入 voxsub 包的导入路径。
+
+    约定：voxsub 包一行不改，只把它的仓库根目录加进 sys.path。
+
+    布局（Electron 前端已并入 VoxSub 仓库）：
+        <repo>/frontend/backend/ipc_server.py   ← 本文件
+        <repo>/voxsub/__init__.py               ← 要找的包
+        <repo>/.venv/                           ← Python 解释器
+
+    实现上不写死"上跳几层"：那对目录调整很脆弱（迁入仓库时就是
+    因为写死了 parents[2] / "VoxSub" 而失效）。改为从脚本位置逐级
+    向上找含 voxsub/__init__.py 的目录。
+    """
+    explicit = os.environ.get("VOXSUB_ROOT")
+    if explicit and (Path(explicit) / "voxsub" / "__init__.py").is_file():
+        if explicit not in sys.path:
+            sys.path.insert(0, explicit)
+        return explicit
+
+    here = Path(__file__).resolve()
+    for candidate in (here.parent, *here.parents):
+        if (candidate / "voxsub" / "__init__.py").is_file():
+            root = str(candidate)
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            return root
+
+    # 兜底：保留旧行为，让后续导入报出可读的错误而不是静默失败
+    fallback = str(here.parents[2]) if len(here.parents) > 2 else str(here.parent)
+    if fallback not in sys.path:
+        sys.path.insert(0, fallback)
+    return fallback
 
 
 VOXSUB_ROOT = _install_backend_path()

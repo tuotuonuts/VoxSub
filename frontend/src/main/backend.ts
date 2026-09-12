@@ -48,16 +48,45 @@ export class BackendBridge {
   }
 
   private resolvePython(): { command: string; args: string[] } {
-    // Python 解释器复用 VoxSub 现成的 venv（voxsub 包的依赖都在里面）；
-    // 但 IPC 服务是本项目自己的文件，位于 backend/ipc_server.py。
-    // 两者分开的原因：VoxSub 仓库必须保持零改动。
-    const voxsubRoot =
-      process.env["VOXSUB_ROOT"] ?? path.resolve(app.getAppPath(), "..", "VoxSub");
+    // Electron 前端已并入 VoxSub 仓库，布局是：
+    //   <repo>/frontend/          ← 本项目的 package.json 与 src/
+    //   <repo>/voxsub/            ← Python 包
+    //   <repo>/.venv/             ← 解释器与依赖
+    // 所以"仓库根"就是 frontend 的上一级。
+    //
+    // 不写死相对层级：逐级向上找同时含 voxsub/ 与 .venv/ 的目录，
+    // 这样仓库再次调整目录结构时不会静默失效。
+    const explicit = process.env["VOXSUB_ROOT"];
+    const appPath = app.getAppPath();
+
+    const looksLikeRepoRoot = (dir: string): boolean =>
+      fs.existsSync(path.join(dir, "voxsub", "__init__.py")) ||
+      fs.existsSync(path.join(dir, ".venv", "Scripts", "python.exe"));
+
+    let voxsubRoot = "";
+    if (explicit && looksLikeRepoRoot(explicit)) {
+      voxsubRoot = explicit;
+    } else {
+      let probe = appPath;
+      for (let depth = 0; depth < 4; depth += 1) {
+        if (looksLikeRepoRoot(probe)) {
+          voxsubRoot = probe;
+          break;
+        }
+        const parent = path.dirname(probe);
+        if (parent === probe) break;
+        probe = parent;
+      }
+    }
+    if (!voxsubRoot) {
+      voxsubRoot = path.resolve(appPath, "..");
+    }
+
     const python = path.join(voxsubRoot, ".venv", "Scripts", "python.exe");
 
     // 开发期：源码目录；打包后：extraResources 里的 backend/
     const candidates = [
-      path.join(app.getAppPath(), "backend", "ipc_server.py"),
+      path.join(appPath, "backend", "ipc_server.py"),
       path.join(process.resourcesPath ?? "", "backend", "ipc_server.py"),
     ];
     const entry = candidates.find((candidate) => fs.existsSync(candidate));
@@ -68,7 +97,9 @@ export class BackendBridge {
       );
     }
     if (!fs.existsSync(python)) {
-      throw new Error(`找不到 Python 解释器：${python}（可用 VOXSUB_ROOT 指定 VoxSub 目录）`);
+      throw new Error(
+        `找不到 Python 解释器：${python}（仓库根解析为 ${voxsubRoot}；可用 VOXSUB_ROOT 指定）`,
+      );
     }
     return { command: python, args: [entry] };
   }
