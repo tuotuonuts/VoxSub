@@ -42,7 +42,8 @@
     "test:recorder": "node tools/test-recorder-controls.mjs",
     "test:launchers": "node tools/test-launchers.mjs",
     "test:launcher-cleanup": "node tools/test-launcher-cleanup.mjs",
-    "test:launcher-e2e": "node tools/test-launcher-cleanup-e2e.mjs"
+    "test:launcher-e2e": "node tools/test-launcher-cleanup-e2e.mjs",
+    "test:overlay-display": "node tools/test-overlay-display-mode.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

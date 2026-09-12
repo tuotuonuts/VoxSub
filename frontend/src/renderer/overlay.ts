@@ -32,6 +32,8 @@ let displayMode: DisplayMode = "bilingual";
 /** 已定稿句子的回溯栈；index 指向当前查看的位置。 */
 const history: HistoryItem[] = [];
 let historyIndex = -1;
+/** 历史区上次渲染的内容签名。没变就跳过 DOM 重建（见 renderHistory）。 */
+let historySignature = "";
 /** 当前草稿（未定稿）内容，滚动历史时暂存，回到最新时恢复。 */
 let draft: HistoryItem = { src: "", dst: "" };
 
@@ -96,6 +98,19 @@ const MODE_LABEL: Record<DisplayMode, string> = {
   bilingual: "双语",
 };
 
+/**
+ * 应用显示模式的**渲染**：按钮文案、原文/译文显隐、菜单选中态。
+ *
+ * 这里刻意不发 IPC 通知主进程 —— 那是 setDisplayMode（用户动作）的职责。
+ * 曾经把通知写在这里，形成了 renderer → main → renderer 的无限往返：
+ *
+ *   用户点菜单 → setDisplayMode → applyDisplayMode → IPC 通知主进程
+ *     → 主进程原样回传 overlay:display-mode
+ *       → onDisplayModeChanged 处理器 → applyDisplayMode → 再发 IPC → …
+ *
+ * 实测后果：切换一次显示模式，3 秒内 DOM 重建 181,252 次（约 6 万次/秒）
+ * 且持续增长，用户看到的就是浮窗不停闪烁抽动。
+ */
 function applyDisplayMode(): void {
   if (displayBtn) displayBtn.textContent = MODE_LABEL[displayMode];
   if (srcEl) srcEl.hidden = displayMode === "translation";
@@ -105,29 +120,49 @@ function applyDisplayMode(): void {
   displayMenu?.querySelectorAll<HTMLElement>(".menu__item").forEach((item) => {
     item.classList.toggle("is-active", item.dataset["mode"] === displayMode);
   });
-  void window.voxsub?.overlay.setDisplayMode(displayMode);
 }
 
-/** 把历史项渲染成小字（在光标回到旧条目时才显示）。 */
+/**
+ * 渲染历史区（仅在回溯时才有内容）。
+ *
+ * 内容签名没变就不碰 DOM。paint() 在每句草稿与定稿时都会跑，而非回溯状态下
+ * 历史区永远是空的 —— 无条件 replaceChildren 等于每次字幕更新都让浮窗重排
+ * 一次，是"抽动"的来源之一。
+ */
 function renderHistory(): void {
   if (!historyEl) return;
 
   const browsing = historyIndex >= 0 && historyIndex < history.length - 1;
   if (historyLiveBtn) historyLiveBtn.hidden = !browsing;
-  historyEl.replaceChildren();
-
-  if (!browsing) return;
 
   // 只显示当前查看条目之前的若干条，避免浮窗被撑爆
-  const from = Math.max(0, historyIndex - 4);
-  for (let i = from; i < historyIndex; i += 1) {
-    const item = history[i];
-    if (!item) continue;
+  const rows: string[] = [];
+  if (browsing) {
+    const from = Math.max(0, historyIndex - 4);
+    for (let i = from; i < historyIndex; i += 1) {
+      const item = history[i];
+      if (!item) continue;
+      rows.push(displayMode === "translation" ? item.dst : item.src);
+    }
+  }
+
+  // \u0000 作分隔符：正文里不会出现，避免 ["a","b"] 与 ["a\u0000b"] 撞签名
+  const signature = rows.join("\u0000");
+  if (signature === historySignature) return;
+  historySignature = signature;
+
+  historyEl.replaceChildren();
+  for (const text of rows) {
     const row = document.createElement("p");
     row.className = "history__row";
-    row.textContent = displayMode === "translation" ? item.dst : item.src;
+    row.textContent = text;
     historyEl.append(row);
   }
+}
+
+/** 只在文字真的变了才写 DOM —— 同值赋值也会产生一次变更记录与重排。 */
+function setText(el: HTMLElement | null, value: string): void {
+  if (el && el.textContent !== value) el.textContent = value;
 }
 
 /** 当前应显示的正文：查看历史时显示历史项，否则显示最新草稿。 */
@@ -141,8 +176,8 @@ function currentView(): HistoryItem {
 
 function paint(): void {
   const view = currentView();
-  if (srcEl) srcEl.textContent = view.src || "等待识别…";
-  if (dstEl) dstEl.textContent = view.dst;
+  setText(srcEl, view.src || "等待识别…");
+  setText(dstEl, view.dst);
   // 回溯状态加类名：CSS 据此把当前句压暗，与"正在看历史"一致
   document.body.classList.toggle("is-browsing", isBrowsing());
   renderHistory();
@@ -205,11 +240,61 @@ function setLineGap(next: number): void {
   applyVisuals();
 }
 
+const MODES: readonly DisplayMode[] = ["source", "translation", "bilingual"];
+
+function isDisplayMode(value: unknown): value is DisplayMode {
+  return typeof value === "string" && (MODES as readonly string[]).includes(value);
+}
+
+/**
+ * 从后端配置恢复显示模式。
+ *
+ * Qt 版把这个选择存在 config 的 overlay_display_mode 里
+ * （subtitle_overlay.py:152 读、:536 写），重启后沿用；Electron 版原先既没读
+ * 也没写，用户每次启动都要重新选一遍。
+ */
+async function restoreDisplayMode(): Promise<void> {
+  try {
+    const result = await window.voxsub?.backend.command("get_config", null);
+    const saved = (result?.data as Record<string, unknown> | undefined)?.["overlay_display_mode"];
+    if (!isDisplayMode(saved) || saved === displayMode) return;
+    displayMode = saved;
+    applyDisplayMode();
+    paint();
+  } catch {
+    // 读不到就保持默认值，不影响浮窗工作
+  }
+}
+
+/** 把显示模式写回配置，下次启动沿用。 */
+async function persistDisplayMode(mode: DisplayMode): Promise<void> {
+  try {
+    await window.voxsub?.backend.command("set_config", {
+      updates: { overlay_display_mode: mode },
+    });
+  } catch {
+    // 写失败不打断用户操作：本次切换照常生效，只是下次启动回到默认
+  }
+}
+
+/**
+ * 用户主动切换显示模式（点菜单项）。
+ *
+ * 三件事各归其位：
+ *   · 渲染 —— applyDisplayMode()
+ *   · 持久化 —— persistDisplayMode()，写 config（与 Qt 版同一个键）
+ *   · 通知主进程 —— 保持主进程侧的状态同步
+ *
+ * 通知为什么必须放在这里、而不是 applyDisplayMode 里：主进程收到通知后会把
+ * 模式回传给浮窗，若渲染函数也发通知就会形成无限往返 —— 详见 applyDisplayMode。
+ */
 function setDisplayMode(mode: DisplayMode): void {
   displayMode = mode;
   applyDisplayMode();
   paint();
   if (displayMenu) displayMenu.hidden = true;
+  void persistDisplayMode(mode);
+  void window.voxsub?.overlay.setDisplayMode(mode);
 }
 
 /* -------------------------------------------------------------- 事件 */
@@ -333,7 +418,12 @@ function wireMainProcess(): void {
   });
 
   window.voxsub?.overlay.onDisplayModeChanged((value) => {
-    displayMode = value as DisplayMode;
+    const next = value as DisplayMode;
+    // 主进程回传的模式常常就是我们刚发出去的那个（它在 IPC 处理里原样广播）。
+    // 值没变就不重绘：paint() 会重建历史区 DOM，无谓的重排正是"闪烁抽动"的来源。
+    // 这道去重是第二层保险 —— 第一层是 applyDisplayMode 不再发通知。
+    if (next === displayMode) return;
+    displayMode = next;
     applyDisplayMode();
     paint();
   });
@@ -379,6 +469,10 @@ function boot(): void {
   wireControls();
   wireMainProcess();
   wireBackend();
+
+  // 恢复上次选的显示模式。异步做：读配置要一次 IPC 往返，不该卡住浮窗首帧
+  // （浮窗是要长期压在别的应用上的，晚出现几百毫秒很显眼）。
+  void restoreDisplayMode();
 
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTextColors);
 
