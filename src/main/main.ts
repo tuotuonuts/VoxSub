@@ -92,6 +92,12 @@ function createMainWindow(): BrowserWindow {
   void win.loadFile(path.join(RENDERER_DIR, "index.html"));
   win.once("ready-to-show", () => win.show());
 
+  // 开发模式：由启动器通过环境变量开启 DevTools。
+  // 在 ready-to-show 之后开，否则拿到的是空窗口。
+  if (process.env["VOXSUB_DEVTOOLS"] === "1") {
+    win.webContents.openDevTools({ mode: "detach" });
+  }
+
   // 有后台长任务时拦一次关闭，避免把模型库留在半路
   win.on("close", (event) => {
     if (busyReason) {

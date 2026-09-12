@@ -54,6 +54,31 @@ npm start          # 或 ./node_modules/.bin/electron .
 VOXSUB_ROOT="D:/OneDrive/app_dve/VoxSub" ./node_modules/.bin/electron .
 ```
 
+## 一键启动（开发用，免打包）
+
+双击项目根目录的 **启动Electron版.bat**，或在终端跑：
+
+```bash
+npm run launch          # 增量构建 + 启动
+npm run launch:clean    # 强制全量重建
+npm run launch:dev      # 启动并打开 DevTools
+npm run launch:debug    # 启动并开远程调试端口 9222（冒烟测试用）
+```
+
+脚本会自动处理四件容易忘的事：
+
+1. **补齐二进制** —— npm 在本机拦截 postinstall，electron/esbuild 的 exe 不会被下载；
+   脚本检测缺失就自动补，不用再手动跑 install.js
+2. **增量构建** —— 比对源码与 dist 的修改时间，没改就不重建（省掉每次十几秒）
+3. **定位后端** —— 自动找仓库同级的 VoxSub 并设 VOXSUB_ROOT，同时清掉
+   PYTHONPATH/PYTHONHOME（不清会 import 到错误的包）
+4. **清理旧实例** —— 先停掉已在运行的 Electron，避免开出第二个窗口、抢锁文件
+
+其他参数：`--no-build` 跳过构建，`--keep` 不动已在运行的实例。
+
+> 为什么 .bat 里全是英文：它会被从资源管理器双击，那时控制台代码页是 CP936，
+> UTF-8 中文会显示成乱码甚至破坏批处理解析。中文只在应用界面里。
+
 ## 校验（交付前必跑）
 
 ```bash

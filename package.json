@@ -24,7 +24,11 @@
     "verify": "npm run check && npm run probe:backend && npm run test:ocr && npm run test:migration",
     "test:migration": "python tools/test-migration.py",
     "i18n:migration": "python tools/i18n-migration.py",
-    "check:uninstaller": "python tools/check-uninstaller-risk.py"
+    "check:uninstaller": "python tools/check-uninstaller-risk.py",
+    "launch": "node scripts/launch.mjs",
+    "launch:clean": "node scripts/launch.mjs --clean",
+    "launch:dev": "node scripts/launch.mjs --dev",
+    "launch:debug": "node scripts/launch.mjs --debug"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
