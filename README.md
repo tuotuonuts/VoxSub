@@ -207,8 +207,25 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ## 目录结构
 
 ```
-voxsub/     主包（模块见 DESIGN.md）
+voxsub/     Python 核心（识别 / 翻译 / TTS / OCR / 硬件探测 / 流水线）
+frontend/   Electron 前端（界面、IPC 适配层、开发工具）
 tests/      pytest 测试
 scripts/    构建/工具脚本
 models/     运行时模型缓存（gitignore）
 ```
+
+### 前端技术栈
+
+界面是 **Electron + TypeScript**，Python 核心通过 stdin/stdout 上的 JSON Lines
+协议被驱动（`frontend/backend/ipc_server.py`）。核心层不感知界面存在 ——
+`tests/test_architecture.py` 强制这条边界。
+
+开发启动（免打包）：
+
+```bash
+cd frontend
+npm run launch          # 增量构建 + 启动
+npm run launch:silent   # 静默模式：窗口不显示，供自动化验证
+```
+
+Qt 版（PySide6）前端已冻结在 `qt-legacy` 分支，保留完整源码与提交历史。

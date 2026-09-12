@@ -11,13 +11,14 @@ Electron 前端已完整实现现有功能并跑通端到端，**`VoxSub` 仓库
 
 | 项 | 值 |
 |---|---|
-| 项目目录 | `D:\OneDrive\app_dve\voxsub-electron`（独立 git 仓库） |
-| 后端源码 | `D:\OneDrive\app_dve\VoxSub`（branch `main`，**零改动**，`git status` 干净） |
-| Python 解释器 | `D:\OneDrive\app_dve\VoxSub\.venv\Scripts\python.exe`（3.12.4） |
+| 项目目录 | `<repo>/frontend`（Electron 前端） |
+| 仓库根 | `D:\OneDrive\app_dve\VoxSub`（分支 `main`；Qt 版在 `qt-legacy`） |
+| Python 核心 | `<repo>/voxsub`（与前端同仓库，`main` 上已无 Qt） |
+| Python 解释器 | `<repo>\.venv\Scripts\python.exe`（3.12.4） |
 | Node / npm | v22.23.2 / 12.0.2 |
 | Electron | 44.3.0（从 34.2.0 升级，清掉 34 条 CVE） |
 | 模型根目录 | `D:\VoxSub\Models`（另有旧位置 `%LOCALAPPDATA%\VoxSub\models`，多根查找） |
-| 启动方式 | `VOXSUB_ROOT="D:/OneDrive/app_dve/VoxSub" ./node_modules/.bin/electron .` |
+| 启动方式 | `npm run launch`（自动定位仓库根；或双击 启动Electron版.bat） |
 
 ## 功能对照（Qt 版 → Electron 版）
 
@@ -135,5 +136,5 @@ npm install
 node node_modules/electron/install.js   # ← npm 拦截了 postinstall，必须补
 npm run check                            # 类型 + 令牌契约
 npm run build
-VOXSUB_ROOT="<VoxSub 路径>" ./node_modules/.bin/electron .
+./node_modules/.bin/electron .
 ```

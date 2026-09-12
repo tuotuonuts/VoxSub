@@ -41,3 +41,15 @@ scripts/qq_notify.py
 *.log
 .DS_Store
 Thumbs.db
+
+# 并行开发环境（1.1GB，绝不应入库）
+.venv-codex/
+.venv.invalid-*/
+
+# 前端依赖与产物
+frontend/node_modules/
+frontend/dist/
+frontend/logs/
+
+# 启动器日志
+logs/
