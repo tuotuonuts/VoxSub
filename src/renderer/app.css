@@ -883,6 +883,71 @@ body::before {
   padding: 44px 24px 24px;
 }
 
+/* ------------------------------------------------- 二级页面外壳（返回栏） */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 100%;
+}
+
+.page__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+  /* 滚动时返回按钮保持可见：页面很长时不该为了返回而滚回顶部 */
+  position: sticky;
+  top: 0;
+  background: var(--ground);
+  z-index: 2;
+}
+
+.page__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 12px 0 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink2);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: border-color 120ms ease-out, color 120ms ease-out;
+}
+
+.page__back:hover {
+  border-color: var(--ink2);
+  color: var(--ink);
+}
+
+.page__back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.page__back-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.page__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* 窄窗藏掉「返回」二字，只留箭头，避免挤压标题 */
+@media (max-width: 720px) {
+  .page__back-text {
+    display: none;
+  }
+}
+
 .settings {
   display: grid;
   grid-template-columns: minmax(150px, 178px) minmax(0, 1fr);

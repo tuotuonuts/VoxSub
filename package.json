@@ -20,6 +20,7 @@
     "verify:features": "python tools/compare-qt-features.py",
     "test:ocr": "python tools/test-ocr-e2e.py",
     "i18n:add": "python tools/add-i18n-entries.py",
+    "i18n:page-back": "python tools/i18n-page-back.py",
     "verify": "npm run check && npm run probe:backend && npm run test:ocr"
   },
   "devDependencies": {

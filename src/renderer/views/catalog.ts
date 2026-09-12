@@ -251,16 +251,15 @@ export function refreshDownloads(): void {
 export function buildModelCatalog(): HTMLElement {
   const page = h("div", { class: "catalog-page" });
 
+  // 标题由二级页面外壳统一渲染（返回栏里已有「模型」），
+  // 这里只留说明文字，避免同一个页名出现两次。
   const head = h("header", { class: "catalog-page__head" });
-  const titleBox = h("div", { class: "catalog-page__title-box" });
-  titleBox.append(
-    h("h2", { class: "catalog-page__title", text: tr("模型目录") }),
+  head.append(
     h("p", {
       class: "catalog-page__sub",
       text: tr("识别、翻译、语音模型按用途分组。下载后即在本机运行，不上传你的音频。"),
     }),
   );
-  head.append(titleBox);
   page.append(head);
 
   // 工具行：计数 · 空间 · 筛选 · 刷新

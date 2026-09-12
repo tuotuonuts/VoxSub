@@ -113,7 +113,8 @@ console.log("\n=== 主窗：模型目录页 ===");
     btn?.click();
     await new Promise(r => setTimeout(r, 2200));
     return {
-      title: document.querySelector('.catalog-page__title')?.textContent ?? null,
+      title: document.querySelector('.page__title')?.textContent ?? null,
+      sub: document.querySelector('.catalog-page__sub')?.textContent ?? null,
       count: document.querySelector('.catalog__count')?.textContent ?? null,
       disk: document.querySelector('.catalog__disk')?.textContent ?? null,
       cells: document.querySelectorAll('.cell').length,
@@ -121,7 +122,8 @@ console.log("\n=== 主窗：模型目录页 ===");
       filters: [...document.querySelectorAll('.filter-chip')].map(c => c.textContent),
     };
   })()`);
-  check("目录页有标题", info.title === "模型目录", String(info.title));
+  check("目录页在返回栏里标为「模型」", info.title === "模型", String(info.title));
+  check("目录页有说明文字", Boolean(info.sub), String(info.sub).slice(0, 24) + "…");
   check("模型格已渲染", info.cells === 18, `${info.cells} 格`);
   check("已安装标记生效", info.installed > 0, `${info.installed} 个`);
   check("空间提示已显示", Boolean(info.disk?.includes("GB")), String(info.disk));
@@ -252,6 +254,58 @@ console.log("\n=== 主屏录音与导出 ===");
   check("录音说明文案", Boolean(info.recordHint), String(info.recordHint));
   check("录音开关存在", info.recordSwitch, "");
   check("导出会话入口", info.exportBtn.includes("导出会话"), info.exportBtn.join("/"));
+}
+
+console.log("\n=== 二级页面返回栏 ===");
+{
+  const pages = ["模型", "设置", "诊断"];
+  const results = await ev(`(async () => {
+    const out = [];
+    for (const name of ${JSON.stringify(pages)}) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await new Promise(r => setTimeout(r, 400));
+      const btn = [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === name);
+      btn?.click();
+      await new Promise(r => setTimeout(r, 900));
+      const back = document.querySelector('.page__back');
+      out.push({
+        name,
+        hasBar: Boolean(document.querySelector('.page__bar')),
+        hasBack: Boolean(back),
+        backText: back?.textContent ?? null,
+        title: document.querySelector('.page__title')?.textContent ?? null,
+      });
+    }
+    return out;
+  })()`, 20000);
+
+  for (const item of results) {
+    check(`${item.name} 页有返回栏`, item.hasBar && item.hasBack, `${item.backText} | 标题 ${item.title}`);
+  }
+
+  // 点返回按钮真的能回到主屏
+  const backWorks = await ev(`(async () => {
+    document.querySelector('.page__back')?.click();
+    await new Promise(r => setTimeout(r, 700));
+    const layer = document.querySelector('.page-layer');
+    return {
+      hidden: layer?.hidden ?? null,
+      mainVisible: Boolean(document.querySelector('.workspace')),
+    };
+  })()`);
+  check("点返回回到主屏", backWorks.hidden === true && backWorks.mainVisible, JSON.stringify(backWorks));
+
+  // Esc 也能返回
+  const escWorks = await ev(`(async () => {
+    const btn = [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '设置');
+    btn?.click();
+    await new Promise(r => setTimeout(r, 800));
+    const opened = !document.querySelector('.page-layer')?.hidden;
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise(r => setTimeout(r, 600));
+    return { opened, closedByEsc: document.querySelector('.page-layer')?.hidden ?? null };
+  })()`);
+  check("Esc 也能返回", escWorks.opened === true && escWorks.closedByEsc === true, JSON.stringify(escWorks));
 }
 
 console.log("\n=== 浮窗 ===");

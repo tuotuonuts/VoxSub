@@ -10,6 +10,7 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "返回（Esc）": "Back (Esc)",
   "结束并保存": "Stop & save",
   "像手机录音：开始 → 暂停 / 继续 → 结束并保存": "Like a phone recorder: start, then pause/resume, then stop & save",
   "仅生成字幕，不保存麦克风音频": "Captions only; microphone audio is not saved",

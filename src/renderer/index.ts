@@ -63,6 +63,40 @@ function applyTheme(theme: ThemeName): void {
 
 /* ------------------------------------------------------------- 二级页面 */
 
+/** 页面标题：返回按钮与标题栏需要知道当前在哪一页。 */
+const PAGE_TITLE: Record<PageName, string> = {
+  catalog: "模型",
+  settings: "设置",
+  diagnostics: "诊断",
+};
+
+/**
+ * 二级页面外壳：统一的返回栏 + 内容区。
+ *
+ * 之前每页直接把自己塞进 pageLayer，返回只能按 Esc —— 不知道这个快捷键的
+ * 用户会被困在页面里。返回按钮放在外壳上，三页长得一致、行为一致。
+ */
+function wrapPage(page: PageName, content: HTMLElement): HTMLElement {
+  const frame = h("div", { class: "page" });
+
+  const bar = h("header", { class: "page__bar" });
+  const back = h("button", {
+    class: "page__back",
+    type: "button",
+    title: tr("返回（Esc）"),
+    "aria-label": tr("返回"),
+  });
+  back.append(
+    h("span", { class: "page__back-icon", text: "←" }),
+    h("span", { class: "page__back-text", text: tr("返回") }),
+  );
+  on(back, "click", () => closePage());
+
+  bar.append(back, h("span", { class: "page__title", text: tr(PAGE_TITLE[page]) }));
+  frame.append(bar, content);
+  return frame;
+}
+
 function openPage(page: PageName): void {
   if (!pageLayer) return;
   currentPage = page;
@@ -72,7 +106,9 @@ function openPage(page: PageName): void {
     diagnostics: buildDiagnostics,
     catalog: buildModelCatalog,
   };
-  pageLayer.replaceChildren(builders[page]());
+  pageLayer.replaceChildren(wrapPage(page, builders[page]()));
+  // 打开后焦点给返回按钮：键盘用户一按 Enter 就能回去
+  pageLayer.querySelector<HTMLButtonElement>(".page__back")?.focus();
 }
 
 function closePage(): void {
@@ -274,9 +310,30 @@ function boot(): void {
     }
   });
 
-  // Esc 关闭二级页面
+  // Esc 关闭二级页面。
+  //
+  // 例外：焦点在输入控件里时先让控件处理（比如数字输入框按 Esc 撤销编辑），
+  // 否则用户想取消一个输入却把整页关掉，得重新进来。
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && currentPage !== "none") closePage();
+    if (event.key !== "Escape" || currentPage === "none") return;
+
+    const active = document.activeElement as HTMLElement | null;
+    const tag = active?.tagName?.toLowerCase();
+    const isEditing =
+      tag === "input" || tag === "textarea" || tag === "select" || active?.isContentEditable;
+    if (isEditing) {
+      active?.blur();
+      return;
+    }
+
+    // 展开的浮层先收一层（例如显示模式菜单），再关页面
+    const openPopup = document.querySelector(".menu:not([hidden])");
+    if (openPopup) {
+      openPopup.setAttribute("hidden", "");
+      return;
+    }
+
+    closePage();
   });
 
   // 主进程可请求打开设置（例如从托盘）
