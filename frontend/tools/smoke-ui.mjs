@@ -75,6 +75,19 @@ if (!mainPage) {
 
 const ev = (expr, timeout) => evaluate(mainPage.webSocketDebuggerUrl, expr, timeout);
 
+// 复位到已知状态：关掉二级页面、回到 A 模式。
+// 冒烟测试假设从主屏开始，但上一次人工测试/自动化可能把应用留在 OCR（D 模式）
+// 或某个二级页面上，那样断言会以"界面元素找不到"的形式假失败 —— 与代码无关，
+// 却要花时间排查。这里先归位。
+await ev(`(async () => {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  await new Promise(r => setTimeout(r, 300));
+  document.querySelector('.page__back')?.click();
+  await new Promise(r => setTimeout(r, 300));
+  document.querySelector('.mode-cell[data-mode="a"]')?.click();
+  await new Promise(r => setTimeout(r, 800));
+})()`);
+
 console.log("\n=== 主窗：主屏布局 ===");
 {
   const info = await ev(`(() => {

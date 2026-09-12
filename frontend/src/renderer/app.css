@@ -1233,7 +1233,9 @@ body::before {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 0.9231rem 1.0769rem;
+  /* 原文/译文两栏的内边距：与卡片正文取同一档（1.3846rem），
+     之前 1.0769rem 时栏内的文字几乎贴到分栏线上。 */
+  padding: 1.2308rem 1.3846rem;
   border-right: 1px solid var(--rule);
 }
 
@@ -1374,7 +1376,8 @@ body::before {
 .ocr-page {
   display: flex;
   flex-direction: column;
-  gap: 0.9231rem;
+  /* 与设置页卡片同一档间距，避免两处松紧不一致 */
+  gap: 1.2308rem;
   min-height: 0;
   flex: 1;
 }
