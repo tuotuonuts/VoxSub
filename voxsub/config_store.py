@@ -60,11 +60,14 @@ _DEFAULTS: dict[str, Any] = {
     "translate_tier": "fast",   # fast | quality | cloud
     "stt_provider": "local",    # local | cloud
     "asr_model_id": "asr-zipformer-bilingual-fast",
-    "asr_tuning_profile": "auto",
-    "asr_vad_threshold": 0.35,
-    "asr_silence_ms": 650,
-    "asr_max_utterance_ms": 12000,
-    "asr_beam_paths": 4,
+    # 默认档 = 智能上下文（context）。它开启上下文纠错，是当前主推的识别方式。
+    # 下面的四个数值必须与 pipeline._effective_asr_tuning 里 context 预设一致，
+    # 否则新装用户看到的"默认值"和实际生效值会对不上。
+    "asr_tuning_profile": "context",
+    "asr_vad_threshold": 0.32,
+    "asr_silence_ms": 500,
+    "asr_max_utterance_ms": 18000,
+    "asr_beam_paths": 6,
     "asr_max_new_tokens": 512,
     "asr_hotwords": "",
     "asr_context_hold_ms": 1800,

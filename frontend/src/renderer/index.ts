@@ -17,7 +17,7 @@ import { CMD } from "./protocol";
 import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
 import { buildModelCatalog, refreshDownloads } from "./views/catalog";
-import { buildSettings } from "./views/settings";
+import { buildSettings, loadConfig } from "./views/settings";
 import { buildDiagnostics, detachDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
 import { buildMigrationWizard, shouldOfferMigration } from "./views/migration";
@@ -102,6 +102,11 @@ function openPage(page: PageName): void {
   if (!pageLayer) return;
   currentPage = page;
   pageLayer.hidden = false;
+
+  // 这里**同步**渲染，不能等配置。
+  // 试过先 await loadConfig() 再渲染：点"设置"后会空白约 1 秒才出现，
+  // 冒烟测试与用户都判定为"点了没反应"。配置改为在 boot() 阶段预取，
+  // 页面内的异步刷新（buildSettings 里）负责补上最新值。
   const builders: Record<PageName, () => HTMLElement> = {
     settings: buildSettings,
     diagnostics: buildDiagnostics,
@@ -284,6 +289,11 @@ function boot(): void {
   // 晚一步启动会让首屏所有请求落空（见 store.ts 的"后端就绪门"）。
   connectBackend();
   render();
+
+  // 预取配置：设置页的控件（模型目录、模型下拉、调优默认值）全都依赖它。
+  // 这里异步拉取、不阻塞首屏；buildSettings 打开时若已就绪就直接用上，
+  // 未就绪则由它自己的刷新补上。
+  void loadConfig();
 
   // 首次启动：检测旧版数据风险，需要时弹出迁移向导。
   // 放在 render 之后异步执行 —— 检测要读注册表与遍历目录，不能阻塞首屏。

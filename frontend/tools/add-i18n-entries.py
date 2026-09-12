@@ -148,6 +148,26 @@ ENTRIES: dict[str, str] = {
     "暂无更新日志": "No release notes yet",
     "收起历史更新日志": "Hide older release notes",
     "展开历史更新日志（还有 {n} 版）": "Show older release notes ({n} more)",
+    # 本地/云端分离（翻译分页）
+    "识别模型": "Speech model",
+    "翻译模型": "Translation model",
+    "只列出已下载到本机的模型": "Only models already downloaded to this machine are listed",
+    "还没有下载本地识别模型。请到「模型」页下载后回到这里选择。":
+        "No local speech model downloaded yet. Download one on the Models page, "
+        "then come back and select it here.",
+    "还没有下载本地翻译模型。请到「模型」页下载后回到这里选择。":
+        "No local translation model downloaded yet. Download one on the Models "
+        "page, then come back and select it here.",
+    # 应用声音隔离（设备分页）
+    "应用声音隔离": "Per-app audio isolation",
+    "不隔离（捕获全部系统声音）": "No isolation (capture all system audio)",
+    "没有检测到正在发声的应用窗口": "No application window detected",
+    "先打开要捕获声音的应用，再回到这里刷新":
+        "Open the app you want to capture, then come back and refresh",
+    "只在 B 模式下生效：选择后只捕获该应用的声音，其它声音不会被识别":
+        "Only applies in mode B: only the selected app's audio is captured, "
+        "everything else is ignored",
+    "刷新应用列表": "Refresh app list",
 }
 
 

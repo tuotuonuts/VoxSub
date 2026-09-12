@@ -116,6 +116,19 @@ export interface AudioDevice {
   kind: "mic" | "loopback";
 }
 
+/**
+ * 可捕获的可见窗口 —— B 模式「按应用隔离」的目标。
+ *
+ * pid 用来写入 capture_process_id，windowTitle 用来写入 capture_window_title
+ * （两个都存，是因为进程可能重启导致 pid 变化，标题可以帮用户认出来选的是谁）。
+ */
+export interface CaptureTarget {
+  pid: number;
+  processName: string;
+  windowTitle: string;
+  label: string;
+}
+
 export interface DeviceEntry {
   provider: string;
   name: string;

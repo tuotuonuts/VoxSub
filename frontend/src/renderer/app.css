@@ -71,8 +71,10 @@ body::before {
   display: flex;
   flex-direction: column;
   height: 100%;
-  /* 顶部 44px：让开窗口按钮（34px）+ 视觉留白 */
-  padding: 3.3846rem 1.8462rem 0;
+  /* 顶部 44px：让开窗口按钮（34px）+ 视觉留白。
+     底部必须留白：之前这里是 0，卡片和字幕直接贴到窗口下沿，
+     视觉上像被裁掉了半截。左右与底部取同一个值，四边才平衡。 */
+  padding: 3.3846rem 1.8462rem 1.8462rem;
   gap: 1.2308rem;
   overflow: hidden;
 }
@@ -1004,7 +1006,9 @@ body::before {
 .tab-page {
   display: flex;
   flex-direction: column;
-  gap: 1.0769rem;
+  /* 卡片之间留足呼吸感：之前 1.0769rem（≈14px）时上下两张卡片的标题
+     和正文几乎贴在一起，扫读时容易串行。 */
+  gap: 1.3846rem;
   min-width: 0;
 }
 
@@ -1028,14 +1032,18 @@ body::before {
 .card__body {
   display: flex;
   flex-direction: column;
-  gap: 0.9231rem;
-  padding: 1.0769rem;
+  /* 字段之间 1.2308rem（≈16px）：0.9231rem 时相邻字段的标签和上一个
+     控件的值挤在一起，分不清谁属于谁。内边距同步放宽到 1.3846rem。 */
+  gap: 1.2308rem;
+  padding: 1.3846rem;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 0.3077rem;
+  /* 标签与控件之间 0.4615rem（≈6px）：0.3077rem 时标签紧贴输入框，
+     在小字号下几乎连成一行。 */
+  gap: 0.4615rem;
   min-width: 0;
 }
 
@@ -1049,6 +1057,15 @@ body::before {
   font-size: 0.7692rem;
   color: var(--ink2);
   line-height: 1.45;
+}
+
+/* 需要用户采取行动的提示（例如"还没有下载本地模型"）。
+   用警示色是为了和普通说明区分开：普通 hint 只是补充信息，可以忽略；
+   这一条表示当前这一项不可用，用户必须去别处处理。 */
+.field__hint--warn {
+  color: var(--warn, #c98a2e);
+  border-left: 2px solid var(--warn, #c98a2e);
+  padding-left: 0.6154rem;
 }
 
 .readonly-value {

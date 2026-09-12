@@ -187,17 +187,65 @@ function build() {
 
 /* ---------------------------------------------------------------- 清理 */
 
-/** 杀掉已在运行的实例：否则会开出第二个窗口，模型与锁文件也会打架。 */
+/**
+ * 杀掉已在运行的实例。
+ *
+ * 为什么必须做：Electron 有单实例锁（app.requestSingleInstanceLock），
+ * 已有实例在跑时新实例会静默退出 —— 用户看到的是"双击没反应"，
+ * 极难自查。
+ *
+ * 过滤条件**不能用固定的目录名**：这个脚本原先写死 '*voxsub-electron*'，
+ * 那是迁移前的目录名。迁入 <repo>/frontend 之后该条件永远匹配不到，
+ * 旧实例杀不掉，新实例被锁挡住 —— 这就是"双击启动不了"的真实原因。
+ *
+ * 改为按"可执行文件路径包含本项目的 node_modules"来过滤：
+ * 无论项目放在哪个目录都能匹配到自己的实例，也不会误杀其它 Electron 应用。
+ */
 function killRunning() {
   if (args.has("--keep")) return;
+
+  // 用本项目 node_modules 的真实路径做标识，而不是写死目录名。
+  //
+  // 两处踩过的坑：
+  //   1. 原先写死 '*voxsub-electron*' —— 那是迁移前的目录名，迁入
+  //      <repo>/frontend 后永远匹配不到，旧实例杀不掉、新实例被单实例锁
+  //      挡住，表现是"双击没反应"。
+  //   2. 拼接 PowerShell 时不要用 $var++ 自增，也不要嵌套单引号 ——
+  //      经 cmd.exe 一层后容易解析失败（exit 255）。改用管道 + 计数。
+  const marker = join(ROOT, "node_modules");
+
+  // 用PowerShell 的 -EncodedCommand（Base64 / UTF-16LE）传脚本：
+  //
+  // 为什么不直接传字符串：`shell: true` 会把多行脚本按空格拆开、换行丢掉，
+  // PowerShell 于是把 `Where-Object` 当成独立命令 —— 报 "不是内部或外部命令"，
+  // exit 255。这个坑实测踩了三次，改用编码传参后彻底绕开，
+  // 也不必再跟 cmd.exe 的引号转义较劲。
+  const script = [
+    `$marker = "${marker}";`,
+    "$mine = @(Get-Process electron -ErrorAction SilentlyContinue |",
+    "  Where-Object { $_.Path -and $_.Path.StartsWith($marker, [StringComparison]::OrdinalIgnoreCase) });",
+    "foreach ($p in $mine) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }",
+    "$side = @(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue |",
+    "  Where-Object { $_.CommandLine -and $_.CommandLine.Contains('ipc_server') });",
+    "foreach ($p in $side) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }",
+    "Write-Output (\"stopped=\" + $mine.Count + \",\" + $side.Count)",
+  ].join("\n");
+
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = spawnSync(
     "powershell",
-    ["-NoProfile", "-Command",
-      "Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*voxsub-electron*' } | Stop-Process -Force"],
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
     // windowsHide: 不加的话每次都会在屏幕上闪一个黑框控制台窗口
-    { stdio: "pipe", shell: true, windowsHide: true },
+    { stdio: "pipe", windowsHide: true, encoding: "utf-8" },
   );
-  if (result.status === 0) ok("previous instances stopped (if any)");
+
+  const output = (result.stdout ?? "").trim();
+  if (result.status === 0) {
+    ok(`previous instances cleared (${output || "stopped=0,0"})`);
+  } else {
+    // 清理失败不该阻断启动：可能是权限或竞态，继续尝试启动
+    warn(`could not stop previous instances (exit ${result.status})`);
+  }
 }
 
 /* ---------------------------------------------------------------- 启动 */

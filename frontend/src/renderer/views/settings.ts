@@ -6,7 +6,7 @@
  */
 import { h, on } from "../dom";
 import { call, store } from "../store";
-import { CMD, type AudioDevice, type HardwareProfile } from "../protocol";
+import { CMD, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
 
@@ -15,6 +15,12 @@ type Config = Record<string, unknown>;
 let config: Config = {};
 let microphones: AudioDevice[] = [];
 let loopbacks: AudioDevice[] = [];
+/** 模型清单：设置页要按用途列出可选的本地模型（识别/翻译/朗读）。 */
+let models: ModelEntry[] = [];
+/** 可捕获的可见窗口（B 模式按应用隔离用）。 */
+let captureTargets: CaptureTarget[] = [];
+/** 配置是否已成功取回。用于决定设置页是否需要补一次重绘。 */
+let configReady = false;
 /** 调优草稿：只有点保存才写回，避免逐项写配置造成抖动。 */
 let tuningDraft: Record<string, unknown> = {};
 let tuningDirty = false;
@@ -22,6 +28,11 @@ let tuningDirty = false;
 export async function loadConfig(): Promise<void> {
   const result = await call<Config>(CMD.getConfig);
   config = result ?? {};
+
+  // 模型清单：识别/翻译分页要用它列出可选的本地模型。
+  // 与配置一起取，保证下拉里的"已安装模型"和真实情况一致。
+  const catalog = await call<{ models: ModelEntry[] }>(CMD.listModels, { models_root: null });
+  models = catalog?.models ?? [];
 
   // 更新日志与配置一起加载：设置页「关于」要用（后端默认只回最近一版）
   const notes = await call<{ notes: Array<{ version: string; title: string; body: string }> }>(
@@ -32,11 +43,11 @@ export async function loadConfig(): Promise<void> {
     store.patch({ releaseNotes: notes.notes.map((n) => ({ version: n.version, body: n.body })) });
   }
   tuningDraft = {
-    asr_tuning_profile: config["asr_tuning_profile"] ?? "auto",
-    asr_vad_threshold: config["asr_vad_threshold"] ?? 0.35,
-    asr_silence_ms: config["asr_silence_ms"] ?? 650,
-    asr_max_utterance_ms: config["asr_max_utterance_ms"] ?? 12000,
-    asr_beam_paths: config["asr_beam_paths"] ?? 4,
+    asr_tuning_profile: normalizeProfile(config["asr_tuning_profile"]),
+    asr_vad_threshold: config["asr_vad_threshold"] ?? 0.32,
+    asr_silence_ms: config["asr_silence_ms"] ?? 500,
+    asr_max_utterance_ms: config["asr_max_utterance_ms"] ?? 18000,
+    asr_beam_paths: config["asr_beam_paths"] ?? 6,
     asr_max_new_tokens: config["asr_max_new_tokens"] ?? 512,
     asr_hotwords: config["asr_hotwords"] ?? "",
     asr_context_hold_ms: config["asr_context_hold_ms"] ?? 1800,
@@ -45,6 +56,32 @@ export async function loadConfig(): Promise<void> {
     asr_filler_mode: config["asr_filler_mode"] ?? "light",
   };
   tuningDirty = false;
+  configReady = true;
+}
+
+/**
+ * 配置是否已就绪。设置页据此判断要不要补一次重绘：
+ * 未就绪时首屏用的是兜底值，取回后必须重绘；
+ * 已就绪时不再重绘 —— 那会把用户正在输入的内容清掉。
+ */
+export function isConfigReady(): boolean {
+  return configReady;
+}
+
+/**
+ * 档位归一化。
+ *
+ * 下拉只列五个档，但历史配置里可能存着 "auto"（旧默认）或前端此前写错的
+ * "accurate"。这两种值在下拉里没有对应项，select 会显示成空白，
+ * 用户会以为"配置丢了"。统一映射到语义最接近的档：
+ *   auto     → context（都是"自动帮你挑"的语义，且 context 是当前默认）
+ *   accurate → accuracy（后端只认 accuracy）
+ */
+function normalizeProfile(raw: unknown): string {
+  const value = String(raw ?? "").trim();
+  if (value === "" || value === "auto") return "context";
+  if (value === "accurate") return "accuracy";
+  return value;
 }
 
 async function saveConfig(updates: Config): Promise<void> {
@@ -137,41 +174,111 @@ function card(title: string, children: Array<HTMLElement | null>): HTMLElement {
 
 /* ------------------------------------------------------------ 各分页 */
 
+/** 按用途取**已安装**的本地模型（设置页下拉只列能真正跑起来的）。 */
+function installedLocalModels(task: string): ModelEntry[] {
+  return models.filter((m) => m.task === task && m.installed);
+}
+
+/** 本地模型下拉：没有可选模型时给出明确的下一步，而不是留一个空框。 */
+function localModelField(
+  label: string,
+  task: string,
+  currentId: string,
+  onPick: (id: string) => void,
+  emptyHint: string,
+): HTMLElement {
+  const available = installedLocalModels(task);
+  if (available.length === 0) {
+    return h("p", { class: "field__hint field__hint--warn", text: emptyHint });
+  }
+  const value = available.some((m) => m.id === currentId) ? currentId : available[0]!.id;
+  return field(
+    label,
+    select<string>(
+      value,
+      available.map((m) => [m.id, m.name] as const),
+      onPick,
+    ),
+    tr("只列出已下载到本机的模型"),
+  );
+}
+
 function translationTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
 
   const sttProvider = String(config["stt_provider"] ?? "local");
   const tier = String(config["translate_tier"] ?? "fast");
 
-  page.append(
-    card(tr("语音识别"), [
-      radioGroup<"local" | "cloud">(
-        sttProvider === "cloud" ? "cloud" : "local",
-        [["local", tr("本地识别")], ["cloud", tr("云端识别")]],
-        (v) => void saveConfig({ stt_provider: v }),
-      ),
-      field(tr("模型名"), textInput(String(config["stt_model"] ?? ""), (v) => void saveConfig({ stt_model: v })), "云端识别使用的模型"),
+  // 本地与云端是两套完全不同的配置：本地要挑模型文件，云端要填地址和密钥。
+  // 之前两组字段始终堆在一起 —— 选"本地识别"却只看到 API 密钥输入框，
+  // 既找不到本地模型，也分不清哪些项真的生效。现在只显示所选来源那一组。
+  const sttChildren: Array<HTMLElement | null> = [
+    radioGroup<"local" | "cloud">(
+      sttProvider === "cloud" ? "cloud" : "local",
+      [["local", tr("本地识别")], ["cloud", tr("云端识别")]],
+      (v) => {
+        void saveConfig({ stt_provider: v }).then(() => {
+          window.dispatchEvent(new Event("voxsub:settings"));
+        });
+      },
+    ),
+  ];
+
+  if (sttProvider === "cloud") {
+    sttChildren.push(
+      field(tr("模型名"), textInput(String(config["stt_model"] ?? ""), (v) => void saveConfig({ stt_model: v })), tr("云端识别使用的模型")),
       field(tr("API 地址"), textInput(String(config["stt_base_url"] ?? ""), (v) => void saveConfig({ stt_base_url: v }))),
       field(tr("API 密钥"), textInput(String(config["stt_api_key"] ?? ""), (v) => void saveConfig({ stt_api_key: v }), { type: "password" })),
-    ]),
-  );
-
-  page.append(
-    card(tr("翻译档位"), [
-      radioGroup<"fast" | "quality" | "cloud">(
-        tier as "fast" | "quality" | "cloud",
-        [["fast", tr("快档")], ["quality", tr("质量档")], ["cloud", tr("云端")]],
+    );
+  } else {
+    sttChildren.push(
+      localModelField(
+        tr("识别模型"),
+        "asr",
+        String(config["asr_model_id"] ?? ""),
         (v) => {
-          void saveConfig({ translate_tier: v });
+          void saveConfig({ asr_model_id: v }).then(() => call(CMD.setAsrModel, { model_id: v }));
+        },
+        tr("还没有下载本地识别模型。请到「模型」页下载后回到这里选择。"),
+      ),
+    );
+  }
+
+  page.append(card(tr("语音识别"), sttChildren));
+
+  const tierChildren: Array<HTMLElement | null> = [
+    radioGroup<"fast" | "quality" | "cloud">(
+      tier as "fast" | "quality" | "cloud",
+      [["fast", tr("快档")], ["quality", tr("质量档")], ["cloud", tr("云端")]],
+      (v) => {
+        void saveConfig({ translate_tier: v }).then(() => {
           const kind = v === "fast" ? "opus-fast" : v === "quality" ? "qwen-quality" : "cloud";
           void call(CMD.setTranslator, { kind, config: {} });
-        },
-      ),
+          window.dispatchEvent(new Event("voxsub:settings"));
+        });
+      },
+    ),
+  ];
+
+  if (tier === "cloud") {
+    tierChildren.push(
       field(tr("模型名"), textInput(String(config["translate_model"] ?? ""), (v) => void saveConfig({ translate_model: v }))),
       field(tr("API 地址"), textInput(String(config["translate_base_url"] ?? ""), (v) => void saveConfig({ translate_base_url: v }))),
       field(tr("API 密钥"), textInput(String(config["translate_api_key"] ?? ""), (v) => void saveConfig({ translate_api_key: v }), { type: "password" })),
-    ]),
-  );
+    );
+  } else {
+    tierChildren.push(
+      localModelField(
+        tr("翻译模型"),
+        "translate",
+        String(config["translate_model_id"] ?? ""),
+        (v) => void saveConfig({ translate_model_id: v }),
+        tr("还没有下载本地翻译模型。请到「模型」页下载后回到这里选择。"),
+      ),
+    );
+  }
+
+  page.append(card(tr("翻译档位"), tierChildren));
 
   return page;
 }
@@ -200,6 +307,39 @@ function devicesTab(): HTMLElement {
   const loopOptions: Array<readonly [string, string]> = [["", "默认设备"]];
   for (const loop of loopbacks) loopOptions.push([loop.id, loop.name]);
 
+  // 按应用隔离：这里必须能**挑**应用，只显示一行"未选择应用"等于没有这个功能。
+  // 列表来自后端 list_capture_targets（枚举当前有可见窗口的进程）。
+  const currentPid = String(config["capture_process_id"] ?? "");
+  const targetOptions: Array<readonly [string, string]> = [["", tr("不隔离（捕获全部系统声音）")]];
+  for (const target of captureTargets) {
+    targetOptions.push([String(target.pid), target.label || `${target.processName} — ${target.windowTitle}`]);
+  }
+
+  const captureField =
+    captureTargets.length === 0
+      ? field(
+          tr("应用声音隔离"),
+          h("span", { class: "readonly-value", text: tr("没有检测到正在发声的应用窗口") }),
+          tr("先打开要捕获声音的应用，再回到这里刷新"),
+        )
+      : field(
+          tr("应用声音隔离"),
+          select<string>(currentPid, targetOptions, (v) => {
+            const picked = captureTargets.find((t) => String(t.pid) === v);
+            const title = picked ? picked.windowTitle : "";
+            void saveConfig({
+              capture_process_id: v,
+              capture_window_title: title,
+            }).then(() => call(CMD.setCaptureProcess, { pid: Number(v) || 0, title }));
+          }),
+          tr("只在 B 模式下生效：选择后只捕获该应用的声音，其它声音不会被识别"),
+        );
+
+  const refreshBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新应用列表") });
+  on(refreshBtn, "click", () => {
+    void loadCaptureTargets().then(() => window.dispatchEvent(new Event("voxsub:settings")));
+  });
+
   page.append(
     card(tr("设备"), [
       field(tr("麦克风"), select(String(config["mic_device_id"] ?? ""), micOptions, (v) => {
@@ -216,7 +356,8 @@ function devicesTab(): HTMLElement {
           loopback: v,
         });
       })),
-      field(tr("应用声音隔离"), h("span", { class: "readonly-value", text: String(config["capture_window_title"] || "未选择应用") }), "在 B 模式下可只捕获指定应用的声音"),
+      captureField,
+      h("div", { class: "tuning-actions" }, [h("span", { class: "catalog__spacer" }), refreshBtn]),
     ]),
   );
   return page;
@@ -225,11 +366,14 @@ function devicesTab(): HTMLElement {
 function tuningTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
 
+  // 档位就是这五个。不提供"自动"：它是一个隐藏的自适应档，用户选了
+  // 也不知道实际跑什么参数，反而让"我调过优了"变成错觉。
+  // 注意键名必须与后端 config_store 的允许集合一致 —— 是 accuracy 不是
+  // accurate，写错会被后端校验直接拒绝（前端此前就写错成 accurate）。
   const profiles: ReadonlyArray<readonly [string, string]> = [
-    ["auto", "自动"],
     ["responsive", tr("快档")],
     ["balanced", "均衡"],
-    ["accurate", "准确优先"],
+    ["accuracy", "准确优先"],
     ["context", "智能上下文"],
     ["custom", "自定义"],
   ];
@@ -259,7 +403,7 @@ function tuningTab(): HTMLElement {
   page.append(
     card(tr("识别调优"), [
       h("p", { class: "field__hint", text: "这里调整的是模型如何听、何时断句，不会重新训练模型。该设置同时用于 A/B/C 三种模式。" }),
-      field(tr("调优预设"), select(String(tuningDraft["asr_tuning_profile"] ?? "auto"), profiles, (v) => {
+      field(tr("调优预设"), select(normalizeProfile(tuningDraft["asr_tuning_profile"]), profiles, (v) => {
         tuningDraft["asr_tuning_profile"] = v;
         markDirty();
       })),
@@ -346,11 +490,12 @@ function aboutTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
   const state = store.get();
 
+  // 这里只放用户关心的事实（版本、来源）。
+  // 不写"前端 Electron / 后端 Python"这类实现细节：对使用者没有意义，
+  // 而且换技术栈就会过期，属于会腐烂的信息。
   page.append(
     card(tr("关于"), [
       field("版本", h("span", { class: "readonly-value", text: state.version || "—" })),
-      field("前端", h("span", { class: "readonly-value", text: "Electron + TypeScript" })),
-      field("后端", h("span", { class: "readonly-value", text: "Python (voxsub)" })),
       field("GitHub", h("a", {
         class: "link",
         href: "https://github.com/tuotuonuts/VoxSub",
@@ -665,9 +810,14 @@ export function buildSettings(): HTMLElement {
   shell.append(nav, panes);
   renderPane();
 
-  void loadDevices().then(() => {
-    if (current === 2) renderPane();
-  });
+  // 配置与设备列表可能在 boot 之后才到齐，这里补一次刷新。
+  // 只在配置**尚未就绪**时重绘：已就绪还重绘会把用户正在输入的内容清掉。
+  const needsConfigRefresh = !isConfigReady();
+  void Promise.all([loadDevices(), loadCaptureTargets(), needsConfigRefresh ? loadConfig() : null]).then(
+    () => {
+      if (needsConfigRefresh || current === 2) renderPane();
+    },
+  );
 
   window.addEventListener("voxsub:settings", () => {
     void loadConfig().then(renderPane);
@@ -683,6 +833,21 @@ export async function loadDevices(): Promise<void> {
   );
   microphones = result?.microphones ?? [];
   loopbacks = result?.loopbacks ?? [];
+}
+
+/**
+ * 枚举可捕获的应用窗口（B 模式按应用隔离的目标）。
+ *
+ * 单独加载且不阻塞渲染：枚举要遍历所有顶层窗口，慢的时候要几百毫秒。
+ * 失败时不抛错 —— 拿不到列表只是"这一项不可选"，不该让整个设置页挂掉。
+ */
+export async function loadCaptureTargets(): Promise<void> {
+  try {
+    const result = await call<{ targets: CaptureTarget[] }>(CMD.listCaptureTargets);
+    captureTargets = result?.targets ?? [];
+  } catch {
+    captureTargets = [];
+  }
 }
 
 export async function loadHardware(): Promise<HardwareProfile | null> {

@@ -214,6 +214,12 @@ function setDisplayMode(mode: DisplayMode): void {
 
 /* -------------------------------------------------------------- 事件 */
 
+/** 收起浮窗上的所有弹出层（显示模式菜单、间距面板）。 */
+function closePopups(): void {
+  if (displayMenu) displayMenu.hidden = true;
+  if (spacingControls) spacingControls.hidden = true;
+}
+
 function wireControls(): void {
   $("font-down")?.addEventListener("click", () => setFontSize(fontSize - 2));
   $("font-up")?.addEventListener("click", () => setFontSize(fontSize + 2));
@@ -260,6 +266,14 @@ function wireControls(): void {
     }
   });
 
+  // 浮窗失焦时收起浮层。
+  //
+  // 为什么必须加：浮窗是个独立的小窗口（860×140），上面那条"点空白处"
+  // 只在**窗口内部**的点击才触发。用户点开菜单后往往直接把鼠标移回文档
+  // 或浏览器去点，那些点击浮窗根本收不到 —— 菜单就永远挂在屏幕上，
+  // 看起来像"关不掉"。窗口失焦是唯一可靠的信号。
+  window.addEventListener("blur", closePopups);
+
   // 滚轮回溯历史（原 Qt 版：锁定时滚轮交给下层软件，这里只在解锁时接管）
   document.addEventListener(
     "wheel",
@@ -272,9 +286,17 @@ function wireControls(): void {
     { passive: false },
   );
 
-  // Esc 解锁（锁定时本窗口收不到键盘事件，这条只在解锁态生效）
+  // Esc：先收弹出层，再解锁（锁定时本窗口收不到键盘事件，解锁这条只在解锁态生效）
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && locked) setLocked(false);
+    if (event.key !== "Escape") return;
+    const popupOpen = Boolean(
+      (displayMenu && !displayMenu.hidden) || (spacingControls && !spacingControls.hidden),
+    );
+    if (popupOpen) {
+      closePopups();
+      return;
+    }
+    if (locked) setLocked(false);
   });
 
   // 悬停显示工具条：未锁定时鼠标离开一会儿就淡出，避免遮挡画面
