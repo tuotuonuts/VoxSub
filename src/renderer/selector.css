@@ -1,0 +1,48 @@
+/* 框选窗：全屏遮罩 + 拖拽矩形。遮罩用半透明而非全黑，保留画面可见性。 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  cursor: crosshair;
+  user-select: none;
+  font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 12, 14, 0.42);
+}
+
+/* 选中区域：用超大 box-shadow 把外部压暗，内部保持原样可见 */
+.sel {
+  position: absolute;
+  display: none;
+  border: 1px solid #6FA8DC;
+  box-shadow: 0 0 0 9999px rgba(8, 12, 14, 0.42);
+  background: transparent;
+}
+
+.sel.is-active {
+  display: block;
+}
+
+.hint {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 18px;
+  border-radius: 4px;
+  background: rgba(8, 12, 14, 0.86);
+  color: #E6ECEC;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+    />
+    <title>字幕浮窗</title>
+    <link rel="stylesheet" href="overlay.css" />
+  </head>
+  <body class="overlay">
+    <!-- 双层壳：外壳 24px + 内芯 16px，与原 Qt 的 Double-Bezel 一致 -->
+    <div class="shell" id="shell">
+      <div class="shell__inner" id="inner">
+        <p class="line line--src" id="src">等待识别…</p>
+        <p class="line line--dst" id="dst">Waiting for recognition…</p>
+      </div>
+      <div class="controls" id="controls">
+        <button type="button" class="ctl" id="lock" title="锁定后鼠标穿透，内容不可点击">锁定</button>
+        <button type="button" class="ctl" id="close" title="隐藏浮窗">隐藏</button>
+      </div>
+    </div>
+    <script src="overlay.js"></script>
+  </body>
+</html>

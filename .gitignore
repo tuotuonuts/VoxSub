@@ -1,0 +1,39 @@
+# 依赖与产物（node_modules 绝不入 OneDrive 同步范围）
+node_modules/
+dist/
+out/
+build/
+release/
+
+# Electron 打包产物
+*.exe
+*.blockmap
+latest.yml
+
+# Python 后端（同 VoxSub 约定：模型与运行时数据不入库）
+.venv/
+__pycache__/
+*.py[cod]
+models/
+runtime/
+
+# 凭据
+.env
+*.env
+*sentry*
+
+# impeccable 工作目录
+.impeccable/config.local.json
+.impeccable/live/
+.impeccable/critique/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+*.log
+Thumbs.db
+.DS_Store
+
+# 截图产物（验证用，不入库）
+VoxSub/
+captures/

@@ -1,0 +1,129 @@
+/* ==========================================================================
+   字幕浮窗样式
+   环境事实（PRODUCT.md）：浮窗长期压在别的应用画面上，用户可能正在共享屏幕。
+   因此：背景必须足够实以保证可读，但边缘要透，不能挡死底下的内容。
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent; /* 关键：窗口本体透明，由 .shell 承载可见部分 */
+  overflow: hidden;
+  user-select: none;
+  font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.overlay {
+  display: grid;
+  place-items: stretch;
+  padding: 6px;
+}
+
+/* 外壳：半透明玻璃 + 细描边。透明度由 JS 通过 --overlay-opacity 控制 */
+.shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: rgba(16, 20, 22, var(--overlay-opacity, 0.92));
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.24),
+    0 10px 24px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  -webkit-app-region: drag; /* 整窗可拖动 */
+  overflow: hidden;
+}
+
+/* 内芯：inset 高光，Double-Bezel 的第二层 */
+.shell__inner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--line-gap, 6px);
+  padding: var(--content-padding, 18px);
+  border-radius: 12px;
+  margin: 5px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.line {
+  margin: 0;
+  /* 字幕正文是用户/系统数据，本窗口内唯一必须绝对可读的内容 */
+  color: #F0F4F4;
+  font-size: var(--font-size, 20px);
+  line-height: 1.35;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+  overflow-wrap: anywhere;
+}
+
+.line--src {
+  font-weight: 500;
+}
+
+.line--dst {
+  color: #A9C4E4; /* 冷调提亮，与原译区分且不影响可读性 */
+}
+
+/* 悬停控件：平时淡出，鼠标移入才出现，避免遮挡字幕 */
+.controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+  -webkit-app-region: no-drag;
+}
+
+.shell:hover .controls,
+.controls:focus-within {
+  opacity: 1;
+}
+
+.ctl {
+  min-height: 22px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 11px;
+  color: #E6ECEC;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.ctl:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+/* 锁定态：整窗视觉不变，但提示"点不到了" */
+body.is-locked .controls {
+  display: none;
+}
+
+body.is-locked .shell {
+  border-color: rgba(255, 255, 255, 0.18);
+  cursor: default;
+}
+
+/* 锁定后仍要能解锁：整窗就是解锁热区 */
+.unlock-hint {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  font-size: 12px;
+  color: #E6ECEC;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+body.is-locked .shell:hover .unlock-hint {
+  display: grid;
+}
