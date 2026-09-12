@@ -261,9 +261,18 @@ function launch() {
     ok("silent mode: no window will appear on the desktop");
   }
 
-  child.on("exit", (code) => {
-    console.log(`\n[exit] Electron closed (code ${code ?? "null"})`);
-    process.exit(code ?? 0);
+  child.on("exit", (code, signal) => {
+    // 区分"用户正常关闭"与"被强杀/崩溃"：只把退出码原样传给调用方的话，
+    // 每次 Stop-Process 都会让启动器看起来像失败了。写清原因才能分辨。
+    const killed = signal != null || (code != null && code !== 0);
+    const reason = signal
+      ? `terminated by signal ${signal}`
+      : code === 0
+        ? "closed normally"
+        : `exited with code ${code}`;
+    console.log(`\n[exit] Electron ${reason}`);
+    logLine(`[exit] Electron ${reason}${killed ? " (expected if force-stopped)" : ""}`);
+    process.exit(code ?? (killed ? 1 : 0));
   });
 }
 
