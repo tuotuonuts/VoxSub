@@ -22,9 +22,14 @@ class ReleaseNote:
 RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
     ReleaseNote(
         "0.9.0-beta",
-        "平级 OCR 翻译、快速首帧与稳定纠偏",
-        "Peer OCR mode, fast first result, and stable refinement",
+        "平级 OCR 翻译、界面层次重调与双语言选择",
+        "Peer OCR mode, rebalanced interface layers, and split language selectors",
         (
+            "界面层次重新调整：卡片、面板与背景之间的明暗差之前过于接近，整个界面看起来是一整块深色；现在能清楚看出谁浮在谁上面。",
+            "深色与浅色两档配色都带上了轻微色调，不再是无色相的纯灰，长时间盯字幕更不容易累。",
+            "浅色档的强调色换成更深的青色，在浅色背景上也能看清按钮和状态点。",
+            "识别语言与目标语言改为两个独立选择，不再需要从一长串语言组合里找方向。",
+            "移除页面标题上方重复的小标签，让标题自己说明当前在哪一页。",
             "修复安装包内 RapidOCR 延迟导入缺失，截图与实时区域 OCR 现在使用同一条已验证的离线识别链路。",
             "主窗口可上传 PNG、JPG、WebP、BMP 或 TIFF；结果可在原图标框和原位覆盖译文之间切换，并导出译后图片。",
             "原图与未导出的译后图分别缓存在应用目录的 originals / translated；禁止写入 C 盘，默认每类保留 15 张，0 表示无限。",
@@ -35,6 +40,11 @@ RELEASE_HISTORY: tuple[ReleaseNote, ...] = (
             "四张模式卡使用 2×2 布局；引擎不可用时实时模式会暂停，不再持续重试刷日志。",
         ),
         (
+            "Rebalanced the interface layers: cards, panels and the background used to sit at almost the same brightness and read as one dark block; it is now clear what sits above what.",
+            "Both the dark and light palettes now carry a subtle tint instead of pure neutral grey, which is easier on the eyes across long subtitle sessions.",
+            "The light theme uses a deeper teal accent so buttons and status dots stay legible on light backgrounds.",
+            "Recognition language and target language are now two independent selectors instead of one long list of language pairs.",
+            "Removed the redundant label above page titles so the heading carries its own hierarchy.",
             "Fixes the missing RapidOCR lazy import in packaged builds, so screenshot and live-region OCR share one verified offline path.",
             "The main window can upload PNG, JPG, WebP, BMP, or TIFF images, switch between source boxes and in-place translations, and export the rendered result.",
             "Source and unexported translated images use separate originals/translated app cache folders. Drive C is rejected; each type keeps 15 images by default, while 0 is unlimited.",
@@ -236,15 +246,32 @@ def _note(version: str) -> ReleaseNote | None:
     return next((item for item in RELEASE_HISTORY if item.version == version), None)
 
 
-def release_history_text() -> str:
-    """Return a compact, user-facing history for Settings > About."""
+def latest_release_note() -> ReleaseNote | None:
+    """Newest entry — RELEASE_HISTORY is ordered newest-first."""
+    return RELEASE_HISTORY[0] if RELEASE_HISTORY else None
+
+
+def _format_note(note: ReleaseNote, english: bool) -> str:
+    title = note.title_en if english else note.title_zh
+    items = note.items_en if english else note.items_zh
+    return f"{note.version}  {title}\n" + "\n".join(f"• {item}" for item in items)
+
+
+def release_history_text(*, include_history: bool = False) -> str:
+    """User-facing notes for Settings > About.
+
+    Defaults to the newest entry only; pass ``include_history=True`` for the
+    full list behind the expand affordance.
+    """
     english = language_manager.language == LANGUAGE_EN
-    blocks: list[str] = []
-    for note in RELEASE_HISTORY:
-        title = note.title_en if english else note.title_zh
-        items = note.items_en if english else note.items_zh
-        blocks.append(f"{note.version}  {title}\n" + "\n".join(f"• {item}" for item in items))
-    return "\n\n".join(blocks)
+    notes = RELEASE_HISTORY if include_history else RELEASE_HISTORY[:1]
+    return "\n\n".join(_format_note(note, english) for note in notes)
+
+
+def older_release_count() -> int:
+    """How many older entries the expand affordance would reveal."""
+    return max(0, len(RELEASE_HISTORY) - 1)
+
 
 
 class ReleaseNotesDialog(QDialog):
@@ -330,7 +357,10 @@ def show_release_notes_once(parent: QWidget, store: ConfigStore, version: str) -
 
 __all__ = [
     "RELEASE_HISTORY",
+    "ReleaseNote",
     "ReleaseNotesDialog",
+    "latest_release_note",
+    "older_release_count",
     "release_history_text",
     "show_release_notes_once",
 ]

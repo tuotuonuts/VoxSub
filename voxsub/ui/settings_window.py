@@ -47,6 +47,7 @@ from voxsub.ui.i18n import (
     LANGUAGE_EN,
     LANGUAGE_SYSTEM,
     LANGUAGE_ZH,
+    format_text,
     language_manager,
     retranslate_widget_tree,
     tr,
@@ -66,7 +67,10 @@ from voxsub.ocr_cache import (
     resolve_ocr_cache_root,
     validate_ocr_cache_root,
 )
-from voxsub.ui.release_notes import release_history_text
+from voxsub.ui.release_notes import (
+    older_release_count,
+    release_history_text,
+)
 
 logger = get_logger("ui.settings_window")
 
@@ -1003,7 +1007,7 @@ class SettingsWindow(QWidget):
 
         history_card, history_box = self._card("更新日志")
         history_note = QLabel(
-            "每次更新后，首次打开应用会看到一次简短说明。这里可以随时回看最近版本的变化。",
+            "默认只显示最近一版；需要回看更早的版本时点下方展开。",
             history_card,
         )
         history_note.setObjectName("cardCaption")
@@ -1015,6 +1019,15 @@ class SettingsWindow(QWidget):
         self.release_history_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse)
         history_box.addWidget(self.release_history_label)
+        # 默认收起：只展示最新一则。展开后才显示全部历史。
+        self._release_history_expanded = False
+        self.release_history_toggle = QPushButton(history_card)
+        self.release_history_toggle.setObjectName("secondaryButton")
+        self.release_history_toggle.setMinimumHeight(36)
+        self.release_history_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.release_history_toggle.clicked.connect(self._toggle_release_history)
+        history_box.addWidget(self.release_history_toggle)
+        self._render_release_history()
         lay.addWidget(history_card)
         lay.addStretch(1)
         return self._scroll_page(page)
@@ -1068,8 +1081,7 @@ class SettingsWindow(QWidget):
         self.ocr_cache_limit_spin.setValue(int(cfg.get("ocr_cache_limit", 15)))
         self._refresh_ocr_cache_storage()
         self._refresh_model_storage()
-        if hasattr(self, "release_history_label"):
-            self.release_history_label.setText(release_history_text())
+        self._render_release_history()
 
         self.refresh_devices()
 
@@ -1793,6 +1805,31 @@ class SettingsWindow(QWidget):
         self._store.set("language", value)
         language_manager.set_language(value)
 
+    def _toggle_release_history(self) -> None:
+        """Expand/collapse the older release notes."""
+        self._release_history_expanded = not self._release_history_expanded
+        self._render_release_history()
+
+    def _render_release_history(self) -> None:
+        """Show the newest note by default; the full list only when expanded."""
+        if not hasattr(self, "release_history_label"):
+            return
+        expanded = getattr(self, "_release_history_expanded", False)
+        self.release_history_label.setText(
+            release_history_text(include_history=expanded))
+        toggle = getattr(self, "release_history_toggle", None)
+        if toggle is None:
+            return
+        older = older_release_count()
+        toggle.setVisible(bool(older) or expanded)
+        if expanded:
+            toggle.setText(tr("收起历史更新日志", "Hide older release notes"))
+        else:
+            toggle.setText(format_text(
+                "展开历史更新日志（还有 {count} 版）",
+                "Show older release notes ({count} more)",
+                count=older))
+
     def _on_language_changed(self, _language: str) -> None:
         retranslate_widget_tree(self)
         self.ocr_cache_limit_spin.setSpecialValueText(tr("无限"))
@@ -1803,8 +1840,7 @@ class SettingsWindow(QWidget):
         self._refresh_ocr_cache_storage()
         self._update_tts_status()
         self._update_sentry_status()
-        if hasattr(self, "release_history_label"):
-            self.release_history_label.setText(release_history_text())
+        self._render_release_history()
 
     def set_embedded(self, embedded: bool = True) -> None:
         """Switch between the legacy top-level presentation and page embedding."""

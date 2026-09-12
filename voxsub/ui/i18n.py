@@ -574,6 +574,11 @@ TRANSLATIONS: dict[str, str] = {
     "更新日志": "What's new",
     "每次更新后，首次打开应用会看到一次简短说明。这里可以随时回看最近版本的变化。":
         "After an update, the first app launch shows a brief summary. Revisit recent changes here anytime.",
+    "默认只显示最近一版；需要回看更早的版本时点下方展开。":
+        "Only the newest release shows by default. Use the button below to expand older releases.",
+    "展开历史更新日志（还有 {count} 版）":
+        "Show older release notes ({count} more)",
+    "收起历史更新日志": "Hide older release notes",
     "启用内置调试模式（实时显示详细日志）":
         "Enable built-in debug mode (show detailed live logs)",
     "版本": "Version",
