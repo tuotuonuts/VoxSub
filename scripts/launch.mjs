@@ -13,6 +13,7 @@
  *   node scripts/launch.mjs --no-build   跳过构建，直接启动
  *   node scripts/launch.mjs --dev        启动后自动打开开发者工具
  *   node scripts/launch.mjs --debug      开启远程调试端口 9222（冒烟测试用）
+ *   node scripts/launch.mjs --silent     静默模式：窗口不显示、不抢焦点（自动化测试用）
  *   node scripts/launch.mjs --keep       不杀掉已在运行的实例
  *
  * 输出一律用 ASCII：Windows 控制台在 CP936 下会把 UTF-8 中文显示成乱码，
@@ -59,7 +60,9 @@ function ensureBinaries() {
     warn(`${target.name} binary missing - repairing`);
     const result = spawnSync(process.execPath, [target.installer], {
       cwd: ROOT,
-      stdio: "inherit",
+      // stdin 用 ignore：非 tty 环境下子进程会报 "stdin is not a tty"
+      stdio: ["ignore", "inherit", "inherit"],
+      windowsHide: true,
     });
     if (result.status === 0 && existsSync(target.binary)) {
       ok(`${target.name} repaired`);
@@ -137,8 +140,9 @@ function build() {
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   const result = spawnSync(npm, ["run", "build"], {
     cwd: ROOT,
-    stdio: "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
     shell: process.platform === "win32",
+    windowsHide: true,
   });
   if (result.status !== 0) {
     fail("build failed");
@@ -156,7 +160,8 @@ function killRunning() {
     "powershell",
     ["-NoProfile", "-Command",
       "Get-Process electron -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*voxsub-electron*' } | Stop-Process -Force"],
-    { stdio: "pipe", shell: true },
+    // windowsHide: 不加的话每次都会在屏幕上闪一个黑框控制台窗口
+    { stdio: "pipe", shell: true, windowsHide: true },
   );
   if (result.status === 0) ok("previous instances stopped (if any)");
 }
@@ -212,8 +217,15 @@ function launch() {
       // 不用 SendKeys 发 F12：那会把按键发给"当前焦点窗口"，
       // 用户此刻可能正对着编辑器，等于往别人窗口里打字。
       ...(args.has("--dev") ? { VOXSUB_DEVTOOLS: "1" } : {}),
+      // 静默模式：窗口不显示、不抢焦点、不建托盘。
+      // 自动化测试与后台验证一律走这个模式 —— 用户桌面上不该出现任何东西。
+      ...(args.has("--silent") ? { VOXSUB_HEADLESS: "1" } : {}),
     },
   });
+
+  if (args.has("--silent")) {
+    ok("silent mode: no window will appear on the desktop");
+  }
 
   child.on("exit", (code) => {
     console.log(`\n[exit] Electron closed (code ${code ?? "null"})`);
@@ -231,7 +243,12 @@ step(1, "checking dependencies");
 if (!existsSync(join(ROOT, "node_modules"))) {
   warn("node_modules missing - running npm install (first run, may take a while)");
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  spawnSync(npm, ["install"], { cwd: ROOT, stdio: "inherit", shell: process.platform === "win32" });
+  spawnSync(npm, ["install"], {
+    cwd: ROOT,
+    stdio: ["ignore", "inherit", "inherit"],
+    shell: process.platform === "win32",
+    windowsHide: true,
+  });
 }
 ok("node_modules present");
 ensureBinaries();

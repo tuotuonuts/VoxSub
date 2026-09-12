@@ -30,7 +30,8 @@
     "launch:dev": "node scripts/launch.mjs --dev",
     "launch:debug": "node scripts/launch.mjs --debug",
     "probe:resize": "node tools/probe-resize.mjs",
-    "css:px2rem": "python tools/px-to-rem.py"
+    "css:px2rem": "python tools/px-to-rem.py",
+    "launch:silent": "node scripts/launch.mjs --silent --debug"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

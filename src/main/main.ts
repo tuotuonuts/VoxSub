@@ -64,6 +64,20 @@ function requestQuit(): boolean {
 
 /* ------------------------------------------------------------------ 窗口 */
 
+/**
+ * 无头模式：窗口创建但不显示，供自动化测试与后台任务使用。
+ *
+ * 为什么需要：开发期要反复启动应用做验证，而每次启动都会在用户桌面上弹窗、
+ * 抢走焦点 —— 用户可能正在做别的事。无头模式下窗口存在、渲染照常、CDP 可连，
+ * 但桌面上看不到任何东西、也不会抢焦点。
+ *
+ * 两个必须配套的开关：
+ *   · backgroundThrottling: false —— 隐藏窗口会被 Chromium 节流渲染，
+ *     布局测量会拿到陈旧值，测试结果就不可信了
+ *   · 不建托盘 —— 托盘图标本身也是"出现在用户屏幕上"的东西
+ */
+const HEADLESS = process.env["VOXSUB_HEADLESS"] === "1";
+
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1240,
@@ -86,15 +100,21 @@ function createMainWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // 隐藏窗口下 Chromium 会节流后台渲染；测布局时那会让读数失真
+      backgroundThrottling: false,
     },
   });
 
   void win.loadFile(path.join(RENDERER_DIR, "index.html"));
-  win.once("ready-to-show", () => win.show());
+
+  // 无头模式绝不 show()：窗口始终不可见，但渲染与 CDP 都正常
+  if (!HEADLESS) {
+    win.once("ready-to-show", () => win.show());
+  }
 
   // 开发模式：由启动器通过环境变量开启 DevTools。
   // 在 ready-to-show 之后开，否则拿到的是空窗口。
-  if (process.env["VOXSUB_DEVTOOLS"] === "1") {
+  if (process.env["VOXSUB_DEVTOOLS"] === "1" && !HEADLESS) {
     win.webContents.openDevTools({ mode: "detach" });
   }
 
@@ -136,6 +156,7 @@ function createOverlayWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -145,7 +166,11 @@ function createOverlayWindow(): BrowserWindow {
   // 时序是关键：必须在窗口**已经显示**之后再设捕获排除。
   // 实测（Electron 34 与 44 行为一致）：ready-to-show 阶段调用会返回成功
   // 但 GetWindowDisplayAffinity 读回 WDA_NONE，窗口成为无保护的暴露面。
+  //
+  // 无头模式例外：窗口不显示，也就没有"暴露面"可言，跳过整个流程 ——
+  // 桌面上不该出现浮窗（它 alwaysOnTop，一旦显示就会压在用户所有窗口之上）。
   win.once("ready-to-show", () => {
+    if (HEADLESS) return;
     win.showInactive();
     win.setContentProtection(true);
   });
@@ -479,7 +504,7 @@ void app.whenReady().then(() => {
 
   mainWindow = createMainWindow();
   overlayWindow = createOverlayWindow();
-  tray = createTray();
+  tray = HEADLESS ? null : createTray();
   registerIpc();
 
   app.on("activate", () => {

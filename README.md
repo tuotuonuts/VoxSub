@@ -63,6 +63,14 @@ npm run launch          # 增量构建 + 启动
 npm run launch:clean    # 强制全量重建
 npm run launch:dev      # 启动并打开 DevTools
 npm run launch:debug    # 启动并开远程调试端口 9222（冒烟测试用）
+npm run launch:silent   # 静默启动：窗口不显示、不抢焦点（自动化验证用）
+```
+
+**做自动化验证时一律用 `--silent`**：窗口存在、渲染正常、CDP 可连，但用户桌面上
+不会出现任何窗口，也不抢焦点。验证方式：
+
+```bash
+python tools/check-windows-visible.py --expect-hidden   # 断言桌面无可见窗口
 ```
 
 脚本会自动处理四件容易忘的事：
