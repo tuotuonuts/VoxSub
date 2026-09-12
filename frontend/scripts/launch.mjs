@@ -24,6 +24,8 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "no
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildCleanupScript } from "./lib/electron-instances.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const args = new Set(process.argv.slice(2));
@@ -194,42 +196,33 @@ function build() {
  * 已有实例在跑时新实例会静默退出 —— 用户看到的是"双击没反应"，
  * 极难自查。
  *
- * 过滤条件**不能用固定的目录名**：这个脚本原先写死 '*voxsub-electron*'，
- * 那是迁移前的目录名。迁入 <repo>/frontend 之后该条件永远匹配不到，
- * 旧实例杀不掉，新实例被锁挡住 —— 这就是"双击启动不了"的真实原因。
+ * 这里踩过三次坑，教训都写下来别再犯：
  *
- * 改为按"可执行文件路径包含本项目的 node_modules"来过滤：
- * 无论项目放在哪个目录都能匹配到自己的实例，也不会误杀其它 Electron 应用。
+ *   1. 最早写死 '*voxsub-electron*'（迁移前的目录名）。迁入 <repo>/frontend 后
+ *      该条件永远匹配不到 —— 旧实例杀不掉、新实例被锁挡住。
+ *      教训：不要写死目录名，要用从自身位置推导出的路径。
+ *
+ *   2. 改成"只匹配本项目 node_modules"后仍然不够：工作区里还留着迁移前的旧
+ *      检出（voxsub-electron/），从那里启动的实例与本项目**共用同一份
+ *      userData**，照样抢锁 —— 用户双击旧目录里的启动器时新实例会立刻退出。
+ *      教训：要清的是"会争抢同一 userData 的实例"，不只是"自己这一个"。
+ *
+ *   3. 拼接 PowerShell 时不要用 $var++ 自增、不要嵌套单引号，并且必须用
+ *      -EncodedCommand 传参 —— 否则经 cmd.exe 一层后解析失败（exit 255）。
+ *
+ * 过滤规则：electron 进程，且满足以下任一
+ *   · 路径在本项目 node_modules 下（当前检出）
+ *   · 路径在同一工作区父目录下且含 node_modules\electron（同工作区的其它检出）
+ * 第二条用 dirname(ROOT) 推导而非写死目录名，项目搬家后依然成立；又因为要求
+ * 路径里带 node_modules\electron，不会误杀正式安装的 Electron 应用。
  */
 function killRunning() {
   if (args.has("--keep")) return;
 
-  // 用本项目 node_modules 的真实路径做标识，而不是写死目录名。
-  //
-  // 两处踩过的坑：
-  //   1. 原先写死 '*voxsub-electron*' —— 那是迁移前的目录名，迁入
-  //      <repo>/frontend 后永远匹配不到，旧实例杀不掉、新实例被单实例锁
-  //      挡住，表现是"双击没反应"。
-  //   2. 拼接 PowerShell 时不要用 $var++ 自增，也不要嵌套单引号 ——
-  //      经 cmd.exe 一层后容易解析失败（exit 255）。改用管道 + 计数。
-  const marker = join(ROOT, "node_modules");
+  // 判定规则与理由见 scripts/lib/electron-instances.mjs
+  const ownMarker = join(ROOT, "node_modules");
 
-  // 用PowerShell 的 -EncodedCommand（Base64 / UTF-16LE）传脚本：
-  //
-  // 为什么不直接传字符串：`shell: true` 会把多行脚本按空格拆开、换行丢掉，
-  // PowerShell 于是把 `Where-Object` 当成独立命令 —— 报 "不是内部或外部命令"，
-  // exit 255。这个坑实测踩了三次，改用编码传参后彻底绕开，
-  // 也不必再跟 cmd.exe 的引号转义较劲。
-  const script = [
-    `$marker = "${marker}";`,
-    "$mine = @(Get-Process electron -ErrorAction SilentlyContinue |",
-    "  Where-Object { $_.Path -and $_.Path.StartsWith($marker, [StringComparison]::OrdinalIgnoreCase) });",
-    "foreach ($p in $mine) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }",
-    "$side = @(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" -ErrorAction SilentlyContinue |",
-    "  Where-Object { $_.CommandLine -and $_.CommandLine.Contains('ipc_server') });",
-    "foreach ($p in $side) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }",
-    "Write-Output (\"stopped=\" + $mine.Count + \",\" + $side.Count)",
-  ].join("\n");
+  const script = buildCleanupScript({ ownMarker });
 
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = spawnSync(
@@ -241,7 +234,13 @@ function killRunning() {
 
   const output = (result.stdout ?? "").trim();
   if (result.status === 0) {
-    ok(`previous instances cleared (${output || "stopped=0,0"})`);
+    // output 可能是多行：第一行是 stopped=N,M，后面是 from: <目录>
+    const lines = output.split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean);
+    const counts = lines.find((l) => l.startsWith("stopped=")) ?? "stopped=0,0";
+    const sources = lines.filter((l) => l.startsWith("from:"));
+    ok(`previous instances cleared (${counts})`);
+    // 来源目录单独打：出现"清理了别的检出"时能立刻看出来
+    for (const src of sources) ok(src);
   } else {
     // 清理失败不该阻断启动：可能是权限或竞态，继续尝试启动
     warn(`could not stop previous instances (exit ${result.status})`);
