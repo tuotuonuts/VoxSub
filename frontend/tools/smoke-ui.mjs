@@ -270,17 +270,33 @@ console.log("\n=== 主屏录音与导出 ===");
     const a = [...document.querySelectorAll('.mode-cell')].find(m => m.dataset.mode === 'a');
     a?.click();
     await new Promise(r => setTimeout(r, 800));
+    const bar = document.querySelector('.workspace__actions');
+    const labels = [...bar.querySelectorAll('button')].map(b => b.textContent.trim());
+    const input = bar.querySelector('.switch input[type=checkbox]');
+    // 收尾按钮的文案随「同时录音」开关变化，所以两种状态都要读。
+    // 不再断言页面上同时存在「结束」和「结束并保存」两个按钮 —— 那样会让用户
+    // 在两个底层相同的按钮之间做无意义的选择（见 test-recorder-controls.mjs）。
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 600));
+    const withRec = [...bar.querySelectorAll('button')].map(b => b.textContent.trim());
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 600));
     return {
-      hasFinishRec: [...document.querySelectorAll('.workspace__actions button')].some(b => b.textContent === '结束并保存'),
+      labels,
+      withRec,
       recordHint: document.querySelector('.rec-hint')?.textContent ?? null,
-      recordSwitch: Boolean(document.querySelector('.switch input')),
-      exportBtn: [...document.querySelectorAll('.workspace__actions button')].map(b => b.textContent),
+      recordSwitch: Boolean(input),
+      hasClock: Boolean(bar.querySelector('.recorder__clock')),
     };
   })()`);
-  check("有「结束并保存」按钮", info.hasFinishRec, "");
+  check("有收尾按钮", info.labels.includes("结束"), info.labels.join("/"));
+  check("开录音后变为「结束并保存」", info.withRec.includes("结束并保存"), info.withRec.join("/"));
   check("录音说明文案", Boolean(info.recordHint), String(info.recordHint));
   check("录音开关存在", info.recordSwitch, "");
-  check("导出会话入口", info.exportBtn.includes("导出会话"), info.exportBtn.join("/"));
+  check("有会话计时器", info.hasClock, "");
+  check("导出会话入口", info.labels.includes("导出会话"), info.labels.join("/"));
 }
 
 console.log("\n=== 二级页面返回栏 ===");

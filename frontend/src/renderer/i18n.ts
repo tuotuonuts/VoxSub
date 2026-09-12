@@ -10,6 +10,7 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "结束后保存为 WAV，放在本机录音文件夹": "Saved as a WAV in this machine's recordings folder when you stop",
   "识别模型": "Speech model",
   "翻译模型": "Translation model",
   "只列出已下载到本机的模型": "Only models already downloaded to this machine are listed",

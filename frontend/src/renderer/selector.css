@@ -3,6 +3,11 @@
   box-sizing: border-box;
 }
 
+/* 见 app.css 同名规则：作者 display 会盖掉 UA 的 [hidden]{display:none}。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;

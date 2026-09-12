@@ -15,6 +15,16 @@
   box-sizing: border-box;
 }
 
+/* hidden 属性必须真的生效。
+   作者样式里的 display（例如 .menu { display: flex }）优先级高于 UA 样式表的
+   [hidden] { display: none }，元素会带着 hidden 属性照样显示在屏幕上。
+   踩过：浮窗显示模式菜单点"关"关不掉，而测试读 el.hidden 报的是 true，
+   于是测试通过、用户看到菜单一直挂着。断言必须查计算样式。
+   这里用 !important 兜底，任何 display 规则都不再能盖掉它。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -479,10 +489,34 @@ body::before {
   background: var(--warn);
 }
 
-.rec-note {
-  font-size: 0.7692rem;
-  color: var(--err);
-  font-weight: 600;
+/* 会话计时（mm:ss）。等宽数字，避免每秒跳字时宽度抖动把旁边的按钮推来推去。 */
+.recorder__clock {
+  font-size: 0.8462rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink2);
+  letter-spacing: 0.04em;
+  padding-left: 0.3077rem;
+}
+
+/* 录音红点：只在真正录的时候出现。用呼吸动画表达"还在录"，
+   静态红点容易被误认为一个装饰圆点。 */
+.rec-dot {
+  width: 0.4615rem;
+  height: 0.4615rem;
+  border-radius: 50%;
+  background: var(--err);
+  margin-left: 0.4615rem;
+  animation: rec-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* 尊重系统的"减少动态效果"设置：关掉呼吸动画，改为常亮。 */
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot { animation: none; }
 }
 
 .file-panel {

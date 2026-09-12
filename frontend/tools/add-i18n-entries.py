@@ -168,6 +168,9 @@ ENTRIES: dict[str, str] = {
         "Only applies in mode B: only the selected app's audio is captured, "
         "everything else is ignored",
     "刷新应用列表": "Refresh app list",
+    # 录音（会话操作条）
+    "结束后保存为 WAV，放在本机录音文件夹":
+        "Saved as a WAV in this machine's recordings folder when you stop",
 }
 
 

@@ -78,7 +78,36 @@ function requestQuit(): boolean {
  */
 const HEADLESS = process.env["VOXSUB_HEADLESS"] === "1";
 
+/* ------------------------------------------------------------------ 图标 */
+
+/**
+ * 应用图标路径。
+ *
+ * 文件放在 dist/renderer/assets 下（构建时由 scripts/copy-assets.mjs 从仓库
+ * 根的 assets/ 复制过来）。放在这个位置的原因是：打包后主进程代码位于
+ * app.asar 内，读不到仓库根的 assets/，而 dist/renderer 会被一起打进 asar。
+ *
+ * 有两处必须用到它，缺任何一处用户都会看到"没有图标"：
+ *   · BrowserWindow.icon —— 任务栏 / Alt+Tab 的窗口图标
+ *   · Tray               —— 系统托盘图标
+ * 之前两处都没设：窗口图标是 Electron 默认的，托盘图标是 createEmpty()（空白）。
+ */
+const APP_ICON = path.join(RENDERER_DIR, "assets", "icon.ico");
+
+/** 读应用图标。读不到时返回 null，调用方退化为系统默认图标而不是崩掉。 */
+function appIcon(): Electron.NativeImage | null {
+  try {
+    const image = nativeImage.createFromPath(APP_ICON);
+    return image.isEmpty() ? null : image;
+  } catch {
+    return null;
+  }
+}
+
 function createMainWindow(): BrowserWindow {
+  // 图标要按需展开而不是直接写 `icon: appIcon() ?? undefined`：
+  // tsconfig 开了 exactOptionalPropertyTypes，Electron 的类型不接受 undefined。
+  const icon = appIcon();
   const win = new BrowserWindow({
     width: 1240,
     height: 820,
@@ -87,6 +116,8 @@ function createMainWindow(): BrowserWindow {
     show: false,
     backgroundColor: "#101416",
     title: "语幕 VoxSub",
+    // 任务栏与 Alt+Tab 的窗口图标
+    ...(icon ? { icon } : {}),
     // 自绘标题栏：默认原生标题栏会被 Windows 强调色染色（实测 #0078D4），
     // 与本产品的纸面配色冲突。hidden + overlay 保留系统的最小化/最大化/关闭按钮。
     titleBarStyle: "hidden",
@@ -189,7 +220,10 @@ function applyOverlayClickThrough(enabled: boolean): void {
 /* ------------------------------------------------------------------ 托盘 */
 
 function createTray(): Tray | null {
-  const image = nativeImage.createEmpty();
+  // 托盘必须有真实图标。原先用 nativeImage.createEmpty()，托盘区里是一个
+  // 空白占位 —— 用户报告"系统托盘没有 icon"就是这个原因。
+  const image = appIcon();
+  if (!image) return null; // 读不到图标就不建托盘，免得留一个点不中的空白
   try {
     const created = new Tray(image);
     const send = (mode: string) => {
@@ -544,6 +578,13 @@ if (!HAS_SINGLE_INSTANCE) {
 void app.whenReady().then(() => {
   // 第二个实例：不建任何窗口（app.quit() 已在上面发起）
   if (!HAS_SINGLE_INSTANCE) return;
+
+  // Windows 任务栏身份。
+  //
+  // 必须与安装器的 appId 一致（electron-builder.config.cjs 的
+  // com.voxsub.electron）。不设的话 Windows 会把进程当成 electron.exe 的
+  // 一个无名实例，任务栏图标显示 Electron 默认图标、也无法正确归组与固定。
+  app.setAppUserModelId("com.voxsub.electron");
 
   // 移除 Electron 默认菜单栏（File/Edit/View/…）：本应用有自己的界面语言，
   // 残留的默认菜单会让成品显得未完成。快捷键改用 globalShortcut / 页面内绑定。

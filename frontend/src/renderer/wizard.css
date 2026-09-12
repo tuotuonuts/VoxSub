@@ -5,6 +5,11 @@
    但层级仍靠线与留白而非背景色差。
    ========================================================================== */
 
+/* 见 app.css 同名规则：作者 display 会盖掉 UA 的 [hidden]{display:none}。 */
+[hidden] {
+  display: none !important;
+}
+
 .wiz-host {
   max-width: 940px;
   margin: 0 auto;

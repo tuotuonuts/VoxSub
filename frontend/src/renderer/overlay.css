@@ -8,6 +8,13 @@
   box-sizing: border-box;
 }
 
+/* 见 app.css 同名规则：作者 display 会盖掉 UA 的 [hidden]{display:none}。
+   浮窗的 .menu 与 .controls__sub 都是 display:flex + hidden 属性，
+   没有这条兜底，两者永远关不掉。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;

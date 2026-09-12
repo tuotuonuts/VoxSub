@@ -15,8 +15,75 @@ let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
 let progressWrap: HTMLElement | null = null;
 let fileLabelEl: HTMLElement | null = null;
+/** 录音提示行：说明音频存到哪，而不是解释操作步骤。 */
 let recordHintEl: HTMLElement | null = null;
-let recordingLabelEl: HTMLElement | null = null;
+/** 会话计时器（mm:ss）。只在运行中走字。 */
+let clockEl: HTMLElement | null = null;
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+
+/* 操作条控件引用。
+   提到模块级是为了让 updateStatus（模块作用域）能驱动它们 —— 原先它们都是
+   buildWorkspace 里的局部变量，状态更新只能在页面构建时绑定一次，
+   会话中途状态变化（暂停、开始录音）不会反映到按钮上。 */
+let ctaEl: HTMLButtonElement | null = null;
+let stopBtnEl: HTMLButtonElement | null = null;
+let recInputEl: HTMLInputElement | null = null;
+let recDotEl: HTMLElement | null = null;
+
+/**
+ * 同步操作条上的全部状态：主按钮文案、收尾按钮文案与可见性、录音红点、说明行。
+ *
+ * 收在一处是因为这四项互相牵连 —— 拆开写就会出现"按钮说结束并保存、
+ * 红点却没亮"这种自相矛盾的界面。
+ */
+function syncControls(): void {
+  const s = store.get();
+  const recording = Boolean(recInputEl?.checked);
+  const inMicMode = s.mode === "a";
+
+  // 主按钮：开始 → 暂停 ⇄ 继续
+  if (ctaEl) {
+    if (!s.running) ctaEl.textContent = tr("开始");
+    else if (s.paused) ctaEl.textContent = tr("继续");
+    else ctaEl.textContent = tr("暂停");
+    ctaEl.disabled = s.mode === "d";
+  }
+
+  // 收尾按钮：会话在跑才出现；开了录音才谈得上"保存"
+  if (stopBtnEl) {
+    stopBtnEl.textContent = recording ? tr("结束并保存") : tr("结束");
+    stopBtnEl.hidden = !s.running;
+  }
+
+  // 红点：真的在录（开关开着 + 会话在跑 + 没暂停 + 是麦克风模式）
+  if (recDotEl) recDotEl.hidden = !(recording && s.running && !s.paused && inMicMode);
+  if (recInputEl) recInputEl.disabled = !inMicMode;
+
+  if (recordHintEl) {
+    if (!inMicMode) {
+      recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
+    } else if (recording) {
+      // 告诉用户文件会落在哪 —— 这才是他们需要知道的信息
+      recordHintEl.textContent = tr("结束后保存为 WAV，放在本机录音文件夹");
+    } else {
+      recordHintEl.textContent = tr("仅生成字幕，不保存麦克风音频");
+    }
+  }
+}
+
+/** 启动秒表。幂等：重复调用不会叠出多个定时器。 */
+function startClock(): void {
+  stopClock();
+  clockTimer = setInterval(syncClock, 1000);
+  syncClock();
+}
+
+function stopClock(): void {
+  if (clockTimer !== null) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+}
 
 /** 把一句话渲染成一行对照。草稿行带 is-draft，原位替换而不是新增。 */
 function subtitleRow(source: string, translation: string, draft = false): HTMLElement {
@@ -90,10 +157,33 @@ export function updateStatus(): void {
     lamp.classList.toggle("is-live", state.running && !state.paused);
     lamp.classList.toggle("is-paused", state.paused);
   }
-  if (recordingLabelEl) {
-    recordingLabelEl.textContent = state.recording ? tr("录音中") : "";
-    recordingLabelEl.hidden = !state.recording;
+  // 操作条与计时由 syncControls / syncClock 统一驱动（模块级）。
+  // 它们依赖多个字段，散在 updateStatus 里容易和按钮状态不一致。
+  syncControls();
+}
+
+/**
+ * 会话计时。
+ *
+ * 手机录音在走表，用户靠它判断"到底录了多久"。原先界面上没有任何时间反馈，
+ * 用户无法确认会话是否真的在进行。
+ *
+ * 单独开一个 1 秒定时器而不是挂在 store 订阅上：安静时没有字幕事件，
+ * store 不会更新，挂在上面的计时会停住。
+ */
+function syncClock(): void {
+  if (!clockEl) return;
+  const state = store.get();
+  if (!state.running || state.sessionStartedAt === null) {
+    clockEl.hidden = true;
+    clockEl.textContent = "";
+    return;
   }
+  const seconds = Math.max(0, Math.floor((Date.now() - state.sessionStartedAt) / 1000));
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
+  clockEl.hidden = false;
+  clockEl.textContent = `${mm}:${ss}`;
 }
 
 export function updateProgress(): void {
@@ -150,24 +240,20 @@ async function toggleRun(): Promise<void> {
   await call(CMD.pause);
 }
 
-async function stopRun(): Promise<void> {
-  await call(CMD.stop);
-  const result = await call<{ path: string | null }>(CMD.lastRecording);
-  if (result?.path) {
-    // 用户可见的确认：录音保存位置不只在日志里，界面也要留痕
-    store.patch({ statusText: `${tr("录音已保存")}：${fileName(result.path)}` });
-  }
-}
-
 /**
- * 「结束并保存」——手机录音式的收尾动作。
+ * 会话收尾（操作条上那个按钮）。
  *
- * 与「结束」的区别只在于：用户明确期待看到保存结果。
- * 底层是同一个 stop（pipeline 内部会关闭录音器并写 WAV），
- * 但这里必须把路径回报到界面上，否则用户不知道文件去哪了。
+ * 合并了原先的「结束」与「结束并保存」两个按钮 —— 它们底层是同一个 stop，
+ * 同时摆在条上只会让用户犹豫该点哪个。是否保存由「同时录音」开关决定，
+ * 按钮文案跟着开关走（见 syncRecorder）。
+ *
+ * 开着录音时把落盘路径回报到界面并在资源管理器里定位：用户点了"结束并保存"，
+ * 最想知道的下一件事就是"文件在哪"。
  */
-async function finishRecording(): Promise<void> {
-  store.patch({ statusText: tr("正在结束录音…") });
+async function finishSession(): Promise<void> {
+  const recording = store.get().recording;
+  if (recording) store.patch({ statusText: tr("正在结束录音…") });
+
   await call(CMD.stop);
 
   const result = await call<{ path: string | null }>(CMD.lastRecording);
@@ -176,7 +262,8 @@ async function finishRecording(): Promise<void> {
     store.pushLog({ ts: new Date().toISOString(), level: "INFO", message: `录音已保存: ${result.path}` });
     // 让用户在资源管理器里能直接找到
     void window.voxsub?.dialog.revealInFolder(result.path);
-  } else {
+  } else if (recording) {
+    // 开了录音却没拿到文件：必须说清楚，否则用户以为录到了
     store.patch({ statusText: tr("录音未保存（可能未开启同时录音）") });
   }
 }
@@ -202,21 +289,27 @@ export function buildWorkspace(): HTMLElement {
   pane.append(head);
 
   // ---- 会话操作条
+  //
+  // 录音按手机录音的操作模型组织：
+  //   · 一个主按钮，随状态变形：开始 → 暂停 ⇄ 继续
+  //   · 一个收尾按钮：开了「同时录音」就是「结束并保存」，否则是「结束」
+  //   · 运行时显示走字的计时，录音时额外亮一个红点
+  //
+  // 为什么收尾只留一个按钮：原先「结束」与「结束并保存」同时挂在条上，而它们
+  // 底层是同一个 stop，用户不知道该点哪个。现在按"是否在录音"决定文案与后续
+  // 动作（是否回显保存路径、是否在资源管理器里定位文件）。
+  //
+  // 同时删掉了原先那行"像手机录音：开始 → 暂停 / 继续 → 结束并保存"的文案：
+  // 那是把设计意图当界面说明写给用户看。用户要的是这个流程本身，不是对它的描述。
   const actions = h("div", { class: "workspace__actions" });
 
-  const cta = h("button", { class: "btn btn--primary", type: "button" });
-  const syncCta = (): void => {
-    const s = store.get();
-    if (!s.running) cta.textContent = tr("开始");
-    else if (s.paused) cta.textContent = tr("继续");
-    else cta.textContent = tr("暂停");
-    cta.disabled = s.mode === "d";
-  };
-  on(cta, "click", () => void toggleRun());
-  Object.defineProperty(cta, "sync", { value: syncCta });
+  ctaEl = h("button", { class: "btn btn--primary", type: "button" });
+  on(ctaEl, "click", () => void toggleRun());
 
-  const stopBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("结束") });
-  on(stopBtn, "click", () => void stopRun());
+  stopBtnEl = h("button", { class: "btn btn--ghost", type: "button" });
+  on(stopBtnEl, "click", () => void finishSession());
+
+  clockEl = h("span", { class: "recorder__clock", hidden: true });
 
   const exportBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("导出会话") });
   on(exportBtn, "click", () => void exportSession());
@@ -225,55 +318,32 @@ export function buildWorkspace(): HTMLElement {
   on(clearBtn, "click", () => store.patch({ subtitles: [], draft: null }));
 
   const recSwitch = h("label", { class: "switch" });
-  const recInput = h("input", { type: "checkbox" });
-  recInput.checked = state.recording;
-  on(recInput, "change", () => {
-    store.patch({ recording: recInput.checked });
-    void call(CMD.setRecording, { enabled: recInput.checked });
-    syncRecordHint();
+  recInputEl = h("input", { type: "checkbox" });
+  recInputEl.checked = state.recording;
+  on(recInputEl, "change", () => {
+    store.patch({ recording: recInputEl!.checked });
+    void call(CMD.setRecording, { enabled: recInputEl!.checked });
+    syncControls();
   });
-  recSwitch.append(recInput, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
-  recordingLabelEl = h("span", { class: "rec-note", hidden: true });
-  recordingLabelEl.hidden = true;
-  recSwitch.append(recordingLabelEl);
+  recSwitch.append(recInputEl, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
+  // 录音指示：红点比文字更接近"正在录"的直觉，也不占宽度
+  recDotEl = h("span", { class: "rec-dot", hidden: true });
+  recSwitch.append(recDotEl);
 
-  // 「结束并保存」：录音流程的收尾动作。
-  // 与「结束」的区别是它会把已录的 WAV 落盘（Qt 版同样分开两个按钮），
-  // 只有开了录音且会话在跑时才出现。
-  const finishRecBtn = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("结束并保存"),
-    hidden: true,
-  });
-  on(finishRecBtn, "click", () => void finishRecording());
-
-  actions.append(cta, stopBtn, finishRecBtn, exportBtn, clearBtn, recSwitch);
+  actions.append(
+    ctaEl,
+    stopBtnEl,
+    clockEl,
+    h("span", { class: "catalog__spacer" }),
+    exportBtn,
+    clearBtn,
+    recSwitch,
+  );
   pane.append(actions);
 
-  // 录音文案：与 Qt 版一致地说明「像手机录音」的三段式操作
+  // 录音说明行：只讲音频去哪，不讲操作步骤
   recordHintEl = h("p", { class: "field__hint rec-hint" });
   pane.append(recordHintEl);
-
-  /** 录音相关的可见状态：开关关闭→说明只出字幕；开启→说明操作流程。 */
-  function syncRecordHint(): void {
-    const s = store.get();
-    const on = recInput.checked;
-
-    if (recordHintEl) {
-      recordHintEl.textContent = on
-        ? tr("像手机录音：开始 → 暂停 / 继续 → 结束并保存")
-        : tr("仅生成字幕，不保存麦克风音频");
-    }
-    // 「结束并保存」只在录音开启且会话运行时出现
-    finishRecBtn.hidden = !(on && s.running);
-    // 录音只在 A 模式成立（B 是系统声音、C 是文件、D 是 OCR）
-    recInput.disabled = s.mode !== "a";
-    if (s.mode !== "a" && on) {
-      if (recordHintEl) recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
-    }
-  }
-  syncRecordHint();
 
   // ---- C 模式文件区
   const filePanel = h("div", { class: "file-panel" });
@@ -305,11 +375,12 @@ export function buildWorkspace(): HTMLElement {
   pane.append(streamEl);
 
   rebuildStream();
-  syncCta();
+  syncControls();
+  startClock();
+
   window.addEventListener("voxsub:state", () => {
-    syncCta();
     filePanel.hidden = store.get().mode !== "c";
-    syncRecordHint();
+    syncControls();
   });
 
   return pane;

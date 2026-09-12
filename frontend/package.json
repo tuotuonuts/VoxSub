@@ -36,7 +36,10 @@
     "package": "npm run build && electron-builder --config electron-builder.config.cjs --win --x64",
     "package:dir": "npm run build && electron-builder --config electron-builder.config.cjs --win --x64 --dir",
     "verify:packaged": "python tools/verify-packaged.py",
-    "test:reported": "node tools/test-reported-fixes.mjs"
+    "test:reported": "node tools/test-reported-fixes.mjs",
+    "test:icon": "electron tools/test-icon.cjs",
+    "test:overlay-menus": "node tools/test-overlay-menus.mjs",
+    "test:recorder": "node tools/test-recorder-controls.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
