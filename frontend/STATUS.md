@@ -91,9 +91,10 @@ Electron 前端已完整实现现有功能并跑通端到端，**`VoxSub` 仓库
 
 ## 未完成
 
-1. **electron-builder 打包配置**（`package.json` 里没有 build 段）。生产环境需要把
-   `backend/` 与 Python 运行时作为 extraResources 打进去——`backend.ts` 的
-   `resolvePython()` 已经预留了 `process.resourcesPath/backend/ipc_server.py` 这条路径。
+1. ~~electron-builder 打包配置~~ **已完成**（`electron-builder.config.cjs` +
+   `backend/ipc_server.spec` + `tools/build-release.py`）。实测能产出
+   win-unpacked（656MB，含 sidecar 与 asar）。用户决定当前先用脚本启动，
+   暂不发布安装包。
 2. **模型下载/卸载的真实网络往返**未测（命令已接通，未实际下载）。
 3. **OCR 的框选与实时区域交互**未在真实屏幕上走完（后端识别链路已端到端验证，
    `capture.ts` 的框选窗与覆盖窗只验证到实现层）。
