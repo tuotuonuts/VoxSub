@@ -97,6 +97,9 @@ npm run verify:palette  # 令牌契约：对比度 / 色相 / 层级分离
 npm run probe:backend   # 后端能力实测 20 项
 npm run test:ocr        # OCR 端到端：造图→识别→翻译→译后图校验
 npm run verify          # 上面三项一起跑
+
+# Python 全量测试（在仓库根跑，不依赖前端是否启动）
+cd .. && ./.venv/Scripts/python.exe -m pytest tests/ -q
 npm run smoke:ui        # 界面冒烟 28 项（需应用带 --remote-debugging-port=9222 运行）
 npm run verify:features # Qt → Electron 功能对照（输出待确认清单）
 ```

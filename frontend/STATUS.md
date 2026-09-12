@@ -139,3 +139,22 @@ npm run check                            # 类型 + 令牌契约
 npm run build
 ./node_modules/.bin/electron .
 ```
+
+## 测试覆盖（新功能必须配套测试）
+
+| 测试文件 | 覆盖 | 数量 |
+|---|---|---|
+| `tests/test_legacy_migration.py` | 旧版检测 / 风险分级 / 迁移规划 / 三层校验 / 快照 / 状态持久化 | 30 |
+| `tests/test_ipc_commands.py` | 字幕导出时间轴 / OCR 渲染 / 文件与日志命令 / 更新日志 / 窗口枚举 / 迁移命令分发 / 首启动初始化 / 协议通道（子进程） | 36 |
+
+运行：
+```bash
+cd <repo>
+./.venv/Scripts/python.exe -m pytest tests/ -q          # 全量 323 项
+./.venv/Scripts/python.exe -m pytest tests/test_ipc_commands.py -q   # 单文件
+```
+
+前端侧的验证工具（需要应用在跑）在 `frontend/tools/`：
+`smoke-ui.mjs`（界面 49 项）、`probe-backend.py`（后端 20 项）、
+`test-ocr-e2e.py`（OCR 端到端）、`test-migration.py`（迁移 32 项）、
+`probe-resize.mjs`（响应式布局）、`verify-palette.mjs`（设计令牌契约）。
