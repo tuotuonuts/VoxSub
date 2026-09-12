@@ -32,9 +32,15 @@ def electron_process_count() -> int:
             capture_output=True, text=True, timeout=20,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return sum(1 for line in result.stdout.splitlines() if "electron.exe" in line.lower())
     except (OSError, subprocess.SubprocessError):
         return -1
+
+    # stdout 可能是 None（某些环境下 capture_output 拿不到输出）。
+    # 直接 .splitlines() 会抛 AttributeError，让检查工具本身崩掉 ——
+    # 那就等于"检查失败"被伪装成"没有窗口"，正是要避免的假通过。
+    if not result.stdout:
+        return -1
+    return sum(1 for line in result.stdout.splitlines() if "electron.exe" in line.lower())
 
 
 def enum_windows() -> list[tuple[int, str, bool]]:
