@@ -1,14 +1,16 @@
-"""Friendly, in-app update notes shown once for each installed version."""
+"""Release history data and queries — no UI dependencies.
+
+从 voxsub/ui/release_notes.py 抽出来的：那份文件在导入时就需要 PySide6，
+而后端（Electron 版）也要读更新日志。抽出来之后：
+
+  · 这个模块零 Qt 依赖，打包时可以不带 Qt
+  · Qt 版的对话框留在 voxsub/ui/release_notes.py（qt-legacy 分支）
+
+数据本身（RELEASE_HISTORY）是唯一的真相来源，界面只负责呈现。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
-
-from voxsub.config_store import ConfigStore
-from voxsub.ui.i18n import LANGUAGE_EN, language_manager, tr
-
 
 @dataclass(frozen=True)
 class ReleaseNote:
@@ -271,96 +273,3 @@ def release_history_text(*, include_history: bool = False) -> str:
 def older_release_count() -> int:
     """How many older entries the expand affordance would reveal."""
     return max(0, len(RELEASE_HISTORY) - 1)
-
-
-
-class ReleaseNotesDialog(QDialog):
-    """Soft, non-native first-launch update message."""
-
-    def __init__(self, version: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._version = version
-        self._note = _note(version)
-        self.setObjectName("releaseNotesDialog")
-        self.setModal(True)
-        self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.setWindowTitle(tr("这一版更新了什么", "What is new"))
-        self.setMinimumWidth(520)
-        self.setMaximumWidth(620)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 26, 28, 22)
-        root.setSpacing(14)
-        shell = QFrame(self)
-        shell.setObjectName("releaseNotesSurface")
-        layout = QVBoxLayout(shell)
-        layout.setContentsMargins(24, 22, 24, 20)
-        layout.setSpacing(10)
-        self.eyebrow = QLabel(shell)
-        self.eyebrow.setObjectName("eyebrowLabel")
-        self.title_label = QLabel(shell)
-        self.title_label.setObjectName("releaseNotesTitle")
-        self.summary = QLabel(shell)
-        self.summary.setObjectName("secondaryLabel")
-        self.summary.setWordWrap(True)
-        self.items_label = QLabel(shell)
-        self.items_label.setObjectName("releaseNotesItems")
-        self.items_label.setWordWrap(True)
-        layout.addWidget(self.eyebrow)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.summary)
-        layout.addSpacing(4)
-        layout.addWidget(self.items_label)
-        root.addWidget(shell)
-
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-        self.close_button = QPushButton(self)
-        self.close_button.setObjectName("primaryButton")
-        self.close_button.setMinimumHeight(40)
-        self.close_button.clicked.connect(self.accept)
-        actions.addWidget(self.close_button)
-        root.addLayout(actions)
-        language_manager.language_changed.connect(self._render)
-        self._render()
-
-    def _render(self, *_args) -> None:
-        note = self._note
-        english = language_manager.language == LANGUAGE_EN
-        self.setWindowTitle(tr("这一版更新了什么", "What is new"))
-        self.eyebrow.setText(f"VOXSUB  /  {self._version.upper()}")
-        if note is None:
-            title = tr("欢迎使用新版 VoxSub", "Welcome to the new VoxSub")
-            items = (tr("这次更新带来了体验改进。", "This update includes experience improvements."),)
-        else:
-            title = note.title_en if english else note.title_zh
-            items = note.items_en if english else note.items_zh
-        self.title_label.setText(title)
-        self.summary.setText(tr("更新内容已准备好，之后也可以在“设置 > 关于”中查看。",
-                                 "You can revisit these notes later in Settings > About."))
-        self.items_label.setText("\n".join(f"• {item}" for item in items))
-        self.close_button.setText(tr("开始使用", "Start using VoxSub"))
-
-
-def show_release_notes_once(parent: QWidget, store: ConfigStore, version: str) -> ReleaseNotesDialog | None:
-    """Show the installed version's notes once, then persist that decision."""
-    if str(store.get("release_notes_seen_version", "")) == version:
-        return None
-    # Mark before display so a forced close/crash cannot make every next start
-    # feel like another update prompt.
-    store.set("release_notes_seen_version", version)
-    dialog = ReleaseNotesDialog(version, parent)
-    parent._voxsub_release_notes = dialog  # type: ignore[attr-defined]
-    dialog.open()
-    return dialog
-
-
-__all__ = [
-    "RELEASE_HISTORY",
-    "ReleaseNote",
-    "ReleaseNotesDialog",
-    "latest_release_note",
-    "older_release_count",
-    "release_history_text",
-    "show_release_notes_once",
-]

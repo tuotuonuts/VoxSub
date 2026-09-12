@@ -11,7 +11,7 @@ from voxsub.model_storage import (
     normalize_model_layout,
 )
 from voxsub.models import ModelManager, load_manifest, save_manifest
-from voxsub.ui.config_store import ConfigStore
+from voxsub.config_store import ConfigStore
 
 
 def test_fresh_packaged_install_uses_install_models_folder(tmp_path, monkeypatch):
