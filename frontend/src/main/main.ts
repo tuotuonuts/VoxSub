@@ -596,6 +596,15 @@ void app.whenReady().then(() => {
   mainWindow = createMainWindow();
   overlayWindow = createOverlayWindow();
   tray = HEADLESS ? null : createTray();
+  // 托盘建没建起来要能从日志里查。图标读不到时 createTray 返回 null，
+  // 界面上只会表现为"托盘里没有图标"，没有任何报错 —— 不打这行就只能靠猜。
+  if (!HEADLESS) {
+    console.log(
+      tray
+        ? `[tray] 已创建，图标 ${APP_ICON}`
+        : `[tray] 未创建：读不到图标 ${APP_ICON}`,
+    );
+  }
   registerIpc();
 
   app.on("activate", () => {
