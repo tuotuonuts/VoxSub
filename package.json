@@ -28,7 +28,9 @@
     "launch": "node scripts/launch.mjs",
     "launch:clean": "node scripts/launch.mjs --clean",
     "launch:dev": "node scripts/launch.mjs --dev",
-    "launch:debug": "node scripts/launch.mjs --debug"
+    "launch:debug": "node scripts/launch.mjs --debug",
+    "probe:resize": "node tools/probe-resize.mjs",
+    "css:px2rem": "python tools/px-to-rem.py"
   },
   "devDependencies": {
     "@types/node": "22.13.1",
