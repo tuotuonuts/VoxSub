@@ -45,10 +45,14 @@ const api = {
     pickDirectory: () => ipcRenderer.invoke("dialog:pick-directory"),
     /** 保存诊断报告。 */
     saveReport: () => ipcRenderer.invoke("dialog:save-report"),
+    /** 保存图片（OCR 译后图导出）。 */
+    saveImage: () => ipcRenderer.invoke("dialog:save-image"),
     /** 保存会话字幕（SRT/VTT/TXT）。 */
     saveSession: (payload: { lines: unknown[] }) => ipcRenderer.invoke("dialog:save-session", payload),
     /** 打开外部链接。 */
     openExternal: (url: string) => ipcRenderer.invoke("dialog:open-external", url),
+    /** 在资源管理器里定位文件（保存录音/图片后的收尾动作） */
+    revealInFolder: (path: string) => ipcRenderer.invoke("dialog:reveal-in-folder", path),
   },
 
   ocr: {
@@ -75,6 +79,11 @@ const api = {
     capabilities: () => ipcRenderer.invoke("app:capabilities"),
     onOpenPage: (handler: (page: string) => void) => subscribe("app:open-page", handler),
     onTrayMode: (handler: (mode: string) => void) => subscribe("app:tray-mode", handler),
+    /** 请求退出（有后台长任务时会被拒绝并跳回设置页） */
+    requestQuit: () => ipcRenderer.invoke("app:request-quit"),
+    /** 标记后台长任务：non-null 会阻止退出 */
+    setBusy: (busy: boolean, reason?: string) => ipcRenderer.invoke("app:set-busy", busy, reason),
+    onBlockingTask: (handler: (payload: { reason: string }) => void) => subscribe("app:blocking-task", handler),
   },
 } as const;
 

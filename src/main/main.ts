@@ -36,10 +36,31 @@ let overlayClickThrough = false;
 let overlayOpacity = 0.92;
 let overlayFontSize = 20;
 let overlayDisplayMode = "bilingual";
+/** 后台长任务的原因（非空时阻止退出）。模型迁移/下载期间设置。 */
+let busyReason = "";
 /** 实时 OCR 定时器：仅在用户开启后运行 */
 let liveOcrTimer: NodeJS.Timeout | null = null;
 let liveOcrArea: SelectionArea | null = null;
 let liveOcrBusy = false;
+
+/**
+ * 退出请求的唯一入口：托盘退出、窗口关闭、快捷键都走这里。
+ *
+ * 有后台长任务（模型迁移等）时不允许直接退——中途退出会把多 GB 的
+ * 模型库留在半路。改成把用户带回设置页并说明原因，与 Qt 版一致。
+ */
+function requestQuit(): boolean {
+  if (busyReason) {
+    mainWindow?.show();
+    mainWindow?.webContents.send("app:open-page", "settings");
+    mainWindow?.webContents.send("app:blocking-task", { reason: busyReason });
+    return false;
+  }
+  stopLiveOcr();
+  bridge?.dispose();
+  app.quit();
+  return true;
+}
 
 /* ------------------------------------------------------------------ 窗口 */
 
@@ -70,6 +91,14 @@ function createMainWindow(): BrowserWindow {
 
   void win.loadFile(path.join(RENDERER_DIR, "index.html"));
   win.once("ready-to-show", () => win.show());
+
+  // 有后台长任务时拦一次关闭，避免把模型库留在半路
+  win.on("close", (event) => {
+    if (busyReason) {
+      event.preventDefault();
+      requestQuit();
+    }
+  });
   return win;
 }
 
@@ -148,14 +177,7 @@ function createTray(): Tray | null {
       { label: "设置", click: () => openPage("settings") },
       { label: "诊断", click: () => openPage("diagnostics") },
       { type: "separator" },
-      {
-        label: "退出",
-        click: () => {
-          stopLiveOcr();
-          bridge?.dispose();
-          app.quit();
-        },
-      },
+      { label: "退出", click: () => void requestQuit() },
     ]);
     created.setToolTip("语幕 VoxSub");
     created.setContextMenu(menu);
@@ -309,6 +331,18 @@ function registerIpc(): void {
     return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
   });
 
+  ipcMain.handle("dialog:save-image", async () => {
+    const result = await dialog.showSaveDialog(mainWindow ?? undefined!, {
+      title: "导出译后图片",
+      defaultPath: `voxsub-ocr-${stamp()}.png`,
+      filters: [
+        { name: "PNG 图片", extensions: ["png"] },
+        { name: "JPEG 图片", extensions: ["jpg", "jpeg"] },
+      ],
+    });
+    return result.canceled || !result.filePath ? null : result.filePath;
+  });
+
   ipcMain.handle("dialog:save-report", async () => {
     const result = await dialog.showSaveDialog(mainWindow ?? undefined!, {
       title: "导出诊断报告",
@@ -335,6 +369,19 @@ function registerIpc(): void {
       lines: payload.lines,
     });
     return result?.ok ? chosen.filePath : null;
+  });
+
+  ipcMain.handle("dialog:reveal-in-folder", (_e, target: string) => {
+    // 在资源管理器里定位文件：用户刚保存完录音/图片，最想做的就是找到它
+    if (typeof target === "string" && target) {
+      try {
+        shell.showItemInFolder(target);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   });
 
   ipcMain.handle("dialog:open-external", async (_e, url: string) => {
@@ -385,6 +432,18 @@ function registerIpc(): void {
       node: process.versions.node,
     },
   }));
+
+  /* ---- 退出保护 ---- */
+  // 模型迁移是长任务（多 GB 文件搬动），中途退出会留下半个模型库。
+  // Qt 版的做法：拦截退出、跳到设置页提示。这里保持同样语义。
+  ipcMain.handle("app:request-quit", async () => requestQuit());
+
+  ipcMain.handle("app:set-busy", (_e, busy: boolean, reason?: string) => {
+    busyReason = busy ? (reason ?? "正在执行后台任务") : "";
+    return busyReason;
+  });
+
+  ipcMain.handle("app:busy-reason", () => busyReason);
 }
 
 function stamp(): string {
@@ -423,11 +482,7 @@ void app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    stopLiveOcr();
-    bridge?.dispose();
-    app.quit();
-  }
+  if (process.platform !== "darwin") void requestQuit();
 });
 
 app.on("before-quit", () => {

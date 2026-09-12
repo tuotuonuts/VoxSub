@@ -74,6 +74,96 @@ def _dir_size(directory: Path) -> int:
     return total
 
 
+# ---------------------------------------------------------------- OCR 渲染辅助
+
+def _box_to_list(box: Any) -> list[int]:
+    """把 OCR 的框统一成 [left, top, right, bottom]。
+
+    两种来源都要兼容：voxsub 的 OcrBox 是带 left/top/right/bottom 属性的对象；
+    某些 RapidOCR 版本给的是四点列表 [[x,y], ...]。前端按扁平四元组消费。
+    """
+    if box is None:
+        return []
+    if all(hasattr(box, name) for name in ("left", "top", "right", "bottom")):
+        return [int(box.left), int(box.top), int(box.right), int(box.bottom)]
+    if isinstance(box, (list, tuple)) and box and isinstance(box[0], (list, tuple)):
+        xs = [float(point[0]) for point in box if len(point) >= 2]
+        ys = [float(point[1]) for point in box if len(point) >= 2]
+        if xs and ys:
+            return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
+    if isinstance(box, (list, tuple)) and len(box) >= 4:
+        return [int(v) for v in box[:4]]
+    return []
+
+
+def _normalize_box(box: Any, width: int, height: int) -> tuple[int, int, int, int] | None:
+    """把框统一成 (left, top, right, bottom) 并夹到图像范围内。"""
+    if all(hasattr(box, name) for name in ("left", "top", "right", "bottom")):
+        flat = [int(box.left), int(box.top), int(box.right), int(box.bottom)]
+    elif isinstance(box, (list, tuple)) and len(box) >= 4:
+        flat = _box_to_list(box)
+    else:
+        return None
+
+    if len(flat) < 4:
+        return None
+
+    left = max(0, min(width - 1, flat[0]))
+    top = max(0, min(height - 1, flat[1]))
+    right = max(left + 1, min(width, flat[2]))
+    bottom = max(top + 1, min(height, flat[3]))
+    return left, top, right, bottom
+
+
+def _sample_background(image: Any, rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    """从原图采样框的背景色（Qt 版同款取点：四角 + 上下边中点，求均值）。"""
+    left, top, right, bottom = rect
+    width, height = image.size
+    mid_x = (left + right) // 2
+    points = (
+        (left, top),
+        (right - 1, top),
+        (left, bottom - 1),
+        (right - 1, bottom - 1),
+        (mid_x, top),
+        (mid_x, bottom - 1),
+    )
+    pixels = [
+        image.getpixel((max(0, min(width - 1, x)), max(0, min(height - 1, y))))
+        for x, y in points
+    ]
+    count = len(pixels)
+    return (
+        sum(pixel[0] for pixel in pixels) // count,
+        sum(pixel[1] for pixel in pixels) // count,
+        sum(pixel[2] for pixel in pixels) // count,
+    )
+
+
+def _luminance(color: tuple[int, int, int]) -> float:
+    """感知亮度（Rec.709 系数），与 Qt 版 _contrasting_text 的判据一致。"""
+    return 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
+
+
+def _load_font(size: int) -> Any:
+    """按可用字体依次尝试；找不到就退回 PIL 内置位图字体。"""
+    from PIL import ImageFont  # noqa: PLC0415
+
+    candidates = (
+        r"C:\Windows\Fonts\msyh.ttc",      # 微软雅黑
+        r"C:\Windows\Fonts\msyhbd.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+    )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, ValueError):
+            continue
+    return ImageFont.load_default()
+
+
 def _resolve_models_root() -> Path:
     """复用应用自己的模型根目录解析。
 
@@ -208,9 +298,12 @@ class BackendService:
     # ================================================================== 会话控制
     def _cmd_start(self, pipeline: Any, _args: dict[str, Any]) -> None:
         pipeline.start()
+        # 通知界面"新的会话开始"：前端据此重置时间基准（导出 SRT 需要相对时间）
+        _event("session", action="start")
 
     def _cmd_stop(self, pipeline: Any, _args: dict[str, Any]) -> None:
         pipeline.stop()
+        _event("session", action="stop")
 
     def _cmd_pause(self, pipeline: Any, _args: dict[str, Any]) -> None:
         pipeline.pause()
@@ -604,7 +697,11 @@ class BackendService:
 
     # ================================================================== OCR
     def _cmd_ocr_recognize(self, args: dict[str, Any]) -> dict[str, Any]:
-        """对一张图片做识别 + 翻译。像素只在本机内存处理。"""
+        """对一张图片做识别（可选翻译），像素只在本机内存处理。
+
+        返回行级数据（文本 + 框 + 译文），供前端做预览与覆盖渲染。
+        译文按行翻译：整段送出去会让模型重排语序，覆盖回原框时对不上位置。
+        """
         import numpy as np  # noqa: PLC0415
         from PIL import Image  # noqa: PLC0415
 
@@ -614,15 +711,183 @@ class BackendService:
         with Image.open(image_path) as handle:
             frame = np.asarray(handle.convert("RGB"))
 
+        import time  # noqa: PLC0415
+
+        started = time.monotonic()
         engine = RapidOcrEngine()
         result = engine.recognize(frame)
+        ocr_ms = int((time.monotonic() - started) * 1000)
+
+        raw_lines = list(getattr(result, "lines", ()) or ())
         lines = []
-        for line in getattr(result, "lines", ()) or ():
+        for line in raw_lines:
+            # OcrBox 是带 left/top/right/bottom 的对象，不是可迭代序列
             lines.append({
                 "text": str(getattr(line, "text", "")),
-                "box": list(getattr(line, "box", ()) or ()),
+                "box": _box_to_list(getattr(line, "box", None)),
+                "translation": "",
             })
-        return {"text": str(getattr(result, "text", "")), "lines": lines}
+
+        # 翻译（可选）：逐行送，避免语序重排导致框位错配
+        translate_ms = 0
+        translator = self._translator()
+        if translator is not None and str(args.get("translate", True)).lower() != "false":
+            source = str(args.get("source", "auto"))
+            target = str(args.get("target", "zh"))
+            started = time.monotonic()
+            for item in lines:
+                if not item["text"].strip():
+                    continue
+                try:
+                    item["translation"] = str(
+                        translator.translate(item["text"], source, target) or "")
+                except Exception as error:  # noqa: BLE001 - 单行失败不丢整张
+                    item["translation"] = ""
+                    print(f"[ocr] 行翻译失败: {error}", file=sys.stderr)
+            translate_ms = int((time.monotonic() - started) * 1000)
+
+        return {
+            "text": "\n".join(item["text"] for item in lines),
+            "translation": "\n".join(item["translation"] for item in lines),
+            "lines": lines,
+            "ocrElapsedMs": ocr_ms,
+            "translateElapsedMs": translate_ms,
+            "width": int(frame.shape[1]),
+            "height": int(frame.shape[0]),
+            "sourcePath": str(image_path),
+        }
+
+    def _cmd_copy_file(self, args: dict[str, Any]) -> dict[str, Any]:
+        """复制文件（导出译后图片等）。目标已存在时覆盖。"""
+        import shutil  # noqa: PLC0415
+
+        source = Path(str(args.get("source", "")))
+        target = Path(str(args.get("target", "")))
+        if not source.is_file():
+            raise FileNotFoundError(f"源文件不存在：{source}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        return {"path": str(target), "bytes": target.stat().st_size}
+
+    def _cmd_ocr_cache_dir(self, args: dict[str, Any]) -> dict[str, Any]:
+        """OCR 临时图片目录（译后图与截图落盘位置，供界面拼输出路径）。"""
+        try:
+            from voxsub.ocr_cache import resolve_ocr_cache_root  # noqa: PLC0415
+
+            path = resolve_ocr_cache_root()
+            path.mkdir(parents=True, exist_ok=True)
+            return {"path": str(path)}
+        except Exception as error:  # noqa: BLE001 - 缓存目录不可用时给明确兜底
+            print(f"[ocr] 缓存目录解析失败，改用兜底路径: {error}", file=sys.stderr)
+        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        fallback = Path(local) / "VoxSub" / "cache" / "ocr"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return {"path": str(fallback), "fallback": True}
+
+    def _cmd_render_ocr_image(self, args: dict[str, Any]) -> dict[str, Any]:
+        """把译文画回原图，生成「译后图片」（Qt 版 render_translated_image 的等价实现）。
+
+        为什么不用 Qt 那份：它在 voxsub/ui/ 里且依赖 QImage/QPainter。
+        Electron 版没有 Qt，这里用 PIL 重写同一套算法：
+          · 背景色从原图对应框的边框采样（取上下边中点与四角，求均值）
+          · 文字颜色按背景亮度在浅/深之间二选一
+          · 圆角矩形填充 + 内缩绘制文字
+        """
+        from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+
+        source_path = Path(str(args.get("source", "")))
+        target_path = Path(str(args.get("target", "")))
+        raw = args.get("lines") or []
+
+        with Image.open(source_path) as handle:
+            canvas = handle.convert("RGB").copy()
+
+        if not raw:
+            canvas.save(target_path)
+            return {"path": str(target_path), "lines": 0}
+
+        draw = ImageDraw.Draw(canvas)
+        width, height = canvas.size
+        painted = 0
+
+        for item in raw:
+            text = str(item.get("translation") or "").strip()
+            box = _normalize_box(item.get("box"), width, height)
+            if not text or box is None:
+                continue
+            left, top, right, bottom = box
+            if right - left < 4 or bottom - top < 4:
+                continue
+
+            background = _sample_background(canvas, (left, top, right, bottom))
+            text_color = (17, 24, 39) if _luminance(background) >= 150 else (249, 250, 251)
+
+            radius = min(7, (bottom - top) // 3)
+            draw.rounded_rectangle((left, top, right - 1, bottom - 1),
+                                   radius=max(0, radius), fill=background)
+
+            # 字号以框高为基准，逐级缩小直到文字能放进框内
+            size = max(8, int((bottom - top) * 0.68))
+            font = _load_font(size)
+            inset = max(2, (bottom - top) // 8)
+            while size > 8:
+                measured = draw.textbbox((0, 0), text, font=font)
+                if (measured[2] - measured[0]) <= (right - left - 2 * inset):
+                    break
+                size -= 1
+                font = _load_font(size)
+
+            draw.multiline_text(
+                (left + inset, top + inset),
+                text,
+                font=font,
+                fill=text_color,
+                spacing=max(1, size // 5),
+            )
+            painted += 1
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        canvas.save(target_path)
+        return {"path": str(target_path), "lines": painted, "width": width, "height": height}
+
+    def _translator(self) -> Any:
+        """取当前翻译器；未启动会话时按配置现建一个。
+
+        OCR 是独立工作区：用户可能没点「开始」就直接框选屏幕，
+        这时不能因为 pipeline 未启动就静默不翻译。
+        """
+        pipeline = self._pipeline
+        if pipeline is not None:
+            translator = getattr(pipeline, "translator", None)
+            if isinstance(translator, tuple) and len(translator) > 1 and translator[1]:
+                return translator[1]
+            if translator is not None and not isinstance(translator, tuple):
+                return translator
+
+        if getattr(self, "_ocr_translator", None) is not None:
+            return self._ocr_translator
+
+        try:
+            from voxsub.pipeline import _load_translator  # noqa: PLC0415
+
+            config = {}
+            try:
+                from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+                config = dict(ConfigStore().load())
+            except Exception:  # noqa: BLE001 - 拿不到配置就用默认
+                config = {}
+
+            kind = str(config.get("translator_kind") or "opus-fast")
+            result = _load_translator(kind, config)
+            # _load_translator 返回 (translator, effective_kind) 或裸对象
+            translator = result[0] if isinstance(result, tuple) else result
+            if translator is not None:
+                self._ocr_translator = translator
+            return translator
+        except Exception as error:  # noqa: BLE001 - 失败只降级，不阻断识别
+            print(f"[ocr] 翻译器不可用，仅返回识别结果: {error}", file=sys.stderr)
+            return None
 
     def _cmd_ocr_translate(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
         """把已识别的文本交给当前翻译配置。"""
@@ -657,7 +922,7 @@ class BackendService:
 for _name in (
     "list_models", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
-    "clear_logs", "log_path", "import_models", "release_notes",
+    "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",
     "list_devices", "hardware_profile", "list_audio_devices",
     "list_capture_targets", "export_subtitles", "ocr_recognize",
 ):

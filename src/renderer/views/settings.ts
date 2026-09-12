@@ -487,9 +487,12 @@ function storageTab(): HTMLElement {
     const picked = await api.dialog.pickDirectory();
     if (!picked) return;
     importState.textContent = tr("正在扫描…");
+    // 迁移是多 GB 的文件搬动，期间必须阻止退出（否则留下半个模型库）
+    void window.voxsub?.app.setBusy(true, tr("模型仍在后台迁移，请等待完成后再退出应用。"));
     const result = await call<{ moved: number; skipped: number }>(CMD.importModels, {
       source: picked,
     });
+    void window.voxsub?.app.setBusy(false);
     importState.textContent = result
       ? tr("已并入 {n} 项，跳过 {m} 项").replace("{n}", String(result.moved)).replace("{m}", String(result.skipped))
       : tr("迁移失败，详见日志");

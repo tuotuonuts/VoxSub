@@ -64,6 +64,9 @@ export const CMD = {
 
   // OCR
   ocrRecognize: "ocr_recognize",
+  renderOcrImage: "render_ocr_image",
+  copyFile: "copy_file",
+  ocrCacheDir: "ocr_cache_dir",
   ocrTranslate: "ocr_translate",
 } as const;
 
@@ -143,12 +146,24 @@ export interface SubtitleLine {
 
 export interface OcrLine {
   text: string;
+  /** [left, top, right, bottom]（后端已把 OcrBox 对象归一成扁平四元组） */
   box: number[];
+  /** 逐行译文；未翻译时为空串 */
+  translation: string;
 }
 
 export interface OcrResult {
   text: string;
+  /** 整段译文（按行拼接，与 lines 顺序一致） */
+  translation: string;
   lines: OcrLine[];
+  /** 原图尺寸（用于预览缩放校验） */
+  width?: number;
+  height?: number;
+  /** 识别源图路径：预览切到「原图」时用它 */
+  sourcePath: string;
+  ocrElapsedMs?: number;
+  translateElapsedMs?: number;
 }
 
 /* ---------------------------------------------------------------- 事件类型 */
@@ -156,6 +171,7 @@ export interface OcrResult {
 export type BackendEvent =
   | { type: "ready"; version: string }
   | { type: "status"; text: string }
+  | { type: "session"; action: "start" | "stop" }
   | { type: "utterance"; source: string; translation: string }
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }

@@ -32,6 +32,10 @@ export async function loadModels(): Promise<void> {
   });
   models = result?.models ?? [];
   if (result?.modelsRoot) store.patch({ modelsRoot: result.modelsRoot });
+
+  // OCR 临时目录：译后图片要落盘，界面需要知道往哪写
+  const cache = await call<{ path: string }>(CMD.ocrCacheDir);
+  if (cache?.path) store.patch({ cacheRoot: cache.path });
   renderGrid();
 }
 

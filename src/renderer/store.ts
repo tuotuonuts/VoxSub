@@ -19,8 +19,10 @@ export interface AppState {
   sourceLang: string;
   targetLang: string;
   statusText: string;
-  /** 字幕流（稳定终句） */
-  subtitles: Array<{ source: string; translation: string }>;
+  /** 字幕流（稳定终句）。tsMs 是相对会话开始的毫秒数（导出 SRT 用）。 */
+  subtitles: Array<{ source: string; translation: string; tsMs: number }>;
+  /** 会话开始的单调时刻（performance.now()），用于计算每句相对时间 */
+  sessionStartedAt: number | null;
   /** 当前句草稿（原位替换，不进入历史） */
   draft: { source: string; translation: string } | null;
   /** 文件模式进度 */
@@ -32,6 +34,8 @@ export interface AppState {
   recording: boolean;
   /** 模型根目录（由 list_models 回传，供设置页与目录页展示） */
   modelsRoot: string;
+  /** 临时缓存目录（OCR 译后图等落盘位置，由后端回传） */
+  cacheRoot: string;
   /** 更新日志（版本 → 说明），供设置页「关于」渲染 */
   releaseNotes: Array<{ version: string; date?: string; body: string }>;
 }
@@ -49,6 +53,7 @@ function initialState(): AppState {
     targetLang: "zh",
     statusText: "待机",
     subtitles: [],
+    sessionStartedAt: null,
     draft: null,
     progress: null,
     downloads: {},
@@ -56,6 +61,7 @@ function initialState(): AppState {
     theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
     recording: false,
     modelsRoot: "",
+    cacheRoot: "",
     releaseNotes: [],
   };
 }
@@ -82,11 +88,17 @@ class Store {
   /** 追加字幕。同一句草稿转为终句时替换而非追加重复行。 */
   commitSubtitle(source: string, translation: string): void {
     const last = this.state.subtitles[this.state.subtitles.length - 1];
-    const subtitles =
-      last && last.source === source && last.translation === translation
-        ? this.state.subtitles
-        : [...this.state.subtitles, { source, translation }];
-    this.patch({ subtitles, draft: null });
+    if (last && last.source === source && last.translation === translation) {
+      this.patch({ draft: null });
+      return;
+    }
+
+    // 每句带相对时间：SRT/VTT 导出需要真实时间轴，
+    // 用序号乘固定间隔是假的（长句与停顿都会被拉平）。
+    const startedAt = this.state.sessionStartedAt ?? performance.now();
+    const tsMs = Math.max(0, Math.round(performance.now() - startedAt));
+    const subtitles = [...this.state.subtitles, { source, translation, tsMs }];
+    this.patch({ subtitles, draft: null, sessionStartedAt: startedAt });
   }
 
   pushLog(entry: LogEntry): void {
@@ -102,6 +114,14 @@ class Store {
         break;
       case "status":
         this.patch({ statusText: event.text });
+        break;
+      case "session":
+        // 会话开始：重置时间基准，导出时间轴从零算起
+        this.patch({
+          sessionStartedAt: performance.now(),
+          subtitles: [],
+          draft: null,
+        });
         break;
       case "utterance":
         this.commitSubtitle(event.source, event.translation);

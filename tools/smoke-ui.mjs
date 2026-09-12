@@ -199,6 +199,61 @@ console.log("\n=== 主窗：设置页 7 分页 ===");
   }
 }
 
+console.log("\n=== OCR 工作区 ===");
+{
+  const info = await ev(`(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise(r => setTimeout(r, 400));
+    const d = [...document.querySelectorAll('.mode-cell')].find(m => m.dataset.mode === 'd');
+    d?.click();
+    await new Promise(r => setTimeout(r, 1000));
+
+    const tabs = [...document.querySelectorAll('.filter-bar .filter-chip')].map(c => c.textContent);
+    // 切到「截图翻译」
+    [...document.querySelectorAll('.filter-bar .filter-chip')].find(c => c.textContent === '截图翻译')?.click();
+    await new Promise(r => setTimeout(r, 500));
+
+    return {
+      title: document.querySelector('.workspace__title')?.textContent ?? null,
+      tabs,
+      actions: [...document.querySelectorAll('.workspace__actions button')].map(b => b.textContent),
+      hasPreview: Boolean(document.querySelector('.ocr-preview')),
+      previewToggles: [...document.querySelectorAll('.ocr-preview-bar .filter-chip')].map(b => b.textContent),
+      exportDisabled: document.querySelector('.ocr-preview-bar button.btn')?.disabled ?? null,
+      cols: [...document.querySelectorAll('.ocr__col-title')].map(t => t.textContent),
+      copyButtons: [...document.querySelectorAll('.ocr__col-head button')].map(b => b.textContent),
+    };
+  })()`, 12000);
+
+  check("OCR 标题", Boolean(info.title?.includes("OCR")), String(info.title));
+  check("截图/实时分页", info.tabs.includes("截图翻译") && info.tabs.includes("实时区域"), info.tabs.join("/"));
+  check("框选与上传入口", info.actions.includes("框选屏幕并翻译") && info.actions.includes("上传图片并翻译"), info.actions.join("/"));
+  check("预览区已挂载", info.hasPreview, "");
+  check("原图⇄译后切换", info.previewToggles.includes("原图") && info.previewToggles.includes("译后"), info.previewToggles.join("/"));
+  check("无结果时导出禁用", info.exportDisabled === true, String(info.exportDisabled));
+  check("原文/译文对照列", info.cols.includes("识别原文") && info.cols.includes("译文"), info.cols.join("/"));
+  check("两列都有复制按钮", info.copyButtons.filter((t) => t === "复制").length === 2, info.copyButtons.join("/"));
+}
+
+console.log("\n=== 主屏录音与导出 ===");
+{
+  const info = await ev(`(async () => {
+    const a = [...document.querySelectorAll('.mode-cell')].find(m => m.dataset.mode === 'a');
+    a?.click();
+    await new Promise(r => setTimeout(r, 800));
+    return {
+      hasFinishRec: [...document.querySelectorAll('.workspace__actions button')].some(b => b.textContent === '结束并保存'),
+      recordHint: document.querySelector('.rec-hint')?.textContent ?? null,
+      recordSwitch: Boolean(document.querySelector('.switch input')),
+      exportBtn: [...document.querySelectorAll('.workspace__actions button')].map(b => b.textContent),
+    };
+  })()`);
+  check("有「结束并保存」按钮", info.hasFinishRec, "");
+  check("录音说明文案", Boolean(info.recordHint), String(info.recordHint));
+  check("录音开关存在", info.recordSwitch, "");
+  check("导出会话入口", info.exportBtn.includes("导出会话"), info.exportBtn.join("/"));
+}
+
 console.log("\n=== 浮窗 ===");
 if (!overlayPage) {
   check("浮窗可见", false, "未找到浮窗");

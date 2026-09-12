@@ -280,7 +280,12 @@ function boot(): void {
   });
 
   // 主进程可请求打开设置（例如从托盘）
-  window.voxsub?.app.onOpenPage?.((page) => openPage(page as "settings" | "diagnostics"));
+  window.voxsub?.app.onOpenPage?.((page) => openPage(page as PageName));
+
+  // 退出被拦下：说明原因，并停在设置页让用户看到进度
+  window.voxsub?.app.onBlockingTask?.((payload) => {
+    window.alert(payload?.reason ?? "有后台任务正在运行，暂时无法退出。");
+  });
 }
 
 document.addEventListener("DOMContentLoaded", boot);

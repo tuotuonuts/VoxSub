@@ -17,7 +17,10 @@
     "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch",
     "probe:backend": "python tools/probe-backend.py",
     "smoke:ui": "node tools/smoke-ui.mjs",
-    "verify:features": "python tools/compare-qt-features.py"
+    "verify:features": "python tools/compare-qt-features.py",
+    "test:ocr": "python tools/test-ocr-e2e.py",
+    "i18n:add": "python tools/add-i18n-entries.py",
+    "verify": "npm run check && npm run probe:backend && npm run test:ocr"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

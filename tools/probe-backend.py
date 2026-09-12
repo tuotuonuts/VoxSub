@@ -43,7 +43,7 @@ PROBES: list[tuple[str, dict | None, str]] = [
     ("recent_logs", {"limit": 20}, "最近日志"),
     ("export_diagnostics", None, "诊断报告文本"),
     # 配置写入
-    ("set_config", {"updates": {"_probe_marker": "ok"}}, "写配置"),
+    ("set_config", {"updates": {"_probe_marker": "ok"}}, "写配置（非法键应被白名单拒绝）"),
     ("set_mode", {"mode": "a"}, "切模式"),
     ("set_langs", {"source": "auto", "target": "zh"}, "切语言对"),
     # 调优
@@ -113,8 +113,8 @@ def run_probes(only: str | None = None) -> int:
             continue
 
         ok = answer.get("ok") is True
-        # 预期会失败的命令（例如缺图 OCR）只要"优雅报错"就算通过
-        expects_error = cmd == "ocr_recognize"
+        # 预期会被拒绝的命令：只要"优雅报错"（有 error 字符串、不是崩溃）就算通过
+        expects_error = cmd in ("ocr_recognize", "set_config")
 
         if ok or (expects_error and isinstance(answer.get("error"), str)):
             detail = ""

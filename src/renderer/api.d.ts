@@ -58,8 +58,10 @@ export interface VoxSubApi {
     pickImage(): Promise<string | null>;
     pickDirectory(): Promise<string | null>;
     saveReport(): Promise<string | null>;
+    saveImage(): Promise<string | null>;
     saveSession(payload: { lines: unknown[] }): Promise<string | null>;
     openExternal(url: string): Promise<boolean>;
+    revealInFolder(path: string): Promise<boolean>;
   };
   ocr: {
     selectArea(): Promise<string | null>;
@@ -82,6 +84,9 @@ export interface VoxSubApi {
     }>;
     onOpenPage(handler: (page: string) => void): () => void;
     onTrayMode(handler: (mode: string) => void): () => void;
+    requestQuit(): Promise<boolean>;
+    setBusy(busy: boolean, reason?: string): Promise<string>;
+    onBlockingTask(handler: (payload: { reason: string }) => void): () => void;
   };
 }
 

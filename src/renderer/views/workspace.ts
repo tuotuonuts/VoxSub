@@ -15,6 +15,7 @@ let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
 let progressWrap: HTMLElement | null = null;
 let fileLabelEl: HTMLElement | null = null;
+let recordHintEl: HTMLElement | null = null;
 let recordingLabelEl: HTMLElement | null = null;
 
 /** 把一句话渲染成一行对照。草稿行带 is-draft，原位替换而不是新增。 */
@@ -117,13 +118,22 @@ async function exportSession(): Promise<void> {
   if (state.subtitles.length === 0) return;
   const api = window.voxsub;
   if (!api) return;
-  // 主进程负责弹保存框，这里只送内容
-  const lines = state.subtitles.map((line, index) => ({
-    source: line.source,
-    translation: line.translation,
-    startMs: index * 3000,
-    endMs: index * 3000 + 2800,
-  }));
+
+  // 用每句真实的相对时间戳。之前是 index * 3000 的假时间轴，
+  // 会把长句、停顿、快语速全部拉平，导出的 SRT 与录音对不上。
+  const lines = state.subtitles.map((line, index, all) => {
+    const startMs = line.tsMs;
+    const next = all[index + 1];
+    // 结束时间取下一句的开始；最后一句给 3 秒收尾
+    const endMs = next ? Math.max(startMs + 400, next.tsMs) : startMs + 3000;
+    return {
+      source: line.source,
+      translation: line.translation,
+      tsMs: startMs,
+      startMs,
+      endMs,
+    };
+  });
   await api.dialog.saveSession({ lines });
 }
 
@@ -143,7 +153,37 @@ async function toggleRun(): Promise<void> {
 async function stopRun(): Promise<void> {
   await call(CMD.stop);
   const result = await call<{ path: string | null }>(CMD.lastRecording);
-  if (result?.path) store.pushLog({ ts: new Date().toISOString(), level: "INFO", message: `录音已保存: ${result.path}` });
+  if (result?.path) {
+    // 用户可见的确认：录音保存位置不只在日志里，界面也要留痕
+    store.patch({ statusText: `${tr("录音已保存")}：${fileName(result.path)}` });
+  }
+}
+
+/**
+ * 「结束并保存」——手机录音式的收尾动作。
+ *
+ * 与「结束」的区别只在于：用户明确期待看到保存结果。
+ * 底层是同一个 stop（pipeline 内部会关闭录音器并写 WAV），
+ * 但这里必须把路径回报到界面上，否则用户不知道文件去哪了。
+ */
+async function finishRecording(): Promise<void> {
+  store.patch({ statusText: tr("正在结束录音…") });
+  await call(CMD.stop);
+
+  const result = await call<{ path: string | null }>(CMD.lastRecording);
+  if (result?.path) {
+    store.patch({ statusText: `${tr("录音已保存")}：${fileName(result.path)}` });
+    store.pushLog({ ts: new Date().toISOString(), level: "INFO", message: `录音已保存: ${result.path}` });
+    // 让用户在资源管理器里能直接找到
+    void window.voxsub?.dialog.revealInFolder(result.path);
+  } else {
+    store.patch({ statusText: tr("录音未保存（可能未开启同时录音）") });
+  }
+}
+
+function fileName(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
 }
 
 export function buildWorkspace(): HTMLElement {
@@ -190,14 +230,50 @@ export function buildWorkspace(): HTMLElement {
   on(recInput, "change", () => {
     store.patch({ recording: recInput.checked });
     void call(CMD.setRecording, { enabled: recInput.checked });
+    syncRecordHint();
   });
   recSwitch.append(recInput, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
   recordingLabelEl = h("span", { class: "rec-note", hidden: true });
   recordingLabelEl.hidden = true;
   recSwitch.append(recordingLabelEl);
 
-  actions.append(cta, stopBtn, exportBtn, clearBtn, recSwitch);
+  // 「结束并保存」：录音流程的收尾动作。
+  // 与「结束」的区别是它会把已录的 WAV 落盘（Qt 版同样分开两个按钮），
+  // 只有开了录音且会话在跑时才出现。
+  const finishRecBtn = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("结束并保存"),
+    hidden: true,
+  });
+  on(finishRecBtn, "click", () => void finishRecording());
+
+  actions.append(cta, stopBtn, finishRecBtn, exportBtn, clearBtn, recSwitch);
   pane.append(actions);
+
+  // 录音文案：与 Qt 版一致地说明「像手机录音」的三段式操作
+  recordHintEl = h("p", { class: "field__hint rec-hint" });
+  pane.append(recordHintEl);
+
+  /** 录音相关的可见状态：开关关闭→说明只出字幕；开启→说明操作流程。 */
+  function syncRecordHint(): void {
+    const s = store.get();
+    const on = recInput.checked;
+
+    if (recordHintEl) {
+      recordHintEl.textContent = on
+        ? tr("像手机录音：开始 → 暂停 / 继续 → 结束并保存")
+        : tr("仅生成字幕，不保存麦克风音频");
+    }
+    // 「结束并保存」只在录音开启且会话运行时出现
+    finishRecBtn.hidden = !(on && s.running);
+    // 录音只在 A 模式成立（B 是系统声音、C 是文件、D 是 OCR）
+    recInput.disabled = s.mode !== "a";
+    if (s.mode !== "a" && on) {
+      if (recordHintEl) recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
+    }
+  }
+  syncRecordHint();
 
   // ---- C 模式文件区
   const filePanel = h("div", { class: "file-panel" });
@@ -233,6 +309,7 @@ export function buildWorkspace(): HTMLElement {
   window.addEventListener("voxsub:state", () => {
     syncCta();
     filePanel.hidden = store.get().mode !== "c";
+    syncRecordHint();
   });
 
   return pane;
