@@ -57,8 +57,18 @@ VOXSUB_ROOT="D:/OneDrive/app_dve/VoxSub" ./node_modules/.bin/electron .
 ## 校验（交付前必跑）
 
 ```bash
-npm run check          # 类型检查 + 设计令牌契约
-npm run verify:palette # 单独跑令牌契约（对比度 / 色相 / 层级分离）
+npm run check           # 类型检查 + 设计令牌契约
+npm run build           # 构建（prebuild 会先清零宽字符）
+npm run verify:palette  # 令牌契约：对比度 / 色相 / 层级分离
+npm run probe:backend   # 后端能力实测 20 项
+npm run smoke:ui        # 界面冒烟 28 项（需应用带 --remote-debugging-port=9222 运行）
+npm run verify:features # Qt → Electron 功能对照（输出待确认清单）
+```
+
+冒烟与后端实测都需要应用在跑；启动示例：
+
+```bash
+VOXSUB_ROOT="D:/OneDrive/app_dve/VoxSub" ./node_modules/.bin/electron . --remote-debugging-port=9222
 ```
 
 调试用工具：

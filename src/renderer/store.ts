@@ -30,6 +30,10 @@ export interface AppState {
   logs: LogEntry[];
   theme: "dark" | "light";
   recording: boolean;
+  /** 模型根目录（由 list_models 回传，供设置页与目录页展示） */
+  modelsRoot: string;
+  /** 更新日志（版本 → 说明），供设置页「关于」渲染 */
+  releaseNotes: Array<{ version: string; date?: string; body: string }>;
 }
 
 const MAX_LOG_LINES = 400;
@@ -51,6 +55,8 @@ function initialState(): AppState {
     logs: [],
     theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
     recording: false,
+    modelsRoot: "",
+    releaseNotes: [],
   };
 }
 

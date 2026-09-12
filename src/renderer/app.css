@@ -154,9 +154,11 @@ body::before {
   display: grid;
   grid-template-columns: minmax(196px, 224px) minmax(0, 1fr);
   gap: 20px;
-  flex: 0 0 auto;
-  min-height: 296px;
-  max-height: 46vh;
+  /* 字幕是主屏的主角：占满剩余高度，模型目录已移到独立页面。
+     之前这里是 flex: 0 0 auto + max-height: 46vh —— 那是为了让出底部
+     给模型网格，结果最该看的内容只拿到不到一半屏幕。 */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* ------------------------------------------------------- 模式索引（左栏） */
@@ -573,33 +575,79 @@ body::before {
   font-style: italic;
 }
 
-/* ------------------------------------------------------- 模型目录网格 */
-.catalog {
-  flex: 1 1 auto;
-  min-height: 0;
+/* ------------------------------------------------------- 模型目录页 */
+.catalog-page {
   display: flex;
   flex-direction: column;
-  gap: 11px;
-  padding-bottom: 6px;
+  gap: 14px;
+  max-width: 1400px;
 }
 
-.catalog__head {
+.catalog-page__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.catalog-page__title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.catalog-page__sub {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--ink2);
+  max-width: 60ch;
+  line-height: 1.5;
+}
+
+.catalog-page__bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding-bottom: 7px;
+  gap: 12px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--rule);
 }
 
 .catalog__count {
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   color: var(--ink2);
   font-variant-numeric: tabular-nums;
+}
+
+.catalog__disk {
+  font-size: 10px;
+  color: var(--ink2);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 62ch;
 }
 
 .catalog__spacer {
   flex: 1;
 }
+
+/* 整格重排：窄了少放一列，卡片宽度不变 */
+.catalog__sheet {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 11px;
+  align-content: start;
+  padding-bottom: 16px;
+}
+
 
 .filter-bar {
   display: flex;
@@ -1180,4 +1228,49 @@ body::before {
   .catalog__sheet {
     grid-template-columns: repeat(auto-fill, minmax(208px, 1fr));
   }
+}
+
+/* ------------------------------------------------------------ 更新日志 */
+.release-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.release-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.release-item__head {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 12px;
+}
+
+.release-item__date {
+  font-size: 10px;
+  color: var(--ink2);
+  font-variant-numeric: tabular-nums;
+}
+
+.release-item__body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink2);
+  white-space: pre-wrap;
+}
+
+.release-history {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
 }

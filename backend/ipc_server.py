@@ -438,19 +438,103 @@ class BackendService:
         return {"results": results}
 
     def _cmd_export_diagnostics(self, args: dict[str, Any]) -> dict[str, Any]:
+        """导出诊断报告；可附带日志文本（诊断页「导出日志」）。"""
         from voxsub.diagnostics import export_report  # noqa: PLC0415
 
         path = Path(str(args.get("path", "")))
         text = export_report()
+
+        # 日志导出复用同一入口：把日志附在报告之后，而不是另建命令
+        log_text = str(args.get("log_text") or "")
+        if log_text:
+            text = f"{text}\n\n{'=' * 60}\n日志快照\n{'=' * 60}\n{log_text}\n"
+
         if path.parent and str(path) != ".":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
-            return {"path": str(path)}
+            return {"path": str(path), "bytes": len(text.encode("utf-8"))}
         return {"text": text}
 
     def _cmd_recent_logs(self, args: dict[str, Any]) -> dict[str, Any]:
+        """最近的日志。
+
+        source="memory"（默认）读本进程缓冲，响应快、只含本次运行；
+        source="file" 读磁盘 voxsub.log 的尾部，能拿到历史运行记录——
+        排障时用户要的通常是后者（崩溃发生在下次启动之前）。
+        """
         limit = int(args.get("limit", 200) or 200)
-        return {"logs": self._log_buffer[-limit:]}
+        source = str(args.get("source", "memory"))
+
+        if source == "file":
+            from voxsub.logging_setup import tail_log_file  # noqa: PLC0415
+
+            text = tail_log_file(limit)
+            return {"text": text, "source": "file", "lines": len(text.splitlines())}
+
+        return {"logs": self._log_buffer[-limit:], "source": "memory"}
+
+    def _cmd_clear_logs(self, args: dict[str, Any]) -> dict[str, Any]:
+        """清除本机日志文件（保留模型、配置、凭据、已导出报告）。
+
+        与 Qt 版「清除本机日志」语义一致：活动日志就地截断（应用可继续写），
+        历史轮转文件删除。
+        """
+        from voxsub.logging_setup import clear_local_logs  # noqa: PLC0415
+
+        result = clear_local_logs()
+        self._log_buffer.clear()
+        return dict(result) if isinstance(result, dict) else {"cleared": True}
+
+    def _cmd_log_path(self, args: dict[str, Any]) -> dict[str, Any]:
+        """日志文件位置，供界面「打开日志所在文件夹」。"""
+        try:
+            from voxsub.logging_setup import _log_dir  # noqa: PLC0415
+
+            return {"path": str(_log_dir())}
+        except (ImportError, AttributeError):
+            local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            return {"path": str(Path(local) / "VoxSub" / "logs")}
+
+    def _cmd_import_models(self, args: dict[str, Any]) -> dict[str, Any]:
+        """把别处的模型并入当前模型目录（Qt 版「迁移已有模型」）。"""
+        from voxsub.model_catalog import migrate_models  # noqa: PLC0415
+
+        source = Path(str(args.get("source", "")))
+        if not source.is_dir():
+            raise FileNotFoundError(f"源目录不存在：{source}")
+
+        destination = Path(
+            str(args.get("destination") or self._marketplace(args).models_dir)
+        )
+        destination.mkdir(parents=True, exist_ok=True)
+
+        result = migrate_models(source, destination)
+        return {
+            "moved": int(getattr(result, "moved_paths", 0) or 0),
+            "skipped": int(getattr(result, "kept_existing_paths", 0) or 0),
+            "destination": str(destination),
+        }
+
+    def _cmd_release_notes(self, args: dict[str, Any]) -> dict[str, Any]:
+        """更新日志（默认只回最近一版；include_history=True 回全部）。"""
+        from voxsub.ui.release_notes import RELEASE_HISTORY  # noqa: PLC0415
+
+        english = str(args.get("language", "zh")).startswith("en")
+        include_history = bool(args.get("include_history", False))
+        notes = list(RELEASE_HISTORY)
+        if not include_history:
+            notes = notes[:1]
+
+        items = []
+        for note in notes:
+            title = note.title_en if english else note.title_zh
+            body_items = note.items_en if english else note.items_zh
+            items.append({
+                "version": note.version,
+                "title": title,
+                "body": "\n".join(f"· {line}" for line in body_items),
+            })
+        return {"notes": items, "total": len(RELEASE_HISTORY)}
 
     def _cmd_list_devices(self, args: dict[str, Any]) -> dict[str, Any]:
         from voxsub.router import enumerate_devices  # noqa: PLC0415
@@ -482,26 +566,40 @@ class BackendService:
 
     # ================================================================== 文件字幕
     def _cmd_export_subtitles(self, args: dict[str, Any]) -> dict[str, Any]:
-        """导出字幕：格式由扩展名决定（.srt/.vtt/.txt）。"""
-        from voxsub.subtitles import SubtitleLine, write_srt, write_txt, write_vtt  # noqa: PLC0415
+        """导出字幕：格式由扩展名决定（.srt/.vtt/.txt）。
+
+        字段名注意：SubtitleLine 用的是 text / translation / ts_ms，
+        不是 source / start_ms / end_ms（写错会在导出时才炸，静态检查看不出来）。
+        """
+        from voxsub.subtitles import SubtitleLine, SubtitleExporter  # noqa: PLC0415
 
         out = Path(str(args.get("path", "")))
         raw = args.get("lines") or []
-        lines = [
-            SubtitleLine(source=str(item.get("source", "")),
-                         translation=str(item.get("translation", "")),
-                         start_ms=int(item.get("startMs", 0) or 0),
-                         end_ms=int(item.get("endMs", 0) or 0))
-            for item in raw
-        ]
+
+        lines: list[Any] = []
+        for index, item in enumerate(raw):
+            # 逐句时间戳：调用方给了就用，没给就按序号推进（30s/句），
+            # 保证 SRT 的时间轴单调递增而不是全 0。
+            ts_ms = item.get("tsMs")
+            if ts_ms is None:
+                ts_ms = int(item.get("startMs") or index * 30_000)
+            lines.append(
+                SubtitleLine(
+                    text=str(item.get("source", "")),
+                    translation=str(item.get("translation", "")),
+                    ts_ms=int(ts_ms),
+                    is_final=bool(item.get("isFinal", True)),
+                )
+            )
+
         out.parent.mkdir(parents=True, exist_ok=True)
         suffix = out.suffix.lower()
         if suffix == ".txt":
-            write_txt(lines, out)
+            SubtitleExporter.write_txt(lines, out)
         elif suffix == ".vtt":
-            write_vtt(lines, out)
+            SubtitleExporter.write_vtt(lines, out)
         else:
-            write_srt(lines, out)
+            SubtitleExporter.write_srt(lines, out)
         return {"path": str(out), "count": len(lines)}
 
     # ================================================================== OCR
@@ -559,6 +657,7 @@ class BackendService:
 for _name in (
     "list_models", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
+    "clear_logs", "log_path", "import_models", "release_notes",
     "list_devices", "hardware_profile", "list_audio_devices",
     "list_capture_targets", "export_subtitles", "ocr_recognize",
 ):

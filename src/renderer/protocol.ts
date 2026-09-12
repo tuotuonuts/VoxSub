@@ -40,6 +40,11 @@ export const CMD = {
 
   // 模型广场
   listModels: "list_models",
+  clearLogs: "clear_logs",
+  logPath: "log_path",
+  importModels: "import_models",
+  releaseNotes: "release_notes",
+  recentLogs: "recent_logs",
   installModel: "install_model",
   uninstallModel: "uninstall_model",
   modelDir: "model_dir",
@@ -51,7 +56,6 @@ export const CMD = {
   // 诊断
   runSelfCheck: "run_self_check",
   exportDiagnostics: "export_diagnostics",
-  recentLogs: "recent_logs",
   listDevices: "list_devices",
   hardwareProfile: "hardware_profile",
 
@@ -66,6 +70,13 @@ export const CMD = {
 export type CommandName = (typeof CMD)[keyof typeof CMD];
 
 /* ---------------------------------------------------------------- 数据类型 */
+
+export interface ModelCatalogResult {
+  models: ModelEntry[];
+  modelsRoot: string;
+  lookupRoots: string[];
+  diagnostics: string[];
+}
 
 export interface ModelEntry {
   id: string;

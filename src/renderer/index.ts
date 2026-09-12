@@ -18,7 +18,7 @@ import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
 import { buildModelCatalog, refreshDownloads } from "./views/catalog";
 import { buildSettings } from "./views/settings";
-import { buildDiagnostics, refreshLogView } from "./views/diagnostics";
+import { buildDiagnostics, detachDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
 
 type Mode = "a" | "b" | "c" | "d";
@@ -47,7 +47,8 @@ const TARGET_LANGS: ReadonlyArray<readonly [string, string]> = [
 
 let workspaceSlot: HTMLElement | null = null;
 let pageLayer: HTMLElement | null = null;
-let currentPage: "none" | "settings" | "diagnostics" = "none";
+type PageName = "settings" | "diagnostics" | "catalog";
+let currentPage: "none" | PageName = "none";
 
 /* ------------------------------------------------------------- 令牌应用 */
 
@@ -62,17 +63,22 @@ function applyTheme(theme: ThemeName): void {
 
 /* ------------------------------------------------------------- 二级页面 */
 
-function openPage(page: "settings" | "diagnostics"): void {
+function openPage(page: PageName): void {
   if (!pageLayer) return;
   currentPage = page;
   pageLayer.hidden = false;
-  pageLayer.replaceChildren(
-    page === "settings" ? buildSettings() : buildDiagnostics(),
-  );
+  const builders: Record<PageName, () => HTMLElement> = {
+    settings: buildSettings,
+    diagnostics: buildDiagnostics,
+    catalog: buildModelCatalog,
+  };
+  pageLayer.replaceChildren(builders[page]());
 }
 
 function closePage(): void {
   if (!pageLayer) return;
+  // 通知页面内的在途异步回调停止写 DOM（诊断自检要跑 4-6 秒）
+  if (currentPage === "diagnostics") detachDiagnostics();
   currentPage = "none";
   pageLayer.hidden = true;
   pageLayer.replaceChildren();
@@ -181,6 +187,10 @@ function buildTopbar(): HTMLElement {
 
   const actions = h("div", { class: "topbar__actions" });
 
+  const catalogBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("模型") });
+  on(catalogBtn, "click", () => openPage("catalog"));
+  actions.append(catalogBtn);
+
   const settingsBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("设置") });
   on(settingsBtn, "click", () => openPage("settings"));
   actions.append(settingsBtn);
@@ -214,14 +224,14 @@ function render(): void {
   const shell = h("div", { class: "shell" });
   shell.append(buildTopbar());
 
+  // 主体：模式索引 + 工作区。字幕是主角，占满剩余高度；
+  // 模型目录这类低频操作移到独立页面（顶栏进入），不再挤压字幕区。
   const body = h("div", { class: "shell__body" });
   body.append(buildModeIndex());
 
   workspaceSlot = h("div", { class: "workspace-slot" });
   body.append(workspaceSlot);
   shell.append(body);
-
-  shell.append(buildModelCatalog());
 
   pageLayer = h("div", { class: "page-layer", hidden: true });
   shell.append(pageLayer);

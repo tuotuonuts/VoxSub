@@ -24,7 +24,7 @@ body {
   padding: 6px;
 }
 
-/* 外壳：半透明玻璃 + 细描边。透明度由 JS 通过 --overlay-opacity 控制 */
+/* 外壳：半透明 + 细描边。透明度由 JS 通过 --overlay-opacity 控制 */
 .shell {
   position: relative;
   display: flex;
@@ -44,14 +44,16 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-end;
   gap: var(--line-gap, 6px);
   padding: var(--content-padding, 18px);
   border-radius: 12px;
   margin: 5px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
 }
 
+/* ---------------------------------------------------------------- 字幕 */
 .line {
   margin: 0;
   /* 字幕正文是用户/系统数据，本窗口内唯一必须绝对可读的内容 */
@@ -70,21 +72,74 @@ body {
   color: #A9C4E4; /* 冷调提亮，与原译区分且不影响可读性 */
 }
 
-/* 悬停控件：平时淡出，鼠标移入才出现，避免遮挡字幕 */
+/* 回溯历史时缩小并压暗，与当前句区分 */
+body.is-browsing .line {
+  opacity: 0.82;
+}
+
+/* ------------------------------------------------------------ 历史回溯 */
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 42%;
+  overflow: hidden;
+  /* 旧条目从顶部淡出，暗示上方还有内容 */
+  mask-image: linear-gradient(to bottom, transparent, #000 40%);
+}
+
+.history__row {
+  margin: 0;
+  font-size: calc(var(--font-size, 20px) * 0.68);
+  line-height: 1.3;
+  color: #C3CFD4;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------------------------------------------------------------- 工具条 */
 .controls {
   position: absolute;
   top: 6px;
+  left: 6px;
   right: 6px;
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   opacity: 0;
   transition: opacity 140ms ease-out;
   -webkit-app-region: no-drag;
+  pointer-events: none;
 }
 
-.shell:hover .controls,
+.controls__group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 4px;
+  /* 工具条底衬：多个按钮成组时需要一个共同的落脚面 */
+  background: rgba(8, 12, 14, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.controls__group--end {
+  margin-left: auto;
+}
+
+/* 鼠标在窗口内时显示工具条；idle 后淡出 */
+body:not(.is-idle):not(.is-locked) .controls,
 .controls:focus-within {
   opacity: 1;
+  pointer-events: auto;
+}
+
+body.is-locked .controls {
+  display: none;
 }
 
 .ctl {
@@ -93,37 +148,105 @@ body {
   font: inherit;
   font-size: 11px;
   color: #E6ECEC;
-  background: rgba(0, 0, 0, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ctl:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.ctl--mini {
+  min-width: 20px;
+  padding: 0 5px;
+}
+
+.ctl--wide {
+  min-width: 48px;
+}
+
+.ctl__value {
+  min-width: 22px;
+  text-align: center;
+  font-size: 11px;
+  color: #C3CFD4;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctl__label {
+  font-size: 10px;
+  color: #93A3A8;
+  padding: 0 2px;
+}
+
+/* 二级控件（间距面板）挂在同一组内，避免再多一层浮层 */
+.controls__sub {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+/* ------------------------------------------------------------ 下拉菜单 */
+.menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 92px;
+  padding: 3px;
+  border-radius: 4px;
+  background: rgba(8, 12, 14, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  z-index: 5;
+}
+
+.menu__item {
+  text-align: left;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: #E6ECEC;
+  background: transparent;
+  border: none;
   border-radius: 3px;
   cursor: pointer;
 }
 
-.ctl:hover {
-  background: rgba(0, 0, 0, 0.75);
+.menu__item:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
-/* 锁定态：整窗视觉不变，但提示"点不到了" */
-body.is-locked .controls {
-  display: none;
+.menu__item.is-active {
+  color: #6FA8DC;
+  font-weight: 600;
 }
 
+/* ------------------------------------------------------------ 锁定态 */
+/* 锁定后鼠标事件穿透到下层软件，因此这里只做视觉提示：
+   真正的解锁入口是主窗按钮 / 托盘菜单 / 快捷键（主进程侧）。 */
 body.is-locked .shell {
   border-color: rgba(255, 255, 255, 0.18);
   cursor: default;
 }
 
-/* 锁定后仍要能解锁：整窗就是解锁热区 */
-.unlock-hint {
+.locked-panel {
   position: absolute;
-  inset: 0;
-  display: none;
-  place-items: center;
-  font-size: 12px;
-  color: #E6ECEC;
-  background: rgba(0, 0, 0, 0.4);
+  bottom: 4px;
+  right: 8px;
+  -webkit-app-region: no-drag;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
 }
 
-body.is-locked .shell:hover .unlock-hint {
-  display: grid;
+body.is-locked .shell:hover .locked-panel {
+  opacity: 0.7;
 }

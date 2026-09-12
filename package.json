@@ -14,7 +14,10 @@
     "verify:palette": "node tools/verify-palette.mjs",
     "check": "npm run typecheck && npm run verify:palette",
     "start": "npm run build && electron .",
-    "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch"
+    "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch",
+    "probe:backend": "python tools/probe-backend.py",
+    "smoke:ui": "node tools/smoke-ui.mjs",
+    "verify:features": "python tools/compare-qt-features.py"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

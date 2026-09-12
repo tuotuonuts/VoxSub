@@ -6,7 +6,7 @@
  */
 import { h, on, scorePips, percent } from "../dom";
 import { call, store } from "../store";
-import { CMD, type ModelEntry } from "../protocol";
+import { CMD, type ModelCatalogResult, type ModelEntry } from "../protocol";
 import { tr } from "../i18n";
 
 type TaskFilter = "all" | "asr" | "translate" | "tts" | "ocr";
@@ -23,13 +23,15 @@ let filter: TaskFilter = "all";
 let gridEl: HTMLElement | null = null;
 let countEl: HTMLElement | null = null;
 let filterBarEl: HTMLElement | null = null;
+let diskEl: HTMLElement | null = null;
 
 export async function loadModels(): Promise<void> {
   const modelsRoot = document.documentElement.dataset["modelsRoot"] ?? "";
-  const result = await call<{ models: ModelEntry[] }>(CMD.listModels, {
+  const result = await call<ModelCatalogResult>(CMD.listModels, {
     models_root: modelsRoot || null,
   });
   models = result?.models ?? [];
+  if (result?.modelsRoot) store.patch({ modelsRoot: result.modelsRoot });
   renderGrid();
 }
 
@@ -234,24 +236,70 @@ export function refreshDownloads(): void {
   renderGrid();
 }
 
+/**
+ * 模型目录 —— 独立页面。
+ *
+ * 页面化的理由（使用逻辑）：装模型是低频操作，字幕是每次打开都要看的。
+ * 之前把网格塞在首屏底部，等于让低频内容长期占着屏幕、挤压高频内容。
+ *
+ * 页面里提供：标题 + 计数 + 空间提示 + 刷新，按任务筛选，密铺网格。
+ */
 export function buildModelCatalog(): HTMLElement {
-  const section = h("section", { class: "catalog" });
+  const page = h("div", { class: "catalog-page" });
 
-  const head = h("header", { class: "catalog__head" });
-  head.append(h("h2", { class: "catalog__title", text: tr("模型目录") }));
+  const head = h("header", { class: "catalog-page__head" });
+  const titleBox = h("div", { class: "catalog-page__title-box" });
+  titleBox.append(
+    h("h2", { class: "catalog-page__title", text: tr("模型目录") }),
+    h("p", {
+      class: "catalog-page__sub",
+      text: tr("识别、翻译、语音模型按用途分组。下载后即在本机运行，不上传你的音频。"),
+    }),
+  );
+  head.append(titleBox);
+  page.append(head);
+
+  // 工具行：计数 · 空间 · 筛选 · 刷新
+  const bar = h("div", { class: "catalog-page__bar" });
   countEl = h("span", { class: "catalog__count", text: "" });
-  head.append(countEl);
+  diskEl = h("span", { class: "catalog__disk", text: "" });
   const refresh = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新") });
   on(refresh, "click", () => void loadModels());
-  head.append(h("span", { class: "catalog__spacer" }), refresh);
-  section.append(head);
+  bar.append(countEl, diskEl, h("span", { class: "catalog__spacer" }));
+  page.append(bar);
 
   filterBarEl = renderFilterBar();
-  section.append(filterBarEl);
+  page.append(filterBarEl);
 
-  gridEl = h("div", { class: "catalog__sheet" });
-  section.append(gridEl);
+  const sheet = h("div", { class: "catalog__sheet" });
+  gridEl = sheet;
+  page.append(sheet);
 
-  void loadModels();
-  return section;
+  void loadModels().then(updateDiskUsage);
+  return page;
+}
+
+/** 显示模型目录占用，以及已装模型的合计体积。 */
+async function updateDiskUsage(): Promise<void> {
+  if (!diskEl) return;
+  const installedBytes = models
+    .filter((m) => m.installed)
+    .reduce((sum, m) => sum + (m.installedBytes || 0), 0);
+  const totalBytes = models.reduce((sum, m) => sum + (m.sizeBytes || 0), 0);
+
+  const parts: string[] = [];
+  if (installedBytes > 0) parts.push(`${tr("已占")} ${human(installedBytes)}`);
+  if (totalBytes > 0) parts.push(`${tr("全部安装需")} ${human(totalBytes)}`);
+
+  const root = store.get().modelsRoot;
+  if (root) parts.push(root);
+
+  diskEl.textContent = parts.join(" · ");
+  diskEl.title = parts.join("\n");
+}
+
+function human(bytes: number): string {
+  if (bytes >= 1 << 30) return `${(bytes / (1 << 30)).toFixed(2)} GB`;
+  if (bytes >= 1 << 20) return `${(bytes / (1 << 20)).toFixed(0)} MB`;
+  return `${bytes} B`;
 }

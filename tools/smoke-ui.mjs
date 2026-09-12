@@ -1,0 +1,232 @@
+/**
+ * 界面冒烟验证 —— 通过 CDP 逐项检查，不依赖人工点击。
+ *
+ * 为什么单独写脚本而不在命令行塞 JS：
+ *   1) shell 转义会把中文与引号搞乱（多次踩坑）
+ *   2) 需要等待渲染的检查要统一超时，否则会挂住
+ *   3) 结果需要汇总成"通过/失败"清单
+ *
+ * 用法：node tools/smoke-ui.mjs
+ */
+const PORT = 9222;
+
+async function listPages() {
+  const response = await fetch(`http://127.0.0.1:${PORT}/json/list`);
+  return response.json();
+}
+
+/** 在指定窗口里求值；带超时，避免悬空 Promise 挂住整个脚本。 */
+async function evaluate(wsUrl, expression, timeoutMs = 8000) {
+  const socket = new WebSocket(wsUrl);
+  const pending = new Map();
+  let nextId = 1;
+
+  const send = (method, params) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++;
+      pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify({ id, method, params }));
+    });
+
+  socket.addEventListener("message", (event) => {
+    const payload = JSON.parse(event.data);
+    const slot = pending.get(payload.id);
+    if (!slot) return;
+    pending.delete(payload.id);
+    if (payload.error) slot.reject(new Error(JSON.stringify(payload.error)));
+    else slot.resolve(payload.result);
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve);
+    socket.addEventListener("error", reject);
+    setTimeout(() => reject(new Error("WebSocket 连接超时")), timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([
+      send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("求值超时")), timeoutMs)),
+    ]);
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.exception?.description ?? "执行出错");
+    }
+    return result.result.value;
+  } finally {
+    socket.close();
+  }
+}
+
+const checks = [];
+function check(name, ok, detail) {
+  checks.push({ name, ok, detail });
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  — ${detail}` : ""}`);
+}
+
+const pages = await listPages();
+const mainPage = pages.find((p) => p.type === "page" && (p.title ?? "").includes("语幕"));
+const overlayPage = pages.find((p) => p.type === "page" && (p.title ?? "").includes("浮窗"));
+
+if (!mainPage) {
+  console.error("找不到主窗。现有页面：");
+  for (const p of pages) console.error(`  ${p.type}  ${p.title}`);
+  process.exit(1);
+}
+
+const ev = (expr, timeout) => evaluate(mainPage.webSocketDebuggerUrl, expr, timeout);
+
+console.log("\n=== 主窗：主屏布局 ===");
+{
+  const info = await ev(`(() => {
+    const ws = document.querySelector('.workspace');
+    const body = document.querySelector('div[class*=__body]');
+    const cells = document.querySelectorAll('.cell').length;
+    const modes = document.querySelectorAll('.mode-cell').length;
+    const buttons = [...document.querySelectorAll('.topbar__actions button')].map(b => b.textContent);
+    return {
+      workspaceHeight: Math.round(ws?.getBoundingClientRect().height ?? 0),
+      windowHeight: innerHeight,
+      bodyHeight: Math.round(body?.getBoundingClientRect().height ?? 0),
+      gridOnHome: cells,
+      modes,
+      buttons,
+    };
+  })()`);
+  check("模式索引 4 项", info.modes === 4, `${info.modes}`);
+  check(
+    "顶栏含模型入口",
+    info.buttons.includes("模型"),
+    info.buttons.join(" / "),
+  );
+  check(
+    "字幕区占满剩余高度（≥ 窗口 70%）",
+    info.workspaceHeight >= info.windowHeight * 0.7,
+    `${info.workspaceHeight}px / ${info.windowHeight}px`,
+  );
+  check("首屏不再有模型网格", info.gridOnHome === 0, `${info.gridOnHome} 个 .cell`);
+}
+
+console.log("\n=== 主窗：模型目录页 ===");
+{
+  const info = await ev(`(async () => {
+    const btn = [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '模型');
+    btn?.click();
+    await new Promise(r => setTimeout(r, 2200));
+    return {
+      title: document.querySelector('.catalog-page__title')?.textContent ?? null,
+      count: document.querySelector('.catalog__count')?.textContent ?? null,
+      disk: document.querySelector('.catalog__disk')?.textContent ?? null,
+      cells: document.querySelectorAll('.cell').length,
+      installed: document.querySelectorAll('.cell.is-installed').length,
+      filters: [...document.querySelectorAll('.filter-chip')].map(c => c.textContent),
+    };
+  })()`);
+  check("目录页有标题", info.title === "模型目录", String(info.title));
+  check("模型格已渲染", info.cells === 18, `${info.cells} 格`);
+  check("已安装标记生效", info.installed > 0, `${info.installed} 个`);
+  check("空间提示已显示", Boolean(info.disk?.includes("GB")), String(info.disk));
+  check("任务筛选 5 项", info.filters.length === 5, info.filters.join("/"));
+}
+
+console.log("\n=== 主窗：诊断页日志能力 ===");
+{
+  const info = await ev(`(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise(r => setTimeout(r, 400));
+    const btn = [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '诊断');
+    btn?.click();
+    await new Promise(r => setTimeout(r, 1200));
+
+    // 先等自检跑完（4-6 秒），否则切页时旧页还在渲染
+    await new Promise(r => setTimeout(r, 7000));
+    const tabs = [...document.querySelectorAll('.settings__tab')];
+    tabs[1]?.click();
+    await new Promise(r => setTimeout(r, 1800));
+
+    return {
+      tabs: tabs.map(t => t.textContent),
+      actions: [...document.querySelectorAll('.tuning-actions button')].map(b => b.textContent),
+      state: document.querySelector('.tuning-actions__state')?.textContent ?? null,
+      hasLogView: Boolean(document.querySelector('.log-view')),
+    };
+  })()`, 25000);
+  check("诊断页 3 个分页", info.tabs.length === 3, info.tabs.join("/"));
+  check("日志页有导出日志", info.actions.includes("导出日志"), info.actions.join("/"));
+  check("日志页有清除本机日志", info.actions.includes("清除本机日志"), "");
+  check("日志页有打开文件夹", info.actions.includes("打开文件夹"), "");
+  check("实时/历史切换存在", info.actions.includes("实时") && info.actions.includes("历史文件"), "");
+  check("日志视图已挂载", info.hasLogView, "");
+}
+
+console.log("\n=== 主窗：设置页 7 分页 ===");
+{
+  const info = await ev(`(async () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await new Promise(r => setTimeout(r, 400));
+    const btn = [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '设置');
+    btn?.click();
+    await new Promise(r => setTimeout(r, 1400));
+    return {
+      tabs: [...document.querySelectorAll('.settings__tab')].map(t => t.textContent),
+    };
+  })()`);
+  check("设置页含「存储与模型」", info.tabs.includes("存储与模型"), info.tabs.join("/"));
+  check("设置页 7 个分页", info.tabs.length === 7, `${info.tabs.length}`);
+
+  // 逐页点开，确认每页都能渲染出内容
+  const perTab = await ev(`(async () => {
+    const tabs = [...document.querySelectorAll('.settings__tab')];
+    const out = [];
+    for (const tab of tabs) {
+      tab.click();
+      await new Promise(r => setTimeout(r, 450));
+      const pane = document.querySelector('.settings__panes');
+      out.push({
+        tab: tab.textContent,
+        cards: pane?.querySelectorAll('.card').length ?? 0,
+        fields: pane?.querySelectorAll('.field').length ?? 0,
+      });
+    }
+    return out;
+  })()`, 20000);
+
+  for (const item of perTab) {
+    check(
+      `分页「${item.tab}」有内容`,
+      item.cards > 0 || item.fields > 0,
+      `${item.cards} 卡片 / ${item.fields} 字段`,
+    );
+  }
+}
+
+console.log("\n=== 浮窗 ===");
+if (!overlayPage) {
+  check("浮窗可见", false, "未找到浮窗");
+} else {
+  const info = await evaluate(
+    overlayPage.webSocketDebuggerUrl,
+    `(() => {
+      const state = window.__overlayState ? window.__overlayState() : null;
+      const shell = document.body.firstElementChild;
+      const cs = shell ? getComputedStyle(shell) : null;
+      return {
+        size: [innerWidth, innerHeight],
+        background: cs?.backgroundColor ?? null,
+        state,
+        controls: [...document.querySelectorAll('#controls button')].map(b => b.textContent),
+      };
+    })()`,
+  );
+  check("浮窗尺寸", info.size[0] > 0 && info.size[1] > 0, info.size.join("×"));
+  check("半透明生效", String(info.background).includes("0.92"), String(info.background));
+  check(
+    "工具条含字号/显示/间距/历史/锁定",
+    ["A−", "A+", "↑", "↓"].every((t) => info.controls.includes(t)),
+    info.controls.join(" "),
+  );
+  check("内部状态可读", Boolean(info.state), JSON.stringify(info.state));
+}
+
+const failed = checks.filter((c) => !c.ok).length;
+console.log(`\n${checks.length - failed} 通过 / ${failed} 失败 / 共 ${checks.length}`);
+process.exit(failed === 0 ? 0 : 1);

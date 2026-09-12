@@ -21,6 +21,15 @@ let tuningDirty = false;
 export async function loadConfig(): Promise<void> {
   const result = await call<Config>(CMD.getConfig);
   config = result ?? {};
+
+  // 更新日志与配置一起加载：设置页「关于」要用（后端默认只回最近一版）
+  const notes = await call<{ notes: Array<{ version: string; title: string; body: string }> }>(
+    CMD.releaseNotes,
+    { include_history: true, language: currentLanguage() },
+  );
+  if (notes?.notes) {
+    store.patch({ releaseNotes: notes.notes.map((n) => ({ version: n.version, body: n.body })) });
+  }
   tuningDraft = {
     asr_tuning_profile: config["asr_tuning_profile"] ?? "auto",
     asr_vad_threshold: config["asr_vad_threshold"] ?? 0.35,
@@ -351,26 +360,207 @@ function aboutTab(): HTMLElement {
     ]),
   );
 
-  const outputDir = String(config["models_root"] ?? "");
+  // 更新日志：默认只显示最近一版，可展开历史（与原 Qt 版一致）
+  page.append(buildReleaseNotes());
+
+  return page;
+}
+
+/**
+ * 「存储与模型」分页 —— 对应原 Qt settings_window.py 的同名分页。
+ *
+ * 三块内容：模型目录 / OCR 缓存（位置 + 每类保留张数）/ 迁移已有模型。
+ */
+function storageTab(): HTMLElement {
+  const page = h("div", { class: "tab-page" });
+
+  const modelsRoot = String(config["models_root"] ?? "");
+  const modelsMode = String(config["models_root_mode"] ?? "default");
+
+  const pathValue = h("span", {
+    class: "readonly-value",
+    text: modelsRoot || "使用默认位置",
+  });
+  const modeNote = h("p", {
+    class: "field__hint",
+    text:
+      modelsMode === "custom"
+        ? tr("模型保存在自定义位置。更新软件不会清空这个文件夹。")
+        : tr("模型保存在默认位置。可改到其它磁盘以避免占用系统盘。"),
+  });
+
+  const openFolder = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开文件夹") });
+  on(openFolder, "click", () => {
+    const target = modelsRoot || store.get().modelsRoot || "";
+    if (target) void window.voxsub?.dialog.openExternal(`file:///${target.replace(/\\/g, "/")}`);
+  });
+
+  const changeFolder = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("更改保存位置"),
+  });
+  on(changeFolder, "click", async () => {
+    const api = window.voxsub;
+    if (!api) return;
+    const picked = await api.dialog.pickDirectory();
+    if (!picked) return;
+    await saveConfig({ models_root: picked, models_root_mode: "custom" });
+    window.dispatchEvent(new Event("voxsub:settings"));
+  });
+
   page.append(
-    card(tr("模型存储位置"), [
-      field("当前路径", h("span", { class: "readonly-value", text: outputDir || "使用默认位置" })),
-      (() => {
-        const btn = h("button", { class: "btn btn--ghost", type: "button", text: tr("更改位置") });
-        on(btn, "click", async () => {
-          const api = window.voxsub;
-          if (!api) return;
-          const picked = await api.dialog.pickDirectory();
-          if (!picked) return;
-          await saveConfig({ models_root: picked, models_root_mode: "custom" });
-          window.dispatchEvent(new Event("voxsub:settings"));
-        });
-        return btn;
-      })(),
+    card(tr("模型目录"), [
+      h("p", {
+        class: "field__hint",
+        text: tr("识别、翻译、语音模型会按用途整理在这里。更新软件不会清空这个文件夹。"),
+      }),
+      field(tr("当前位置"), pathValue, modeNote.textContent ?? undefined),
+      h("div", { class: "tuning-actions" }, [openFolder, changeFolder]),
+    ]),
+  );
+
+  // ---- OCR 缓存 ----
+  const cacheRoot = String(config["ocr_cache_root"] ?? "");
+  const cacheLimit = Number(config["ocr_cache_limit"] ?? 15);
+
+  const cachePathValue = h("span", {
+    class: "readonly-value",
+    text: cacheRoot || tr("使用默认位置"),
+  });
+
+  const limitInput = h("input", {
+    class: "input",
+    type: "number",
+    min: "0",
+    max: "999",
+    value: String(cacheLimit),
+    style: "max-width: 120px",
+  }) as HTMLInputElement;
+  on(limitInput, "change", () => {
+    const value = Math.max(0, Math.min(999, Math.round(Number(limitInput.value) || 0)));
+    limitInput.value = String(value);
+    void saveConfig({ ocr_cache_limit: value });
+  });
+
+  const openCache = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开缓存") });
+  on(openCache, "click", () => {
+    if (cacheRoot) void window.voxsub?.dialog.openExternal(`file:///${cacheRoot.replace(/\\/g, "/")}`);
+  });
+
+  const changeCache = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("更改缓存位置"),
+  });
+  on(changeCache, "click", async () => {
+    const api = window.voxsub;
+    if (!api) return;
+    const picked = await api.dialog.pickDirectory();
+    if (!picked) return;
+    await saveConfig({ ocr_cache_root: picked });
+    window.dispatchEvent(new Event("voxsub:settings"));
+  });
+
+  page.append(
+    card(tr("OCR 缓存"), [
+      h("p", {
+        class: "field__hint",
+        text: tr("上传/截图原图与译后覆盖图分开保存，绝不写入 C 盘。默认每类保留最近 15 张；设为 0 表示无限保留。"),
+      }),
+      field(tr("当前位置"), cachePathValue),
+      field(tr("每类保留"), limitInput, tr("设为 0 表示无限保留。")),
+      h("div", { class: "tuning-actions" }, [openCache, changeCache]),
+    ]),
+  );
+
+  // ---- 迁移已有模型 ----
+  const importBtn = h("button", {
+    class: "btn btn--ghost",
+    type: "button",
+    text: tr("迁移已有模型"),
+  });
+  const importState = h("span", { class: "tuning-actions__state", text: "" });
+  on(importBtn, "click", async () => {
+    const api = window.voxsub;
+    if (!api) return;
+    const picked = await api.dialog.pickDirectory();
+    if (!picked) return;
+    importState.textContent = tr("正在扫描…");
+    const result = await call<{ moved: number; skipped: number }>(CMD.importModels, {
+      source: picked,
+    });
+    importState.textContent = result
+      ? tr("已并入 {n} 项，跳过 {m} 项").replace("{n}", String(result.moved)).replace("{m}", String(result.skipped))
+      : tr("迁移失败，详见日志");
+  });
+
+  page.append(
+    card(tr("迁移已有模型"), [
+      h("p", {
+        class: "field__hint",
+        text: tr("如果以前把模型放在其他磁盘或手动复制过模型，可从这里把它们并入当前位置。"),
+      }),
+      h("div", { class: "tuning-actions" }, [importBtn, importState]),
     ]),
   );
 
   return page;
+}
+
+/** 更新日志卡片：默认折叠到最近一版（原 Qt 版行为一致）。 */
+function buildReleaseNotes(): HTMLElement {
+  const notes = store.get().releaseNotes;
+  const card = h("div", { class: "card" });
+  card.append(h("h3", { class: "card__title", text: tr("更新日志") }));
+
+  const body = h("div", { class: "card__body" });
+
+  if (!notes || notes.length === 0) {
+    body.append(h("p", { class: "field__hint", text: tr("暂无更新日志") }));
+    card.append(body);
+    return card;
+  }
+
+  const latest = notes[0];
+  const render = (item: (typeof notes)[number]): HTMLElement => {
+    const block = h("div", { class: "release-item" });
+    block.append(
+      h("p", { class: "release-item__head" }, [
+        h("strong", { text: item.version }),
+        h("span", { class: "release-item__date", text: item.date ?? "" }),
+      ]),
+      h("p", { class: "release-item__body", text: item.body }),
+    );
+    return block;
+  };
+
+  if (latest) body.append(render(latest));
+
+  const older = notes.slice(1);
+  if (older.length > 0) {
+    const history = h("div", { class: "release-history", hidden: true });
+    older.forEach((item) => history.append(render(item)));
+
+    const toggle = h("button", {
+      class: "btn btn--ghost btn--sm",
+      type: "button",
+      text: tr("展开历史更新日志（还有 {n} 版）").replace("{n}", String(older.length)),
+    });
+    let expanded = false;
+    on(toggle, "click", () => {
+      expanded = !expanded;
+      history.hidden = !expanded;
+      toggle.textContent = expanded
+        ? tr("收起历史更新日志")
+        : tr("展开历史更新日志（还有 {n} 版）").replace("{n}", String(older.length));
+    });
+
+    body.append(toggle, history);
+  }
+
+  card.append(body);
+  return card;
 }
 
 /** 主题选择：写 dataset 让 CSS 变量切换，同时通知主进程（浮窗跟随）。 */
@@ -389,6 +579,7 @@ export function buildSettings(): HTMLElement {
     [tr("语音"), voiceTab],
     [tr("设备"), devicesTab],
     [tr("识别调优"), tuningTab],
+    [tr("存储与模型"), storageTab],
     [tr("外观"), appearanceTab],
     [tr("关于"), aboutTab],
   ];
