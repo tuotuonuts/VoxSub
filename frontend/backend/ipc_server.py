@@ -535,17 +535,33 @@ class BackendService:
 
     # ================================================================== 音频设备
     def _cmd_list_audio_devices(self, args: dict[str, Any]) -> dict[str, Any]:
+        """列出可选音频设备。
+
+        id 必须是 ``AudioDeviceInfo.id``（WASAPI 端点 ID）—— 这是配置里持久化、
+        也是 ``Pipeline._find_device`` 用来比对的**同一个值**。此前读的是
+        ``device_id``，而 AudioDeviceInfo 没有这个字段，于是回落成设备**名字**：
+        用户在设置里选一次麦克风，写进配置的是名字，开始会话时
+        ``_find_device`` 拿名字去比 WASAPI ID 必然不匹配，直接抛
+        "已选择的麦克风当前不可用，请在设置中重新选择" —— 也就是这个选择
+        功能实际是坏的。
+
+        少数假设备没有端点 ID（``id`` 为空串），此时回落用名字，避免多个设备
+        的 id 都为空而互相撞车。
+        """
         from voxsub.audio import list_loopbacks, list_microphones  # noqa: PLC0415
 
-        mics = []
-        for device in list_microphones(include_loopback=False):
-            mics.append({"id": str(getattr(device, "device_id", "") or device.name),
-                         "name": device.name, "kind": "mic"})
-        loops = []
-        for device in list_loopbacks():
-            loops.append({"id": str(getattr(device, "device_id", "") or device.name),
-                          "name": device.name, "kind": "loopback"})
-        return {"microphones": mics, "loopbacks": loops}
+        def _entry(device: Any, kind: str) -> dict[str, str]:
+            endpoint_id = str(getattr(device, "id", "") or "")
+            return {
+                "id": endpoint_id or str(device.name),
+                "name": str(device.name),
+                "kind": kind,
+            }
+
+        return {
+            "microphones": [_entry(d, "mic") for d in list_microphones(include_loopback=False)],
+            "loopbacks": [_entry(d, "loopback") for d in list_loopbacks()],
+        }
 
     def _cmd_list_capture_targets(self, args: dict[str, Any]) -> dict[str, Any]:
         """可捕获的可见窗口（用于 B 模式按应用隔离）。
@@ -593,21 +609,35 @@ class BackendService:
                          args.get("config") or {})
 
     def _cmd_set_translator(self, pipeline: Any, args: dict[str, Any]) -> None:
-        # 优先接受档位 id（fast/quality/cloud），由后端映射成翻译器 kind ——
-        # 映射规则要看配置（质量档在 translate_model_id=mt-opus-fast-builtin 时
-        # 实际创建的是 OPUS 翻译器），放前端会算错。kind 保留兼容旧调用。
+        """切换翻译档位/模型。
+
+        优先接受档位 id（fast/quality/cloud），由后端映射成翻译器 kind ——
+        映射规则要看配置（质量档在 translate_model_id=mt-opus-fast-builtin 时
+        实际创建的是 OPUS 翻译器），放前端会算错。kind 保留兼容旧调用。
+
+        **参数里的 config 一律先与已保存的配置合并**，再把同一个对象同时用于
+        档位映射和翻译器创建。必要性：两个界面入口都传 `config: {}`——
+          · 设置页点档位单选（只传 tier）
+          · 模型广场选翻译模型（先写 translate_model_id，再传 kind）
+        此前合并结果只用于档位映射，创建时仍用参数里的空 dict，于是
+        factory 拿不到 translate_model_id、退回默认 Qwen 模型 —— 实测两条
+        路径加载的模型不同：启动路径用用户选的 hy-mt2，点一下档位就换成
+        旧模型；在模型广场选完模型也要重启才生效。
+        """
         config = args.get("config") or {}
         tier = args.get("tier")
-        if tier:
+        try:
             from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+            config = {**dict(ConfigStore().load()),
+                      **(config if isinstance(config, dict) else {})}
+        except Exception:  # noqa: BLE001 - 拿不到配置就按传入的算
+            pass
+
+        if tier:
             from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
 
-            merged = config
-            try:
-                merged = {**dict(ConfigStore().load()), **(config if isinstance(config, dict) else {})}
-            except Exception:  # noqa: BLE001 - 拿不到配置就按传入的算
-                pass
-            kind = kind_for_tier(str(tier), merged)
+            kind = kind_for_tier(str(tier), config)
         else:
             kind = str(args.get("kind", "opus-fast"))
         pipeline.set_translator(kind, config)
@@ -1357,10 +1387,10 @@ class BackendService:
         """
         pipeline = self._pipeline
         if pipeline is not None:
+            # 用 Pipeline 的公开只读属性（此前这里 getattr(pipeline, "translator")
+            # 也读错了名字，永远拿不到运行中会话的翻译器）。
             translator = getattr(pipeline, "translator", None)
-            if isinstance(translator, tuple) and len(translator) > 1 and translator[1]:
-                return translator[1]
-            if translator is not None and not isinstance(translator, tuple):
+            if translator is not None:
                 return translator
 
         if getattr(self, "_ocr_translator", None) is not None:
@@ -1395,9 +1425,16 @@ class BackendService:
             return None
 
     def _cmd_ocr_translate(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
-        """把已识别的文本交给当前翻译配置。"""
+        """把已识别的文本交给当前翻译配置。
+
+        必须走 self._translator()：它会依次尝试「运行中会话的翻译器 →
+        OCR 自己的缓存 → 按配置现建一个」。此前这里写的是
+        ``pipeline.translator[1]`` —— 该属性**不存在**（Pipeline 内部叫
+        _translator），于是只要 pipeline 建好过，OCR 翻译就必然抛
+        AttributeError，整个功能不可用。
+        """
         text = str(args.get("text", ""))
-        translator = pipeline.translator[1]
+        translator = self._translator()
         if translator is None or not text:
             return {"translation": ""}
         translation = translator.translate(

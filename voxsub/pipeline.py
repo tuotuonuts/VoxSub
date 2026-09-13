@@ -479,6 +479,23 @@ class Pipeline:
         self._translator = None
         self._trans_kind = None
 
+    # ---- 只读访问器 ----
+
+    @property
+    def translator(self) -> object | None:
+        """当前翻译器实例；尚未创建时为 None。
+
+        供独立工作区取用（OCR 页可能在没点「开始」时就框选屏幕翻译，
+        此时要用运行中会话的翻译器，没有则按配置现建 —— 见
+        ipc_server.BackendService._translator）。
+
+        做成公开属性而不是让调用方读 ``_translator``：内部字段会被
+        换档位/换模型/切模型目录重置，调用方直接读私有名会写错
+        （ipc_server 里就曾写成不存在的 ``pipeline.translator[1]``，
+        导致 OCR 翻译整个不可用）。
+        """
+        return self._translator
+
     # ---- 配置 ----
     @property
     def mode(self) -> str:
@@ -1566,8 +1583,21 @@ class Pipeline:
 
     @staticmethod
     def _find_device(devices: list, device_id: str, label: str) -> object:
+        """按端点 ID 找设备；找不到时回退按名字匹配。
+
+        为什么要有名字回退：界面曾经把设备**名字**当 id 存进配置
+        （见 ipc_server._cmd_list_audio_devices 的说明）。那些已经存了名字的
+        配置如果直接抛错，用户会看到"已选择的麦克风当前不可用"却不知道
+        该改哪里 —— 明明列表里就有这个设备。按名字能匹配上就照常用。
+
+        仍然匹配不到才抛错：那说明设备真的拔了/换了，报错并让用户重选是对的。
+        """
         for info in devices:
             if str(getattr(info.device, "id", "")) == device_id:
+                return info.device
+        for info in devices:
+            if str(getattr(info, "name", "")) == device_id:
+                logger.info("%s按名字匹配到设备（配置里存的是旧格式的设备名）", label)
                 return info.device
         raise RuntimeError(f"已选择的{label}当前不可用，请在设置中重新选择")
 

@@ -59,6 +59,19 @@ def isolated_config(tmp_path, monkeypatch):
     return tmp_path
 
 
+def write_config(**overrides):
+    """写一份配置到隔离的 LOCALAPPDATA，返回 store。
+
+    模块级而不是某个测试类的方法：多个测试类都要用（提成方法会变成
+    "另一个类里调不到"的假失败）。
+    """
+    from voxsub.config_store import ConfigStore
+
+    store = ConfigStore()
+    store.update(overrides)
+    return store
+
+
 # ------------------------------------------------------- 调优键名归一化
 
 
@@ -258,3 +271,109 @@ class TestApplySavedConfig:
         pipeline = service.ensure_pipeline()
 
         assert pipeline._requested_trans_kind == "qwen-quality"  # noqa: SLF001
+
+
+class TestSetTranslatorHonorsSavedConfig:
+    """切换档位/模型时，已保存的模型选择必须传下去。
+
+    用户报告"快档不支持 ja→zh"排查时顺带实测到的第二个问题：
+    界面两个入口都传 `config: {}`——
+      · 设置页点档位单选（只传 tier）
+      · 模型广场选翻译模型（先写 translate_model_id，再传 kind）
+    此前合并后的配置只用于"档位→kind"的映射，创建翻译器时仍用参数里的空
+    dict，factory 拿不到 translate_model_id 就退回默认 Qwen 模型。实测两条
+    路径加载的文件不同：
+      启动路径 → hy-mt2-1.8b-q8（用户选的）
+      点一次档位 → legacy-llm/qwen2.5-1.5b-instruct-q4_k_m（旧模型）
+    也就是说：点一下档位单选就把用户选的模型换掉了；在模型广场选完模型
+    还要重启才生效。
+    """
+
+    USER_MODEL = "mt-hy-mt2-1.8b-q8"
+
+    @staticmethod
+    def _capture_loader(monkeypatch):
+        """拦截 _load_translator，记录它收到的 (kind, config)。"""
+        import voxsub.pipeline as pipeline_module
+
+        calls: list[tuple[str, dict]] = []
+
+        class _Stub:
+            langs = ("zh", "en", "ja", "ko")
+
+            def supports(self, src, dst):
+                return True
+
+            def translate(self, text, src, dst, **kw):
+                return text
+
+            def close(self):
+                pass
+
+        def fake_load(kind, config=None):
+            calls.append((kind, dict(config or {})))
+            return _Stub(), kind
+
+        monkeypatch.setattr(pipeline_module, "_load_translator", fake_load)
+        return calls
+
+    def _write_and_build(self, isolated_config, monkeypatch):
+        write_config(translate_tier="quality", translate_model_id=self.USER_MODEL)
+        calls = self._capture_loader(monkeypatch)
+        pipeline = ipc_server.BackendService().ensure_pipeline()
+        calls.clear()
+        return pipeline, calls
+
+    def test_tier_path_keeps_saved_model(self, isolated_config, monkeypatch):
+        """设置页点档位单选（传 config={}）不能丢掉已选的模型。"""
+        pipeline, calls = self._write_and_build(isolated_config, monkeypatch)
+        pipeline.set_langs("ja", "zh")
+        service = ipc_server.BackendService()
+        service._pipeline = pipeline  # noqa: SLF001
+
+        service._cmd_set_translator(pipeline, {"tier": "quality", "config": {}})  # noqa: SLF001
+        pipeline._ensure_translator()  # noqa: SLF001
+
+        assert calls, "没有调用翻译器加载"
+        kind, config = calls[-1]
+        assert kind == "qwen-quality", kind
+        assert config.get("translate_model_id") == self.USER_MODEL, (
+            f"加载器拿到的配置里没有用户选的模型：{config.get('translate_model_id')!r}")
+
+    def test_kind_path_keeps_saved_model(self, isolated_config, monkeypatch):
+        """模型广场选翻译模型（传 kind）也要用刚保存的模型，不必重启。"""
+        pipeline, calls = self._write_and_build(isolated_config, monkeypatch)
+        pipeline.set_langs("ja", "zh")
+        service = ipc_server.BackendService()
+        service._pipeline = pipeline  # noqa: SLF001
+
+        service._cmd_set_translator(pipeline, {"kind": "qwen-quality", "config": {}})  # noqa: SLF001
+        pipeline._ensure_translator()  # noqa: SLF001
+
+        _, config = calls[-1]
+        assert config.get("translate_model_id") == self.USER_MODEL, config.get("translate_model_id")
+
+    def test_explicit_config_wins_over_saved(self, isolated_config, monkeypatch):
+        """显式传进来的配置项优先级更高（合并顺序不能反过来）。"""
+        pipeline, calls = self._write_and_build(isolated_config, monkeypatch)
+        service = ipc_server.BackendService()
+        service._pipeline = pipeline  # noqa: SLF001
+
+        service._cmd_set_translator(  # noqa: SLF001
+            pipeline, {"tier": "quality", "config": {"translate_model_id": "别的模型"}})
+        pipeline._ensure_translator()  # noqa: SLF001
+
+        _, config = calls[-1]
+        assert config.get("translate_model_id") == "别的模型", config.get("translate_model_id")
+
+    def test_no_config_arg_still_uses_saved(self, isolated_config, monkeypatch):
+        """完全不传 config（None）时同样要用保存的模型。"""
+        pipeline, calls = self._write_and_build(isolated_config, monkeypatch)
+        service = ipc_server.BackendService()
+        service._pipeline = pipeline  # noqa: SLF001
+
+        service._cmd_set_translator(pipeline, {"tier": "quality"})  # noqa: SLF001
+        pipeline._ensure_translator()  # noqa: SLF001
+
+        _, config = calls[-1]
+        assert config.get("translate_model_id") == self.USER_MODEL
