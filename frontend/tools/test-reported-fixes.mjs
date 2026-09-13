@@ -261,12 +261,27 @@ try {
           `${cloud.stt?.selects.length} 个下拉`);
 
     // ---- 还原
-    const sw3 = await switchProvider(original);
-    check("#3", `还原为用户原本的选择（${original}）`, sw3.ok === true, JSON.stringify(sw3));
+    // 用 set_config 直接写回，而不是再点一次单选。
+    //
+    // 为什么：单选点击会走 saveConfig（即时写配置），依赖点击时序；
+    // 一旦中途出错或超时，用户的配置就留在测试值上了。直接写回最可靠。
+    const restored = await main.ev(`(async () => {
+      const r = await window.voxsub.backend.command('set_config', {
+        updates: { stt_provider: ${JSON.stringify(original)} },
+      });
+      return String(r?.data?.stt_provider ?? '');
+    })()`);
+    check("#3", `还原为用户原本的选择（${original}）`, restored === original,
+          `实际 ${restored}`);
 
     } finally {
-      // 异常路径的兜底还原（正常路径已在上面还原过，重复设置同一个值是幂等的）
-      await switchProvider(original).catch(() => undefined);
+      // 异常路径的兜底还原（正常路径已在上面还原过，重复写同一个值是幂等的）
+      await main.ev(`(async () => {
+        await window.voxsub.backend.command('set_config', {
+          updates: { stt_provider: ${JSON.stringify(original)} },
+        });
+        return 'ok';
+      })()`).catch(() => undefined);
     }
   }
 

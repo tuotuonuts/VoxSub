@@ -6,7 +6,7 @@
  */
 import { h, on } from "../dom";
 import { call, store } from "../store";
-import { CMD, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry } from "../protocol";
+import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
 
@@ -24,6 +24,12 @@ let configReady = false;
 /** 调优草稿：只有点保存才写回，避免逐项写配置造成抖动。 */
 let tuningDraft: Record<string, unknown> = {};
 let tuningDirty = false;
+/**
+ * 识别调优的元数据（后端提供：预设值 / 各档可改键 / 当前生效值）。
+ *
+ * 拿不到时退化为"全部可改"，不阻断界面 —— 灰化是提示，不该让设置页打不开。
+ */
+let tuningMeta: AsrTuningMeta | null = null;
 
 export async function loadConfig(): Promise<void> {
   const result = await call<Config>(CMD.getConfig);
@@ -33,6 +39,14 @@ export async function loadConfig(): Promise<void> {
   // 与配置一起取，保证下拉里的"已安装模型"和真实情况一致。
   const catalog = await call<{ models: ModelEntry[] }>(CMD.listModels, { models_root: null });
   models = catalog?.models ?? [];
+
+  // 调优元数据：界面据此决定哪些项要置灰、以及该显示哪个值。
+  // 失败时不抛错 —— 拿不到就退化为"全部可改"，灰化只是提示。
+  try {
+    tuningMeta = await call<AsrTuningMeta>(CMD.asrTuningMeta);
+  } catch {
+    tuningMeta = null;
+  }
 
   // 更新日志与配置一起加载：设置页「关于」要用（后端默认只回最近一版）
   const notes = await call<{ notes: Array<{ version: string; title: string; body: string }> }>(
@@ -91,11 +105,22 @@ async function saveConfig(updates: Config): Promise<void> {
 
 /* ------------------------------------------------------------ 通用控件 */
 
-function field(label: string, control: HTMLElement, hint?: string): HTMLElement {
-  const wrap = h("div", { class: "field" });
+/**
+ * 字段容器。
+ *
+ * `disabledBy` 非空时表示"这一项当前不可改"，并给出被谁接管 ——
+ * 只把控件置灰而不说原因，用户会以为界面坏了；说清"由预设决定"才可理解。
+ */
+function field(label: string, control: HTMLElement, hint?: string, disabledBy?: string): HTMLElement {
+  const wrap = h("div", { class: disabledBy ? "field is-locked" : "field" });
   wrap.append(h("label", { class: "field__label", text: label }));
   wrap.append(control);
-  if (hint) wrap.append(h("p", { class: "field__hint", text: hint }));
+  const notes: string[] = [];
+  if (disabledBy) notes.push(disabledBy);
+  if (hint) notes.push(hint);
+  for (const note of notes) {
+    wrap.append(h("p", { class: "field__hint", text: note }));
+  }
   return wrap;
 }
 
@@ -363,6 +388,27 @@ function devicesTab(): HTMLElement {
   return page;
 }
 
+/**
+ * 识别调优分页。
+ *
+ * ## 为什么有些项要置灰
+ *
+ * 后端只有部分参数在任何档位下都生效。逐条核对过后端调用点：
+ *
+ *   · vad_threshold / silence_ms / max_utterance_ms / beam_paths
+ *     在预设档下由 ASR_TUNING_PRESETS 覆盖，**只有"自定义"档才读用户值** ——
+ *     选了"智能上下文"还去调"语音灵敏度"，改了等于没改。
+ *   · context_hold_ms / context_correction / live_draft_enabled / filler_mode
+ *     只作用于 ContextualTextProcessor，而它**仅在"智能上下文"档创建**。
+ *   · hotwords / max_new_tokens 有非上下文的生效路径，任何时候都可改。
+ *
+ * 所以本分页按当前档位置灰不可改的项。规则与预设值都来自后端元数据
+ * （asr_tuning_meta 命令），前端不硬编码 —— 否则改了一处忘另一处，又会出现
+ * "界面显示的值和实际跑的值对不上"。
+ *
+ * 置灰项显示的是**实际生效值**（预设值），而不是用户存的值：显示一个不生效
+ * 的数字比置灰更糟。用户存的值仍保留在草稿里，切回"自定义"就会回来。
+ */
 function tuningTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
 
@@ -382,6 +428,63 @@ function tuningTab(): HTMLElement {
     ["custom", "自定义"],
   ];
 
+  // 切换档位会改变"哪些项可改"与"置灰项显示什么值"，整体重建最不容易漏。
+  // 草稿在模块级变量里，重建不会丢未保存的编辑。
+  const rebuild = (): void => {
+    page.replaceChildren(...buildTuningContent(page, profiles, rebuild));
+  };
+  rebuild();
+  return page;
+}
+
+/** 识别调优分页的全部内容。抽出来是为了档位切换时能整体重建。 */
+function buildTuningContent(
+  page: HTMLElement,
+  profiles: ReadonlyArray<readonly [string, string]>,
+  rebuild: () => void,
+): HTMLElement[] {
+  const profile = normalizeProfile(tuningDraft["asr_tuning_profile"]);
+  const editable = new Set(tuningMeta?.editable?.[profile] ?? []);
+  const controlled = new Set(tuningMeta?.controlled ?? []);
+
+  /**
+   * 该键在当前档位下是否可改。
+   *
+   * 两层判断，缺一不可：
+   *   · 不受档位控制的键（hotwords、max_new_tokens）任何档位都可改；
+   *   · 受控制的键只在当前档位的 editable 列表里才可改。
+   *
+   * 元数据拿不到时一律视为可改 —— 置灰只是提示，不该把界面锁死。
+   */
+  const canEdit = (key: string): boolean => {
+    if (!tuningMeta) return true;
+    if (!controlled.has(key)) return true;
+    return editable.has(key);
+  };
+
+  /** 该键显示的值。被预设管理的项显示**实际生效值**，其余显示草稿值。 */
+  const displayValue = (key: string): unknown => {
+    if (!canEdit(key)) {
+      const preset = tuningMeta?.presets?.[profile]?.[key];
+      if (preset !== undefined) return preset;
+    }
+    return tuningDraft[key];
+  };
+
+  /** 置灰原因。按"这个键在哪些档位可改"生成，避免一句笼统的"不可用"。 */
+  const lockedReason = (key: string): string => {
+    const where = Object.entries(tuningMeta?.editable ?? {})
+      .filter(([, keys]) => keys.includes(key))
+      .map(([name]) => name);
+    if (where.length === 1 && where[0] === "context") {
+      return tr("仅「智能上下文」档可用");
+    }
+    if (where.length === 1 && where[0] === "custom") {
+      return tr("由当前预设决定；切到「自定义」可自行调整");
+    }
+    return tr("当前档位下不可调整");
+  };
+
   const markDirty = (): void => {
     tuningDirty = true;
     const bar = page.querySelector<HTMLElement>(".tuning-actions__state");
@@ -389,60 +492,85 @@ function tuningTab(): HTMLElement {
   };
 
   const numField = (key: string, label: string, min: number, max: number, step: number, hint?: string): HTMLElement => {
+    const locked = !canEdit(key);
     const input = h("input", {
       class: "input input--num",
       type: "number",
-      value: String(tuningDraft[key] ?? ""),
+      value: String(displayValue(key) ?? ""),
       min: String(min),
       max: String(max),
       step: String(step),
     });
+    if (locked) input.disabled = true;
     on(input, "change", () => {
       tuningDraft[key] = Number(input.value);
       markDirty();
     });
-    return field(label, input, hint);
+    return field(label, input, hint, locked ? lockedReason(key) : undefined);
   };
 
-  page.append(
-    card(tr("识别调优"), [
-      h("p", { class: "field__hint", text: "这里调整的是模型如何听、何时断句，不会重新训练模型。该设置同时用于 A/B/C 三种模式。" }),
-      field(tr("调优预设"), select(normalizeProfile(tuningDraft["asr_tuning_profile"]), profiles, (v) => {
-        tuningDraft["asr_tuning_profile"] = v;
-        markDirty();
-      })),
-      numField("asr_vad_threshold", "语音灵敏度", 0, 1, 0.01, "越高越不容易把背景噪声当成说话"),
-      numField("asr_silence_ms", "停顿多久断句", 100, 3000, 50, "说完后静音多久算一句话结束"),
-      numField("asr_max_utterance_ms", "单句最长时长", 2000, 60000, 500, "超过这个时长会强制断句"),
-      numField("asr_beam_paths", "识别候选数", 1, 12, 1, "越大越准，但更慢"),
-      numField("asr_max_new_tokens", "单句最大文字量", 64, 4096, 64),
-      field(tr("常用词 / 专有名词"), textInput(String(tuningDraft["asr_hotwords"] ?? ""), (v) => {
-        tuningDraft["asr_hotwords"] = v;
-        markDirty();
-      }, { placeholder: "用逗号分隔" })),
-    ]),
-  );
+  const boolField = (key: string, label: string): HTMLElement => {
+    const locked = !canEdit(key);
+    const wrap = h("label", { class: "switch" });
+    const input = h("input", { type: "checkbox" });
+    input.checked = Boolean(displayValue(key));
+    if (locked) input.disabled = true;
+    on(input, "change", () => {
+      tuningDraft[key] = input.checked;
+      markDirty();
+    });
+    wrap.append(input, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: label }));
+    if (!locked) return wrap;
+    // 置灰时包一层容器放原因。不复用 field()：开关自己已经带标签，
+    // 再套一层会出现两个标题。
+    const box = h("div", { class: "field is-locked" });
+    box.append(wrap, h("p", { class: "field__hint", text: lockedReason(key) }));
+    return box;
+  };
 
-  page.append(
-    card("智能上下文", [
-      numField("asr_context_hold_ms", "上下文最长等待", 0, 4000, 100, "句子可能没说完时，最多多等多久"),
-      toggleSwitch(Boolean(tuningDraft["asr_live_draft_enabled"]), "实时双语草稿", (v) => {
-        tuningDraft["asr_live_draft_enabled"] = v;
-        markDirty();
-      }),
-      toggleSwitch(Boolean(tuningDraft["asr_context_correction"]), "上下文保守纠偏", (v) => {
-        tuningDraft["asr_context_correction"] = v;
-        markDirty();
-      }),
-      field("语气词清理", select(String(tuningDraft["asr_filler_mode"] ?? "light"), [
-        ["off", "关闭（保留原话）"],
-        ["light", "轻度（仅独立语气词）"],
-      ], (v) => {
-        tuningDraft["asr_filler_mode"] = v;
-        markDirty();
-      })),
+  const selectField = (
+    key: string,
+    label: string,
+    options: ReadonlyArray<readonly [string, string]>,
+  ): HTMLElement => {
+    const locked = !canEdit(key);
+    const sel = select(String(displayValue(key) ?? ""), options, (v) => {
+      tuningDraft[key] = v;
+      markDirty();
+    });
+    if (locked) sel.disabled = true;
+    return field(label, sel, undefined, locked ? lockedReason(key) : undefined);
+  };
+
+  const tuningCard = card(tr("识别调优"), [
+    h("p", { class: "field__hint", text: "这里调整的是模型如何听、何时断句，不会重新训练模型。该设置同时用于 A/B/C 三种模式。" }),
+    field(tr("调优预设"), select(profile, profiles, (v) => {
+      tuningDraft["asr_tuning_profile"] = v;
+      markDirty();
+      // 换档位会改变哪些项可改，立即重建界面（草稿保留，不丢未保存的编辑）
+      rebuild();
+    })),
+    numField("asr_vad_threshold", "语音灵敏度", 0, 1, 0.01, "越高越不容易把背景噪声当成说话"),
+    numField("asr_silence_ms", "停顿多久断句", 100, 3000, 50, "说完后静音多久算一句话结束"),
+    numField("asr_max_utterance_ms", "单句最长时长", 2000, 60000, 500, "超过这个时长会强制断句"),
+    numField("asr_beam_paths", "识别候选数", 1, 12, 1, "越大越准，但更慢"),
+    numField("asr_max_new_tokens", "单句最大文字量", 64, 4096, 64),
+    field(tr("常用词 / 专有名词"), textInput(String(displayValue("asr_hotwords") ?? ""), (v) => {
+      tuningDraft["asr_hotwords"] = v;
+      markDirty();
+    }, { placeholder: "用逗号分隔" })),
+  ]);
+
+  const contextCard = card("智能上下文", [
+    h("p", { class: "field__hint", text: "下面几项只在「智能上下文」档生效；其他档位下它们不会参与识别。" }),
+    numField("asr_context_hold_ms", "上下文最长等待", 0, 4000, 100, "句子可能没说完时，最多多等多久"),
+    boolField("asr_live_draft_enabled", "实时双语草稿"),
+    boolField("asr_context_correction", "上下文保守纠偏"),
+    selectField("asr_filler_mode", "语气词清理", [
+      ["off", "关闭（保留原话）"],
+      ["light", "轻度（仅独立语气词）"],
     ]),
-  );
+  ]);
 
   const actions = h("div", { class: "tuning-actions" });
   const stateEl = h("span", { class: "tuning-actions__state", text: tuningDirty ? "有未保存的更改" : "未修改" });
@@ -458,9 +586,8 @@ function tuningTab(): HTMLElement {
     void loadConfig().then(() => window.dispatchEvent(new Event("voxsub:settings")));
   });
   actions.append(stateEl, h("span", { class: "catalog__spacer" }), resetBtn, saveBtn);
-  page.append(actions);
 
-  return page;
+  return [tuningCard, contextCard, actions];
 }
 
 function appearanceTab(): HTMLElement {

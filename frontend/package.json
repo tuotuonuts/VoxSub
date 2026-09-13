@@ -44,7 +44,8 @@
     "test:launcher-cleanup": "node tools/test-launcher-cleanup.mjs",
     "test:launcher-e2e": "node tools/test-launcher-cleanup-e2e.mjs",
     "test:overlay-display": "node tools/test-overlay-display-mode.mjs",
-    "test:session": "node tools/test-session-controls.mjs"
+    "test:session": "node tools/test-session-controls.mjs",
+    "test:tuning-lock": "node tools/test-tuning-lock.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

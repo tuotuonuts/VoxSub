@@ -10,6 +10,10 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "仅「智能上下文」档可用": "Only available in the Smart context profile",
+  "由当前预设决定；切到「自定义」可自行调整": "Set by the current profile; switch to Custom to adjust it yourself",
+  "当前档位下不可调整": "Not adjustable in the current profile",
+  "下面几项只在「智能上下文」档生效；其他档位下它们不会参与识别。": "The items below only apply to the Smart context profile; other profiles ignore them.",
   "会话进行中，请先结束后再切换模式": "A session is running — stop it before switching modes",
   "结束后保存为 WAV，放在本机录音文件夹": "Saved as a WAV in this machine's recordings folder when you stop",
   "识别模型": "Speech model",

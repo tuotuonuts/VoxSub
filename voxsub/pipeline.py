@@ -18,7 +18,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import numpy as np
 
@@ -57,6 +57,164 @@ _CAPTURE_QUEUE_MAX = 20_000       # 10 minutes at 30 ms/chunk
 _RECOGNITION_QUEUE_MAX = 16       # complete utterance waveforms can be large
 _CONTEXT_QUEUE_MAX = 128          # decoded acoustic fragments awaiting semantics
 _TRANSLATION_QUEUE_MAX = 128      # text only, but must never grow forever
+
+# ---------------------------------------------------------------- 调优预设
+#
+# 这四个档位各自固定一组基础参数。定义在模块级而不是 _effective_asr_tuning
+# 内部，是因为界面也要用它们 —— 档位非 custom 时，用户存的基础参数**不会生效**
+# （被这里覆盖），界面必须显示这里的目标值，否则用户看到 0.35 而实际跑 0.32。
+ASR_TUNING_PRESETS: dict[str, dict[str, float | int]] = {
+    "responsive": {"vad_threshold": 0.45, "silence_ms": 350,
+                   "max_utterance_ms": 6000, "beam_paths": 2},
+    "balanced": {"vad_threshold": 0.35, "silence_ms": 650,
+                 "max_utterance_ms": 12000, "beam_paths": 4},
+    "accuracy": {"vad_threshold": 0.25, "silence_ms": 900,
+                 "max_utterance_ms": 20000, "beam_paths": 6},
+    "context": {"vad_threshold": 0.32, "silence_ms": 500,
+                "max_utterance_ms": 18000, "beam_paths": 6},
+}
+
+# 受档位控制的参数（键名同配置，不带 asr_ 前缀）。
+#
+# 只有这些键会被档位限制；不在表里的键（hotwords、max_new_tokens）**任何档位
+# 都可改** —— 它们有非上下文的生效路径（生成式 ASR 直接读，见 asr.py）。
+#
+# 每条依据都核对过后端调用点：
+#   · 四个基础参数在预设档下由 ASR_TUNING_PRESETS 覆盖，只有 custom 才走用户值。
+#   · context_hold_ms / context_correction / filler_mode 只传给
+#     ContextualTextProcessor，而它仅在 context 档创建。
+#   · live_draft_enabled 由 _live_draft_enabled() 读，该函数要求
+#     profile == "context"。
+PROFILE_CONTROLLED_KEYS: frozenset[str] = frozenset({
+    "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
+    "context_hold_ms", "context_correction", "live_draft_enabled", "filler_mode",
+})
+
+# 每个档位下，上述受控参数中**用户仍可改**的那些。
+PROFILE_EDITABLE_KEYS: dict[str, frozenset[str]] = {
+    "responsive": frozenset(),
+    "balanced": frozenset(),
+    "accuracy": frozenset(),
+    "context": frozenset({
+        "context_hold_ms", "context_correction", "live_draft_enabled", "filler_mode",
+    }),
+    "custom": frozenset({
+        "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
+    }),
+}
+
+
+def asr_tuning_metadata() -> dict[str, object]:
+    """界面所需的调优元数据（单一来源，避免前端硬编码后与后端漂移）。
+
+    返回的键名一律带 ``asr_`` 前缀，与配置文件、界面控件一致 ——
+    内部用短名，只在跨层时统一。
+
+    三项内容：
+      · presets    —— 每个预设档位固定的基础参数值
+      · controlled —— 受档位控制的键（不在其中的键任何档位都可改）
+      · editable   —— 每个档位下 controlled 里仍可改的子集
+    """
+    return {
+        "presets": {
+            profile: {f"asr_{key}": value for key, value in values.items()}
+            for profile, values in ASR_TUNING_PRESETS.items()
+        },
+        "controlled": sorted(f"asr_{key}" for key in PROFILE_CONTROLLED_KEYS),
+        "editable": {
+            profile: sorted(f"asr_{key}" for key in keys)
+            for profile, keys in PROFILE_EDITABLE_KEYS.items()
+        },
+    }
+
+
+# 配置键 ↔ 内部调优键的映射。界面与配置文件用 asr_ 前缀，pipeline 内部用短名。
+TUNING_KEY_MAP: dict[str, str] = {
+    "asr_tuning_profile": "profile",
+    "asr_vad_threshold": "vad_threshold",
+    "asr_silence_ms": "silence_ms",
+    "asr_max_utterance_ms": "max_utterance_ms",
+    "asr_beam_paths": "beam_paths",
+    "asr_max_new_tokens": "max_new_tokens",
+    "asr_hotwords": "hotwords",
+    "asr_context_hold_ms": "context_hold_ms",
+    "asr_live_draft_enabled": "live_draft_enabled",
+    "asr_context_correction": "context_correction",
+    "asr_filler_mode": "filler_mode",
+}
+
+# effective_tuning_for 报告哪些键（顺序即界面顺序，便于人工核对）
+_EFFECTIVE_UI_KEYS: tuple[str, ...] = (
+    "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
+    "max_new_tokens", "hotwords",
+    "context_hold_ms", "live_draft_enabled", "context_correction", "filler_mode",
+)
+
+
+def tuning_from_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """从配置字典提取调优参数，转成 pipeline 内部的短名。"""
+    return {
+        short: config[key]
+        for key, short in TUNING_KEY_MAP.items()
+        if key in config
+    }
+
+
+def resolve_tuning_values(tuning: Mapping[str, Any], generative: bool) -> dict[str, Any]:
+    """把档位 + 用户参数解析成具体生效值。
+
+    提成模块级函数（原本是 Pipeline 的实例方法）是为了让**界面也能算**：
+    界面需要显示"这一项现在实际是多少"，而那取决于配置里的档位，不是
+    pipeline 实例的内存状态（实例可能还没启动过，`_asr_tuning` 还是构造时的
+    默认值 —— 实测踩到：配置是 context，报告出来的却是 auto 档的 0.5/4）。
+    """
+    profile = str(tuning.get("profile", "auto"))
+    if profile == "auto":
+        values = ({"vad_threshold": 0.35, "silence_ms": 700,
+                   "max_utterance_ms": 12000, "beam_paths": 4}
+                  if generative else
+                  {"vad_threshold": 0.5, "silence_ms": 350,
+                   "max_utterance_ms": 4500, "beam_paths": 4})
+    elif profile in ASR_TUNING_PRESETS:
+        values = dict(ASR_TUNING_PRESETS[profile])
+    else:
+        values = {
+            "vad_threshold": float(tuning.get("vad_threshold", 0.35)),
+            "silence_ms": int(tuning.get("silence_ms", 650)),
+            "max_utterance_ms": int(tuning.get("max_utterance_ms", 12000)),
+            "beam_paths": int(tuning.get("beam_paths", 4)),
+        }
+    values.update({
+        "vad_threshold": max(0.01, min(0.99, float(values["vad_threshold"]))),
+        "silence_ms": max(50, min(5000, int(values["silence_ms"]))),
+        "max_utterance_ms": max(1000, min(120000, int(values["max_utterance_ms"]))),
+        "beam_paths": max(1, min(16, int(values["beam_paths"]))),
+        "max_new_tokens": max(32, min(4096, int(tuning.get("max_new_tokens", 512)))),
+        "hotwords": str(tuning.get("hotwords", "")).strip(),
+        "context_enabled": profile == "context",
+        "live_draft_enabled": bool(tuning.get("live_draft_enabled", True)),
+        # Reading the already-decoded Zipformer hypothesis is cheap.  The
+        # context profile samples it near word cadence; legacy profiles
+        # retain their existing update frequency.
+        "partial_interval_ms": 140 if profile == "context" else 360,
+        "context_hold_ms": max(200, min(4000, int(tuning.get("context_hold_ms", 1800)))),
+        "context_correction": bool(tuning.get("context_correction", True)),
+        "filler_mode": (
+            str(tuning.get("filler_mode", "light"))
+            if str(tuning.get("filler_mode", "light")) in {"off", "light"} else "light"
+        ),
+    })
+    return values
+
+
+def effective_tuning_for(config: Mapping[str, Any]) -> dict[str, Any]:
+    """按**配置**解析出生效值，键名带 asr_ 前缀（界面直接显示）。
+
+    用配置而不是 Pipeline 实例状态：实例可能从未启动过，其 `_asr_tuning`
+    还是构造时的默认值，据此报告出来的数字与实际会用到的完全不同。
+    """
+    values = resolve_tuning_values(tuning_from_config(config), generative=False)
+    return {f"asr_{key}": values[key] for key in _EFFECTIVE_UI_KEYS}
 
 
 @dataclass(frozen=True)
@@ -435,6 +593,29 @@ class Pipeline:
         self._seg = None
         self._context_processor = None
 
+    def effective_tuning(self) -> dict[str, object]:
+        """当前档位下**实际生效**的调优值，键名带 ``asr_`` 前缀。
+
+        界面用它显示"这一项现在真的是多少"。必要性：预设档位下用户存的基础
+        参数会被 ASR_TUNING_PRESETS 覆盖，界面若显示用户存的值（例如 0.35），
+        用户看到的就是一个不生效的数字。
+
+        键名统一加前缀是为了跨层一致 —— 配置、界面控件都用 ``asr_`` 前缀。
+        """
+        values = self._effective_asr_tuning(generative=False)
+        return {
+            "asr_vad_threshold": values["vad_threshold"],
+            "asr_silence_ms": values["silence_ms"],
+            "asr_max_utterance_ms": values["max_utterance_ms"],
+            "asr_beam_paths": values["beam_paths"],
+            "asr_max_new_tokens": values["max_new_tokens"],
+            "asr_hotwords": values["hotwords"],
+            "asr_context_hold_ms": values["context_hold_ms"],
+            "asr_live_draft_enabled": values["live_draft_enabled"],
+            "asr_context_correction": values["context_correction"],
+            "asr_filler_mode": values["filler_mode"],
+        }
+
     def set_recording(self, enabled: bool, directory: str | Path | None = None) -> None:
         """Enable microphone recording alongside translation for the next run."""
         if self._running:
@@ -645,58 +826,7 @@ class Pipeline:
 
     def _effective_asr_tuning(self, generative: bool) -> dict:
         """Resolve friendly presets to concrete values with safe bounds."""
-        profile = str(self._asr_tuning.get("profile", "auto"))
-        presets = {
-            "responsive": {"vad_threshold": 0.45, "silence_ms": 350,
-                           "max_utterance_ms": 6000, "beam_paths": 2},
-            "balanced": {"vad_threshold": 0.35, "silence_ms": 650,
-                         "max_utterance_ms": 12000, "beam_paths": 4},
-            "accuracy": {"vad_threshold": 0.25, "silence_ms": 900,
-                         "max_utterance_ms": 20000, "beam_paths": 6},
-            "context": {"vad_threshold": 0.32, "silence_ms": 500,
-                        "max_utterance_ms": 18000, "beam_paths": 6},
-        }
-        if profile == "auto":
-            values = ({"vad_threshold": 0.35, "silence_ms": 700,
-                       "max_utterance_ms": 12000, "beam_paths": 4}
-                      if generative else
-                      {"vad_threshold": 0.5, "silence_ms": 350,
-                       "max_utterance_ms": 4500, "beam_paths": 4})
-        elif profile in presets:
-            values = dict(presets[profile])
-        else:
-            values = {
-                "vad_threshold": float(self._asr_tuning.get("vad_threshold", 0.35)),
-                "silence_ms": int(self._asr_tuning.get("silence_ms", 650)),
-                "max_utterance_ms": int(self._asr_tuning.get("max_utterance_ms", 12000)),
-                "beam_paths": int(self._asr_tuning.get("beam_paths", 4)),
-            }
-        values.update({
-            "vad_threshold": max(0.01, min(0.99, float(values["vad_threshold"]))),
-            "silence_ms": max(50, min(5000, int(values["silence_ms"]))),
-            "max_utterance_ms": max(1000, min(120000, int(values["max_utterance_ms"]))),
-            "beam_paths": max(1, min(16, int(values["beam_paths"]))),
-            "max_new_tokens": max(32, min(4096, int(
-                self._asr_tuning.get("max_new_tokens", 512)))),
-            "hotwords": str(self._asr_tuning.get("hotwords", "")).strip(),
-            "context_enabled": profile == "context",
-            "live_draft_enabled": bool(
-                self._asr_tuning.get("live_draft_enabled", True)),
-            # Reading the already-decoded Zipformer hypothesis is cheap.  The
-            # context profile samples it near word cadence; legacy profiles
-            # retain their existing update frequency.
-            "partial_interval_ms": 140 if profile == "context" else 360,
-            "context_hold_ms": max(200, min(4000, int(
-                self._asr_tuning.get("context_hold_ms", 1800)))),
-            "context_correction": bool(
-                self._asr_tuning.get("context_correction", True)),
-            "filler_mode": (
-                str(self._asr_tuning.get("filler_mode", "light"))
-                if str(self._asr_tuning.get("filler_mode", "light")) in
-                {"off", "light"} else "light"
-            ),
-        })
-        return values
+        return resolve_tuning_values(self._asr_tuning, generative)
 
     def _build_real_time(self) -> None:
         """构建 A/B 模式实时组件 (惰性, 只建一次)。"""

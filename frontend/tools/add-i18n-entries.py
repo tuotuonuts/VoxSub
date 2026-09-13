@@ -173,6 +173,14 @@ ENTRIES: dict[str, str] = {
         "Saved as a WAV in this machine's recordings folder when you stop",
     "会话进行中，请先结束后再切换模式":
         "A session is running — stop it before switching modes",
+    # 识别调优：被预设接管的字段
+    "仅「智能上下文」档可用": "Only available in the Smart context profile",
+    "由当前预设决定；切到「自定义」可自行调整":
+        "Set by the current profile; switch to Custom to adjust it yourself",
+    "当前档位下不可调整": "Not adjustable in the current profile",
+    "下面几项只在「智能上下文」档生效；其他档位下它们不会参与识别。":
+        "The items below only apply to the Smart context profile; other profiles "
+        "ignore them.",
 }
 
 

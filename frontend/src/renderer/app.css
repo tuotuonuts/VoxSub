@@ -321,6 +321,29 @@ body::before {
   padding: 0 0.4615rem;
 }
 
+/* ---------------------------------------------------- 被预设接管的字段 */
+/* 识别调优分页里，某些参数在预设档位下由后端覆盖，用户改了不生效。
+   置灰它们比留着可改更诚实 —— 但必须同时说明原因（见 .field.is-locked 的
+   提示行），否则用户会以为界面坏了。 */
+.field.is-locked .field__label {
+  color: var(--ink2);
+}
+
+.field.is-locked .input,
+.field.is-locked .select,
+.field.is-locked .switch input {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 置灰字段的说明行加一道细边，和普通提示区分开：
+   普通提示是补充信息，这一条是"为什么不能改"。 */
+.field.is-locked .field__hint {
+  border-left: 2px solid var(--rule);
+  padding-left: 0.6154rem;
+  color: var(--ink2);
+}
+
 .select:focus-visible,
 .input:focus-visible,
 .btn:focus-visible,

@@ -487,6 +487,33 @@ class BackendService:
     def _cmd_set_asr_tuning(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_asr_tuning(args.get("tuning") or {})
 
+    def _cmd_asr_tuning_meta(self, _args: dict[str, Any]) -> dict[str, Any]:
+        """界面渲染「识别调优」分页所需的全部信息。
+
+        三项内容：
+          · presets    —— 每个预设档位固定的基础参数值
+          · controlled —— 受档位控制的键（不在其中的键任何档位都可改）
+          · editable   —— 每个档位下 controlled 里仍可改的子集（其余要置灰）
+          · effective  —— 当前档位下**实际生效**的值（界面显示这个，而不是用户
+                          存的值：预设档下用户存的基础参数根本不生效）
+
+        生效值按**配置**算，不读 pipeline 实例状态：实例可能从未启动过，
+        它的 `_asr_tuning` 还是构造时的默认值（auto 档），据此报出来的数字
+        与实际会用到的完全不同 —— 实测踩到：配置是 context，报出来却是 0.5/4。
+
+        为什么由后端提供而不是前端硬编码：这些都取决于后端实际怎么读配置。
+        前端各写一份的话，改了一处忘另一处就会出现"界面显示的值和实际跑的
+        值对不上"。
+        """
+        from voxsub.config_store import ConfigStore  # noqa: PLC0415
+        from voxsub.pipeline import asr_tuning_metadata, effective_tuning_for  # noqa: PLC0415
+
+        config = dict(ConfigStore().load())
+        return {
+            **asr_tuning_metadata(),
+            "effective": effective_tuning_for(config),
+        }
+
     def _cmd_set_tts(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_tts(bool(args.get("enabled", False)))
 
@@ -1239,6 +1266,9 @@ for _name in (
     "write_model_snapshot", "cleanup_migrated_source", "migration_decision",
     "list_devices", "hardware_profile", "list_audio_devices",
     "list_capture_targets", "export_subtitles", "ocr_recognize",
+    # 调优元数据只读配置，不需要拉起 pipeline —— 界面上打开设置页就会调它，
+    # 不该因此把整个推理栈初始化一遍。
+    "asr_tuning_meta",
 ):
     _fn = getattr(BackendService, f"_cmd_{_name}", None)
     if _fn is not None:

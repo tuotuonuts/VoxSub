@@ -33,6 +33,7 @@ export const CMD = {
   setTranslator: "set_translator",
   setAsrModel: "set_asr_model",
   setAsrTuning: "set_asr_tuning",
+  asrTuningMeta: "asr_tuning_meta",
   setTts: "set_tts",
   setTtsModels: "set_tts_models",
   setRecording: "set_recording",
@@ -127,6 +128,23 @@ export interface CaptureTarget {
   processName: string;
   windowTitle: string;
   label: string;
+}
+
+/**
+ * 识别调优的元数据（后端 asr_tuning_meta 命令返回）。
+ *
+ * 三项都由后端提供，前端不硬编码 —— 它们取决于后端实际怎么读配置，
+ * 前端各写一份就会出现"界面显示的值和实际跑的值不一致"。
+ */
+export interface AsrTuningMeta {
+  /** 每个预设档位固定的基础参数值（键名带 asr_ 前缀）。 */
+  presets: Record<string, Record<string, number>>;
+  /** 受档位控制的键。**不在此列表里的键任何档位都可改**。 */
+  controlled: string[];
+  /** 每个档位下 controlled 里仍可改的子集；其余由预设定，界面应置灰。 */
+  editable: Record<string, string[]>;
+  /** 当前档位下**实际生效**的值（界面显示这个，而不是用户存的值）。 */
+  effective: Record<string, unknown>;
 }
 
 export interface DeviceEntry {
