@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from voxsub.file_io import write_text_atomically
+from voxsub.file_io import sanitize_for_json, write_text_atomically
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("config_store")
@@ -272,7 +272,15 @@ class ConfigStore:
             self._save_unlocked(data)
 
     def _save_unlocked(self, data: dict[str, Any]) -> None:
+        # 洗掉不成对的代理字符：这类码元无法编码成 UTF-8，会让整次写入抛
+        # UnicodeEncodeError（用户看到 "set_config 失败: ... surrogates not allowed"，
+        # 设置没保存）。来源通常是 Windows 窗口标题 —— 见 file_io.sanitize_text。
         normalized = APP_CONFIG_SCHEMA.normalize_mapping(data)
+        clean = sanitize_for_json(normalized)
+        if clean != normalized:
+            # 真出现才记一条：说明还有别的入口在往里塞非法码元，值得知道。
+            logger.warning("配置含不成对的代理字符，已替换为 U+FFFD（该码元无法写入 UTF-8）")
+            normalized = clean
         write_text_atomically(
             self.path,
             json.dumps(normalized, ensure_ascii=False, indent=2),

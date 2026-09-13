@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from voxsub.file_io import sanitize_text
+
 import numpy as np
 
 from voxsub.audio import AudioSource, CHUNK_FRAMES, SAMPLE_RATE, resample_16k
@@ -118,7 +120,9 @@ def list_capture_targets() -> list[CaptureTarget]:
     by_pid: dict[int, CaptureTarget] = {}
     for win in list_windows():
         pid = int(getattr(win, "pid", 0) or 0)
-        title = str(getattr(win, "title", "") or "").strip()
+        # 标题要洗一遍：Windows 标题是 UTF-16，可含不成对的代理字符，
+        # 这种字符串写进 config.json 会抛 UnicodeEncodeError（见 file_io.sanitize_text）。
+        title = sanitize_text(str(getattr(win, "title", "") or "").strip())
         if pid <= 0 or pid == os.getpid() or not title:
             continue
         process_name = f"PID {pid}"
