@@ -1254,6 +1254,8 @@ body::before {
 
 .log-row__msg {
   overflow-wrap: anywhere;
+  /* 回溯这类多行消息要保留换行与缩进，否则整个堆栈会挤成一段读不出来 */
+  white-space: pre-wrap;
 }
 
 .device-wrap {

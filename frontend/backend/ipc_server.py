@@ -305,32 +305,32 @@ class BackendService:
         }
 
     def _install_log_sink(self) -> None:
-        """把 voxsub 的日志钩到协议事件上，供诊断页实时日志使用。"""
+        """把 voxsub 的日志钩到协议事件上，供诊断页实时日志使用。
+
+        两个关键点，都踩过坑：
+
+        1. **必须挂在 "voxsub" logger 上，不能挂根 logger。**
+           logging_setup.setup_logging() 把 handler 挂在 "voxsub" 上并设了
+           `propagate = False`（不让日志泄漏到第三方库的根 logger）。挂在根
+           logger 上的话永远收不到任何记录 —— 事件不发、`recent_logs(memory)`
+           恒为空，而界面上完全看不出原因（只有 stderr 那条通路还在动，
+           于是所有日志都被当成 stderr 而标成 ERROR）。
+
+        2. **同时摘掉 stderr 控制台 handler。**
+           否则同一条日志会到两次：一次是这里的结构化事件（级别/时间准确），
+           一次是 stderr 原样输出（Electron 侧只能靠猜级别）。摘掉之后
+           stderr 只承载非 logging 的输出（线程异常、warnings 模块），
+           那部分由 Electron 侧解析，两者不重叠。
+        """
         if self._log_sink_installed:
             return
         try:
-            from voxsub.logging_setup import get_logger  # noqa: PLC0415
-
-            logger = get_logger("ipc")
-
-            class _Handler:
-                def write(self, text: str) -> None:  # pragma: no cover - 适配器
-                    line = str(text).rstrip()
-                    if not line:
-                        return
-                    self._push(line)
-
-                def _push(self, line: str) -> None:
-                    entry = {"ts": _now_iso(), "level": _guess_level(line),
-                             "message": line}
-                    self._buffer.append(entry)
-                    del self._buffer[:-500]
-                    _event("log", **entry)
-
-            # 复用 logging 的 handler 协议而不是重造轮子
             import logging  # noqa: PLC0415
 
-            self._buffer: list[dict[str, Any]] = []
+            from voxsub.logging_setup import get_logger  # noqa: PLC0415
+
+            get_logger("ipc")  # 确保 setup_logging 已跑过，handler 已就位
+            target = logging.getLogger("voxsub")
 
             class _Bridge(logging.Handler):
                 def __init__(self, outer: "BackendService") -> None:
@@ -352,10 +352,19 @@ class BackendService:
             handler.setLevel(logging.INFO)
             handler.setFormatter(
                 logging.Formatter("%(name)s: %(message)s"))
-            logging.getLogger().addHandler(handler)
+            target.addHandler(handler)
+
+            # 摘掉 stderr 控制台 handler（保留文件 handler —— voxsub.log 仍要写）。
+            # FileHandler 是 StreamHandler 的子类，所以先排除它。
+            for existing in list(target.handlers):
+                if isinstance(existing, logging.StreamHandler) and not isinstance(
+                    existing, logging.FileHandler
+                ):
+                    target.removeHandler(existing)
+
             self._log_sink_installed = True
         except Exception:  # noqa: BLE001 - 日志桥失败不能阻断后端
-            _event("log", level="warning",
+            _event("log", level="WARNING",
                    message="日志桥安装失败", ts=_now_iso())
 
     # ------------------------------------------------------------------ 分发
@@ -526,7 +535,10 @@ class BackendService:
                                args.get("directory"))
 
     def _cmd_last_recording(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        path = pipeline.last_recording_path()
+        # last_recording_path 是 @property，不是方法 —— 加括号会得到
+        # `None()` → TypeError: 'NoneType' object is not callable，
+        # 每次结束会话（前端都会查一次）都报一条假错误。
+        path = pipeline.last_recording_path
         return {"path": str(path) if path else None}
 
     # ================================================================== 模型广场
@@ -1279,14 +1291,6 @@ def _now_iso() -> str:
     import datetime  # noqa: PLC0415
 
     return datetime.datetime.now().isoformat(timespec="seconds")
-
-
-def _guess_level(line: str) -> str:
-    upper = line.upper()
-    for level in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"):
-        if level in upper:
-            return level
-    return "INFO"
 
 
 def _human_size(num: int) -> str:

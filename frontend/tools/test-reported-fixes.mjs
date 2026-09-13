@@ -114,9 +114,17 @@ try {
   }
 
   // 打开设置页（后续多项都在这里查）
+  // 先循环返回主屏：上一次人工浏览/自动化可能把应用留在二级页面
+  // （例如 诊断 → 实时日志 → 历史文件），那样后面点顶栏按钮会找不到元素而假失败。
   await main.ev(`(async () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await new Promise(r => setTimeout(r, 300));
+    for (let i = 0; i < 6; i += 1) {
+      const back = document.querySelector('.page__back');
+      if (!back) break;
+      back.click();
+      await new Promise(r => setTimeout(r, 350));
+    }
     [...document.querySelectorAll('.topbar__actions button')].find(b => b.textContent === '设置')?.click();
     await new Promise(r => setTimeout(r, 4500));
   })()`);

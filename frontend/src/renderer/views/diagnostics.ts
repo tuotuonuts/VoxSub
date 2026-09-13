@@ -15,6 +15,7 @@ import { h, on } from "../dom";
 import { call, store } from "../store";
 import { CMD, type DeviceEntry, type HardwareProfile, type SelfCheckItem } from "../protocol";
 import { tr } from "../i18n";
+import { guessStderrLevel, splitStderrLines } from "../../shared/log-levels";
 
 let resultsEl: HTMLElement | null = null;
 let logEl: HTMLElement | null = null;
@@ -113,17 +114,15 @@ async function renderFileLog(): Promise<void> {
     return;
   }
 
-  // 文件日志是纯文本，按行渲染并识别级别
-  const rows = text.split(/\r?\n/).filter(Boolean).map((line) => {
-    const level = /(ERROR|CRITICAL)/.test(line)
-      ? "error"
-      : /WARN/.test(line)
-        ? "warning"
-        : "info";
-    const row = h("div", { class: `log-row log-row--${level}` });
+  // 文件日志是纯文本，按行渲染并识别级别。
+  // 用共享的 guessStderrLevel：此前这里是 /(ERROR|CRITICAL)/.test(line)，
+  // 匹配整行的话，正文里提到 "ERROR" 的 INFO 行也会被误标成错误级别。
+  const rows = splitStderrLines(text).map((line) => {
+    const level = guessStderrLevel(line);
+    const row = h("div", { class: `log-row log-row--${level.toLowerCase()}` });
     row.append(
       h("span", { class: "log-row__ts", text: line.slice(0, 10) }),
-      h("span", { class: "log-row__level", text: level === "info" ? "INFO" : level.toUpperCase() }),
+      h("span", { class: "log-row__level", text: level }),
       h("span", { class: "log-row__msg", text: line.slice(10) }),
     );
     return row;

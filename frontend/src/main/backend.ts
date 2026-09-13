@@ -14,6 +14,8 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { app } from "electron";
 
+import { guessStderrLevel, localIsoNow, splitStderrLines } from "../shared/log-levels";
+
 export type BackendEvent =
   | { type: "ready"; version: string }
   | { type: "status"; text: string }
@@ -22,7 +24,7 @@ export type BackendEvent =
   | { type: "partial"; text: string }
   | { type: "progress"; completed: number; total: number; stage: string }
   | { type: "error"; message: string }
-  | { type: "log"; level: string; message: string };
+  | { type: "log"; ts: string; level: string; message: string };
 
 export interface CommandResult {
   ok: boolean;
@@ -156,8 +158,19 @@ export class BackendBridge {
     const reader = readline.createInterface({ input: child.stdout });
     reader.on("line", (line) => this.handleLine(line));
     child.stderr.on("data", (chunk: string) => {
-      // 后端诊断输出原样转发到界面日志区，不阻断
-      this.emit({ type: "log", level: "error", message: chunk.trimEnd() });
+      // 后端的 stderr 转发到界面日志区。
+      //
+      // 注意：**不能一律标成 error**。原先就是那么写的，而 Python 侧会把
+      // 整个日志流也写到 stderr，于是界面上每条 INFO 都显示成 ERROR
+      // （用户报的就是这个）。这里按行拆分并识别真实级别。
+      for (const line of splitStderrLines(chunk)) {
+        this.emit({
+          type: "log",
+          ts: localIsoNow(),
+          level: guessStderrLevel(line),
+          message: line,
+        });
+      }
     });
 
     child.on("exit", (code) => {
@@ -180,7 +193,7 @@ export class BackendBridge {
       payload = JSON.parse(trimmed) as Record<string, unknown>;
     } catch {
       // 非 JSON 行按日志处理，避免后端调试输出造成的噪声中断协议
-      this.emit({ type: "log", level: "info", message: trimmed });
+      this.emit({ type: "log", ts: localIsoNow(), level: "INFO", message: trimmed });
       return;
     }
 

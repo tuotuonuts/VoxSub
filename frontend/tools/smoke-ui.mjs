@@ -79,11 +79,18 @@ const ev = (expr, timeout) => evaluate(mainPage.webSocketDebuggerUrl, expr, time
 // 冒烟测试假设从主屏开始，但上一次人工测试/自动化可能把应用留在 OCR（D 模式）
 // 或某个二级页面上，那样断言会以"界面元素找不到"的形式假失败 —— 与代码无关，
 // 却要花时间排查。这里先归位。
+//
+// 注意要**循环**点返回：人工浏览可能停在第 2、3 层（例如 诊断 → 实时日志 →
+// 历史文件），只点一次会留在中间层，后面的断言照样假失败（实测踩过）。
 await ev(`(async () => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
   await new Promise(r => setTimeout(r, 300));
-  document.querySelector('.page__back')?.click();
-  await new Promise(r => setTimeout(r, 300));
+  for (let i = 0; i < 6; i += 1) {
+    const back = document.querySelector('.page__back');
+    if (!back) break;
+    back.click();
+    await new Promise(r => setTimeout(r, 350));
+  }
   document.querySelector('.mode-cell[data-mode="a"]')?.click();
   await new Promise(r => setTimeout(r, 800));
 })()`);
