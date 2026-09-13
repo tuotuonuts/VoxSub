@@ -443,6 +443,19 @@ body::before {
   position: relative;
 }
 
+/* 档位单选旁的限定说明（例如「不支持当前语言」）。
+   用小号警示色而不是把选项禁用：用户仍可选中它（换语言后就能用），
+   禁掉会让人以为界面坏了。 */
+.radio__badge {
+  font-size: 0.6923rem;
+  line-height: 1.3;
+  padding: 0.0769rem 0.3846rem;
+  border-radius: 0.3846rem;
+  border: 1px solid var(--warn, #c98a2e);
+  color: var(--warn, #c98a2e);
+  white-space: nowrap;
+}
+
 .radio.is-checked {
   border-color: var(--accent);
   color: var(--accent);

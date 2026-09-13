@@ -34,6 +34,7 @@ export const CMD = {
   setAsrModel: "set_asr_model",
   setAsrTuning: "set_asr_tuning",
   asrTuningMeta: "asr_tuning_meta",
+  translateTiers: "translate_tiers",
   setTts: "set_tts",
   setTtsModels: "set_tts_models",
   setRecording: "set_recording",
@@ -145,6 +146,37 @@ export interface AsrTuningMeta {
   editable: Record<string, string[]>;
   /** 当前档位下**实际生效**的值（界面显示这个，而不是用户存的值）。 */
   effective: Record<string, unknown>;
+}
+
+/** 单个翻译档位的能力。 */
+export interface TranslateTierInfo {
+  /** 档位 id：fast | quality | cloud。 */
+  id: string;
+  /** 后端实际使用的翻译器 kind（质量档在特定配置下其实是 opus-fast）。 */
+  kind: string;
+  /** 该档位支持的源/目标语言代码。 */
+  langs: string[];
+  /** 能否翻译**当前**语言对。 */
+  supportsPair: boolean;
+}
+
+/**
+ * 翻译档位 × 当前语言对的能力。
+ *
+ * 由后端算出来而不是前端硬编码：快档（OPUS-MT）只有 zh↔en 的模型，
+ * 界面却允许把语言选成日文/韩文。此前用户选了这个组合，每一句都失败、
+ * 只看到原文和满屏报错 —— 界面必须在选择时就告诉他。
+ */
+export interface TranslateTierMeta {
+  tiers: TranslateTierInfo[];
+  source: string;
+  target: string;
+  /** 用户在设置里选的档位。 */
+  selected: string;
+  /** 实际会用哪个档位（不支持当前语言对时会被替换）。 */
+  effective: string;
+  /** 被替换掉的档位；None 表示用的就是用户所选。 */
+  substitutedFrom: string | null;
 }
 
 export interface DeviceEntry {

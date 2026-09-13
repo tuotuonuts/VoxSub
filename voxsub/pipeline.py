@@ -321,6 +321,85 @@ def _load_translator(kind: str = "opus-fast", config=None) -> object:
         return _NoopTranslator(), None
 
 
+def _close_quietly(obj: object | None) -> None:
+    """关掉翻译器（可能没有 close，或关的时候抛异常）。"""
+    close = getattr(obj, "close", None)
+    if callable(close):
+        close()
+
+
+def _usable_for_pair(translator: object, src_lang: str, dst_lang: str) -> bool:
+    """翻译器是否既**已就绪**、又**支持这个语言对**。
+
+    就绪这一项只对云端有意义（只有 CloudTranslator 有 ready()）：不看它的话，
+    没配 API key 的用户会被"换到云端"，然后照样失败 —— 从一个不支持的档位
+    换到另一个用不了的档位，等于没换。
+    """
+    ready = getattr(translator, "ready", None)
+    if callable(ready) and not ready():
+        return False
+    supports = getattr(translator, "supports", None)
+    return not callable(supports) or bool(supports(src_lang, dst_lang))
+
+
+def _candidate_tiers(requested_kind: str) -> list[str]:
+    """候选档位顺序：用户所选永远第一，其后按"更可能支持该语言对"排列。"""
+    from voxsub.translate.factory import TIER_KINDS, _FALLBACK_KINDS  # noqa: PLC0415
+
+    ordered = [requested_kind]
+    for candidate_kind in _FALLBACK_KINDS:
+        for tier_id, mapped in TIER_KINDS.items():
+            if mapped == candidate_kind and tier_id not in ordered:
+                ordered.append(tier_id)
+    return ordered
+
+
+def _load_translator_for_pair(kind: str, src_lang: str, dst_lang: str,
+                              config=None) -> tuple[object, str | None, str | None]:
+    """按**语言对**挑一个真能用的翻译器。
+
+    返回 ``(translator, 生效 kind, 被替换掉的档位或 None)``。
+
+    为什么要这一层：快档（OPUS-MT）只有 zh↔en 两个方向的模型，而界面允许把
+    源/目标语言选成日文/韩文。此前每句话都会抛 "快档不支持语言对"，用户只看到
+    原文 + 满屏 ERROR 回溯。这里在加载时就把档位换成支持该语言对的
+    （质量档 / 云端），而不是让每句都失败。
+
+    逐个候选都**实际创建**再问 ``supports()``，而不是只看档位名：质量档在
+    translate_model_id=mt-opus-fast-builtin 时创建出来的其实是 OPUS 翻译器，
+    只看名字会误判成"支持日语"。
+    """
+    from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
+
+    requested_kind = kind_for_tier(kind, config)
+    first_failure: object | None = None
+    for tier_id in _candidate_tiers(kind):
+        translator, effective = _load_translator(kind_for_tier(tier_id, config), config)
+        if translator is None or effective is None:
+            continue  # 这个档位加载失败（缺模型/缺凭据），试下一个
+        if _usable_for_pair(translator, src_lang, dst_lang):
+            # 找到了。先前留下的失败翻译器（用户所选那个）要关掉，否则
+            # OPUS 模型实例会一直挂着不释放。
+            _close_quietly(first_failure)
+            substituted = kind if tier_id != kind else None
+            if substituted is not None:
+                logger.warning(
+                    "档位 %s 不支持 %s→%s，已改用 %s",
+                    kind, src_lang, dst_lang, tier_id,
+                )
+            return translator, effective, substituted
+        # 支持不了这个语言对：留一个作最后兜底，其余的关掉
+        if first_failure is None:
+            first_failure = translator
+        else:
+            _close_quietly(translator)
+
+    logger.error("没有档位支持语言对 %s→%s，翻译将保留原文", src_lang, dst_lang)
+    if first_failure is not None:
+        return first_failure, requested_kind, None
+    return _NoopTranslator(), None, None
+
+
 # ---------- Pipeline ----------
 
 class Pipeline:
@@ -348,6 +427,12 @@ class Pipeline:
         self._requested_trans_kind = "opus-fast"
         self._requested_asr_model_id = "asr-zipformer-bilingual-fast"
         self._translator_config = None
+        #: 因语言对不受支持而被替换掉的档位（None = 用的是用户所选）
+        self._trans_substituted_from: str | None = None
+        #: 加载翻译器时所用的语言对，用于判断语言变了要不要重挑档位
+        self._trans_pair: tuple[str, str] | None = None
+        #: 上一次"翻译失败"的原因签名；同一原因不再逐句刷 ERROR 与回溯
+        self._pair_fail_key: tuple[str, str, str] | None = None
 
         # 10 minutes of 30 ms chunks is a hard memory safety cap, not a normal
         # latency policy.  We never silently discard captured speech.
@@ -581,10 +666,17 @@ class Pipeline:
 
         This is deliberately not model-weight training.  It controls VAD,
         sentence boundaries, decoder budget, beam width and domain hotwords.
+
+        键名兼容两种写法：配置/界面用 ``asr_`` 前缀，pipeline 内部用短名。
+        必须归一化 —— 此前直接存原始 dict，而 resolve_tuning_values 只读短名，
+        于是界面保存的档位**完全不生效**：无论选哪档都落到 auto 预设
+        （实测 vad=0.5/silence=350/max=4500，而用户存的是 context 的
+        0.32/500/18000）。用户看到的是"保存了但没用"。
         """
         if self._running:
             return
-        normalized = dict(tuning or {})
+        raw = dict(tuning or {})
+        normalized = {TUNING_KEY_MAP.get(key, key): value for key, value in raw.items()}
         if normalized == self._asr_tuning:
             return
         self._asr_tuning = normalized
@@ -757,8 +849,38 @@ class Pipeline:
     # ---- 组件构造 ----
     def _ensure_translator(self) -> None:
         if self._translator is None:
-            self._translator, self._trans_kind = _load_translator(
-                self._requested_trans_kind, self._translator_config)
+            self._translator, self._trans_kind, substituted = _load_translator_for_pair(
+                self._requested_trans_kind, self._src_lang, self._dst_lang,
+                self._translator_config)
+            self._trans_substituted_from = substituted
+            self._trans_pair = (self._src_lang, self._dst_lang)
+            self._pair_fail_key = None
+
+    def _translator_supports_pair(self) -> bool:
+        """当前翻译器能否处理当前语言对（廉价判断，逐句调用）。"""
+        supports = getattr(self._translator, "supports", None)
+        if not callable(supports):
+            return True  # 判断不了就不阻断，交给真正的 translate 去试
+        return bool(supports(self._src_lang, self._dst_lang))
+
+    def _retune_translator_for_pair(self) -> None:
+        """语言对变了、当前档位不支持时，重新挑一个支持的档位。
+
+        只在翻译工作线程调用（换翻译器要关旧的，跨线程关会撞上正在进行的
+        translate）。用户在会话进行中改语言会走到这里：第一句触发换档，
+        之后正常。
+        """
+        failed = self._translator
+        self._translator = None
+        self._ensure_translator()
+        close = getattr(failed, "close", None)
+        if callable(close) and failed is not self._translator:
+            close()
+        if self._trans_substituted_from is not None:
+            self._emit_status(
+                f"当前档位不支持 {self._src_lang}→{self._dst_lang}，已改用其他档位")
+        elif self._trans_kind is None:
+            self._emit_status("没有可用翻译档位，暂时显示原文")
 
     def _warmup_translator(self) -> None:
         """Warm up the selected translator and fall back once on failure."""
@@ -1049,6 +1171,25 @@ class Pipeline:
                 self._translation_times.pop(text, None)
             return value
 
+    def _log_translate_failure(self, text: str, queue_wait_ms: float | None,
+                               request_ms: float, exc: Exception) -> None:
+        """记录翻译失败，**同一原因只完整报一次**。
+
+        此前是逐句 ERROR + 完整回溯：一段 5 分钟的日语音频能刷出上百条一模一样的
+        回溯，把真正的错误淹掉，也让日志文件迅速膨胀。原因签名 = 档位 + 语言对，
+        所以换档位或换语言后会重新完整报一次（那是新信息）。
+        """
+        fail_key = (str(self._trans_kind), self._src_lang, self._dst_lang)
+        first_time = fail_key != self._pair_fail_key
+        self._pair_fail_key = fail_key
+        waited = f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na"
+        (logger.error if first_time else logger.debug)(
+            "翻译失败: src_chars=%d queue_wait_ms=%s request_ms=%.1f error=%s%s",
+            len(text), waited, request_ms, exc,
+            "" if first_time else "（同一原因，后续不再重复记录）",
+            exc_info=first_time,
+        )
+
     def _translate_sentence(self, text: str, queued_at: float | None = None) -> None:
         """翻译单句并回调 UI；只在翻译工作线程调用。"""
         self._emit_status("翻译中…")
@@ -1056,23 +1197,27 @@ class Pipeline:
         queue_wait_ms = ((time.monotonic() - queued_at) * 1000.0
                          if queued_at is not None else None)
         can_speak = False
+        # 语言对可能在会话中途被改（用户切了"识别语言/翻译为"），而档位是按
+        # 旧语言对挑的。这里在真正翻译前确认一次：不支持就换档位，避免每句
+        # 都抛"快档不支持语言对"（用户看到的就是满屏 ERROR 加原文）。
+        if (self._trans_pair != (self._src_lang, self._dst_lang)
+                and not self._translator_supports_pair()):
+            self._retune_translator_for_pair()
         try:
             translation = self._translator.translate(text, self._src_lang, self._dst_lang)
             if self._trans_kind is not None:
                 translation = guard_text(
                     translation, self._dst_lang, kind="translation")
             request_ms = (time.perf_counter() - started) * 1000.0
+            self._pair_fail_key = None   # 恢复成功，下次失败要重新报
             logger.info("翻译完成: src_chars=%d dst_chars=%d queue_wait_ms=%s request_ms=%.1f",
                         len(text), len(translation),
                          f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
                          request_ms)
             can_speak = True
         except Exception as exc:
-            request_ms = (time.perf_counter() - started) * 1000.0
-            logger.error("翻译失败: src_chars=%d queue_wait_ms=%s request_ms=%.1f error=%s",
-                         len(text),
-                         f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
-                         request_ms, exc, exc_info=True)
+            self._log_translate_failure(
+                text, queue_wait_ms, (time.perf_counter() - started) * 1000.0, exc)
             # A runtime failure after warmup (for example a child process
             # crash) must open the same one-way fallback circuit as warmup.
             self._disable_quality_translator()

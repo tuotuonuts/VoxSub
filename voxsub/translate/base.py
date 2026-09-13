@@ -27,6 +27,22 @@ class TranslationError(RuntimeError):
     """单句翻译失败。由调用方 (pipeline / PrefetchEngine) 捕获并降级。"""
 
 
+def pair_supported(langs: tuple[str, ...] | list[str], src_lang: str,
+                   dst_lang: str) -> bool:
+    """语言对是否落在 ``langs`` 里。
+
+    这是全项目**唯一**的实现，``Translator.supports`` 与档位能力查询都走它 ——
+    界面要提示"这个档位不支持日语→中文"，靠的就是与实际翻译同一套判断，
+    各写一份必然漂移（本项目已经踩过"界面显示的值和实际跑的值对不上"）。
+
+    ``auto`` 是源语言的通配符（N→1 的自动识别）；目标语言必须是具体语言，
+    这样 ``en→auto`` 这种误配永远不会送到后端。
+    """
+    src = normalize_language(src_lang)
+    dst = normalize_language(dst_lang)
+    return (src == "auto" or src in langs) and dst in langs
+
+
 def parse_translation_batch(output: str, expected_count: int) -> list[str]:
     """Parse a model's JSON-array response without accepting extra prose."""
     text = str(output or "").strip()
@@ -78,11 +94,7 @@ class Translator(ABC):
 
     # ---- 便捷: 语言对是否受支持 ----
     def supports(self, src_lang: str, dst_lang: str) -> bool:
-        src = normalize_language(src_lang)
-        dst = normalize_language(dst_lang)
-        # ``auto`` is a wildcard source for N→1. A destination must remain
-        # concrete so an accidental ``en→auto`` can never reach a backend.
-        return (src == "auto" or src in self.langs) and dst in self.langs
+        return pair_supported(self.langs, src_lang, dst_lang)
 
     def __enter__(self) -> "Translator":
         return self

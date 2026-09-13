@@ -88,6 +88,19 @@ except (AttributeError, OSError):
 _PROTOCOL_OUT = sys.stdout
 sys.stdout = sys.stderr
 
+# 模块级 logger：挂在 "voxsub" 下，因此既进 voxsub.log 文件，也经日志桥
+# 进诊断页的实时日志（见 BackendService._install_log_sink）。
+# 不能只 print 到 stderr —— 那条通路不带级别与时间戳，界面会把所有内容
+# 都显示成 ERROR（已修，但新代码不该再依赖它）。
+try:
+    from voxsub.logging_setup import get_logger as _get_logger
+
+    logger = _get_logger("ipc")
+except Exception:  # noqa: BLE001 - 日志设施不可用时退回标准库
+    import logging as _logging
+
+    logger = _logging.getLogger("voxsub.ipc")
+
 
 def _emit(payload: dict[str, Any]) -> None:
     try:
@@ -292,7 +305,100 @@ class BackendService:
         # 因此也覆盖 C 模式文件播完自动停止这类**自主转换**。
         pipeline.on_state(lambda: _event("state", **self._state_payload(pipeline)))
         self._pipeline = pipeline
+        self._apply_saved_config(pipeline)
         return pipeline
+
+    @staticmethod
+    def _apply_saved_config(pipeline: Any) -> None:
+        """把配置文件里的设置真正应用到 pipeline。
+
+        为什么必须有这一步：设置只在用户**点击控件**时才推给后端
+        （前端各处的 CMD.set* 调用），启动时前端只把配置读进界面，从不回推。
+        于是重启后 pipeline 用自己硬编码的默认值跑，用户的设置形同虚设 ——
+        实测症状：配置里 translate_tier=quality、translate_model_id=mt-hy-mt2-1.8b-q8，
+        而会话实际用的是 opus-fast 快档，导致日→中每一句都抛
+        "快档不支持语言对"（用户只看到原文 + 满屏 ERROR 回溯）。
+
+        逐项应用，单项失败不影响其余项：一个坏值不该让整套设置都失效。
+        """
+        try:
+            from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+            config = dict(ConfigStore().load())
+        except Exception:  # noqa: BLE001 - 拿不到配置就用 pipeline 默认值
+            logger.debug("读取配置失败，沿用 pipeline 默认值", exc_info=True)
+            return
+
+        def _apply(label: str, fn: Any) -> None:
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 - 单项失败不阻断其余设置
+                logger.warning("应用配置项 %s 失败", label, exc_info=True)
+
+        # ---- 语言对：配置里存成 "zh-en" / "auto-zh" 这样的单串
+        pair = str(config.get("lang_pair") or "")
+        if "-" in pair:
+            src, _, dst = pair.partition("-")
+            if src and dst:
+                _apply("lang_pair", lambda: pipeline.set_langs(src, dst))
+
+        _apply("mode", lambda: pipeline.set_mode(str(config.get("mode") or "a")))
+
+        # ---- 识别：provider / 模型 / 调优
+        _apply("stt_provider",
+               lambda: pipeline.set_stt(str(config.get("stt_provider") or "local"), config))
+        _apply("asr_model_id",
+               lambda: pipeline.set_asr_model(str(config.get("asr_model_id") or "")))
+        # 调优：配置里是 asr_ 前缀的键，pipeline 内部用短名，
+        # 用 tuning_from_config 转换（与 set_asr_tuning 的归一化同一套映射）。
+        try:
+            from voxsub.pipeline import tuning_from_config  # noqa: PLC0415
+
+            tuning = tuning_from_config(config)
+            if tuning:
+                _apply("asr_tuning", lambda: pipeline.set_asr_tuning(tuning))
+        except Exception:  # noqa: BLE001
+            logger.warning("应用配置项 asr_tuning 失败", exc_info=True)
+
+        # ---- 翻译：档位（按配置修正，例如质量档被配成 OPUS 兼容时）
+        try:
+            from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
+
+            tier = str(config.get("translate_tier") or "fast")
+            _apply("translate_tier",
+                   lambda: pipeline.set_translator(kind_for_tier(tier, config), config))
+        except Exception:  # noqa: BLE001
+            logger.warning("应用配置项 translate_tier 失败", exc_info=True)
+
+        # ---- 语音合成
+        _apply("tts_enabled", lambda: pipeline.set_tts(bool(config.get("tts_enabled", True))))
+        _apply("tts_models", lambda: pipeline.set_tts_models({
+            "zh": str(config.get("tts_model_id_zh") or ""),
+            "en": str(config.get("tts_model_id_en") or ""),
+        }))
+
+        # ---- 设备与捕获目标
+        _apply("audio_devices", lambda: pipeline.set_audio_devices(
+            str(config.get("mic_device_id") or ""),
+            str(config.get("loopback_device_id") or "")))
+        _apply("capture_process", lambda: pipeline.set_capture_process(
+            int(config.get("capture_process_id") or 0),
+            str(config.get("capture_window_title") or "")))
+
+        # ---- C 模式输入文件
+        last_input = str(config.get("last_input_file") or "")
+        if last_input:
+            _apply("last_input_file", lambda: pipeline.set_input_file(last_input))
+
+        # ---- 录音
+        _apply("record_with_translation",
+               lambda: pipeline.set_recording(bool(config.get("record_with_translation", False))))
+
+        logger.info(
+            "已应用保存的配置: tier=%s lang_pair=%s mode=%s profile=%s",
+            config.get("translate_tier"), config.get("lang_pair"),
+            config.get("mode"), config.get("asr_tuning_profile"),
+        )
 
     @staticmethod
     def _state_payload(pipeline: Any) -> dict[str, Any]:
@@ -487,8 +593,24 @@ class BackendService:
                          args.get("config") or {})
 
     def _cmd_set_translator(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_translator(str(args.get("kind", "opus-fast")),
-                                args.get("config") or {})
+        # 优先接受档位 id（fast/quality/cloud），由后端映射成翻译器 kind ——
+        # 映射规则要看配置（质量档在 translate_model_id=mt-opus-fast-builtin 时
+        # 实际创建的是 OPUS 翻译器），放前端会算错。kind 保留兼容旧调用。
+        config = args.get("config") or {}
+        tier = args.get("tier")
+        if tier:
+            from voxsub.config_store import ConfigStore  # noqa: PLC0415
+            from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
+
+            merged = config
+            try:
+                merged = {**dict(ConfigStore().load()), **(config if isinstance(config, dict) else {})}
+            except Exception:  # noqa: BLE001 - 拿不到配置就按传入的算
+                pass
+            kind = kind_for_tier(str(tier), merged)
+        else:
+            kind = str(args.get("kind", "opus-fast"))
+        pipeline.set_translator(kind, config)
 
     def _cmd_set_asr_model(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_asr_model(str(args.get("model_id", "")))
@@ -533,6 +655,32 @@ class BackendService:
     def _cmd_set_recording(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_recording(bool(args.get("enabled", False)),
                                args.get("directory"))
+
+    def _cmd_translate_tiers(self, args: dict[str, Any]) -> dict[str, Any]:
+        """各翻译档位支持的语言对（供界面提示，只读配置不加载模型）。
+
+        必要性：快档（OPUS-MT）只有 zh↔en 的模型，而界面允许把语言选成
+        日文/韩文。此前用户选了这个组合，每一句都失败且只看到原文 ——
+        界面必须在选择时就告诉他，而不是等他跑起来看满屏报错。
+        """
+        from voxsub.config_store import ConfigStore  # noqa: PLC0415
+        from voxsub.translate.factory import tier_capabilities  # noqa: PLC0415
+
+        try:
+            config = dict(ConfigStore().load())
+        except Exception:  # noqa: BLE001 - 拿不到配置就按默认值算
+            config = {}
+
+        # 语言对可以显式传（界面在用户改语言后立刻要新结论），
+        # 否则用配置里保存的那一对。
+        src = str(args.get("source") or "")
+        dst = str(args.get("target") or "")
+        if not src or not dst:
+            pair = str(config.get("lang_pair") or "zh-en")
+            head, _, tail = pair.partition("-")
+            src = src or head or "zh"
+            dst = dst or tail or "en"
+        return tier_capabilities(src, dst, config)
 
     def _cmd_last_recording(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         # last_recording_path 是 @property，不是方法 —— 加括号会得到
@@ -1229,7 +1377,13 @@ class BackendService:
             except Exception:  # noqa: BLE001 - 拿不到配置就用默认
                 config = {}
 
-            kind = str(config.get("translator_kind") or "opus-fast")
+            # 键名必须是 translate_tier：此前写的是 "translator_kind"，
+            # 而这个键在配置里**根本不存在**，于是永远落到 opus-fast ——
+            # 用户在设置里选了质量档/云端，OCR 翻译依然用快档（表现为
+            # "OCR 翻译不支持我选的语言"）。
+            from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
+
+            kind = kind_for_tier(str(config.get("translate_tier") or "fast"), config)
             result = _load_translator(kind, config)
             # _load_translator 返回 (translator, effective_kind) 或裸对象
             translator = result[0] if isinstance(result, tuple) else result
@@ -1281,6 +1435,8 @@ for _name in (
     # 调优元数据只读配置，不需要拉起 pipeline —— 界面上打开设置页就会调它，
     # 不该因此把整个推理栈初始化一遍。
     "asr_tuning_meta",
+    # 同理：档位能力查询只是读配置算语言对支持情况。
+    "translate_tiers",
 ):
     _fn = getattr(BackendService, f"_cmd_{_name}", None)
     if _fn is not None:

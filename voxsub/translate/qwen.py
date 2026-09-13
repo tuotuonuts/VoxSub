@@ -636,11 +636,13 @@ class QwenQualityTranslator(Translator):
             return ""
         src_lang = normalize_language(src_lang)
         dst_lang = normalize_language(dst_lang)
+        # 同语言对直通必须在语言对表查询之前：那张表刻意排除了
+        # src == dst，先查表会先抛"不支持语言对"，下面这行直通永远走不到。
+        if src_lang == dst_lang:
+            return text
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
-        if src_lang == dst_lang:
-            return text
         if src_lang == "auto" and detect_text_language(text) == dst_lang:
             return text
         last_error: OpenAICompatError | None = None
@@ -702,11 +704,12 @@ class QwenQualityTranslator(Translator):
             return []
         src_lang = normalize_language(src_lang)
         dst_lang = normalize_language(dst_lang)
+        # 同单句路径：直通判断必须在语言对表查询之前。
+        if _can_passthrough_batch(sources, src_lang, dst_lang):
+            return list(sources)
         names = _LANG_NAMES.get((src_lang, dst_lang))
         if names is None:
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
-        if _can_passthrough_batch(sources, src_lang, dst_lang):
-            return list(sources)
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
             endpoint = self._ensure()

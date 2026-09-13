@@ -6,7 +6,7 @@
  */
 import { h, on } from "../dom";
 import { call, store } from "../store";
-import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry } from "../protocol";
+import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry, type TranslateTierMeta } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
 
@@ -30,6 +30,66 @@ let tuningDirty = false;
  * 拿不到时退化为"全部可改"，不阻断界面 —— 灰化是提示，不该让设置页打不开。
  */
 let tuningMeta: AsrTuningMeta | null = null;
+
+let tierMeta: TranslateTierMeta | null = null;
+
+/**
+ * 拉取"各翻译档位支持哪些语言对"。
+ *
+ * 由后端算（见 translate_tiers 命令），前端不硬编码 —— 后端换了模型或
+ * 配置，前端继续显示旧结论就会出现"界面说支持、实际每句失败"。
+ */
+async function loadTierMeta(source: string, target: string): Promise<void> {
+  const result = await call<TranslateTierMeta>(CMD.translateTiers, { source, target });
+  tierMeta = result ?? null;
+}
+
+/** 档位 id → 显示名。后端给的是 id，中文名由界面本地化。 */
+function tierLabel(id: string): string {
+  if (id === "fast") return tr("快档");
+  if (id === "quality") return tr("质量档");
+  if (id === "cloud") return tr("云端");
+  return id;
+}
+
+/** 语言代码 → 显示名（界面语言已本地化）。 */
+function langLabel(code: string): string {
+  const map: Record<string, string> = {
+    auto: tr("自动识别"), zh: tr("中文"), en: tr("英文"), ja: tr("日文"), ko: tr("韩文"),
+  };
+  return map[code] ?? code;
+}
+
+/**
+ * 档位区域的说明文字。
+ *
+ * 三种情况：
+ *   · 当前档位不支持这个语言对 → 明确说会改用哪一档（否则用户看到"我选了快档
+ *     却在用质量档"会以为是 bug）；
+ *   · 当前档位支持 → 列出它支持哪些语言，便于用户自己判断；
+ *   · 元数据没拿到 → 不显示（宁可不提示，也不要给错提示）。
+ */
+function tierNoteText(): string | null {
+  if (!tierMeta) return null;
+  const pair = `${langLabel(tierMeta.source)} → ${langLabel(tierMeta.target)}`;
+  if (tierMeta.substitutedFrom) {
+    return tr("{pair}：所选「{from}」不支持该语言对，会话将自动使用「{to}」")
+      .replace("{pair}", pair)
+      .replace("{from}", tierLabel(tierMeta.substitutedFrom))
+      .replace("{to}", tierLabel(tierMeta.effective));
+  }
+  const current = tierMeta.tiers.find((t) => t.id === tierMeta!.selected);
+  if (current && !current.supportsPair) {
+    // 支持的语言里没有任何一档能做这个语言对
+    return tr("{pair}：当前没有档位支持该语言对，翻译会保留原文")
+      .replace("{pair}", pair);
+  }
+  if (current) {
+    const langs = current.langs.map(langLabel).join(" / ");
+    return tr("{pair}：当前档位支持 {langs}").replace("{pair}", pair).replace("{langs}", langs);
+  }
+  return null;
+}
 
 export async function loadConfig(): Promise<void> {
   const result = await call<Config>(CMD.getConfig);
@@ -71,6 +131,21 @@ export async function loadConfig(): Promise<void> {
   };
   tuningDirty = false;
   configReady = true;
+
+  // 语言对：界面控件与后端都以配置为准。启动时用它初始化 store ——
+  // 否则重启后界面显示 store 默认值（自动识别→中文），而后端按配置里的
+  // lang_pair 跑，两边各说各话（用户看到"我设的是日文，界面却写着自动识别"）。
+  const pair = String(config["lang_pair"] ?? "");
+  const [pairSource, pairTarget] = pair.split("-");
+  if (pairSource && pairTarget
+      && (store.get().sourceLang !== pairSource || store.get().targetLang !== pairTarget)) {
+    store.patch({ sourceLang: pairSource, targetLang: pairTarget });
+  }
+
+  // 档位能力随语言对变化，所以在配置就绪时一并取。await 而不是后台跑：
+  // 设置页首次渲染要用它，晚到就会出现"先显示旧结论再跳变"。
+  const state = store.get();
+  await loadTierMeta(state.sourceLang, state.targetLang);
 }
 
 /**
@@ -153,11 +228,11 @@ function select<T extends string>(
 /** 单选组：用圆形指示，避免原生控件在深色档下几何变形。 */
 function radioGroup<T extends string>(
   value: T,
-  options: ReadonlyArray<readonly [T, string]>,
+  options: ReadonlyArray<readonly [T, string, string?]>,
   onChange: (v: T) => void,
 ): HTMLElement {
   const group = h("div", { class: "radio-group", role: "radiogroup" });
-  for (const [val, label] of options) {
+  for (const [val, label, badge] of options) {
     const item = h("button", {
       class: val === value ? "radio is-checked" : "radio",
       type: "button",
@@ -165,6 +240,10 @@ function radioGroup<T extends string>(
       "aria-checked": String(val === value),
     });
     item.append(h("i", { class: "radio__dot" }), h("span", { text: label }));
+    // 徽标用于说明"这一档在当前语言对下不可用"之类的限定条件。
+    // 只放在标签旁边而不禁用选项：用户仍可选中它（换语言后就能用），
+    // 禁掉会让他以为界面坏了。
+    if (badge) item.append(h("span", { class: "radio__badge", text: badge }));
     on(item, "click", () => {
       group.querySelectorAll(".radio").forEach((n) => {
         n.classList.remove("is-checked");
@@ -274,16 +353,37 @@ function translationTab(): HTMLElement {
   const tierChildren: Array<HTMLElement | null> = [
     radioGroup<"fast" | "quality" | "cloud">(
       tier as "fast" | "quality" | "cloud",
-      [["fast", tr("快档")], ["quality", tr("质量档")], ["cloud", tr("云端")]],
+      // 不支持当前语言对的档位加徽标说明 —— 快档只有 zh↔en 的模型，
+      // 而语言可以选日文/韩文；不提示的话用户会选到一个必然失败的组合。
+      ([["fast", tr("快档")], ["quality", tr("质量档")], ["cloud", tr("云端")]] as const).map(
+        ([id, label]) => {
+          const info = tierMeta?.tiers.find((t) => t.id === id);
+          return info && !info.supportsPair
+            ? ([id, label, tr("不支持当前语言")] as const)
+            : ([id, label] as const);
+        },
+      ),
       (v) => {
+        // 只发档位 id：档位→翻译器 kind 的映射由后端决定（此前前端也存了一份，
+        // 与后端各写各的；质量档在特定配置下其实会落到 opus）。
         void saveConfig({ translate_tier: v }).then(() => {
-          const kind = v === "fast" ? "opus-fast" : v === "quality" ? "qwen-quality" : "cloud";
-          void call(CMD.setTranslator, { kind, config: {} });
+          void call(CMD.setTranslator, { tier: v, config: {} });
           window.dispatchEvent(new Event("voxsub:settings"));
         });
       },
     ),
   ];
+
+  // 说明当前语言对下的实际档位。放在单选下方，改语言后重进设置页即更新。
+  const noteText = tierNoteText();
+  if (noteText) {
+    tierChildren.push(
+      h("p", {
+        class: tierMeta?.substitutedFrom ? "field__hint field__hint--warn" : "field__hint",
+        text: noteText,
+      }),
+    );
+  }
 
   if (tier === "cloud") {
     tierChildren.push(
@@ -952,6 +1052,17 @@ export function buildSettings(): HTMLElement {
       if (needsConfigRefresh || current === 2) renderPane();
     },
   );
+
+  // 档位能力取决于**当前语言对**，而语言是在主屏改的 —— 设置页关着的时候
+  // 语言可能已经变了，于是这里必须重新取一次，否则再次打开设置页会显示
+  // 上一次语言对下的结论（例如"快档支持当前语言"其实早就不成立）。
+  //
+  // 只有结果真的变了才重绘：无变化时重绘会把用户正在输入的字段清掉。
+  const metaBefore = JSON.stringify(tierMeta);
+  const langState = store.get();
+  void loadTierMeta(langState.sourceLang, langState.targetLang).then(() => {
+    if (JSON.stringify(tierMeta) !== metaBefore) renderPane();
+  });
 
   window.addEventListener("voxsub:settings", () => {
     void loadConfig().then(renderPane);

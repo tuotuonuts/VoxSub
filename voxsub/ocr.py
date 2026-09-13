@@ -579,11 +579,11 @@ class RapidOcrEngine:
 
 
 def _translator_kind(config: Mapping[str, Any]) -> str:
-    return {
-        "fast": "opus-fast",
-        "quality": "qwen-quality",
-        "cloud": "cloud",
-    }.get(str(config.get("translate_tier", "fast")), "opus-fast")
+    # 映射表在 factory 里（单一来源）。此处曾有一份副本，且 ipc_server 还
+    # 写过另一个不存在的配置键，三处各说各话。
+    from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
+
+    return kind_for_tier(str(config.get("translate_tier", "fast")), dict(config))
 
 
 def _translator_key(config: Mapping[str, Any]) -> tuple[str, ...]:
