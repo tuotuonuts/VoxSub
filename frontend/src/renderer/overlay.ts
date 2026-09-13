@@ -471,9 +471,9 @@ function handleBackendEvent(event: {
     return;
   }
 
-  if (event.type === "session" && event.action === "start") {
-    // 开启新会话时清空上一场的历史与草稿，恢复干净的就绪状态
-    history.length = 0;
+  if (event.type === "session" && (event.action === "start" || event.action === "stop")) {
+    // 会话边界都清除当前句；停止后不能继续显示已经失效的草稿
+    if (event.action === "start") history.length = 0;
     historyIndex = 0;
     draft = { src: "", dst: "" };
     paint();

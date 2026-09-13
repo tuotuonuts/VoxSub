@@ -20,6 +20,9 @@ dist/
 # 例外：手写的打包配置要入库（自动生成的才忽略）
 !frontend/backend/ipc_server.spec
 
+# 修改前备份（不提交备份内容）
+.backups/
+
 # 运行时数据（模型/下载缓存不入库）
 models/
 downloads/

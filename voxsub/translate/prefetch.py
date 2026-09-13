@@ -100,7 +100,8 @@ class PrefetchEngine:
             # 软降级: 字幕不中断, 原文+标记兜底; 属正常降级路径故用 debug 级别
             logger.debug("终稿翻译失败, 降级为 '原文+[翻译失败]' (src=%s dst=%s)",
                          src, dst, exc_info=True)
-            translation = text + " [翻译失败]"
+            # 翻译失败不能把源文伪装成目标语；空字段由 UI 解释为未生成译文。
+            translation = ""
         with self._lock:
             self._last_final_at = time.monotonic()
             self._current_final = None       # 清占位, 允许下句

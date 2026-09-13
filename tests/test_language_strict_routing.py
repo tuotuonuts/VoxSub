@@ -33,13 +33,13 @@ from voxsub.pipeline import Pipeline  # noqa: E402
 
 class TestLanguageMatchersStrict:
     def test_japanese_strictly_rejects_full_chinese_sentence(self):
-        """指定日文时，纯中文长句（无假名）必须拒绝。"""
+        """指定日文时，纯中文或纯汉字短词必须拒绝。"""
         assert text_matches_language("こんにちは", "ja") is True
         assert text_matches_language("会議は三時から始まります", "ja") is True
         assert text_matches_language("今日はいい天気ですね", "ja") is True
-        # 汉字短词允许
-        assert text_matches_language("東京", "ja") is True
-        assert text_matches_language("映画", "ja") is True
+        # 纯汉字无法证明是日文，严格拒绝，避免中文误入日文链路
+        assert text_matches_language("東京", "ja") is False
+        assert text_matches_language("映画", "ja") is False
 
         # 超过 3 字且全无假名的中文句子必须拒绝
         assert text_matches_language("今天天气很好", "ja") is False

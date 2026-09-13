@@ -538,7 +538,8 @@ class Pipeline:
             self._mode = mode
 
     def set_langs(self, src: str, dst: str) -> None:
-        normalized = (normalize_language(src), normalize_language(dst))
+        normalized = (normalize_language(src, strict=True),
+                      normalize_language(dst, strict=True))
         changed = normalized != (self._src_lang, self._dst_lang)
         self._src_lang, self._dst_lang = normalized
         if changed and not self._running:
@@ -1254,8 +1255,8 @@ class Pipeline:
             self._log_translate_failure(
                 text, queue_wait_ms, (time.perf_counter() - started) * 1000.0, exc)
             self._disable_quality_translator()
-            translation = text + " 〔翻译失败〕"
-            self._emit_status("翻译失败(已保留原文)")
+            translation = ""
+            self._emit_status("翻译失败，未显示伪译文")
         self._emit_utterance(text, translation)
         view = self._live_draft.finish_final()
         if view is not None:

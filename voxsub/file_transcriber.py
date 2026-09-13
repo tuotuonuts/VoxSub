@@ -437,7 +437,7 @@ class FileRecognizer:
                     "文件字幕翻译失败: segment=%d error_type=%s error=%s",
                     index, type(exc).__name__, exc, exc_info=True,
                 )
-                line.translation = line.text + " 〔翻译失败〕"
+                line.translation = ""
             FileRecognizer._progress(
                 progress,
                 start_progress + int((end_progress - start_progress) * index / total),

@@ -18,6 +18,14 @@ def test_language_aliases_are_normalized() -> None:
     assert normalize_language("Hindi") == "auto"
 
 
+def test_strict_language_gate_rejects_ambiguous_or_unknown_inputs() -> None:
+    assert not text_matches_language("Hola mundo", "en")
+    assert not text_matches_language("Guten Morgen", "en")
+    assert not text_matches_language("你好", "ja")
+    with pytest.raises(ValueError, match="unsupported language"):
+        normalize_language("xx", strict=True)
+
+
 def test_chinese_gate_allows_chinese_with_latin_name() -> None:
     assert text_matches_language("请打开 Teams meeting", "zh")
     assert guard_text("  请打开 Teams meeting  ", "zh") == "请打开 Teams meeting"
@@ -56,6 +64,7 @@ def test_japanese_and_korean_detection_and_matching() -> None:
     assert not text_matches_language("これは日本語です", "ko")
 
 
-def test_japanese_allows_kanji_only_short_labels() -> None:
-    assert text_matches_language("映画", "ja")
-    assert not text_matches_language("映画", "en")
+def test_japanese_rejects_ambiguous_kanji_only_text() -> None:
+    assert not text_matches_language("电影", "ja")
+    assert not text_matches_language("映画", "ja")
+    assert not text_matches_language("电影", "en")

@@ -892,7 +892,7 @@ def test_pipeline_rejects_translation_in_the_wrong_language() -> None:
 
     p._translate_sentence("这是中文", None)  # noqa: SLF001
 
-    assert emitted == [("这是中文", "这是中文 〔翻译失败〕")]
+    assert emitted == [("这是中文", "")]
 
 
 def test_generative_recognition_is_decoupled_from_vad_worker() -> None:

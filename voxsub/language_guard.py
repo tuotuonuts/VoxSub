@@ -14,6 +14,7 @@ cross-script hallucinations from reaching subtitles or translation.
 from __future__ import annotations
 
 import unicodedata
+import re
 
 
 LANGUAGE_NAMES: dict[str, str] = {
@@ -27,9 +28,15 @@ LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
-def normalize_language(value: object) -> str:
-    """Return a supported short language code, or ``auto``."""
-    value = str(value or "auto").strip().lower().replace("_", "-")
+def normalize_language(value: object, *, strict: bool = False) -> str:
+    """Return a supported short language code.
+
+    UI/config parsing may keep the historical permissive ``auto`` fallback, but
+    pipeline entry points use ``strict=True`` so a typo cannot silently disable
+    language filtering.
+    """
+    original = str(value or "auto").strip().lower().replace("_", "-")
+    value = original
     aliases = {
         "cn": "zh",
         "zh-cn": "zh",
@@ -45,7 +52,11 @@ def normalize_language(value: object) -> str:
         "ko-kr": "ko",
     }
     value = aliases.get(value, value)
-    return value if value in {*LANGUAGE_NAMES, "auto"} else "auto"
+    if value not in {*LANGUAGE_NAMES, "auto"}:
+        if strict:
+            raise ValueError(f"unsupported language: {original}")
+        return "auto"
+    return value
 
 
 def language_name(language: str) -> str:
@@ -114,9 +125,7 @@ def _matches_ja(counts: dict[str, int]) -> bool:
         return False
     if counts["kana"] > 0:
         return counts["latin"] <= max(12, (counts["cjk"] + counts["kana"]) * 2)
-    # 没有假名：只有 <=3 字的极短汉字标签才宽容接受，长句必须有假名
-    if counts["cjk"] > 0 and counts["cjk"] <= 3 and counts["latin"] == 0:
-        return True
+    # 纯汉字无法可靠区分中日文；严格模式下拒绝，避免中文误入日文链路。
     return False
 
 
@@ -125,12 +134,23 @@ def _matches_ko(counts: dict[str, int]) -> bool:
     return counts["hangul"] > 0 and not counts["other"]
 
 
-def _matches_en(counts: dict[str, int]) -> bool:
-    """英文：出现任何 CJK/假名/谚文/其他字母表都视为解码选错了语言。"""
+_COMMON_ENGLISH_WORDS = frozenset({
+    "a", "an", "and", "are", "be", "but", "can", "do", "for", "from",
+    "hello", "how", "i", "if", "in", "is", "it", "me", "my", "no",
+    "not", "of", "on", "or", "please", "that", "the", "this", "to",
+    "we", "what", "when", "where", "who", "why", "with", "world", "yes",
+    "you", "your",
+})
+
+
+def _matches_en(counts: dict[str, int], text: str = "") -> bool:
+    """English: require an English lexical signal, not just Latin script."""
     if counts["latin"] == 0:
         return False
-    return not (counts["cjk"] or counts["kana"]
-                or counts["hangul"] or counts["other"])
+    if counts["cjk"] or counts["kana"] or counts["hangul"] or counts["other"]:
+        return False
+    words = {word.casefold() for word in re.findall(r"[A-Za-z]+", text)}
+    return bool(words & _COMMON_ENGLISH_WORDS)
 
 
 # 语种 → 判定函数（查表取代 if 阶梯，新增语种只加一行）
@@ -156,7 +176,7 @@ def text_matches_language(text: str, language: str, *, require_signal: bool = Tr
     if sum(counts.values()) == 0:
         return not require_signal
     matcher = _LANGUAGE_MATCHERS.get(language)
-    return matcher(counts) if matcher else True
+    return matcher(counts, text) if language == "en" else matcher(counts)
 
 
 def guard_text(text: str, language: str, *, kind: str = "text") -> str:
