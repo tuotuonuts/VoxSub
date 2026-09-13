@@ -47,7 +47,8 @@
     "test:session": "node tools/test-session-controls.mjs",
     "test:tuning-lock": "node tools/test-tuning-lock.mjs",
     "test:log-levels": "node tools/test-log-levels.mjs",
-    "test:translate-tiers": "node tools/test-translate-tiers.mjs"
+    "test:translate-tiers": "node tools/test-translate-tiers.mjs",
+    "test:overlay-sentence": "node tools/test-overlay-current-sentence.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

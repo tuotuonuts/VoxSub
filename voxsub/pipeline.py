@@ -42,7 +42,7 @@ from voxsub.bootstrap_models import ensure_bundled_vad
 from voxsub.cloud_stt import CloudSTT
 from voxsub.contextual_text import ContextualSegment, ContextualTextProcessor
 from voxsub.file_transcriber import FileAudioDecoder, FileRecognizer
-from voxsub.language_guard import guard_text, normalize_language
+from voxsub.language_guard import guard_text, normalize_language, text_matches_language
 from voxsub.live_draft import DraftTranslationRequest, DraftView, LiveDraftState
 from voxsub.logging_setup import get_logger
 from voxsub.recording import WaveSessionRecorder
@@ -860,8 +860,16 @@ class Pipeline:
                 logger.exception("清理实时字幕草稿回调异常: %r", cb)
 
     def _on_asr_partial(self, text: str) -> None:
+        text = str(text or "").strip()
+        if not text:
+            return
+        if self._src_lang != "auto" and not text_matches_language(text, self._src_lang, require_signal=False):
+            return
         processor = self._context_processor
-        self._emit_partial(processor.preview(text) if processor is not None else text)
+        preview = processor.preview(text) if processor is not None else text
+        if self._src_lang != "auto" and not text_matches_language(preview, self._src_lang, require_signal=False):
+            return
+        self._emit_partial(preview)
 
     # ---- 组件构造 ----
     def _ensure_translator(self) -> None:
@@ -1159,7 +1167,8 @@ class Pipeline:
         segments = processor.submit(item.text, now=item.queued_at)
         if (not segments and processor.pending_text and
                 self._live_draft_enabled()):
-            self._emit_partial(processor.pending_text)
+            if self._src_lang == "auto" or text_matches_language(processor.pending_text, self._src_lang, require_signal=False):
+                self._emit_partial(processor.pending_text)
         if not segments and not processor.pending_text:
             pending_since = None
         return segments, pending_since
@@ -1170,6 +1179,11 @@ class Pipeline:
         queued_at: float,
     ) -> None:
         for segment in segments:
+            if not segment.text or not segment.text.strip():
+                continue
+            if self._src_lang != "auto" and not text_matches_language(segment.text, self._src_lang):
+                logger.warning("上下文稳定文本被语言约束拦截: source=%s text=%r", self._src_lang, segment.text[:160])
+                continue
             if segment.corrections or segment.fillers_removed:
                 logger.info(
                     "上下文文本已稳定: raw=%r final=%r corrections=%s fillers=%d",
@@ -1209,6 +1223,10 @@ class Pipeline:
 
     def _translate_sentence(self, text: str, queued_at: float | None = None) -> None:
         """翻译单句并回调 UI；只在翻译工作线程调用。"""
+        # 源语言约束：如果指定了源语言，但文本不符合该语言，直接丢弃不予翻译
+        if self._src_lang != "auto" and not text_matches_language(text, self._src_lang):
+            logger.warning("翻译前拦截非指定源语言文本: expected=%s text=%r", self._src_lang, text[:160])
+            return
         self._emit_status("翻译中…")
         started = time.perf_counter()
         queue_wait_ms = ((time.monotonic() - queued_at) * 1000.0
@@ -1235,8 +1253,6 @@ class Pipeline:
         except Exception as exc:
             self._log_translate_failure(
                 text, queue_wait_ms, (time.perf_counter() - started) * 1000.0, exc)
-            # A runtime failure after warmup (for example a child process
-            # crash) must open the same one-way fallback circuit as warmup.
             self._disable_quality_translator()
             translation = text + " 〔翻译失败〕"
             self._emit_status("翻译失败(已保留原文)")
@@ -1245,7 +1261,7 @@ class Pipeline:
         if view is not None:
             self._emit_draft(view)
         worker = self._tts_worker
-        if can_speak and worker is not None:
+        if can_speak and worker is not None and translation:
             worker.submit(translation, self._dst_lang)
         if self._running:
             self._emit_status(
@@ -1255,6 +1271,8 @@ class Pipeline:
 
     def _translate_draft(self, request: DraftTranslationRequest) -> None:
         """Translate a revision and retain compatible lagging results."""
+        if self._src_lang != "auto" and not text_matches_language(request.source, self._src_lang):
+            return
         try:
             translation = self._translator.translate(
                 request.source, self._src_lang, self._dst_lang)

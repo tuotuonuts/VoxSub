@@ -109,10 +109,15 @@ def _matches_zh(counts: dict[str, int]) -> bool:
 
 
 def _matches_ja(counts: dict[str, int]) -> bool:
-    """日文：假名是可靠信号；纯汉字短标签与中文在字面上无法区分，也接受。"""
+    """日文：假名是可靠信号；纯汉字短标签（<=3字）与中文在字面上无法区分，也接受；长汉字句若无假名则视为中文。"""
     if counts["hangul"] or counts["other"]:
         return False
-    return bool(counts["kana"] or counts["cjk"])
+    if counts["kana"] > 0:
+        return counts["latin"] <= max(12, (counts["cjk"] + counts["kana"]) * 2)
+    # 没有假名：只有 <=3 字的极短汉字标签才宽容接受，长句必须有假名
+    if counts["cjk"] > 0 and counts["cjk"] <= 3 and counts["latin"] == 0:
+        return True
+    return False
 
 
 def _matches_ko(counts: dict[str, int]) -> bool:

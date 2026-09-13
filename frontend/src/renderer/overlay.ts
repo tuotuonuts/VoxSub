@@ -165,19 +165,31 @@ function setText(el: HTMLElement | null, value: string): void {
   if (el && el.textContent !== value) el.textContent = value;
 }
 
-/** 当前应显示的正文：查看历史时显示历史项，否则显示最新草稿。 */
+/** 当前应显示的正文：查看历史时显示历史项，否则事实显示最新当前句（有草稿显示草稿，无草稿保留最新定稿）。 */
 function currentView(): HistoryItem {
   if (historyIndex >= 0 && historyIndex < history.length) {
     const item = history[historyIndex];
     if (item) return item;
   }
-  return draft;
+  // 处于最新实时模式：
+  // 1. 如果有当前正在识别/翻译的草稿，事实显示当前句的草稿
+  if (draft.src || draft.dst) {
+    return draft;
+  }
+  // 2. 如果没有新草稿（刚定稿或停顿中），事实显示最新的一条定稿句子（保留在屏幕上，绝不闪退变白）
+  if (history.length > 0) {
+    return history[history.length - 1]!;
+  }
+  // 3. 全局初始状态，没有任何识别记录
+  return { src: "等待识别…", dst: "" };
 }
 
 function paint(): void {
   const view = currentView();
-  setText(srcEl, view.src || "等待识别…");
-  setText(dstEl, view.dst);
+  setText(srcEl, view.src || (view.dst ? "" : "等待识别…"));
+  // 仅译文模式下，如果正在识别原文但译文尚未返回，显示轻量提示避免空白窗口
+  const dstText = view.dst || (displayMode === "translation" && view.src && view.src !== "等待识别…" ? "翻译中…" : "");
+  setText(dstEl, dstText);
   // 回溯状态加类名：CSS 据此把当前句压暗，与"正在看历史"一致
   document.body.classList.toggle("is-browsing", isBrowsing());
   renderHistory();
@@ -429,34 +441,50 @@ function wireMainProcess(): void {
   });
 }
 
+/** 处理后端字幕与会话事件。 */
+function handleBackendEvent(event: {
+  type?: string;
+  source?: string;
+  translation?: string;
+  text?: string;
+  action?: string;
+}): void {
+  if (event.type === "utterance") {
+    // 定稿：入历史栈，并清空进行中草稿
+    pushHistory({ src: event.source ?? "", dst: event.translation ?? "" });
+    draft = { src: "", dst: "" };
+    paint();
+    return;
+  }
+
+  if (event.type === "draft") {
+    // 实时草稿：更新原文与实时翻译
+    draft = { src: event.source ?? "", dst: event.translation ?? "" };
+    if (!isBrowsing()) paint();
+    return;
+  }
+
+  if (event.type === "partial") {
+    // 实时部分识别：新句子开始
+    draft = { src: event.text ?? "", dst: "" };
+    if (!isBrowsing()) paint();
+    return;
+  }
+
+  if (event.type === "session" && event.action === "start") {
+    // 开启新会话时清空上一场的历史与草稿，恢复干净的就绪状态
+    history.length = 0;
+    historyIndex = 0;
+    draft = { src: "", dst: "" };
+    paint();
+    return;
+  }
+}
+
 /** 后端事件 → 字幕。 */
 function wireBackend(): void {
   window.voxsub?.backend.onEvent((raw) => {
-    const event = raw as {
-      type?: string;
-      source?: string;
-      translation?: string;
-      text?: string;
-    };
-
-    if (event.type === "utterance") {
-      // 定稿：入历史栈
-      pushHistory({ src: event.source ?? "", dst: event.translation ?? "" });
-      draft = { src: "", dst: "" };
-      paint();
-      return;
-    }
-
-    if (event.type === "draft") {
-      draft = { src: event.source ?? "", dst: event.translation ?? "" };
-      if (!isBrowsing()) paint();
-      return;
-    }
-
-    if (event.type === "partial") {
-      draft = { src: event.text ?? "", dst: draft.dst };
-      if (!isBrowsing()) paint();
-    }
+    handleBackendEvent(raw as Parameters<typeof handleBackendEvent>[0]);
   });
 }
 
@@ -490,6 +518,12 @@ function boot(): void {
       historyLength: history.length,
       historyIndex,
     }),
+    writable: false,
+  });
+
+  // 供自动化测试直接验证事件到达后的 DOM 渲染契约
+  Object.defineProperty(window, "__feedOverlayEvent", {
+    value: (event: Record<string, unknown>) => handleBackendEvent(event),
     writable: false,
   });
 }
