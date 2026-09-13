@@ -171,6 +171,8 @@ ENTRIES: dict[str, str] = {
     # 录音（会话操作条）
     "结束后保存为 WAV，放在本机录音文件夹":
         "Saved as a WAV in this machine's recordings folder when you stop",
+    "会话进行中，请先结束后再切换模式":
+        "A session is running — stop it before switching modes",
 }
 
 

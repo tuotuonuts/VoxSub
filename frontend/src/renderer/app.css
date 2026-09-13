@@ -163,6 +163,13 @@ body::before {
   color: var(--ink);
 }
 
+/* 暂停中的暂停按钮：描边换成警示色，让"当前处于暂停"一眼可见。
+   只靠文案"继续"暗示状态不够 —— 用户扫一眼按钮颜色就能确认。 */
+.btn--ghost.is-paused {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;

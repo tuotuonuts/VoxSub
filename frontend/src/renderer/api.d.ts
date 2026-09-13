@@ -94,5 +94,13 @@ export interface VoxSubApi {
 declare global {
   interface Window {
     voxsub?: VoxSubApi;
+    /**
+     * 自动化测试钩子：模拟一条后端 state 事件。
+     *
+     * 会话状态的真实来源是后端事件，而触发它必须真的开始会话 —— 那会占用
+     * 用户的麦克风/系统声音，自动化测试不允许。这个入口走的是与真实事件
+     * 完全相同的代码路径，因此能真实反映按钮是否跟着状态变。
+     */
+    __applySessionState?: (payload: { running?: boolean; paused?: boolean } | null) => void;
   }
 }

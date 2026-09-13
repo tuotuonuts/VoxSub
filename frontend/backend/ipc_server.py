@@ -281,8 +281,28 @@ class BackendService:
         pipeline.on_progress(
             lambda done, total, stage: _event(
                 "progress", completed=done, total=total, stage=stage))
+        # 会话状态（运行中 / 已暂停）推给界面。
+        #
+        # 为什么必须有这条：渲染层原先从不查询也不接收状态，store 里的
+        # running/paused 永远是初始的 false —— 于是主按钮永远显示"开始"、
+        # 结束按钮永远隐藏、暂停/继续的代码分支永远走不到（表现为
+        # "暂停功能没实现"+"所有模式都没有结束按钮"）。
+        #
+        # 由 pipeline 在状态真正变化时回调（_set_state 与 pause/resume），
+        # 因此也覆盖 C 模式文件播完自动停止这类**自主转换**。
+        pipeline.on_state(lambda: _event("state", **self._state_payload(pipeline)))
         self._pipeline = pipeline
         return pipeline
+
+    @staticmethod
+    def _state_payload(pipeline: Any) -> dict[str, Any]:
+        """当前会话状态。命令返回值与 state 事件共用，避免两处口径不一致。"""
+        return {
+            "running": bool(pipeline.is_running()),
+            "paused": bool(pipeline.is_paused()),
+            "mode": str(pipeline.mode),
+            "state": str(getattr(pipeline.state, "value", pipeline.state)),
+        }
 
     def _install_log_sink(self) -> None:
         """把 voxsub 的日志钩到协议事件上，供诊断页实时日志使用。"""
@@ -361,28 +381,31 @@ class BackendService:
         return handler(args)
 
     # ================================================================== 会话控制
-    def _cmd_start(self, pipeline: Any, _args: dict[str, Any]) -> None:
+    #
+    # 四个命令都**返回当前状态**，并且 pipeline 的状态回调会另发 state 事件。
+    # 两条路径都保留是刻意的：命令返回值让界面在点击后立刻更新（不必等事件），
+    # 事件负责覆盖自主转换（文件播完、出错回 IDLE）。
+    def _cmd_start(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         pipeline.start()
         # 通知界面"新的会话开始"：前端据此重置时间基准（导出 SRT 需要相对时间）
         _event("session", action="start")
+        return self._state_payload(pipeline)
 
-    def _cmd_stop(self, pipeline: Any, _args: dict[str, Any]) -> None:
+    def _cmd_stop(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         pipeline.stop()
         _event("session", action="stop")
+        return self._state_payload(pipeline)
 
-    def _cmd_pause(self, pipeline: Any, _args: dict[str, Any]) -> None:
+    def _cmd_pause(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         pipeline.pause()
+        return self._state_payload(pipeline)
 
-    def _cmd_resume(self, pipeline: Any, _args: dict[str, Any]) -> None:
+    def _cmd_resume(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         pipeline.resume()
+        return self._state_payload(pipeline)
 
     def _cmd_state(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "running": bool(pipeline.is_running()),
-            "paused": bool(pipeline.is_paused()),
-            "mode": str(pipeline.mode),
-            "state": str(getattr(pipeline.state, "value", pipeline.state)),
-        }
+        return self._state_payload(pipeline)
 
     # ================================================================== 模式与语言
     def _cmd_set_mode(self, pipeline: Any, args: dict[str, Any]) -> None:

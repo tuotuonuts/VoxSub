@@ -194,6 +194,7 @@ export type BackendEvent =
   | { type: "ready"; version: string }
   | { type: "status"; text: string }
   | { type: "session"; action: "start" | "stop" }
+  | { type: "state"; running: boolean; paused: boolean; mode: string; state: string }
   | { type: "migration"; phase: string; key?: string; index?: number; total?: number; error?: string; target?: string }
   | { type: "utterance"; source: string; translation: string }
   | { type: "draft"; source: string; translation: string }

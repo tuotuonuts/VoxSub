@@ -82,7 +82,9 @@ console.log("=== 操作条结构 ===\n");
   );
 }
 
-console.log("\n=== 收尾按钮：不同时出现两个 ===\n");
+console.log("\n=== 操作条上只有一个会话控制按钮 ===\n");
+console.log("  主按钮 开始⇄结束 由 test-session-controls.mjs 覆盖；");
+console.log("  这里确认没有残留的第二个「结束」按钮（旧设计留下的）。\n");
 {
   const d = await ev(`(() => {
     const bar = document.querySelector('.workspace__actions');
@@ -90,39 +92,40 @@ console.log("\n=== 收尾按钮：不同时出现两个 ===\n");
     return {
       stopCount: labels.filter(t => t === '结束').length,
       finishCount: labels.filter(t => t === '结束并保存').length,
-      bothPresent: labels.includes('结束') && labels.includes('结束并保存'),
+      labels,
     };
   })()`);
-  check("「结束」与「结束并保存」不同时出现", d.bothPresent === false,
-        `结束=${d.stopCount} 结束并保存=${d.finishCount}`);
+  check("未运行时没有「结束」按钮", d.stopCount === 0, `结束=${d.stopCount}`);
+  check("没有「结束并保存」按钮（已合并进主按钮）", d.finishCount === 0, `结束并保存=${d.finishCount}`);
+  check("操作条按钮清单", d.labels.length > 0, d.labels.join("/"));
 }
 
-console.log("\n=== 录音开关驱动收尾按钮文案 ===\n");
+console.log("\n=== 录音开关不再改变按钮文案 ===\n");
+console.log("  开关只管「是否落盘录音」，不再劫持主按钮的文案 ——");
+console.log("  主按钮的语义固定为 开始⇄结束，由会话状态决定。\n");
 {
   const d = await ev(`(async () => {
     const bar = document.querySelector('.workspace__actions');
     const input = bar.querySelector('.switch input[type=checkbox]');
-    const stopBtn = [...bar.querySelectorAll('button')].find(b =>
-      b.textContent.trim() === '结束' || b.textContent.trim() === '结束并保存');
+    const main = [...bar.querySelectorAll('button')].find(b => b.classList.contains('btn--primary'));
 
-    const offLabel = stopBtn?.textContent.trim();
-    // 打开录音
+    const offLabel = main?.textContent.trim();
     input.checked = true;
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 600));
-    const onLabel = stopBtn?.textContent.trim();
+    const onLabel = main?.textContent.trim();
 
     // 关回去，避免留下副作用
     input.checked = false;
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 600));
-    const backLabel = stopBtn?.textContent.trim();
+    const backLabel = main?.textContent.trim();
 
     return { offLabel, onLabel, backLabel, hint: document.querySelector('.rec-hint')?.textContent ?? '' };
   })()`);
-  check("录音关闭时显示「结束」", d.offLabel === "结束", String(d.offLabel));
-  check("录音开启时显示「结束并保存」", d.onLabel === "结束并保存", String(d.onLabel));
-  check("关闭后回到「结束」", d.backLabel === "结束", String(d.backLabel));
+  check("录音关闭时主按钮为「开始」", d.offLabel === "开始", String(d.offLabel));
+  check("录音开启时主按钮仍为「开始」", d.onLabel === "开始", String(d.onLabel));
+  check("关闭后仍是「开始」", d.backLabel === "开始", String(d.backLabel));
 }
 
 console.log("\n=== 说明行只讲音频去哪 ===\n");

@@ -368,8 +368,12 @@ function tuningTab(): HTMLElement {
 
   // 档位就是这五个。不提供"自动"：它是一个隐藏的自适应档，用户选了
   // 也不知道实际跑什么参数，反而让"我调过优了"变成错觉。
-  // 注意键名必须与后端 config_store 的允许集合一致 —— 是 accuracy 不是
-  // accurate，写错会被后端校验直接拒绝（前端此前就写错成 accurate）。
+  //
+  // 键名必须与后端 APP_CONFIG_SCHEMA.choices 一致 —— 是 accuracy 不是
+  // accurate。后端对非法值**不报错**，而是静默回退到默认值（实测
+  // normalize("accurate") == "context"），所以拼错的表现是"选了准确优先，
+  // 下次打开又变回智能上下文"，从界面上完全看不出原因。
+  // tests/test_config_defaults.py 守住了这一点。
   const profiles: ReadonlyArray<readonly [string, string]> = [
     ["responsive", tr("快档")],
     ["balanced", "均衡"],

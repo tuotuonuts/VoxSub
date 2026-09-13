@@ -12,7 +12,7 @@
  */
 import { palette, type ThemeName } from "./palette";
 import { h, on } from "./dom";
-import { call, connectBackend, store } from "./store";
+import { applySessionState, call, connectBackend, store } from "./store";
 import { CMD } from "./protocol";
 import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
@@ -198,6 +198,17 @@ function buildModeIndex(): HTMLElement {
 }
 
 async function switchMode(mode: Mode): Promise<void> {
+  // 会话运行中不允许换模式。
+  //
+  // 后端 Pipeline.set_mode 只在**非运行**状态下生效，运行中切换会被静默忽略 ——
+  // 界面于是与后端各说各话（界面显示 C 模式、实际仍在 A 模式拾音）。这会连带
+  // 让"暂停按钮是否该出现"判断错（supportsPause 按界面模式算）。
+  // 与其让用户以为切成功了，不如明确拒绝并说明。
+  if (store.get().running) {
+    store.patch({ statusText: tr("会话进行中，请先结束后再切换模式") });
+    return;
+  }
+
   // 先落 UI 再通知后端：反向等待会让切换有肉眼可见的延迟（后端要跨进程往返）。
   store.patch({ mode });
   renderWorkspace();
@@ -304,20 +315,37 @@ function boot(): void {
   });
 
   // store 变化 → 增量刷新；不做整页重建，避免输入框失焦与滚动跳动
+  //
+  // 合并策略：rAF 优先（对齐渲染帧，突发更新只刷一次），但**必须有超时兜底**。
+  // 实测：从未 show 过的窗口里 rAF 被节流到约 1fps（首帧 474ms、次帧 1000ms），
+  // 而 setTimeout 不受影响（0ms）。只靠 rAF 的话按钮状态会滞后整整一秒 ——
+  // 表现是"点了开始，按钮过一秒才变成结束"，自动化测试里更明显（读到的
+  // 永远是上一次的状态）。所以谁先到就谁刷，另一个取消。
   let pending = false;
+  let rafHandle = 0;
+  let timerHandle = 0;
+
+  const flush = (): void => {
+    if (!pending) return;
+    pending = false;
+    if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = 0; }
+    if (timerHandle) { clearTimeout(timerHandle); timerHandle = 0; }
+
+    const state = store.get();
+    updateStatus();
+    updateStream();
+    updateProgress();
+    refreshLogView();
+    if (Object.keys(state.downloads).length) refreshDownloads();
+    document.dispatchEvent(new Event("voxsub:state"));
+  };
+
   store.subscribe(() => {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => {
-      pending = false;
-      const state = store.get();
-      updateStatus();
-      updateStream();
-      updateProgress();
-      refreshLogView();
-      if (Object.keys(state.downloads).length) refreshDownloads();
-      document.dispatchEvent(new Event("voxsub:state"));
-    });
+    rafHandle = requestAnimationFrame(flush);
+    // 50ms 足够容纳正常帧（16ms），又远低于用户能察觉的延迟
+    timerHandle = window.setTimeout(flush, 50);
   });
 
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -361,6 +389,23 @@ function boot(): void {
   // 退出被拦下：说明原因，并停在设置页让用户看到进度
   window.voxsub?.app.onBlockingTask?.((payload) => {
     window.alert(payload?.reason ?? "有后台任务正在运行，暂时无法退出。");
+  });
+
+  // 供自动化验证：模拟一条后端 state 事件。
+  //
+  // 为什么需要这个入口：会话状态的**真实来源**是后端事件，而要触发它就必须
+  // 真的开始一个会话 —— 那会占用用户的麦克风/系统声音，而自动化测试明确
+  // 不允许占用音频。所以这里开一个入口，走的是与真实事件**完全相同**的
+  // 代码路径（applySessionState → store.patch → syncControls），
+  // 因此能真实反映"按钮会不会跟着状态变"。
+  //
+  // 后端的**发出**那一侧由 tests/test_pipeline_state_events.py 覆盖
+  // （用假音频源，同样不碰真实设备）。
+  Object.defineProperty(window, "__applySessionState", {
+    value: (payload: { running?: boolean; paused?: boolean } | null) => {
+      applySessionState(payload ?? null);
+    },
+    writable: false,
   });
 }
 

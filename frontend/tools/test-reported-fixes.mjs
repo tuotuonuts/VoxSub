@@ -155,20 +155,119 @@ try {
 
   if (!JSON_OUT) console.log("\n=== #3 本地/云端识别分开 ===\n");
   {
-    const d = await main.ev(`(async () => {
+    // 不假设当前是本地还是云端 —— 那是用户设置，测试期间可能已被改过
+    // （实测踩到：用户人工测试时切成了云端，测试却写死断言"本地模式有模型下拉"，
+    // 于是报出假失败）。这里测的是**真正的不变量**：
+    // 选本地就该看到本地模型下拉、看不到 API 字段；选云端则相反。
+    // 两种状态都走一遍，最后还原用户原本的选择。
+    const original = await main.ev(`(async () => {
+      const r = await window.voxsub.backend.command('get_config', null);
+      return String(r?.data?.stt_provider ?? 'local');
+    })()`);
+
+    // 按卡片读取：识别与翻译是两个独立选择，整页计数会把两者混在一起
+    // （例如识别设为本地、翻译档位设为云端时，整页只有 1 个下拉）。
+    const readPane = () => main.ev(`(() => {
+      const pane = document.querySelector('.settings__panes');
+      const cards = [...pane.querySelectorAll('.card')];
+      const info = (card) => {
+        if (!card) return null;
+        return {
+          title: card.querySelector('.card__title')?.textContent ?? '',
+          selects: [...card.querySelectorAll('select')].map(s => ({ v: s.value, n: s.options.length })),
+          apiInputs: [...card.querySelectorAll('input')].filter(i => i.type === 'password').length,
+        };
+      };
+      return JSON.stringify({ stt: info(cards[0]), translate: info(cards[1]) });
+    })()`);
+
+    /**
+     * 点击单选并**轮询等待界面稳定**。
+     *
+     * 为什么不能固定等待：切换后要走 saveConfig（IPC）→ loadConfig
+     * （又一次 IPC，且包含扫描模型目录的 list_models，可能要数秒）→ 重绘。
+     * 写死 1500ms 会随机假失败（实测踩到：切到本地后卡片仍显示云端字段）。
+     */
+    const switchProvider = async (provider) => {
+      const label = provider === "cloud" ? "云端识别" : "本地识别";
+      const clicked = await main.ev(`(async () => {
+        const pane = document.querySelector('.settings__panes');
+        // 单选是 <button class="radio">，不是 input[type=radio]
+        // （见 settings.ts 的 radioGroup）—— 只能按文案定位。
+        const target = [...pane.querySelectorAll('.radio')]
+          .find(b => b.textContent.trim() === ${JSON.stringify(label)});
+        if (!target) {
+          return JSON.stringify({
+            error: '找不到单选按钮',
+            found: [...pane.querySelectorAll('.radio')].map(b => b.textContent.trim()),
+          });
+        }
+        target.click();
+        return JSON.stringify({ ok: true });
+      })()`);
+      const parsed = JSON.parse(clicked);
+      if (!parsed.ok) return parsed;
+
+      // 等到配置真的变了，且卡片结构与该来源匹配
+      const expectLocal = provider === "local";
+      const deadline = Date.now() + 20000;
+      let last = null;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 400));
+        const cfg = await main.ev(`(async () => {
+          const r = await window.voxsub.backend.command('get_config', null);
+          return String(r?.data?.stt_provider ?? '');
+        })()`);
+        if (cfg !== provider) continue;
+        last = JSON.parse(await readPane());
+        const stt = last.stt;
+        if (!stt) continue;
+        const settled = expectLocal
+          ? (stt.selects.length >= 1 && stt.apiInputs === 0)
+          : (stt.apiInputs >= 1 && stt.selects.length === 0);
+        if (settled) return { ok: true, clicked: label };
+      }
+      return { ok: true, clicked: label, settled: false, last };
+    };
+
+    // 打开翻译页
+    await main.ev(`(async () => {
       const tabs = [...document.querySelectorAll('.settings__tab')];
       tabs.find(t => t.textContent === '翻译')?.click();
       await new Promise(r => setTimeout(r, 1200));
-      const pane = document.querySelector('.settings__panes');
-      return {
-        selects: [...pane.querySelectorAll('select')].map(s => ({ v: s.value, n: s.options.length })),
-        apiInputs: [...pane.querySelectorAll('input')].filter(i => i.type === 'password').length,
-        textInputs: [...pane.querySelectorAll('input')].length,
-      };
     })()`);
-    check("#3", "本地模式有模型下拉", d.selects.length >= 2, `${d.selects.length} 个下拉`);
-    check("#3", "下拉里确实有模型", d.selects.every((s) => s.n > 0), JSON.stringify(d.selects));
-    check("#3", "本地模式不显示云端 API 字段", d.apiInputs === 0, `密码框 ${d.apiInputs} 个`);
+
+    // try/finally 保证异常路径也能还原 —— 测试中途抛错不该把用户的配置留在
+    // 测试用的值上。（helper 定义在 try 之外，finally 才引用得到。）
+    try {
+    // ---- 本地
+    const sw1 = await switchProvider("local");
+    check("#3", "能切到本地识别", sw1.ok === true, JSON.stringify(sw1));
+    const local = JSON.parse(await readPane());
+    check("#3", "本地识别卡片有模型下拉", (local.stt?.selects.length ?? 0) >= 1,
+          `${local.stt?.title} → ${local.stt?.selects.length} 个下拉`);
+    check("#3", "下拉里确实有模型", (local.stt?.selects ?? []).every((s) => s.n > 0),
+          JSON.stringify(local.stt?.selects));
+    check("#3", "本地识别不显示云端 API 字段", local.stt?.apiInputs === 0,
+          `密码框 ${local.stt?.apiInputs} 个`);
+
+    // ---- 云端
+    const sw2 = await switchProvider("cloud");
+    check("#3", "能切到云端识别", sw2.ok === true, JSON.stringify(sw2));
+    const cloud = JSON.parse(await readPane());
+    check("#3", "云端识别显示 API 字段", (cloud.stt?.apiInputs ?? 0) >= 1,
+          `密码框 ${cloud.stt?.apiInputs} 个（语音识别卡片只有「API 密钥」一个）`);
+    check("#3", "云端识别不显示本地模型下拉", (cloud.stt?.selects.length ?? 0) === 0,
+          `${cloud.stt?.selects.length} 个下拉`);
+
+    // ---- 还原
+    const sw3 = await switchProvider(original);
+    check("#3", `还原为用户原本的选择（${original}）`, sw3.ok === true, JSON.stringify(sw3));
+
+    } finally {
+      // 异常路径的兜底还原（正常路径已在上面还原过，重复设置同一个值是幂等的）
+      await switchProvider(original).catch(() => undefined);
+    }
   }
 
   if (!JSON_OUT) console.log("\n=== #6 存储页真实路径 ===\n");
@@ -229,9 +328,13 @@ try {
       };
     })()`);
     const want = ["快档", "均衡", "准确优先", "智能上下文", "自定义"];
+    const values = ["responsive", "balanced", "accuracy", "context", "custom"];
     check("#7", "档位正好 5 个", d.options.length === 5, d.options.join("/"));
     check("#7", "档位与要求一致", want.every((w) => d.options.includes(w)) && !d.options.includes("自动"));
-    check("#7", "默认为智能上下文", d.value === "context", d.value);
+    // 不断言"当前值等于默认值" —— 那是用户设置，可能已被改过（默认值本身由
+    // tests/test_config_defaults.py 在配置层守住）。这里只验证下拉能正确显示
+    // 当前值：必须是五个合法档位之一，不能是空白。
+    check("#7", "下拉显示了合法的当前值", values.includes(d.value), String(d.value));
     check("#7", "数值项已预填", d.numericFilled === d.numericTotal && d.numericTotal > 0,
           `${d.numericFilled}/${d.numericTotal}`);
     check("#7", "开关项已预填", d.checksFilled === d.checksTotal && d.checksTotal > 0,

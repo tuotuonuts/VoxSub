@@ -4,7 +4,7 @@
  * 刻意做成"单一 store + 订阅"而不是事件总线：
  * 页面渲染只读 store，写只经 command 封装，避免多个页面各自持有副本后失同步。
  */
-import type { BackendEvent, CommandName, LogEntry } from "./protocol";
+import { CMD, type BackendEvent, type CommandName, type LogEntry } from "./protocol";
 
 type Listener = () => void;
 
@@ -122,6 +122,14 @@ class Store {
           subtitles: [],
           draft: null,
         });
+        break;
+      case "state":
+        // 会话状态（运行中 / 已暂停）。
+        //
+        // 这条事件是"暂停/继续能用、结束按钮会出现"的前提：渲染层原先从不
+        // 接收也不查询状态，running/paused 永远是初始的 false —— 于是主按钮
+        // 永远显示"开始"、结束按钮永远隐藏、暂停分支永远走不到。
+        applySessionState(event);
         break;
       case "utterance":
         this.commitSubtitle(event.source, event.translation);
@@ -253,6 +261,25 @@ export async function call<T = unknown>(
   return (result.data ?? null) as T | null;
 }
 
+/**
+ * 把会话状态写进 store。事件与主动拉取共用，避免两处口径不一致。
+ */
+export function applySessionState(payload: { running?: boolean; paused?: boolean } | null): void {
+  if (!payload) return;
+  store.patch({ running: Boolean(payload.running), paused: Boolean(payload.paused) });
+}
+
+/**
+ * 主动查询当前会话状态。
+ *
+ * 用途：界面在后端已经在跑的情况下才连上时（后端重启、渲染层重载），
+ * state 事件已经错过，必须主动拉一次，否则按钮会停在"开始"而会话实际在运行。
+ */
+export async function refreshSessionState(): Promise<void> {
+  const result = await call<{ running: boolean; paused: boolean }>(CMD.state);
+  applySessionState(result);
+}
+
 /** 启动后端并接上事件流。返回取消订阅函数。 */
 export function connectBackend(): () => void {
   const api = window.voxsub;
@@ -270,7 +297,15 @@ export function connectBackend(): () => void {
     const event = raw as BackendEvent & { type?: string };
     if (!event || typeof event.type !== "string") return;
     store.applyEvent(event as BackendEvent);
-    if (event.type === "ready") markBackendReady(null);
+    if (event.type === "ready") {
+      markBackendReady(null);
+      // 主动拉一次会话状态。
+      //
+      // 为什么不能只靠 state 事件：界面可能在后端**已经在跑**的情况下才连上
+      // （后端重启、渲染层重载）。那时事件已经错过了，界面会停在"开始"，
+      // 而实际会话正在运行 —— 用户点下去反而会再启一个会话。
+      void refreshSessionState();
+    }
   });
 
   void api.backend.start().then((result) => {

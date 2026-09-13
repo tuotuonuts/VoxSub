@@ -7,7 +7,7 @@
  *   尾部：C 模式的文件导入与进度
  */
 import { h, on, percent } from "../dom";
-import { call, store } from "../store";
+import { applySessionState, call, store } from "../store";
 import { CMD } from "../protocol";
 import { tr } from "../i18n";
 
@@ -26,33 +26,48 @@ let clockTimer: ReturnType<typeof setInterval> | null = null;
    buildWorkspace 里的局部变量，状态更新只能在页面构建时绑定一次，
    会话中途状态变化（暂停、开始录音）不会反映到按钮上。 */
 let ctaEl: HTMLButtonElement | null = null;
-let stopBtnEl: HTMLButtonElement | null = null;
+let pauseBtnEl: HTMLButtonElement | null = null;
 let recInputEl: HTMLInputElement | null = null;
 let recDotEl: HTMLElement | null = null;
 
 /**
- * 同步操作条上的全部状态：主按钮文案、收尾按钮文案与可见性、录音红点、说明行。
+ * 该模式是否支持暂停。
  *
- * 收在一处是因为这四项互相牵连 —— 拆开写就会出现"按钮说结束并保存、
- * 红点却没亮"这种自相矛盾的界面。
+ * 后端 pipeline.pause() 对 C 模式（离线文件）直接返回 —— 文件是一次性读取，
+ * 没有"暂停拾音"这回事。D 模式（屏幕 OCR）根本不走会话，主按钮本身就禁用。
+ * 不支持的模式必须**隐藏**暂停按钮，而不是留一个点了没反应的按钮。
+ */
+function supportsPause(mode: string): boolean {
+  return mode === "a" || mode === "b";
+}
+
+/**
+ * 同步操作条上的全部状态：主按钮、暂停按钮、录音红点、说明行。
+ *
+ * 收在一处是因为这几项互相牵连 —— 拆开写就会出现"按钮说结束、红点却没亮"
+ * 这种自相矛盾的界面。
+ *
+ * 按钮布局（按用户要求）：
+ *   · 主按钮   —— 开始 ⇄ 结束：点了开始就变结束，再点就结束会话
+ *   · 暂停按钮 —— 暂停 ⇄ 继续：仅会话运行中、且该模式支持暂停时出现
  */
 function syncControls(): void {
   const s = store.get();
   const recording = Boolean(recInputEl?.checked);
   const inMicMode = s.mode === "a";
 
-  // 主按钮：开始 → 暂停 ⇄ 继续
+  // 主按钮：开始 ⇄ 结束
   if (ctaEl) {
-    if (!s.running) ctaEl.textContent = tr("开始");
-    else if (s.paused) ctaEl.textContent = tr("继续");
-    else ctaEl.textContent = tr("暂停");
+    ctaEl.textContent = s.running ? tr("结束") : tr("开始");
+    // D 模式没有会话概念（走 OCR 工作区），主按钮禁用
     ctaEl.disabled = s.mode === "d";
   }
 
-  // 收尾按钮：会话在跑才出现；开了录音才谈得上"保存"
-  if (stopBtnEl) {
-    stopBtnEl.textContent = recording ? tr("结束并保存") : tr("结束");
-    stopBtnEl.hidden = !s.running;
+  // 暂停按钮：只在运行中且模式支持时出现
+  if (pauseBtnEl) {
+    pauseBtnEl.hidden = !(s.running && supportsPause(s.mode));
+    pauseBtnEl.textContent = s.paused ? tr("继续") : tr("暂停");
+    pauseBtnEl.classList.toggle("is-paused", s.paused);
   }
 
   // 红点：真的在录（开关开着 + 会话在跑 + 没暂停 + 是麦克风模式）
@@ -227,17 +242,36 @@ async function exportSession(): Promise<void> {
   await api.dialog.saveSession({ lines });
 }
 
-async function toggleRun(): Promise<void> {
+/** 会话状态载荷（后端 start/stop/pause/resume/state 都返回这个形状）。 */
+type SessionState = { running: boolean; paused: boolean };
+
+/**
+ * 主按钮：开始 ⇄ 结束。
+ *
+ * 按用户要求：点击开始后按钮变成结束，再点就结束会话 —— 不需要在两个按钮
+ * 之间判断该点哪个。
+ */
+async function toggleSession(): Promise<void> {
+  if (store.get().running) {
+    await finishSession();
+    return;
+  }
+  const result = await call<SessionState>(CMD.start);
+  // 立即用命令返回值更新界面，不等 state 事件（事件是异步的另一条路）
+  applySessionState(result);
+}
+
+/**
+ * 暂停按钮：暂停 ⇄ 继续。
+ *
+ * 只在运行中且模式支持暂停时可见（见 supportsPause）。后端 pause() 对不支持的
+ * 模式会直接返回，所以这里的 `!running` 早退是必要的兜底。
+ */
+async function togglePause(): Promise<void> {
   const state = store.get();
-  if (!state.running) {
-    await call(CMD.start);
-    return;
-  }
-  if (state.paused) {
-    await call(CMD.resume);
-    return;
-  }
-  await call(CMD.pause);
+  if (!state.running) return;
+  const result = await call<SessionState>(state.paused ? CMD.resume : CMD.pause);
+  applySessionState(result);
 }
 
 /**
@@ -254,7 +288,8 @@ async function finishSession(): Promise<void> {
   const recording = store.get().recording;
   if (recording) store.patch({ statusText: tr("正在结束录音…") });
 
-  await call(CMD.stop);
+  const stopped = await call<SessionState>(CMD.stop);
+  applySessionState(stopped);
 
   const result = await call<{ path: string | null }>(CMD.lastRecording);
   if (result?.path) {
@@ -290,24 +325,20 @@ export function buildWorkspace(): HTMLElement {
 
   // ---- 会话操作条
   //
-  // 录音按手机录音的操作模型组织：
-  //   · 一个主按钮，随状态变形：开始 → 暂停 ⇄ 继续
-  //   · 一个收尾按钮：开了「同时录音」就是「结束并保存」，否则是「结束」
+  // 会话操作条（按用户要求的布局）：
+  //   · 主按钮   —— 开始 ⇄ 结束：点开始后它变成结束，再点就结束会话
+  //   · 暂停按钮 —— 暂停 ⇄ 继续：仅运行中且模式支持暂停时出现
   //   · 运行时显示走字的计时，录音时额外亮一个红点
   //
-  // 为什么收尾只留一个按钮：原先「结束」与「结束并保存」同时挂在条上，而它们
-  // 底层是同一个 stop，用户不知道该点哪个。现在按"是否在录音"决定文案与后续
-  // 动作（是否回显保存路径、是否在资源管理器里定位文件）。
-  //
-  // 同时删掉了原先那行"像手机录音：开始 → 暂停 / 继续 → 结束并保存"的文案：
-  // 那是把设计意图当界面说明写给用户看。用户要的是这个流程本身，不是对它的描述。
+  // 为什么主按钮不再承担"暂停"：一个按钮同时表达三种动作（开始/暂停/继续）
+  // 时，用户点之前无法预判会发生什么。拆成两个按钮后各自的语义是唯一的。
   const actions = h("div", { class: "workspace__actions" });
 
   ctaEl = h("button", { class: "btn btn--primary", type: "button" });
-  on(ctaEl, "click", () => void toggleRun());
+  on(ctaEl, "click", () => void toggleSession());
 
-  stopBtnEl = h("button", { class: "btn btn--ghost", type: "button" });
-  on(stopBtnEl, "click", () => void finishSession());
+  pauseBtnEl = h("button", { class: "btn btn--ghost", type: "button", hidden: true });
+  on(pauseBtnEl, "click", () => void togglePause());
 
   clockEl = h("span", { class: "recorder__clock", hidden: true });
 
@@ -332,7 +363,7 @@ export function buildWorkspace(): HTMLElement {
 
   actions.append(
     ctaEl,
-    stopBtnEl,
+    pauseBtnEl,
     clockEl,
     h("span", { class: "catalog__spacer" }),
     exportBtn,

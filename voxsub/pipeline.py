@@ -214,6 +214,7 @@ class Pipeline:
         self._cb_partial: list[Callable[[str], None]] = []
         self._cb_draft: list[Callable[[str, str], None]] = []
         self._cb_status: list[Callable[[str], None]] = []
+        self._cb_state: list[Callable[[], None]] = []
         self._cb_progress: list[Callable[[int, int, str], None]] = []
         self._live_draft = LiveDraftState()
 
@@ -250,6 +251,18 @@ class Pipeline:
             previous, self._state = self._state, state
         if previous != state:
             logger.info("Pipeline 生命周期: %s -> %s", previous.value, state.value)
+            # 状态变了就通知订阅者。放在这里（而不是只在命令处理里发）是为了
+            # 覆盖**自主转换**：例如 C 模式文件播完自己停下、出错后回到 IDLE。
+            # 只在命令路径发通知的话，那些情况下界面会一直显示"结束"。
+            self._emit_state()
+
+    def _emit_state(self) -> None:
+        """通知订阅者当前状态。订阅者自行读 is_running()/is_paused()。"""
+        for cb in self._cb_state:
+            try:
+                cb()
+            except Exception:
+                logger.debug("状态回调失败", exc_info=True)
 
     @property
     def _running(self) -> bool:
@@ -443,12 +456,16 @@ class Pipeline:
             "识别队列已满，无法安全暂停；任务已停止",
         )
         self._emit_status("已暂停 · 点击继续恢复录音与翻译")
+        # 暂停不改 PipelineState（用 _pause_evt 表达），所以不能只靠 _set_state
+        # 的钩子，这里显式通知一次。
+        self._emit_state()
 
     def resume(self) -> None:
         if not self._running or not self._pause_evt.is_set():
             return
         self._pause_evt.clear()
         self._emit_status("拾音中")
+        self._emit_state()
 
     def is_paused(self) -> bool:
         return self._pause_evt.is_set()
@@ -470,6 +487,16 @@ class Pipeline:
 
     def on_status(self, cb: Callable[[str], None]) -> None:
         self._cb_status.append(cb)
+
+    def on_state(self, cb: Callable[[], None]) -> None:
+        """Subscribe to lifecycle/pause state changes.
+
+        Fires on every ``_set_state`` transition (including autonomous ones such as
+        a file finishing) and on pause/resume.  Consumers read the current state via
+        ``is_running()`` / ``is_paused()`` — no payload is passed, so there is no
+        risk of a stale snapshot being cached by the listener.
+        """
+        self._cb_state.append(cb)
 
     def on_progress(self, cb: Callable[[int, int, str], None]) -> None:
         """Subscribe to offline audio/video progress (current, total, stage)."""
