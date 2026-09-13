@@ -286,10 +286,19 @@ function launch() {
   }
 
   const electron = join(ROOT, "node_modules", "electron", "dist", "electron.exe");
-  const cliArgs = [ROOT];
+  const cliArgs = [];
+  // Electron CLI switches must precede the app path. If placed after ROOT,
+  // Electron treats them as application arguments and remote debugging never starts.
   if (args.has("--debug")) {
     cliArgs.push("--remote-debugging-port=9222");
     ok("remote debugging on port 9222");
+  }
+  cliArgs.push(ROOT);
+
+  const debugSwitchIndex = args.has("--debug") ? cliArgs.indexOf("--remote-debugging-port=9222") : -1;
+  if (args.has("--debug") && (debugSwitchIndex < 0 || debugSwitchIndex > cliArgs.indexOf(ROOT))) {
+    fail("debug switch must precede the Electron app path");
+    process.exit(1);
   }
 
   const child = spawn(electron, cliArgs, {
