@@ -13,7 +13,7 @@ import pytest
 
 from voxsub.contextual_text import ContextualTextProcessor
 from voxsub.file_transcriber import FileRecognizer
-from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine
+from voxsub.pipeline import Pipeline, PipelineState, SubtitleLine, _QueuedTranslation
 
 
 def test_quality_translator_falls_back_to_ready_opus(monkeypatch) -> None:
@@ -783,7 +783,11 @@ def test_cloud_stt_recognition_feeds_the_independent_translation_queue() -> None
     p._recognition_queue.put(np.ones(320, dtype=np.float32))  # noqa: SLF001
     p._recognition_input_done.set()  # noqa: SLF001
     p._recognition_loop()  # noqa: SLF001
-    assert p._translation_queue.get_nowait() == "云端原文"  # noqa: SLF001
+    # 队列条目不再是裸 str：它必须带上提交时的语言快照（缺陷 #9）。
+    entry = p._translation_queue.get_nowait()  # noqa: SLF001
+    assert isinstance(entry, _QueuedTranslation)
+    assert entry.text == "云端原文"
+    assert entry.snapshot.src == "zh" and entry.snapshot.dst == "en"
 
 
 def test_translation_is_queued_outside_asr_thread() -> None:
@@ -920,7 +924,10 @@ def test_generative_recognition_is_decoupled_from_vad_worker() -> None:
     p._recognition_queue.put(np.ones(320, dtype=np.float32))  # noqa: SLF001
     p._recognition_input_done.set()  # noqa: SLF001
     p._recognition_loop()  # noqa: SLF001
-    assert p._translation_queue.get_nowait() == "完整的一句话"  # noqa: SLF001
+    entry = p._translation_queue.get_nowait()  # noqa: SLF001
+    assert isinstance(entry, _QueuedTranslation)
+    assert entry.text == "完整的一句话"
+    assert (entry.snapshot.src, entry.snapshot.dst) == ("zh", "en")
     assert p._translation_input_done.is_set()  # noqa: SLF001
 
 
@@ -986,9 +993,12 @@ def test_context_stage_merges_fragments_before_translation_queue() -> None:
 
     p._context_loop()  # noqa: SLF001
 
-    assert p._translation_queue.get_nowait() == (  # noqa: SLF001
+    entry = p._translation_queue.get_nowait()  # noqa: SLF001
+    assert isinstance(entry, _QueuedTranslation)
+    assert entry.text == (  # noqa: SLF001
         "因为目前成本比较低所以我们下周开始执行。"
     )
+    assert (entry.snapshot.src, entry.snapshot.dst) == ("zh", "en")
     assert p._translation_input_done.is_set()  # noqa: SLF001
 
 
@@ -1002,7 +1012,9 @@ def test_existing_modes_bypass_context_stage() -> None:
     p._on_sentence("原有路径保持不变。")  # noqa: SLF001
 
     assert p._context_queue.empty()  # noqa: SLF001
-    assert p._translation_queue.get_nowait() == "原有路径保持不变。"  # noqa: SLF001
+    entry = p._translation_queue.get_nowait()  # noqa: SLF001
+    assert isinstance(entry, _QueuedTranslation)
+    assert entry.text == "原有路径保持不变。"
 
 
 # ---------- C 模式 (真实模型) ----------

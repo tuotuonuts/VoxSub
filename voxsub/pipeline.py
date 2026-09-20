@@ -218,10 +218,38 @@ def effective_tuning_for(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class _LangSnapshot:
+    """某个**任务提交点**的语言/配置快照（不可变）。
+
+    缺陷 #9 的根因：``Pipeline._src_lang`` / ``_dst_lang`` 是**可变实例状态**，
+    翻译工作线程在执行时才回读它。用户在会话中途切语言（或换档位/模型/调优）
+    时，已经排在队列里的句子于是被**新配置**解释 —— 用户看到的是"我明明选了
+    中文→英文，这句中文却被当成日文被丢掉 / 被当成新语言翻"。
+
+    修法：每个在途任务在**提交时**括下一份快照，执行时只认自己这份，绝不回读
+    实例字段。
+
+    ``generation`` 是"会影响结果的配置"的代数（见 :attr:`Pipeline.config_generation`）。
+    它把"同一段文字 + 不同配置"区分开，是失败签名与任何翻译结果缓存的键的一
+    部分：同一代内配置保证一致（缓存命中是安全的），代次一变旧键自然失效。
+    """
+
+    src: str
+    dst: str
+    generation: int
+
+    @property
+    def pair(self) -> tuple[str, str]:
+        return (self.src, self.dst)
+
+
+@dataclass(frozen=True)
 class _QueuedAudio:
     """A VAD-complete waveform plus its enqueue timestamp for diagnostics."""
     audio: np.ndarray
     queued_at: float
+    #: 入队那一刻的语言快照；裸 PCM 兼容路径为 None（退化成"执行时读当前值"）。
+    snapshot: _LangSnapshot | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +257,23 @@ class _QueuedText:
     """A recognized acoustic fragment plus its first-ready timestamp."""
     text: str
     queued_at: float
+    #: 这句识别结果**进入管线时**的语言快照；上下文阶段必须继续用它，
+    #: 否则用户切语言会让正在等待稳定的旧句子按新语言被过滤掉。
+    snapshot: _LangSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class _QueuedTranslation:
+    """终句 + 它**入队那一刻**的不可变语言/配置快照。
+
+    队列条目以前是裸 ``str``，于是"用哪一对语言翻译"只能等到出队时去读实例
+    字段 —— 那一刻用户可能已经切过语言了。把快照挂在条目上，语义就变成
+    "这句话按它提交时的配置翻"，与用户预期一致（新句子用新语言，旧句子保持）。
+    """
+
+    text: str
+    snapshot: _LangSnapshot
+    queued_at: float | None = None
 
 
 @dataclass
@@ -438,6 +483,10 @@ class Pipeline:
         self._mode = "a"
         self._in_path: Optional[Path] = None          # C 模式输入文件
         self._src_lang, self._dst_lang = "zh", "en"   # 默认中→英
+        #: 「会影响翻译结果的配置」的代次（缺陷 #9）。见 :attr:`config_generation`。
+        #: 语言对/翻译档位/ASR 模型/模型目录/ASR 调优**真的**变了才 +1；
+        #: 反复提交同样的配置不加，否则所有基于代次的缓存/失败签名都会被白白冲掉。
+        self._config_generation = 0
         self._tts_enabled = False
         self._tts_model_ids = {
             "zh": "tts-icefall-zh-aishell3",
@@ -466,7 +515,7 @@ class Pipeline:
             maxsize=_RECOGNITION_QUEUE_MAX)
         self._context_queue: queue.Queue[_QueuedText] = queue.Queue(
             maxsize=_CONTEXT_QUEUE_MAX)
-        self._translation_queue: queue.Queue[str] = queue.Queue(
+        self._translation_queue: queue.Queue[_QueuedTranslation] = queue.Queue(
             maxsize=_TRANSLATION_QUEUE_MAX)
         self._translation_times: dict[str, deque[float]] = defaultdict(deque)
         self._metrics_lock = threading.Lock()
@@ -594,6 +643,41 @@ class Pipeline:
         """
         return not self.is_running() and not self._workers_alive()
 
+    @property
+    def config_generation(self) -> int:
+        """影响翻译结果的配置代次（只读，供 IPC/界面观测）。
+
+        每次「会影响结果的配置」**真的**变了就 +1：语言对、翻译档位、ASR 模型、
+        模型目录、ASR 调优。反复提交同样的值**不加** —— 否则每次重发配置都会把
+        所有基于代次的缓存与失败签名冲掉，等于没有缓存。
+
+        语义（工作单 §3.5）：
+          · 用户保存的配置 —— 配置文件里的值，本类不关心；
+          · 当前实际生效的配置 —— ``self._src_lang/_dst_lang`` 等字段 + 本代次；
+          · 某个在途任务持有的配置快照 —— :class:`_LangSnapshot`，它带上**它
+            被创建时的代次**。代次不同就说明"这是另一个配置下的结果"，不能混用。
+        """
+        with self._state_lock:
+            return self._config_generation
+
+    def _bump_config_generation(self, reason: str) -> int:
+        """配置代次 +1。**只在配置真的变了之后调用**（由调用方负责判断）。"""
+        with self._state_lock:
+            self._config_generation += 1
+            value = self._config_generation
+        logger.info("配置代次更新: generation=%d reason=%s", value, reason)
+        return value
+
+    def _lang_snapshot(self) -> _LangSnapshot:
+        """取一份**当前**配置的不可变快照（在任务提交点调用）。
+
+        与 :meth:`set_langs` 共用 ``_state_lock``，所以读到的永远是"某一刻的
+        语言对 + 那一刻的代次"，不会是半更新状态。
+        """
+        with self._state_lock:
+            return _LangSnapshot(self._src_lang, self._dst_lang,
+                                 self._config_generation)
+
     def set_mode(self, mode: str) -> None:
         if mode in ("a", "b", "c") and not self._running:
             self._mode = mode
@@ -601,8 +685,14 @@ class Pipeline:
     def set_langs(self, src: str, dst: str) -> None:
         normalized = (normalize_language(src, strict=True),
                       normalize_language(dst, strict=True))
-        changed = normalized != (self._src_lang, self._dst_lang)
-        self._src_lang, self._dst_lang = normalized
+        # 语言对的写入与代次递增必须与 :meth:`_lang_snapshot` 互斥，否则取快照
+        # 的线程可能读到"新语言 + 旧代次"这种半更新状态 —— 那种组合会让缓存键
+        # 撒谎（同一代次下出现两种语言对）。
+        with self._state_lock:
+            changed = normalized != (self._src_lang, self._dst_lang)
+            self._src_lang, self._dst_lang = normalized
+            if changed:
+                self._bump_config_generation("set_langs")
         if changed and not self._running:
             self._asr = None
             self._seg = None
@@ -672,6 +762,8 @@ class Pipeline:
         self._trans_kind = None
         self._is_cloud_stt = False
         self._is_generative = False
+        # 模型根变了 = 换了一整套权重：结果不可跨代复用（缓存/失败签名必须失效）。
+        self._bump_config_generation("set_models_dir")
         for label, component in (("云 STT", old_cloud), ("翻译器", old_translator)):
             if component is None:
                 continue
@@ -729,6 +821,9 @@ class Pipeline:
         changed = normalized != self._requested_trans_kind or config != self._translator_config
         self._requested_trans_kind = normalized
         self._translator_config = config
+        if changed:
+            # 档位/凭据变了 → 换的是"谁来翻"，结果不可跨代。
+            self._bump_config_generation("set_translator")
         if changed and self._translator is not None:
             try:
                 self._translator.close()
@@ -747,6 +842,8 @@ class Pipeline:
         if normalized == self._requested_asr_model_id:
             return
         self._requested_asr_model_id = normalized
+        # 换识别模型 = 换"原文怎么来的"：下游翻译结果不可跨代复用。
+        self._bump_config_generation("set_asr_model")
         # sherpa recognizers own native state; replace only while stopped.
         self._asr = None
         self._vad = None
@@ -772,6 +869,8 @@ class Pipeline:
         if normalized == self._asr_tuning:
             return
         self._asr_tuning = normalized
+        # VAD/断句/热词会改变切出来的句子本身 → 结果不可跨代复用。
+        self._bump_config_generation("set_asr_tuning")
         self._asr = None
         self._vad = None
         self._seg = None
@@ -947,38 +1046,57 @@ class Pipeline:
         self._emit_partial(preview)
 
     # ---- 组件构造 ----
-    def _ensure_translator(self) -> None:
+    def _ensure_translator(self, snapshot: _LangSnapshot | None = None) -> None:
+        """惰性创建翻译器。
+
+        缺省按**当前**语言对挑档位（start / 文件模式入口都是这个语义）；传
+        ``snapshot`` 时按**那条在途任务**的语言对挑 —— 用户切语言不该把正在
+        执行的旧任务重新定向。
+        """
         if self._translator is None:
+            pair = (snapshot.pair if snapshot is not None
+                    else (self._src_lang, self._dst_lang))
             self._translator, self._trans_kind, substituted = _load_translator_for_pair(
-                self._requested_trans_kind, self._src_lang, self._dst_lang,
+                self._requested_trans_kind, pair[0], pair[1],
                 self._translator_config)
             self._trans_substituted_from = substituted
-            self._trans_pair = (self._src_lang, self._dst_lang)
+            # 记录"这个实例是按哪一对语言挑的"，而不是"现在配置是哪一对"。
+            self._trans_pair = pair
             self._pair_fail_key = None
 
-    def _translator_supports_pair(self) -> bool:
-        """当前翻译器能否处理当前语言对（廉价判断，逐句调用）。"""
+    def _translator_supports_pair(self, snapshot: _LangSnapshot | None = None) -> bool:
+        """当前翻译器能否处理给定语言对（廉价判断，逐句调用）。
+
+        传 ``snapshot`` 判断的是"这个翻译器能不能翻这条在途句子"，与用户刚切
+        的语言无关。
+        """
+        src, dst = (snapshot.pair if snapshot is not None
+                    else (self._src_lang, self._dst_lang))
         supports = getattr(self._translator, "supports", None)
         if not callable(supports):
             return True  # 判断不了就不阻断，交给真正的 translate 去试
-        return bool(supports(self._src_lang, self._dst_lang))
+        return bool(supports(src, dst))
 
-    def _retune_translator_for_pair(self) -> None:
+    def _retune_translator_for_pair(
+        self, snapshot: _LangSnapshot | None = None
+    ) -> None:
         """语言对变了、当前档位不支持时，重新挑一个支持的档位。
 
         只在翻译工作线程调用（换翻译器要关旧的，跨线程关会撞上正在进行的
         translate）。用户在会话进行中改语言会走到这里：第一句触发换档，
         之后正常。
         """
+        src, dst = (snapshot.pair if snapshot is not None
+                    else (self._src_lang, self._dst_lang))
         failed = self._translator
         self._translator = None
-        self._ensure_translator()
+        self._ensure_translator(snapshot)
         close = getattr(failed, "close", None)
         if callable(close) and failed is not self._translator:
             close()
         if self._trans_substituted_from is not None:
             self._emit_status(
-                f"当前档位不支持 {self._src_lang}→{self._dst_lang}，已改用其他档位")
+                f"当前档位不支持 {src}→{dst}，已改用其他档位")
         elif self._trans_kind is None:
             self._emit_status("没有可用翻译档位，暂时显示原文")
 
@@ -1138,7 +1256,7 @@ class Pipeline:
                     self._recognition_queue.qsize() + 1)
         self._put_or_stop(
             self._recognition_queue,
-            _QueuedAudio(arr, time.monotonic()),
+            _QueuedAudio(arr, time.monotonic(), self._lang_snapshot()),
             "识别后端持续落后，音频分段缓存已满；任务已停止，请切换更轻量的识别模型",
         )
 
@@ -1147,11 +1265,14 @@ class Pipeline:
         text = str(text or "").strip()
         if not text:
             return
+        # **提交点快照**（缺陷 #9）：这句识别结果从这一刻起就固定用哪一对语言、
+        # 哪一代配置。用户之后再切语言只影响**新**的句子，不会回头改写这句。
+        snapshot = self._lang_snapshot()
         try:
-            text = guard_text(text, self._src_lang, kind="STT")
+            text = guard_text(text, snapshot.src, kind="STT")
         except ValueError as exc:
             logger.warning("STT 结果被语言约束拦截: source=%s text=%r reason=%s",
-                           self._src_lang, text[:160], exc)
+                           snapshot.src, text[:160], exc)
             self._emit_status("识别到其他语言，已忽略当前片段")
             return
         queued_at = time.monotonic()
@@ -1162,23 +1283,30 @@ class Pipeline:
             )
             self._put_or_stop(
                 self._context_queue,
-                _QueuedText(text, queued_at),
+                _QueuedText(text, queued_at, snapshot),
                 "上下文处理持续积压，字幕缓存已满；任务已停止",
             )
             return
-        self._queue_translation(text, queued_at)
+        self._queue_translation(text, queued_at, snapshot)
 
-    def _queue_translation(self, text: str, queued_at: float) -> None:
+    def _queue_translation(self, text: str, queued_at: float,
+                           snapshot: _LangSnapshot | None = None) -> None:
+        """终句入翻译队列，并把**入队这一刻**的语言快照挂在条目上。
+
+        ``snapshot`` 缺省时现取一份当前配置的快照（例如集成方直接调用）。
+        """
+        if snapshot is None:
+            snapshot = self._lang_snapshot()
         self._live_draft.begin_final()
         with self._metrics_lock:
             self._translation_times[text].append(queued_at)
-        logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s queue=%d",
-                    len(text), self._src_lang, self._dst_lang,
+        logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s generation=%d queue=%d",
+                    len(text), snapshot.src, snapshot.dst, snapshot.generation,
                     self._translation_queue.qsize() + 1)
         try:
             self._put_or_stop(
                 self._translation_queue,
-                text,
+                _QueuedTranslation(text, snapshot, queued_at),
                 "翻译后端持续落后，字幕缓存已满；任务已停止，请切换更轻量的翻译模型",
             )
         except RuntimeError:
@@ -1200,24 +1328,33 @@ class Pipeline:
             self._translation_input_done.set()
             return
         pending_since: float | None = None
+        #: 当前这一轮"待稳定文本"是从哪份快照开始的（缺陷 #9）。上下文处理器
+        #: 会把多条片段攒成一句话，这一句话必须整体按**开始那一刻**的配置解释；
+        #: 否则用户中途切语言时，旧语言的句子会按新语言被过滤掉。
+        run_snapshot: _LangSnapshot | None = None
         try:
             while (not self._context_input_done.is_set() or
                    not self._context_queue.empty()):
+                item: _QueuedText | None = None
                 try:
                     item = self._context_queue.get(timeout=0.1)
                 except queue.Empty:
                     segments = processor.poll()
                 else:
+                    if run_snapshot is None:
+                        run_snapshot = item.snapshot
                     segments, pending_since = self._consume_context_item(
-                        processor, item, pending_since)
+                        processor, item, pending_since, run_snapshot)
                 if segments:
                     self._commit_context_segments(
-                        segments, pending_since or time.monotonic())
+                        segments, pending_since or time.monotonic(),
+                        run_snapshot)
                     pending_since = None
+                    run_snapshot = None
             trailing = processor.flush()
             if trailing:
                 self._commit_context_segments(
-                    trailing, pending_since or time.monotonic())
+                    trailing, pending_since or time.monotonic(), run_snapshot)
         except Exception as exc:
             logger.exception("智能上下文处理线程失败")
             self._emit_status(f"上下文处理错误: {exc}")
@@ -1231,18 +1368,22 @@ class Pipeline:
         processor: ContextualTextProcessor,
         item: _QueuedText,
         pending_since: float | None,
+        run_snapshot: _LangSnapshot | None = None,
     ) -> tuple[list[ContextualSegment], float | None]:
+        # 这一条属于"当前这一轮待稳定文本"；有 run_snapshot 就用它（这一句话
+        # 是从那里开始的），否则用条目自己的快照。
+        snapshot = run_snapshot or item.snapshot or self._lang_snapshot()
         expired = processor.poll(now=item.queued_at)
         if expired:
             self._commit_context_segments(
-                expired, pending_since or item.queued_at)
+                expired, pending_since or item.queued_at, snapshot)
             pending_since = None
         if not processor.pending_text:
             pending_since = item.queued_at
         segments = processor.submit(item.text, now=item.queued_at)
         if (not segments and processor.pending_text and
                 self._live_draft_enabled()):
-            if self._src_lang == "auto" or text_matches_language(processor.pending_text, self._src_lang, require_signal=False):
+            if snapshot.src == "auto" or text_matches_language(processor.pending_text, snapshot.src, require_signal=False):
                 self._emit_partial(processor.pending_text)
         if not segments and not processor.pending_text:
             pending_since = None
@@ -1252,12 +1393,20 @@ class Pipeline:
         self,
         segments: list[ContextualSegment],
         queued_at: float,
+        snapshot: _LangSnapshot | None = None,
     ) -> None:
+        """把稳定后的文本交给翻译队列。
+
+        ``snapshot`` 是这批文本**开始时**的语言/配置快照；缺省（例如
+        ``processor.poll()`` 现取的片段）用当前配置。
+        """
+        if snapshot is None:
+            snapshot = self._lang_snapshot()
         for segment in segments:
             if not segment.text or not segment.text.strip():
                 continue
-            if self._src_lang != "auto" and not text_matches_language(segment.text, self._src_lang):
-                logger.warning("上下文稳定文本被语言约束拦截: source=%s text=%r", self._src_lang, segment.text[:160])
+            if snapshot.src != "auto" and not text_matches_language(segment.text, snapshot.src):
+                logger.warning("上下文稳定文本被语言约束拦截: source=%s text=%r", snapshot.src, segment.text[:160])
                 continue
             if segment.corrections or segment.fillers_removed:
                 logger.info(
@@ -1265,7 +1414,7 @@ class Pipeline:
                     segment.raw_text[:160], segment.text[:160],
                     segment.corrections, segment.fillers_removed,
                 )
-            self._queue_translation(segment.text, queued_at)
+            self._queue_translation(segment.text, queued_at, snapshot)
 
     def _take_translation_timestamp(self, text: str) -> float | None:
         with self._metrics_lock:
@@ -1278,86 +1427,141 @@ class Pipeline:
             return value
 
     def _log_translate_failure(self, text: str, queue_wait_ms: float | None,
-                               request_ms: float, exc: Exception) -> None:
+                               request_ms: float, exc: Exception,
+                               snapshot: _LangSnapshot | None = None) -> None:
         """记录翻译失败，**同一原因只完整报一次**。
 
         此前是逐句 ERROR + 完整回溯：一段 5 分钟的日语音频能刷出上百条一模一样的
-        回溯，把真正的错误淹掉，也让日志文件迅速膨胀。原因签名 = 档位 + 语言对，
-        所以换档位或换语言后会重新完整报一次（那是新信息）。
+        回溯，把真正的错误淹掉，也让日志文件迅速膨胀。原因签名 = 档位 + 语言对
+        **+ 配置代次**，所以换档位、换语言、或任何影响结果的配置变更之后都会重新
+        完整报一次（那是新信息），而同代内的重复失败继续被折叠。
+
+        ``generation`` 进键是工作单 §3.5 的要求："会影响结果的配置变更要进入缓存
+        有效性判断"。同一代内配置保证一致，所以这个键既不会漏报新原因，也不会
+        把不同配置下的失败混成同一个。
         """
-        fail_key = (str(self._trans_kind), self._src_lang, self._dst_lang)
+        key = snapshot or self._lang_snapshot()
+        fail_key = (str(self._trans_kind), key.src, key.dst, key.generation)
         first_time = fail_key != self._pair_fail_key
         self._pair_fail_key = fail_key
         waited = f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na"
         (logger.error if first_time else logger.debug)(
-            "翻译失败: src_chars=%d queue_wait_ms=%s request_ms=%.1f error=%s%s",
-            len(text), waited, request_ms, exc,
+            "翻译失败: src_chars=%d queue_wait_ms=%s request_ms=%.1f "
+            "generation=%d error=%s%s",
+            len(text), waited, request_ms, key.generation, exc,
             "" if first_time else "（同一原因，后续不再重复记录）",
             exc_info=first_time,
         )
 
-    def _translate_sentence(self, text: str, queued_at: float | None = None) -> None:
-        """翻译单句并回调 UI；只在翻译工作线程调用。"""
+    def _translate_sentence(self, text: str, queued_at: float | None = None,
+                            snapshot: _LangSnapshot | None = None) -> None:
+        """翻译单句并回调 UI；只在翻译工作线程调用。
+
+        ``snapshot`` 是这条句子**入队时**的语言/配置快照（缺陷 #9）。缺省
+        （直接调用，例如 TTS 路径或单测）时取当前配置。
+
+        本函数内部**不再回读** ``self._src_lang`` / ``self._dst_lang``：用户
+        在会话中途切语言，只该影响之后新入队的句子，不该改写已经在途的这一句。
+        """
+        if snapshot is None:
+            snapshot = self._lang_snapshot()
         # 源语言约束：如果指定了源语言，但文本不符合该语言，直接丢弃不予翻译
-        if self._src_lang != "auto" and not text_matches_language(text, self._src_lang):
-            logger.warning("翻译前拦截非指定源语言文本: expected=%s text=%r", self._src_lang, text[:160])
+        if snapshot.src != "auto" and not text_matches_language(text, snapshot.src):
+            logger.warning("翻译前拦截非指定源语言文本: expected=%s text=%r",
+                           snapshot.src, text[:160])
             return
         self._emit_status("翻译中…")
         started = time.perf_counter()
         queue_wait_ms = ((time.monotonic() - queued_at) * 1000.0
                          if queued_at is not None else None)
-        can_speak = False
         # 语言对可能在会话中途被改（用户切了"识别语言/翻译为"），而档位是按
         # 旧语言对挑的。这里在真正翻译前确认一次：不支持就换档位，避免每句
         # 都抛"快档不支持语言对"（用户看到的就是满屏 ERROR 加原文）。
-        if (self._trans_pair != (self._src_lang, self._dst_lang)
-                and not self._translator_supports_pair()):
-            self._retune_translator_for_pair()
+        # 判断用的是**这条任务自己的**快照，不是用户刚切过去的新语言对。
+        if (self._trans_pair != snapshot.pair
+                and not self._translator_supports_pair(snapshot)):
+            self._retune_translator_for_pair(snapshot)
+        translation, can_speak = self._run_translation(
+            text, snapshot, queue_wait_ms, started)
+        self._present_translation(text, translation, snapshot, speak=can_speak)
+
+    def _run_translation(self, text: str, snapshot: _LangSnapshot,
+                         queue_wait_ms: float | None, started: float
+                         ) -> tuple[str, bool]:
+        """调用翻译器，返回 ``(译文, 是否可朗读)``；失败时译文为空串。
+
+        语言一律来自 ``snapshot``（缺陷 #9），成功/失败日志与"档位降级"都收在
+        这里，:meth:`_translate_sentence` 只负责编排与回调。
+        """
         try:
-            translation = self._translator.translate(text, self._src_lang, self._dst_lang)
+            translation = self._translator.translate(text, snapshot.src, snapshot.dst)
             if self._trans_kind is not None:
                 translation = guard_text(
-                    translation, self._dst_lang, kind="translation")
-            request_ms = (time.perf_counter() - started) * 1000.0
-            self._pair_fail_key = None   # 恢复成功，下次失败要重新报
-            logger.info("翻译完成: src_chars=%d dst_chars=%d queue_wait_ms=%s request_ms=%.1f",
-                        len(text), len(translation),
-                         f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
-                         request_ms)
-            can_speak = True
+                    translation, snapshot.dst, kind="translation")
         except Exception as exc:
             self._log_translate_failure(
-                text, queue_wait_ms, (time.perf_counter() - started) * 1000.0, exc)
+                text, queue_wait_ms, (time.perf_counter() - started) * 1000.0,
+                exc, snapshot)
             self._disable_quality_translator()
-            translation = ""
             self._emit_status("翻译失败，未显示伪译文")
+            return "", False
+        self._pair_fail_key = None   # 恢复成功，下次失败要重新报
+        logger.info("翻译完成: src_chars=%d dst_chars=%d lang=%s->%s "
+                    "queue_wait_ms=%s request_ms=%.1f",
+                    len(text), len(translation), snapshot.src, snapshot.dst,
+                    f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
+                    (time.perf_counter() - started) * 1000.0)
+        return translation, True
+
+    def _present_translation(self, text: str, translation: str,
+                             snapshot: _LangSnapshot, *, speak: bool) -> None:
+        """把一条译文交代出去：字幕回调 → 草稿收尾 → TTS → 状态复位。
+
+        TTS 用的是**这条句子的**目标语言快照：否则"用中文语音读英文句子"
+        这类错配会在用户切语言之后出现。
+        """
         self._emit_utterance(text, translation)
         view = self._live_draft.finish_final()
         if view is not None:
             self._emit_draft(view)
         worker = self._tts_worker
-        if can_speak and worker is not None and translation:
-            worker.submit(translation, self._dst_lang)
+        if speak and worker is not None and translation:
+            worker.submit(translation, snapshot.dst)
         if self._running:
             self._emit_status(
                 "已暂停 · 点击继续恢复录音与翻译"
                 if self._pause_evt.is_set() else "拾音中"
             )
 
-    def _translate_draft(self, request: DraftTranslationRequest) -> None:
-        """Translate a revision and retain compatible lagging results."""
-        if self._src_lang != "auto" and not text_matches_language(request.source, self._src_lang):
+    def _translate_draft(self, request: DraftTranslationRequest,
+                         snapshot: _LangSnapshot | None = None) -> None:
+        """Translate a revision and retain compatible lagging results.
+
+        草稿是"现在这一行"的**实时视图**，所以默认用当前配置（用户切了语言，
+        下一份草稿立刻按新语言对走）。但如果翻译过程中配置代次变了，这份结果
+        就不再代表当前配置 —— 丢弃（等于取消这次在途请求），不能把旧语言对的
+        译文贴在新语言对下面。
+        """
+        if snapshot is None:
+            snapshot = self._lang_snapshot()
+        if snapshot.src != "auto" and not text_matches_language(request.source, snapshot.src):
             return
         try:
             translation = self._translator.translate(
-                request.source, self._src_lang, self._dst_lang)
+                request.source, snapshot.src, snapshot.dst)
             if self._trans_kind is not None:
                 translation = guard_text(
-                    translation, self._dst_lang, kind="draft translation")
+                    translation, snapshot.dst, kind="draft translation")
         except Exception:
             logger.debug("实时草稿翻译失败: source=%r", request.source[:160],
                          exc_info=True)
             self._disable_quality_translator()
+            return
+        if snapshot.generation != self.config_generation:
+            logger.debug(
+                "实时草稿结果已过期（翻译期间配置代次变化），丢结果而不是贴旧配置的译文: "
+                "generation=%d current=%d", snapshot.generation,
+                self.config_generation)
             return
         view = self._live_draft.accept_translation(request, translation)
         if view is not None:
@@ -1375,6 +1579,25 @@ class Pipeline:
             and self._live_draft_enabled()
         )
 
+    def _translate_queued_item(self, item: object) -> None:
+        """执行一条翻译队列条目，用的是**条目自带**的快照。
+
+        这是缺陷 #9 的落点：句子按它入队时的语言对/配置代次翻，而不是按出队
+        那一刻的实例字段。
+        """
+        if isinstance(item, _QueuedTranslation):
+            text, snapshot = item.text, item.snapshot
+            queued_at = self._take_translation_timestamp(text)
+            if queued_at is None:
+                queued_at = item.queued_at
+        else:
+            # 兼容仍然直接 put 裸字符串的集成：只能退化成"出队时的配置"，
+            # 也就是缺陷 #9 的旧行为。管线内部一律走 _QueuedTranslation。
+            text = str(item)
+            snapshot = self._lang_snapshot()
+            queued_at = self._take_translation_timestamp(text)
+        self._translate_sentence(text, queued_at, snapshot)
+
     def _translation_loop(self) -> None:
         """Prioritize final sentences, then translate only the latest live draft."""
         warmup = getattr(self._translator, "warmup", None)
@@ -1383,11 +1606,11 @@ class Pipeline:
             self._warmup_translator()
         while True:
             try:
-                text = self._translation_queue.get_nowait()
+                item = self._translation_queue.get_nowait()
             except queue.Empty:
-                text = None
-            if text is not None:
-                self._translate_sentence(text, self._take_translation_timestamp(text))
+                item = None
+            if item is not None:
+                self._translate_queued_item(item)
                 continue
             if self._translation_input_done.is_set():
                 break
@@ -1396,13 +1619,13 @@ class Pipeline:
                 if self._live_draft_translation_enabled() else None
             )
             if request is not None:
-                self._translate_draft(request)
+                self._translate_draft(request, self._lang_snapshot())
                 continue
             try:
-                text = self._translation_queue.get(timeout=0.05)
+                item = self._translation_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
-            self._translate_sentence(text, self._take_translation_timestamp(text))
+            self._translate_queued_item(item)
 
     def _recognition_loop(self) -> None:
         """Decode VAD-complete waveforms without ever blocking audio capture."""
@@ -1413,14 +1636,14 @@ class Pipeline:
                     item = self._recognition_queue.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                audio, queued_at = self._recognition_item(item)
+                audio, queued_at, snapshot = self._recognition_item(item)
                 backlog = self._recognition_queue.qsize()
                 if backlog:
                     logger.info("STT 处理积压: segments=%d（音频已完整保留）", backlog)
                 stt_started = time.perf_counter()
                 wait_ms = ((time.monotonic() - queued_at) * 1000.0
                             if queued_at is not None else None)
-                text = self._decode_recognition_audio(audio)
+                text = self._decode_recognition_audio(audio, snapshot)
                 if text is None:
                     continue
                 decode_ms = (time.perf_counter() - stt_started) * 1000.0
@@ -1439,13 +1662,16 @@ class Pipeline:
                 self._translation_input_done.set()
 
     @staticmethod
-    def _recognition_item(item) -> tuple[np.ndarray, float | None]:
+    def _recognition_item(
+        item,
+    ) -> tuple[np.ndarray, float | None, _LangSnapshot | None]:
         if isinstance(item, _QueuedAudio):
-            return item.audio, item.queued_at
+            return item.audio, item.queued_at, item.snapshot
         # Keep integrations that enqueue raw PCM compatible with the queue.
-        return np.asarray(item, dtype=np.float32), None
+        return np.asarray(item, dtype=np.float32), None, None
 
-    def _decode_recognition_audio(self, audio: np.ndarray) -> str | None:
+    def _decode_recognition_audio(self, audio: np.ndarray,
+                                  snapshot: _LangSnapshot | None = None) -> str | None:
         client = self._cloud_stt if self._is_cloud_stt else self._asr
         if client is None:
             kind = "云 STT 客户端" if self._is_cloud_stt else "本地 STT 执行器"
@@ -1471,8 +1697,12 @@ class Pipeline:
                            values.size * 1000.0 / SAMPLE_RATE, rms, peak)
         try:
             if self._is_cloud_stt:
+                # 云 STT 也吃语言提示：用音频**入队时**的快照，避免用户在排队
+                # 期间切语言导致这段音频被按新语言转写。
+                source_lang = (snapshot.src if snapshot is not None
+                               else self._src_lang)
                 return client.transcribe_samples(
-                    audio, source_lang=self._src_lang).strip()
+                    audio, source_lang=source_lang).strip()
             stream = client.create_stream()
             client.feed(stream, audio)
             text = client.decode(stream).strip()
