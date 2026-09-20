@@ -79,6 +79,9 @@
 - [x] v0.9.0-beta OCR 完善候选：OCR 改为与 A/B/C 平级的 D 模式，共用常驻翻译方向；进入模式后台预热快速 OCR 与翻译器，变化画面使用 Small 快速结果，稳定画面在实际 GPU 可用时用所选质量模型纠偏。实时首轮限制为 20–24 个版面块和约 2.2–2.4K 字符，批量 JSON 异常不再逐行回退；采集队列只保留最新画面并丢弃过期结果。实时覆盖捕获排除已修正，不再周期隐藏闪烁；碎片/连续正文按段落块合并，主阅读列优先，目标语言界面过滤；译文以原 OCR 框高度为字号基准，在不侵入其他 OCR 框的空闲区域内自适应扩张，覆盖框严格不重叠，长文本支持任意字符换行，空结果保留旧画面重试。安装器将安全收尾扩至 5 秒、强制关闭后复核 2 秒，运行标记保持到进程真正终止；Pipeline 退出时主动关闭本地翻译进程，安装器按当前安装目录清理旧版孤儿 `llama-server.exe`，避免 `ggml-cpu.dll` 锁定。成品退出握手通过。构建门禁 `319 passed / 7 skipped`，成品 OCR 自检与真实 Windows 捕获排除通过。安装包 277,285,664 字节（264.44 MiB），SHA256 `F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D`；继续沿用同版本候选，本次构建使用本机自签名证书，等待用户安装验收，不发布 Release
 - [ ] M9 发布候选：完成更多真实推理与无独显 NPU 轻薄本验收
 
+- [x] **2026-09-21 代码可维护性整顿（阶段0–4，共 10 个提交，基线 `0882505`）**：删除授权从"调用方给路径"改成"台账记录 + 护栏"（清理只认 `record_id` 并要求显式 confirm，新增 `migration_ledger.py`）；后台任务控制通道与耗时工作分离（新增 `job_runner.py` 有界单 worker + 诚实取消语义、`ipc_loop.py` 读循环与控制命令插队）；**Pipeline 停止超时不再伪装空闲**（保持"停止中"，资源门禁收敛成 `_may_replace_resources`，有界观察者等 worker 真退出）；**切语言/档位改用提交时快照**（`_LangSnapshot` + `config_generation`，在途任务不被新配置重新解释，`configGeneration` 已接入 `state` 负载）；**IPC 适配层按业务域拆分**（`ipc_server.py` 1779 → 691 行，命令实现进 `handlers/*`，协议 I/O 独立成 `ipc_protocol.py`，既有入口保留为兼容 facade）；配置版本兼容加固（未来版本只读保护、未知字段保留、损坏先备份）；架构门禁从只扫 `voxsub/` 扩到含 `frontend/backend/` 并新增原子发布零豁免、`subprocess` 编码、复杂度棘轮、测试卫生等规则；原子写入收敛成 `file_io.replace_with_retry` 唯一实现。**干净检出实测**：`build-release.py --check-only` 通过、测试套件 738 passed / 0 failed。文档新增 `docs/{ARCHITECTURE,HANDOVER,MODULE_CATALOG,DECISIONS,MAINTAINABILITY_REPORT}.md` 与 `contracts/`。详见 TODO.txt 的 2026-09-21 段与主交付报告。
+- [ ] 待甲方确认：清理 244 个 `.pytest-*`（527MB）+ 3 个 venv（3.3GB）；是否重新打包 sidecar（当前 `dist/` 是旧构建）；模型路径统一；Electron 静默端到端冒烟（L4）；真机四模式验收（L5）
+
 ## 环境事实（接手必知）
 
 - 项目根：`D:\OneDrive\app_dve\VoxSub`（OneDrive 同步盘——**偶发文件锁，报 os error 5 时等 1-2s 重试**）

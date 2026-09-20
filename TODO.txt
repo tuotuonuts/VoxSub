@@ -6,6 +6,39 @@
 
 [x] 2026-08-21 v0.4.1-beta 返修：调优按钮、异步目录选择、后台模型迁移、诊断模块打包、升级翻译模型兼容发现、Teams 宿主进程捕获；全量 193 passed / 7 skipped；安装包 204.80 MiB（开发者自签名），SHA256 4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8
 
+=== 2026-09-21 (代码可维护性整顿 · 阶段0-4 连续执行) ===
+[x] 基线复核：HEAD 0882505 / main / 工作区干净 / .venv Python 3.12.4；全量 438 passed 5 skipped 7 deselected
+[x] 阶段0 只读基线与设计：14 项缺陷逐条核验（含打包版 sidecar 实测），产出 docs/MAINTAINABILITY_REPORT.md 的核验表
+[x] 缺陷#1 删除授权重做：清理只认台账 record_id（不再接受 path）+ 显式 confirm + 卷根/受保护目录/重解析点/UNC/正在使用的数据根全套拒绝；新增 migration_ledger.py（27 条测试）
+[x] 缺陷#5 读循环可响应：新增 job_runner.py（单 worker 有界队列/任务状态机/诚实的取消语义）+ ipc_loop.py（控制命令就地执行、协议防御）；有测试证明长任务在跑时控制命令 <0.3s 响应
+[x] 缺陷#12 配置版本兼容：ConfigVersionTooNew + 未来版本只读保护（拒绝降级写坏）+ 未知字段保留 + 损坏配置先备份再回落；新增 17 条测试
+[x] 缺陷#13 架构门禁补漏：扫描范围扩到 frontend/backend；新增依赖方向/Qt 隔离/复杂度棘轮/subprocess 编码/测试卫生 共 5 类规则
+[x] 额外修复 A1：`import_models` 从 voxsub.model_catalog 导 migrate_models（实际在 model_storage）→ 打包版必失败；已修 + 回归测试
+[x] 额外修复 A2：hardware.py 三处 text=True 按 UTF-8 解 CP936 → UnicodeDecodeError 在读取线程里 → NPU 备用探测静默返回空；已修为 decode_console_output + 门禁规则防复发
+[x] 额外修复 A3/A4：_emit 加锁（多线程写 stdout 不交错）；ipc_server.spec hiddenimports 补齐 5 个适配层模块
+[x] 额外修复 A7：原子写入统一（voxsub/file_io 加 Windows 瞬时占用有界重试；migration_ledger 与 legacy_migration.write_state 改为复用共享实现，不再各写一套）
+[x] 测试入口统一：scripts/run_tests.py（固定 basetemp 到 .pytest-run，gitignore 覆盖）——堵住 244 个 .pytest-* 的来源
+[x] 文档：新增 docs/ARCHITECTURE.md（分层/职责/状态所有权/资源所有权规则）、docs/HANDOVER.md（加功能流程/测试分层/门禁/构建发布/回滚/常见坑）、docs/MAINTAINABILITY_REPORT.md（主交付物）
+[x] 契约层（§3.6）：contracts/（protocol/commands/events/error-codes + README，55 命令 14 事件）+ frontend/backend/contract_validation.py（纯标准库 JSON Schema 子集）+ 68 条契约测试；ipc_loop 加唯一出站口 _send() 接线，CONTRACT_ENFORCE=False（默认只告警，理由写在代码注释）
+[x] 修掉契约交付暴露的真实漂移：job 事件后端发 action、前端读 status（字段可选所以静默 undefined）→ 统一为 status+code，并加"不再出现同义字段"的回归断言
+[x] 发布门禁（缺陷#14）：build-release.py 加 12 个版本位点一致性检查（实测不一致退出码 1）/主程序缺失硬失败/安装包按版本过滤/构建清单/源码漂移检测；恢复 tests/test_packaging.py + 新增 tests/test_release_gate.py（60 条）；新增 .github/workflows/quality.yml（5 job）
+[x] 前端（缺陷#2/#4/#10/#11）：会话停止保留字幕、PageLifecycle（切页后监听 3→0）、独立 disconnected 状态、超时不再当失败/取消；5 套纯逻辑测试 179 断言挂进 npm run check
+[x] 跨进程集成（L3）：tests/test_ipc_integration.py（真起 sidecar 走真管道，7 passed）——覆盖握手四要素、控制命令不被队列堵住、坏输入不弄死进程、关管道后真正退出
+[x] 原子写入统一：voxsub/file_io 加 Windows 瞬时占用有界重试（5×50ms）；migration_ledger 与 legacy_migration.write_state 改为复用共享实现
+[x] 阶段2 缺陷#6：stop 超时保持"停止中"不再落 IDLE；新增 _may_replace_resources（能否替换被 worker 持有资源的唯一权威判断）+ 有界单例收尾观察者；12 条测试
+[x] 阶段2 缺陷#9：语言/档位快照 —— _LangSnapshot + _QueuedTranslation + config_generation；在途任务用提交时快照、新任务用新配置、已显示结果不清屏；19 条用例 + 负例对照证明用例对缺陷敏感
+[x] 阶段3 IPC 按业务域拆分：ipc_server.py 1779 → 691 行；命令实现拆进 handlers/{session,ocr,models,migration,diagnostics,jobs}.py（mixin，动态分派与既有调用点不变）；协议 I/O 独立成 ipc_protocol.py（必须早于 sys.stdout 交换导入）；共用小工具 ipc_support.py
+[x] 阶段3/4 配置代次可观测：state 负载新增 configGeneration，契约三份副本与 TS 类型同步
+[x] 阶段4 原子发布收敛：file_io.replace_with_retry 成为唯一实现（llama_runtime 两处、bootstrap_models 一处改为复用）+ 零豁免门禁（file_io 之外任何 os.replace 都会红）—— 起因是全量跑里 llama_runtime 那步偶发 WinError 5
+[x] 阶段4 干净环境验证构建：git worktree 起干净检出 → build-release.py --check-only 通过、测试套件 738 passed / 0 failed；过程中揪出并修掉"发布门禁 CLI 测试硬编码仓库内 venv"（干净检出上必 FileNotFoundError）
+[x] 文档补齐（任务书 §七 最终文档）：docs/MODULE_CATALOG.md（公共组件/服务目录 + "想加东西先看这张表"）、docs/DECISIONS.md（12 条决策，每条写明代价）
+[ ] 待甲方确认：清理 244 个 .pytest-*（527MB）+ 3 个 venv（3.3GB）；是否重新打包 sidecar（当前 dist/ 是旧构建）；模型路径统一（D:\VoxSub\Models vs %LOCALAPPDATA%）；CI Python 版本锁 3.12
+[ ] 待甲方确认：是否允许起一次隐藏窗口做 Electron 运行时冒烟（npm run launch:silent -- --debug + npm run test:session）
+[ ] 待接续：真机 A/B/C/D 四模式端到端 + NPU 探测结果（L5 层，需真模型与设备）
+[ ] 待接续：缺陷#3 OCR 实时事件链（preload.ts:76-77 声明了 ocr:translated/ocr:frame-failed 但全仓库零发送方）——需真实屏幕采集做端到端验证
+[ ] 待接续：CONTRACT_ENFORCE 翻成 True（条件：出站零告警 + 打包版冒烟）；把 contracts/ 打进 bundle 让打包版也做运行时校验
+
+
 === 2026-08-17 (立项) ===
 [x] REQUIREMENTS / PLAN / DESIGN / README / .gitignore 落盘
 [x] git init (main) + 初始 commit 4421e64
