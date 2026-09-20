@@ -27,7 +27,9 @@ COMPLEXITY_BUDGET = 15
 #:   · 每消化一个就把这一行删掉 —— 这张表只该变短。
 COMPLEXITY_BASELINE: dict[str, int] = {
     "ipc_server.py:_apply_saved_config": 22,
-    "ipc_server.py:_cmd_start_migration": 19,
+    # 这一条随"按业务域拆 IPC"搬到了 handlers/migration.py —— 基线键必须跟着走，
+    # 否则 test_complexity_baseline_only_shrinks 会把它当成"已消化"而报过时。
+    "handlers/migration.py:_cmd_start_migration": 19,
     "legacy_migration.py:detect_legacy_install": 17,
     "legacy_migration.py:assess_storage": 24,
     "legacy_migration.py:verify_copy": 15,

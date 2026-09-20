@@ -42,9 +42,19 @@ hiddenimports = [
     # 而源码运行完全正常（`import_models` 就这么踩过一次）。
     "job_runner",
     "ipc_loop",
+    "ipc_protocol",
+    "ipc_support",
     "legacy_migration",
     "migration_ledger",
     "contract_validation",
+    # 按业务域拆出去的 handler 包（命令实现都在这里）
+    "handlers",
+    "handlers.session",
+    "handlers.ocr",
+    "handlers.models",
+    "handlers.migration",
+    "handlers.diagnostics",
+    "handlers.jobs",
 ]
 
 # 这些包内含二进制/数据文件，必须整体收集

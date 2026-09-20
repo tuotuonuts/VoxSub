@@ -31,6 +31,7 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "frontend" / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
+import ipc_protocol  # noqa: E402
 import ipc_server  # noqa: E402
 
 
@@ -43,9 +44,14 @@ def isolated_config(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def captured_events(monkeypatch):
-    """捕获 _emit 写出的协议消息（避免测试往真实 stdout 写）。"""
+    """捕获 _emit 写出的协议消息（避免测试往真实 stdout 写）。
+
+    打桩点是 **ipc_protocol._emit**，不是 ipc_server._emit：日志桥与各 handler
+    都经 ipc_protocol 写协议流，`ipc_server._emit` 现在只是那个名字的再导出，
+    改它拦不到任何东西（测试会静默地"什么都没捕获到"，看起来像功能坏了）。
+    """
     events: list[dict] = []
-    monkeypatch.setattr(ipc_server, "_emit", lambda payload: events.append(payload))
+    monkeypatch.setattr(ipc_protocol, "_emit", lambda payload: events.append(payload))
     return events
 
 

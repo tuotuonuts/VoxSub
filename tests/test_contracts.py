@@ -41,9 +41,31 @@ BACKEND_DIR = REPO_ROOT / "frontend" / "backend"
 CONTRACTS_DIR = REPO_ROOT / "contracts"
 IPC_SERVER = BACKEND_DIR / "ipc_server.py"
 IPC_LOOP = BACKEND_DIR / "ipc_loop.py"
+
+#: 按业务域拆出去的 handler 模块。
+#:
+#: 命令与事件现在散在这些文件里（ipc_server.py 只留基础设施与兼容 facade），
+#: 所以静态取证必须**一起扫**：只扫入口文件的话，"契约里有的命令代码里必须实现"
+#: 与"事件必须真的被发出"这两条会假阳性 —— 明明有实现，却因为搬了文件而报缺失。
+HANDLER_MODULES = tuple(sorted(
+    path for path in (BACKEND_DIR / "handlers").glob("*.py")
+    if path.name != "__init__.py"
+))
+
+#: 所有可能包含命令实现或事件发射的后端源文件。
+BACKEND_SOURCES: tuple[Path, ...] = (IPC_SERVER, IPC_LOOP) + HANDLER_MODULES
+
 JOB_RUNNER = BACKEND_DIR / "job_runner.py"
 PROTOCOL_TS = REPO_ROOT / "frontend" / "src" / "renderer" / "protocol.ts"
 PRELOAD_TS = REPO_ROOT / "frontend" / "src" / "main" / "preload.ts"
+
+
+def _source_tag(path: Path) -> str:
+    """给源文件一个稳定、可读的标签（出现在断言消息里）。"""
+    try:
+        return path.relative_to(BACKEND_DIR).as_posix()
+    except ValueError:  # pragma: no cover - 不在 backend 下
+        return path.name
 BACKEND_TS = REPO_ROOT / "frontend" / "src" / "main" / "backend.ts"
 
 sys.path.insert(0, str(BACKEND_DIR))
@@ -78,15 +100,25 @@ class BackendFacts:
         self.tree = ast.parse(self.server_src, filename=str(IPC_SERVER))
         self.service = self._find_class(self.tree, "BackendService")
 
-        self.cmd_methods = sorted(
-            node.name[len("_cmd_"):]
-            for node in self.service.body
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("_cmd_")
-        )
+        self.cmd_methods = sorted(self._command_methods())
         self.handle_specials = sorted(self._handle_specials())
         self.needs_pipeline_whitelist = sorted(self._needs_pipeline_whitelist())
         self.event_calls = self._event_calls()
         self.wrapped_job_fields = self._job_runner_emit_fields()
+
+    def _command_methods(self) -> list[str]:
+        """所有后端源文件里的 ``_cmd_*`` 方法名。
+
+        入口文件只留基础设施；真正的命令实现按业务域散在 ``handlers/*`` 里，
+        所以这里要扫全部源，不能只看 ``BackendService.body``。
+        """
+        names: list[str] = []
+        for path in BACKEND_SOURCES:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name.startswith("_cmd_"):
+                    names.append(node.name[len("_cmd_"):])
+        return names
 
     # ---- 基础
 
@@ -133,13 +165,14 @@ class BackendFacts:
     # ---- 事件调用点
 
     def _event_calls(self) -> list[tuple[str, int, str, set[str], bool]]:
-        """全部 ``_event("<常量>", ...)`` 调用点（ipc_server.py 与 ipc_loop.py）。
+        """全部 ``_event("<常量>", ...)`` 调用点（见 ``BACKEND_SOURCES``）。
 
         返回 (文件标签, 行号, 事件名, 显式关键字名集合, 是否含 ** 展开)。
         含 ** 展开的调用点无法静态知道字段，完整性检查会让位于运行时/专项校验。
         """
         calls: list[tuple[str, int, str, set[str], bool]] = []
-        for tag, path in (("ipc_server.py", IPC_SERVER), ("ipc_loop.py", IPC_LOOP)):
+        for path in BACKEND_SOURCES:
+            tag = _source_tag(path)
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
@@ -635,7 +668,8 @@ def test_没有绕过_event_辅助函数的裸事件字典(facts):
     """事件必须经 _event() 发出（它负责加 "event" 键）。裸写 {"event": "x"} 会绕过契约。
 
     ipc_server._event 与 ipc_loop._event 的实现本身就是那个唯一的合法写入点，
-    所以只排除这两个函数体。
+    所以只排除这两个函数体。**注意 ipc_server._event 现在只是 ipc_protocol 的
+    再导出**，函数体唯一存在于 ipc_protocol.py —— 扫的是 BACKEND_SOURCES 全体。
     """
     literals: set[str] = set()
 
@@ -653,8 +687,8 @@ def test_没有绕过_event_辅助函数的裸事件字典(facts):
                     if isinstance(value, ast.Constant) and isinstance(value.value, str):
                         literals.add(f"{tag}: {value.value}")
 
-    _dicts_outside_emitter(IPC_SERVER, "ipc_server.py")
-    _dicts_outside_emitter(IPC_LOOP, "ipc_loop.py")
+    for path in BACKEND_SOURCES:
+        _dicts_outside_emitter(path, _source_tag(path))
     assert not literals, f"发现绕过 _event() 的裸事件字典：{sorted(literals)}"
 
 

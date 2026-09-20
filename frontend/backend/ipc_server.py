@@ -85,12 +85,28 @@ except (AttributeError, OSError):
     # 老解释器或被重定向到不可配置的流时跳过；不影响协议本身
     pass
 
-_PROTOCOL_OUT = sys.stdout
 
-#: 保护 stdout 写入。读循环线程与作业 worker 线程都会写，必须串行化，
-#: 否则两行 JSON 可能交错，前端只能丢弃坏行。
-_PROTOCOL_LOCK = threading.Lock()
+
+# ---- 协议层（必须早于下面的 stdout 交换）-------------------------------
+from ipc_protocol import (  # noqa: E402,F401
+    _PROTOCOL_LOCK, _PROTOCOL_OUT, _cancel_requested, _emit, _event,
+    _exit_process, _now_iso,
+)
 sys.stdout = sys.stderr
+
+# ---- 兼容再导出 ---------------------------------------------------------
+# 名字搬到了 ipc_support / handlers/*，但**引用点不搬**：
+# `ipc_server._event`、`ipc_server._dir_size` 这类既有写法继续可用，
+# 这就是工作单要求的“现有公共入口保留为兼容 facade”。
+from ipc_support import (  # noqa: E402,F401
+    _dir_size, _free_bytes, _human_size, _resolve_models_root,
+)
+from handlers.session import SessionHandlers  # noqa: E402,F401
+from handlers.models import ModelsHandlers  # noqa: E402,F401
+from handlers.migration import MigrationHandlers  # noqa: E402,F401
+from handlers.ocr import OcrHandlers  # noqa: E402,F401
+from handlers.diagnostics import DiagnosticsHandlers  # noqa: E402,F401
+from handlers.jobs import JobsHandlers  # noqa: E402,F401
 
 # 模块级 logger：挂在 "voxsub" 下，因此既进 voxsub.log 文件，也经日志桥
 # 进诊断页的实时日志（见 BackendService._install_log_sink）。
@@ -106,187 +122,33 @@ except Exception:  # noqa: BLE001 - 日志设施不可用时退回标准库
     logger = _logging.getLogger("voxsub.ipc")
 
 
-def _emit(payload: dict[str, Any]) -> None:
-    # 加锁的理由：读循环线程（控制命令）和作业 worker 线程会同时写 stdout。
-    # 没有锁就可能把两行 JSON 交错在一起，前端收到半截 JSON 只能丢包。
-    with _PROTOCOL_LOCK:
-        try:
-            _PROTOCOL_OUT.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            _PROTOCOL_OUT.flush()
-        except (BrokenPipeError, ValueError):
-            raise SystemExit(0) from None
 
 
-def _event(kind: str, **fields: Any) -> None:
-    _emit({"event": kind, **fields})
 
 
-def _cancel_requested() -> bool:
-    """当前作业是否被请求取消。
-
-    长任务实现用它在**安全边界**检查取消：迁移在每步之间查，OCR 这类
-    无法立即打断的原生调用则不查 —— 由作业执行器在结果返回后丢弃，
-    并落 ``cancelled`` 终态（不谎报、不提前解除退出保护）。
-    """
-    try:
-        import job_runner  # noqa: PLC0415
-    except ImportError:
-        return False
-    return job_runner.cancel_requested()
 
 
-def _exit_process() -> None:
-    """在计时器线程里结束进程（lambda 里不能 raise）。"""
-    raise SystemExit(0)
 
 
-def _dir_size(directory: Path) -> int:
-    """递归求目录占用字节数；不可读的条目跳过（不因单文件失败丢掉整体统计）。"""
-    total = 0
-    try:
-        for entry in directory.rglob("*"):
-            try:
-                if entry.is_file():
-                    total += entry.stat().st_size
-            except OSError:
-                continue
-    except OSError:
-        return 0
-    return total
 
 
-def _free_bytes(path: str) -> int:
-    """目标路径所在卷的可用空间。用于迁移前判断空间是否够。
-
-    路径可能还不存在（新建目标目录），所以逐级向上找第一个存在的父目录。
-    """
-    import shutil  # noqa: PLC0415
-
-    probe = Path(path)
-    while True:
-        try:
-            return shutil.disk_usage(probe).free
-        except OSError:
-            parent = probe.parent
-            if parent == probe:
-                return 0
-            probe = parent
 
 
 # ---------------------------------------------------------------- OCR 渲染辅助
 
-def _box_to_list(box: Any) -> list[int]:
-    """把 OCR 的框统一成 [left, top, right, bottom]。
-
-    两种来源都要兼容：voxsub 的 OcrBox 是带 left/top/right/bottom 属性的对象；
-    某些 RapidOCR 版本给的是四点列表 [[x,y], ...]。前端按扁平四元组消费。
-    """
-    if box is None:
-        return []
-    if all(hasattr(box, name) for name in ("left", "top", "right", "bottom")):
-        return [int(box.left), int(box.top), int(box.right), int(box.bottom)]
-    if isinstance(box, (list, tuple)) and box and isinstance(box[0], (list, tuple)):
-        xs = [float(point[0]) for point in box if len(point) >= 2]
-        ys = [float(point[1]) for point in box if len(point) >= 2]
-        if xs and ys:
-            return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
-    if isinstance(box, (list, tuple)) and len(box) >= 4:
-        return [int(v) for v in box[:4]]
-    return []
 
 
-def _normalize_box(box: Any, width: int, height: int) -> tuple[int, int, int, int] | None:
-    """把框统一成 (left, top, right, bottom) 并夹到图像范围内。"""
-    if all(hasattr(box, name) for name in ("left", "top", "right", "bottom")):
-        flat = [int(box.left), int(box.top), int(box.right), int(box.bottom)]
-    elif isinstance(box, (list, tuple)) and len(box) >= 4:
-        flat = _box_to_list(box)
-    else:
-        return None
-
-    if len(flat) < 4:
-        return None
-
-    left = max(0, min(width - 1, flat[0]))
-    top = max(0, min(height - 1, flat[1]))
-    right = max(left + 1, min(width, flat[2]))
-    bottom = max(top + 1, min(height, flat[3]))
-    return left, top, right, bottom
 
 
-def _sample_background(image: Any, rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
-    """从原图采样框的背景色（Qt 版同款取点：四角 + 上下边中点，求均值）。"""
-    left, top, right, bottom = rect
-    width, height = image.size
-    mid_x = (left + right) // 2
-    points = (
-        (left, top),
-        (right - 1, top),
-        (left, bottom - 1),
-        (right - 1, bottom - 1),
-        (mid_x, top),
-        (mid_x, bottom - 1),
-    )
-    pixels = [
-        image.getpixel((max(0, min(width - 1, x)), max(0, min(height - 1, y))))
-        for x, y in points
-    ]
-    count = len(pixels)
-    return (
-        sum(pixel[0] for pixel in pixels) // count,
-        sum(pixel[1] for pixel in pixels) // count,
-        sum(pixel[2] for pixel in pixels) // count,
-    )
 
 
-def _luminance(color: tuple[int, int, int]) -> float:
-    """感知亮度（Rec.709 系数），与 Qt 版 _contrasting_text 的判据一致。"""
-    return 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
 
 
-def _load_font(size: int) -> Any:
-    """按可用字体依次尝试；找不到就退回 PIL 内置位图字体。"""
-    from PIL import ImageFont  # noqa: PLC0415
-
-    candidates = (
-        r"C:\Windows\Fonts\msyh.ttc",      # 微软雅黑
-        r"C:\Windows\Fonts\msyhbd.ttc",
-        r"C:\Windows\Fonts\simhei.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-    )
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, size)
-        except (OSError, ValueError):
-            continue
-    return ImageFont.load_default()
 
 
-def _resolve_models_root() -> Path:
-    """复用应用自己的模型根目录解析。
-
-    刻意不硬编码 %LOCALAPPDATA%：用户改过存储位置、或将来做便携版时，
-    硬编码会让界面静默显示"全部未安装"——这类故障最难排查。
-    """
-    try:
-        from voxsub.paths import resolve_models_root  # noqa: PLC0415
-
-        return Path(resolve_models_root())
-    except (ImportError, AttributeError):
-        pass
-    for module_name in ("voxsub.diagnostics", "voxsub.router", "voxsub.asr"):
-        try:
-            module = __import__(module_name, fromlist=["models_dir"])
-            return Path(module.models_dir())
-        except (ImportError, AttributeError):
-            continue
-    # 最后兜底：与应用默认布局一致
-    local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return Path(local) / "VoxSub" / "models"
 
 
-class BackendService:
+class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHandlers, DiagnosticsHandlers, JobsHandlers):
     """把 voxsub 的能力翻译成协议命令。
 
     命令按功能域分组，命名与 Qt 版 UI 的控件语义一致，
@@ -541,224 +403,30 @@ class BackendService:
     # 四个命令都**返回当前状态**，并且 pipeline 的状态回调会另发 state 事件。
     # 两条路径都保留是刻意的：命令返回值让界面在点击后立刻更新（不必等事件），
     # 事件负责覆盖自主转换（文件播完、出错回 IDLE）。
-    def _cmd_start(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        pipeline.start()
-        # 通知界面"新的会话开始"：前端据此重置时间基准（导出 SRT 需要相对时间）
-        _event("session", action="start")
-        return self._state_payload(pipeline)
 
-    def _cmd_stop(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        pipeline.stop()
-        _event("session", action="stop")
-        return self._state_payload(pipeline)
 
-    def _cmd_pause(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        pipeline.pause()
-        return self._state_payload(pipeline)
 
-    def _cmd_resume(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        pipeline.resume()
-        return self._state_payload(pipeline)
 
-    def _cmd_state(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        return self._state_payload(pipeline)
 
     # ================================================================== 模式与语言
-    def _cmd_set_mode(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_mode(str(args.get("mode", "a")))
 
-    def _cmd_set_langs(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_langs(str(args.get("source", "auto")),
-                           str(args.get("target", "zh")))
 
-    def _cmd_set_input_file(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_input_file(str(args.get("path", "")))
 
     # ================================================================== 音频设备
-    def _cmd_list_audio_devices(self, args: dict[str, Any]) -> dict[str, Any]:
-        """列出可选音频设备。
 
-        id 必须是 ``AudioDeviceInfo.id``（WASAPI 端点 ID）—— 这是配置里持久化、
-        也是 ``Pipeline._find_device`` 用来比对的**同一个值**。此前读的是
-        ``device_id``，而 AudioDeviceInfo 没有这个字段，于是回落成设备**名字**：
-        用户在设置里选一次麦克风，写进配置的是名字，开始会话时
-        ``_find_device`` 拿名字去比 WASAPI ID 必然不匹配，直接抛
-        "已选择的麦克风当前不可用，请在设置中重新选择" —— 也就是这个选择
-        功能实际是坏的。
 
-        少数假设备没有端点 ID（``id`` 为空串），此时回落用名字，避免多个设备
-        的 id 都为空而互相撞车。
-        """
-        from voxsub.audio import list_loopbacks, list_microphones  # noqa: PLC0415
 
-        def _entry(device: Any, kind: str) -> dict[str, str]:
-            endpoint_id = str(getattr(device, "id", "") or "")
-            return {
-                "id": endpoint_id or str(device.name),
-                "name": str(device.name),
-                "kind": kind,
-            }
-
-        return {
-            "microphones": [_entry(d, "mic") for d in list_microphones(include_loopback=False)],
-            "loopbacks": [_entry(d, "loopback") for d in list_loopbacks()],
-        }
-
-    def _cmd_list_capture_targets(self, args: dict[str, Any]) -> dict[str, Any]:
-        """可捕获的可见窗口（用于 B 模式按应用隔离）。
-
-        正确位置是 voxsub.process_audio。原先写的是 voxsub.ui.view_models ——
-        那个模块并不导出此函数，ImportError 被下面的 except 静默吞掉，
-        导致"按应用隔离"从未真正生效（界面永远只有空列表）。
-        """
-        try:
-            from voxsub.process_audio import list_capture_targets  # noqa: PLC0415
-        except ImportError as error:
-            print(f"[capture] 无法导入窗口枚举: {error}", file=sys.stderr)
-            return {"targets": [], "error": str(error)}
-
-        try:
-            targets = list_capture_targets()
-        except Exception as error:  # noqa: BLE001 - 枚举失败不应中断命令
-            print(f"[capture] 枚举窗口失败: {error}", file=sys.stderr)
-            return {"targets": [], "error": str(error)}
-
-        return {
-            "targets": [
-                {
-                    "pid": int(getattr(t, "pid", 0) or 0),
-                    "processName": str(getattr(t, "process_name", "")),
-                    "windowTitle": str(getattr(t, "window_title", "")),
-                    "label": str(getattr(t, "label", "") or getattr(t, "process_name", "")),
-                }
-                for t in targets
-            ],
-        }
-
-    def _cmd_set_audio_devices(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_audio_devices(
-            str(args.get("microphone", "") or ""),
-            str(args.get("loopback", "") or ""))
-
-    def _cmd_set_capture_process(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_capture_process(int(args.get("pid", 0) or 0),
-                                     str(args.get("title", "") or ""))
 
     # ================================================================== STT / 翻译
-    def _cmd_set_stt(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_stt(str(args.get("provider", "local")),
-                         args.get("config") or {})
 
-    def _cmd_set_translator(self, pipeline: Any, args: dict[str, Any]) -> None:
-        """切换翻译档位/模型。
 
-        优先接受档位 id（fast/quality/cloud），由后端映射成翻译器 kind ——
-        映射规则要看配置（质量档在 translate_model_id=mt-opus-fast-builtin 时
-        实际创建的是 OPUS 翻译器），放前端会算错。kind 保留兼容旧调用。
 
-        **参数里的 config 一律先与已保存的配置合并**，再把同一个对象同时用于
-        档位映射和翻译器创建。必要性：两个界面入口都传 `config: {}`——
-          · 设置页点档位单选（只传 tier）
-          · 模型广场选翻译模型（先写 translate_model_id，再传 kind）
-        此前合并结果只用于档位映射，创建时仍用参数里的空 dict，于是
-        factory 拿不到 translate_model_id、退回默认 Qwen 模型 —— 实测两条
-        路径加载的模型不同：启动路径用用户选的 hy-mt2，点一下档位就换成
-        旧模型；在模型广场选完模型也要重启才生效。
-        """
-        config = args.get("config") or {}
-        tier = args.get("tier")
-        try:
-            from voxsub.config_store import ConfigStore  # noqa: PLC0415
 
-            config = {**dict(ConfigStore().load()),
-                      **(config if isinstance(config, dict) else {})}
-        except Exception:  # noqa: BLE001 - 拿不到配置就按传入的算
-            pass
 
-        if tier:
-            from voxsub.translate.factory import kind_for_tier  # noqa: PLC0415
 
-            kind = kind_for_tier(str(tier), config)
-        else:
-            kind = str(args.get("kind", "opus-fast"))
-        pipeline.set_translator(kind, config)
 
-    def _cmd_set_asr_model(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_asr_model(str(args.get("model_id", "")))
 
-    def _cmd_set_asr_tuning(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_asr_tuning(args.get("tuning") or {})
 
-    def _cmd_asr_tuning_meta(self, _args: dict[str, Any]) -> dict[str, Any]:
-        """界面渲染「识别调优」分页所需的全部信息。
-
-        三项内容：
-          · presets    —— 每个预设档位固定的基础参数值
-          · controlled —— 受档位控制的键（不在其中的键任何档位都可改）
-          · editable   —— 每个档位下 controlled 里仍可改的子集（其余要置灰）
-          · effective  —— 当前档位下**实际生效**的值（界面显示这个，而不是用户
-                          存的值：预设档下用户存的基础参数根本不生效）
-
-        生效值按**配置**算，不读 pipeline 实例状态：实例可能从未启动过，
-        它的 `_asr_tuning` 还是构造时的默认值（auto 档），据此报出来的数字
-        与实际会用到的完全不同 —— 实测踩到：配置是 context，报出来却是 0.5/4。
-
-        为什么由后端提供而不是前端硬编码：这些都取决于后端实际怎么读配置。
-        前端各写一份的话，改了一处忘另一处就会出现"界面显示的值和实际跑的
-        值对不上"。
-        """
-        from voxsub.config_store import ConfigStore  # noqa: PLC0415
-        from voxsub.pipeline import asr_tuning_metadata, effective_tuning_for  # noqa: PLC0415
-
-        config = dict(ConfigStore().load())
-        return {
-            **asr_tuning_metadata(),
-            "effective": effective_tuning_for(config),
-        }
-
-    def _cmd_set_tts(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_tts(bool(args.get("enabled", False)))
-
-    def _cmd_set_tts_models(self, pipeline: Any, args: dict[str, Any]) -> None:
-        models = args.get("models") or {}
-        pipeline.set_tts_models({str(k): str(v) for k, v in models.items()})
-
-    def _cmd_set_recording(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_recording(bool(args.get("enabled", False)),
-                               args.get("directory"))
-
-    def _cmd_translate_tiers(self, args: dict[str, Any]) -> dict[str, Any]:
-        """各翻译档位支持的语言对（供界面提示，只读配置不加载模型）。
-
-        必要性：快档（OPUS-MT）只有 zh↔en 的模型，而界面允许把语言选成
-        日文/韩文。此前用户选了这个组合，每一句都失败且只看到原文 ——
-        界面必须在选择时就告诉他，而不是等他跑起来看满屏报错。
-        """
-        from voxsub.config_store import ConfigStore  # noqa: PLC0415
-        from voxsub.translate.factory import tier_capabilities  # noqa: PLC0415
-
-        try:
-            config = dict(ConfigStore().load())
-        except Exception:  # noqa: BLE001 - 拿不到配置就按默认值算
-            config = {}
-
-        # 语言对可以显式传（界面在用户改语言后立刻要新结论），
-        # 否则用配置里保存的那一对。
-        src = str(args.get("source") or "")
-        dst = str(args.get("target") or "")
-        if not src or not dst:
-            pair = str(config.get("lang_pair") or "zh-en")
-            head, _, tail = pair.partition("-")
-            src = src or head or "zh"
-            dst = dst or tail or "en"
-        return tier_capabilities(src, dst, config)
-
-    def _cmd_last_recording(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
-        # last_recording_path 是 @property，不是方法 —— 加括号会得到
-        # `None()` → TypeError: 'NoneType' object is not callable，
-        # 每次结束会话（前端都会查一次）都报一条假错误。
-        path = pipeline.last_recording_path
-        return {"path": str(path) if path else None}
 
     # ================================================================== 模型广场
     def _marketplace(self, args: dict[str, Any]) -> Any:
@@ -782,93 +450,9 @@ class BackendService:
             raise KeyError(f"未知模型 id：{model_id}")
         return spec
 
-    def _cmd_list_models(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.model_catalog import CATALOG  # noqa: PLC0415
 
-        marketplace = self._marketplace(args)
 
-        items = []
-        failures: list[str] = []
-        for model in CATALOG:
-            size = int(getattr(model, "download_bytes", 0) or 0)
 
-            # is_installed 收的是 ModelSpec 对象。先前误传 model.id（字符串）会抛
-            # AttributeError，而当时的 except 把它吞成 installed=False —— 界面因此
-            # 静默显示"全部未安装"。这里改为：失败要留痕，绝不假装成正常结果。
-            try:
-                installed = bool(marketplace.is_installed(model))
-            except Exception as error:  # noqa: BLE001 - 需上报而不是吞掉
-                installed = False
-                failures.append(f"{model.id}: {type(error).__name__}: {error}")
-
-            installed_bytes = 0
-            if installed:
-                try:
-                    directory = marketplace.available_model_dir(model)
-                    installed_bytes = _dir_size(directory)
-                except Exception as error:  # noqa: BLE001
-                    failures.append(f"{model.id} 体积统计失败: {error}")
-
-            items.append({
-                "id": model.id,
-                "name": getattr(model, "name", model.id),
-                "task": getattr(model, "task", "unknown"),
-                "quality": int(getattr(model, "quality_score", 0) or 0),
-                "sizeLabel": getattr(model, "size_label", "") or _human_size(size),
-                "sizeBytes": size,
-                "installedBytes": installed_bytes,
-                "installed": installed,
-                "builtin": bool(getattr(model, "builtin", False)),
-                "runtime": getattr(model, "runtime", "") or "",
-                "license": getattr(model, "license", "") or "",
-                "languages": getattr(model, "languages", "") or "",
-                "description": getattr(model, "description", "") or "",
-                # 硬件支持必须如实呈现，禁止把"未验证"显示成"可用"
-                "gpuSupported": bool(getattr(model, "gpu_supported", False)),
-                "igpuSupported": bool(getattr(model, "igpu_supported", False)),
-                "npuSupported": bool(getattr(model, "npu_supported", False)),
-                "minRamGb": float(getattr(model, "min_ram_gb", 0) or 0),
-            })
-
-        for line in failures:
-            print(f"[list_models] {line}", file=sys.stderr)
-
-        return {
-            "models": items,
-            "modelsRoot": str(marketplace.models_dir),
-            "lookupRoots": [str(p) for p in marketplace._lookup_roots],
-            "diagnostics": failures,
-        }
-
-    def _cmd_install_model(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
-        model_id = str(args.get("model_id", ""))
-        marketplace = self._marketplace(args)
-        spec = self._spec(model_id)
-
-        def _progress(done: int, total: int, stage: str) -> None:
-            _event("download", modelId=model_id, completed=done,
-                   total=total, stage=str(stage))
-
-        marketplace.install(spec, progress_callback=_progress)
-        return {"model_id": model_id}
-
-    def _cmd_uninstall_model(self, args: dict[str, Any]) -> dict[str, Any]:
-        model_id = str(args.get("model_id", ""))
-        marketplace = self._marketplace(args)
-        marketplace.uninstall(self._spec(model_id))
-        return {"model_id": model_id}
-
-    def _cmd_model_dir(self, args: dict[str, Any]) -> dict[str, Any]:
-        model_id = str(args.get("model_id", ""))
-        marketplace = self._marketplace(args)
-        spec = self._spec(model_id)
-        # 已安装时给真实所在目录（可能在旧存储位置），未安装时给即将写入的位置
-        directory = (
-            marketplace.available_model_dir(spec)
-            if marketplace.is_installed(spec)
-            else marketplace.model_dir(spec)
-        )
-        return {"path": str(directory), "installed": marketplace.is_installed(spec)}
 
     # ================================================================== 配置
     def _cmd_get_config(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -885,678 +469,37 @@ class BackendService:
         return dict(store.load())
 
     # ================================================================== 诊断
-    def _cmd_run_self_check(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.diagnostics import run_self_check  # noqa: PLC0415
 
-        results = []
-        for item in run_self_check():
-            results.append({
-                "check": str(item.get("check", "")),
-                "status": str(item.get("status", "")),
-                "detail": str(item.get("detail", "")),
-            })
-        return {"results": results}
 
-    def _cmd_export_diagnostics(self, args: dict[str, Any]) -> dict[str, Any]:
-        """导出诊断报告；可附带日志文本（诊断页「导出日志」）。"""
-        from voxsub.diagnostics import export_report  # noqa: PLC0415
 
-        path = Path(str(args.get("path", "")))
-        text = export_report()
 
-        # 日志导出复用同一入口：把日志附在报告之后，而不是另建命令
-        log_text = str(args.get("log_text") or "")
-        if log_text:
-            text = f"{text}\n\n{'=' * 60}\n日志快照\n{'=' * 60}\n{log_text}\n"
 
-        if path.parent and str(path) != ".":
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-            return {"path": str(path), "bytes": len(text.encode("utf-8"))}
-        return {"text": text}
 
-    def _cmd_recent_logs(self, args: dict[str, Any]) -> dict[str, Any]:
-        """最近的日志。
 
-        source="memory"（默认）读本进程缓冲，响应快、只含本次运行；
-        source="file" 读磁盘 voxsub.log 的尾部，能拿到历史运行记录——
-        排障时用户要的通常是后者（崩溃发生在下次启动之前）。
-        """
-        limit = int(args.get("limit", 200) or 200)
-        source = str(args.get("source", "memory"))
 
-        if source == "file":
-            from voxsub.logging_setup import tail_log_file  # noqa: PLC0415
-
-            text = tail_log_file(limit)
-            return {"text": text, "source": "file", "lines": len(text.splitlines())}
-
-        return {"logs": self._log_buffer[-limit:], "source": "memory"}
-
-    def _cmd_clear_logs(self, args: dict[str, Any]) -> dict[str, Any]:
-        """清除本机日志文件（保留模型、配置、凭据、已导出报告）。
-
-        与 Qt 版「清除本机日志」语义一致：活动日志就地截断（应用可继续写），
-        历史轮转文件删除。
-        """
-        from voxsub.logging_setup import clear_local_logs  # noqa: PLC0415
-
-        result = clear_local_logs()
-        self._log_buffer.clear()
-        return dict(result) if isinstance(result, dict) else {"cleared": True}
-
-    def _cmd_log_path(self, args: dict[str, Any]) -> dict[str, Any]:
-        """日志文件位置，供界面「打开日志所在文件夹」。"""
-        try:
-            from voxsub.logging_setup import _log_dir  # noqa: PLC0415
-
-            return {"path": str(_log_dir())}
-        except (ImportError, AttributeError):
-            local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-            return {"path": str(Path(local) / "VoxSub" / "logs")}
-
-    def _cmd_import_models(self, args: dict[str, Any]) -> dict[str, Any]:
-        """把别处的模型并入当前模型目录（Qt 版「迁移已有模型」）。"""
-        # migrate_models 定义在 voxsub.model_storage，**不在** model_catalog。
-        # 之前写错模块名，打包版实测直接 ImportError：
-        #   ImportError: cannot import name 'migrate_models' from 'voxsub.model_catalog'
-        from voxsub.model_storage import migrate_models  # noqa: PLC0415
-
-        source = Path(str(args.get("source", "")))
-        if not source.is_dir():
-            raise FileNotFoundError(f"源目录不存在：{source}")
-
-        destination = Path(
-            str(args.get("destination") or self._marketplace(args).models_dir)
-        )
-        destination.mkdir(parents=True, exist_ok=True)
-
-        result = migrate_models(source, destination)
-        return {
-            "moved": int(getattr(result, "moved_paths", 0) or 0),
-            "skipped": int(getattr(result, "kept_existing_paths", 0) or 0),
-            "destination": str(destination),
-        }
-
-    def _cmd_release_notes(self, args: dict[str, Any]) -> dict[str, Any]:
-        """更新日志（默认只回最近一版；include_history=True 回全部）。"""
-        # 从 voxsub.release_notes 导入，而不是 voxsub.ui.release_notes ——
-        # 后者在导入时就需要 PySide6，会让"打包时不带 Qt"直接失败。
-        from voxsub.release_notes import RELEASE_HISTORY  # noqa: PLC0415
-
-        english = str(args.get("language", "zh")).startswith("en")
-        include_history = bool(args.get("include_history", False))
-        notes = list(RELEASE_HISTORY)
-        if not include_history:
-            notes = notes[:1]
-
-        items = []
-        for note in notes:
-            title = note.title_en if english else note.title_zh
-            body_items = note.items_en if english else note.items_zh
-            items.append({
-                "version": note.version,
-                "title": title,
-                "body": "\n".join(f"· {line}" for line in body_items),
-            })
-        return {"notes": items, "total": len(RELEASE_HISTORY)}
-
-    def _cmd_list_devices(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.router import enumerate_devices  # noqa: PLC0415
-
-        devices = []
-        for device in enumerate_devices():
-            devices.append({
-                "provider": str(device.provider),
-                "name": str(device.name),
-                "kind": str(getattr(device, "kind", "")),
-                "scoreMs": getattr(device, "score_ms", None),
-            })
-        return {"devices": devices}
-
-    def _cmd_hardware_profile(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.hardware import detect_hardware  # noqa: PLC0415
-
-        profile = detect_hardware()
-        return {
-            "cpu": str(profile.cpu_name),
-            "physicalCores": int(profile.physical_cores),
-            "logicalCores": int(profile.logical_cores),
-            "ramGb": float(profile.ram_gb),
-            "gpu": str(profile.gpu_name),
-            "vramGb": float(profile.vram_gb),
-            "gpuProvider": str(profile.gpu_provider),
-            "npu": str(profile.npu_name),
-        }
 
     # ================================================================== 文件字幕
-    def _cmd_export_subtitles(self, args: dict[str, Any]) -> dict[str, Any]:
-        """导出字幕：格式由扩展名决定（.srt/.vtt/.txt）。
-
-        字段名注意：SubtitleLine 用的是 text / translation / ts_ms，
-        不是 source / start_ms / end_ms（写错会在导出时才炸，静态检查看不出来）。
-        """
-        from voxsub.subtitles import SubtitleLine, SubtitleExporter  # noqa: PLC0415
-
-        out = Path(str(args.get("path", "")))
-        raw = args.get("lines") or []
-
-        lines: list[Any] = []
-        for index, item in enumerate(raw):
-            # 逐句时间戳：调用方给了就用，没给就按序号推进（30s/句），
-            # 保证 SRT 的时间轴单调递增而不是全 0。
-            ts_ms = item.get("tsMs")
-            if ts_ms is None:
-                ts_ms = int(item.get("startMs") or index * 30_000)
-            lines.append(
-                SubtitleLine(
-                    text=str(item.get("source", "")),
-                    translation=str(item.get("translation", "")),
-                    ts_ms=int(ts_ms),
-                    is_final=bool(item.get("isFinal", True)),
-                )
-            )
-
-        out.parent.mkdir(parents=True, exist_ok=True)
-        suffix = out.suffix.lower()
-        if suffix == ".txt":
-            SubtitleExporter.write_txt(lines, out)
-        elif suffix == ".vtt":
-            SubtitleExporter.write_vtt(lines, out)
-        else:
-            SubtitleExporter.write_srt(lines, out)
-        return {"path": str(out), "count": len(lines)}
 
     # ================================================================== OCR
-    def _cmd_ocr_recognize(self, args: dict[str, Any]) -> dict[str, Any]:
-        """对一张图片做识别（可选翻译），像素只在本机内存处理。
 
-        返回行级数据（文本 + 框 + 译文），供前端做预览与覆盖渲染。
-        译文按行翻译：整段送出去会让模型重排语序，覆盖回原框时对不上位置。
-        """
-        import numpy as np  # noqa: PLC0415
-        from PIL import Image  # noqa: PLC0415
 
-        from voxsub.ocr import RapidOcrEngine  # noqa: PLC0415
-
-        image_path = Path(str(args.get("path", "")))
-        with Image.open(image_path) as handle:
-            frame = np.asarray(handle.convert("RGB"))
-
-        import time  # noqa: PLC0415
-
-        started = time.monotonic()
-        engine = RapidOcrEngine()
-        result = engine.recognize(frame)
-        ocr_ms = int((time.monotonic() - started) * 1000)
-
-        raw_lines = list(getattr(result, "lines", ()) or ())
-        lines = []
-        for line in raw_lines:
-            # OcrBox 是带 left/top/right/bottom 的对象，不是可迭代序列
-            lines.append({
-                "text": str(getattr(line, "text", "")),
-                "box": _box_to_list(getattr(line, "box", None)),
-                "translation": "",
-            })
-
-        # 翻译（可选）：逐行送，避免语序重排导致框位错配
-        translate_ms = 0
-        translator = self._translator()
-        if translator is not None and str(args.get("translate", True)).lower() != "false":
-            source = str(args.get("source", "auto"))
-            target = str(args.get("target", "zh"))
-            started = time.monotonic()
-            for item in lines:
-                if not item["text"].strip():
-                    continue
-                try:
-                    item["translation"] = str(
-                        translator.translate(item["text"], source, target) or "")
-                except Exception as error:  # noqa: BLE001 - 单行失败不丢整张
-                    item["translation"] = ""
-                    print(f"[ocr] 行翻译失败: {error}", file=sys.stderr)
-            translate_ms = int((time.monotonic() - started) * 1000)
-
-        return {
-            "text": "\n".join(item["text"] for item in lines),
-            "translation": "\n".join(item["translation"] for item in lines),
-            "lines": lines,
-            "ocrElapsedMs": ocr_ms,
-            "translateElapsedMs": translate_ms,
-            "width": int(frame.shape[1]),
-            "height": int(frame.shape[0]),
-            "sourcePath": str(image_path),
-        }
-
-    def _cmd_copy_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        """复制文件（导出译后图片等）。目标已存在时覆盖。"""
-        import shutil  # noqa: PLC0415
-
-        source = Path(str(args.get("source", "")))
-        target = Path(str(args.get("target", "")))
-        if not source.is_file():
-            raise FileNotFoundError(f"源文件不存在：{source}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
-        return {"path": str(target), "bytes": target.stat().st_size}
-
-    def _cmd_ocr_cache_dir(self, args: dict[str, Any]) -> dict[str, Any]:
-        """OCR 临时图片目录（译后图与截图落盘位置，供界面拼输出路径）。"""
-        try:
-            from voxsub.ocr_cache import resolve_ocr_cache_root  # noqa: PLC0415
-
-            path = resolve_ocr_cache_root()
-            path.mkdir(parents=True, exist_ok=True)
-            return {"path": str(path)}
-        except Exception as error:  # noqa: BLE001 - 缓存目录不可用时给明确兜底
-            print(f"[ocr] 缓存目录解析失败，改用兜底路径: {error}", file=sys.stderr)
-        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        fallback = Path(local) / "VoxSub" / "cache" / "ocr"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return {"path": str(fallback), "fallback": True}
 
     # ================================================================== 旧版迁移
-    def _cmd_detect_legacy(self, args: dict[str, Any]) -> dict[str, Any]:
-        """检测旧版（Qt 版）安装与数据风险。只读，不写任何文件。"""
-        from legacy_migration import (  # noqa: PLC0415
-            assess_storage, asdict, detect_legacy_install, overall_risk, read_state,
-        )
 
-        legacy = detect_legacy_install()
-        checks = assess_storage(legacy)
-        state = read_state()
-        return {
-            "legacy": asdict(legacy),
-            "storage": [asdict(c) for c in checks],
-            "overallRisk": overall_risk(checks),
-            "state": state,
-        }
 
-    def _cmd_migration_decision(self, args: dict[str, Any]) -> dict[str, Any]:
-        """记录用户对迁移向导的决定（跳过 / 完成），避免反复打扰。"""
-        from legacy_migration import write_state  # noqa: PLC0415
 
-        decision = str(args.get("decision", ""))
-        if decision == "dismiss":
-            return write_state(dismissed=True)
-        if decision == "complete":
-            return write_state(completed=True, dismissed=True)
-        if decision == "reset":
-            return write_state(dismissed=False, completed=False)
-        raise ValueError(f"未知决定：{decision}")
 
-    def _cmd_plan_migration(self, args: dict[str, Any]) -> dict[str, Any]:
-        """规划迁移步骤（纯计算，不碰文件系统）。"""
-        from legacy_migration import (  # noqa: PLC0415
-            assess_storage, asdict, detect_legacy_install, plan_migration,
-        )
 
-        legacy = detect_legacy_install()
-        checks = assess_storage(legacy)
-        target = str(args.get("target_root") or "").strip()
-        if not target:
-            drive = Path(legacy.install_location).drive if legacy.install_location else "D:"
-            target = f"{drive}\\VoxSub\\Data"
-        keys = args.get("keys")
-        steps = plan_migration(checks, target, keys=keys or None)
-        return {
-            "targetRoot": target,
-            "steps": [asdict(s) for s in steps],
-            "totalBytes": sum(s.bytes for s in steps),
-            "freeBytes": _free_bytes(target),
-        }
 
-    def _cmd_write_model_snapshot(self, args: dict[str, Any]) -> dict[str, Any]:
-        """写入模型快照（逃生舱：数据丢了也知道曾经有什么）。"""
-        from legacy_migration import write_model_snapshot  # noqa: PLC0415
-
-        root = str(args.get("models_root") or "") or str(_resolve_models_root())
-        return write_model_snapshot(root)
-
-    def _cmd_verify_copy(self, args: dict[str, Any]) -> dict[str, Any]:
-        """校验一份复制是否完整（三层校验）。"""
-        from legacy_migration import verify_copy  # noqa: PLC0415
-
-        return verify_copy(Path(str(args.get("source", ""))), Path(str(args.get("target", ""))))
-
-    def _cmd_start_migration(self, args: dict[str, Any]) -> dict[str, Any]:
-        """执行迁移。**复制优先，绝不删源。**
-
-        安全纪律（本命令的最高优先级）：
-          · 同卷用原子 rename；跨卷用复制
-          · 搬迁前先记录源目录的"期望状态"（字节数/文件数/manifest 哈希）
-          · 搬迁后拿目标与期望比对 —— 不能拿 source 比，同卷 rename 后 source 已经没了
-          · 校验不过就保留现场并报错，不删任何东西
-          · 源目录的清理必须由用户单独确认（另有命令），不在本命令里做
-        """
-        import shutil  # noqa: PLC0415
-        import time  # noqa: PLC0415
-
-        from legacy_migration import (  # noqa: PLC0415
-            _same_volume, capture_expectation, verify_against_expectation,
-        )
-
-        steps = args.get("steps") or []
-        if not steps:
-            raise ValueError("没有要迁移的项目")
-
-        started = time.monotonic()
-        done: list[dict[str, Any]] = []
-        failures: list[dict[str, Any]] = []
-
-        for index, step in enumerate(steps):
-            # 协作式取消：迁移是"每一步之间"可以安全停下的长任务。
-            # 不在这里检查的话，用户点了取消仍要等全部步骤跑完 ——
-            # 那就违背了"停止和取消不排在普通耗时任务后面"。
-            if _cancel_requested():
-                print("[migration] 收到取消请求，已在步骤边界停下", file=sys.stderr)
-                _event("migration", phase="cancelled", completed=len(done),
-                       total=len(steps))
-                break
-
-            source = Path(str(step.get("source", "")))
-            target = Path(str(step.get("target", "")))
-            key = str(step.get("key", f"item{index}"))
-
-            if not source.is_dir():
-                failures.append({"key": key, "error": f"源目录不存在：{source}"})
-                continue
-            if target.exists() and any(target.iterdir()):
-                failures.append({"key": key, "error": f"目标已存在且非空：{target}"})
-                continue
-
-            _event("migration", phase="start", key=key, index=index,
-                   total=len(steps), source=str(source), target=str(target))
-
-            try:
-                # 关键顺序：先记期望，再动文件。同卷 rename 之后源就没了。
-                expectation = capture_expectation(source)
-
-                target.parent.mkdir(parents=True, exist_ok=True)
-
-                if _same_volume(source, target):
-                    source.rename(target)
-                    mode = "move_same_volume"
-                else:
-                    shutil.copytree(
-                        source, target,
-                        ignore_dangling_symlinks=True,
-                        dirs_exist_ok=True,
-                    )
-                    mode = "copy"
-
-                _event("migration", phase="progress", key=key, completed=100, total=100)
-
-                check = verify_against_expectation(expectation, target)
-                if not check.get("ok"):
-                    failures.append({
-                        "key": key,
-                        "error": "校验未通过，已保留现场（未删除任何数据）",
-                        "verify": check,
-                    })
-                    _event("migration", phase="failed", key=key, error="校验未通过")
-                    continue
-
-                done.append({"key": key, "mode": mode, "source": str(source),
-                             "target": str(target), "verify": check})
-                _event("migration", phase="done", key=key, target=str(target))
-
-            except Exception as error:  # noqa: BLE001 - 逐步报告，不中断整体
-                failures.append({"key": key, "error": f"{type(error).__name__}: {error}"})
-                _event("migration", phase="failed", key=key, error=str(error))
-
-        elapsed = int((time.monotonic() - started) * 1000)
-
-        # 迁移成功 → 记入台账。
-        #
-        # 台账是"清理授权"的唯一依据：cleanup_migrated_source 只认这里的记录，
-        # 不认调用方给的路径。所以这一步必须在报告成功**之前**做 ——
-        # 少了它，用户点"清理旧目录"会因为"没有对应记录"被拒（安全但难用）；
-        # 有了它，能删的范围就被钉死在"本次真实校验通过的迁移项"上。
-        try:
-            import migration_ledger  # noqa: PLC0415
-
-            records = [
-                migration_ledger.build_record(
-                    key=item["key"],
-                    source=item["source"],
-                    target=item["target"],
-                    mode=item["mode"],
-                    verified=True,
-                )
-                for item in done
-            ]
-            if records:
-                migration_ledger.record_migrations(records)
-                for item, record in zip(done, records):
-                    item["recordId"] = record["id"]
-        except Exception as error:  # noqa: BLE001 - 台账失败不该否定已完成的迁移
-            print(f"[migration] 台账写入失败: {type(error).__name__}: {error}",
-                  file=sys.stderr)
-
-        # 关键收尾：把配置指针指到新位置。
-        # 不更新配置的话，文件搬走了但应用仍去旧路径找 —— "迁移成功"却不可用，
-        # 这比迁移失败更难排查（用户看到成功提示，功能却是空的）。
-        config_updates: dict[str, Any] = {}
-        for item in done:
-            key = item["key"]
-            target = item["target"]
-            if key == "models":
-                config_updates["models_root"] = target
-                config_updates["models_root_mode"] = "custom"
-            elif key == "cache":
-                config_updates["ocr_cache_root"] = target
-
-        config_error = ""
-        if config_updates:
-            try:
-                from voxsub.config_store import ConfigStore  # noqa: PLC0415
-
-                ConfigStore().update(config_updates)
-                _event("migration", phase="config", keys=list(config_updates))
-            except Exception as error:  # noqa: BLE001 - 文件已迁好，配置失败要单独报
-                config_error = f"{type(error).__name__}: {error}"
-                failures.append({
-                    "key": "config",
-                    "error": f"文件已迁移，但配置未能更新（{config_error}）。"
-                             f"请在设置里手动把路径改到：{config_updates}",
-                })
-                print(f"[migration] 配置更新失败: {config_error}", file=sys.stderr)
-
-        return {
-            "done": done,
-            "failed": failures,
-            "elapsedMs": elapsed,
-            "configUpdates": config_updates,
-            "ok": not failures,
-        }
-
-    def _cmd_cleanup_migrated_source(self, args: dict[str, Any]) -> dict[str, Any]:
-        """删除迁移后的源目录 —— **必须由用户单独二次确认**。
-
-        单独一个命令而不是放在 start_migration 里自动做：删除是不可逆的，
-        校验通过也不代表用户此刻就想删原件。
-
-        安全模型（工作单 §3.8，**授权优先，不靠目录黑名单**）：
-
-          · 入参只接受台账记录标识 ``record_id``（或 ``record_ids`` 数组），
-            **不接受路径**。路径由后端从台账解析 —— 于是"手写一次 IPC 就能
-            删掉任意目录"在结构上不成立：攻击者必须先让一次真实迁移成功，
-            而迁移的源和目标都要通过校验。
-          · 必须显式 ``confirm=True``。前端的确认框只是体验，不是防线。
-          · 每条记录逐条过 :func:`migration_ledger.validate_cleanup_target`
-            的白名单/空路径/卷根/受保护目录/重解析点/数据根归属检查。
-          · 拒绝时**不抛异常**，而是回 ``deleted: false`` + 可读原因 ——
-            这样界面能把"为什么不让删"直接告诉用户。
-
-        历史包袱说明：旧版本接受 ``path`` 参数并在校验后 ``rmtree``，
-        等于把"删哪个目录"的决定权交给了调用方。现在传 ``path`` 一律拒绝，
-        见下面 ``args.get("path")`` 那个分支。
-        """
-        import shutil  # noqa: PLC0415
-
-        import migration_ledger  # noqa: PLC0415
-
-        if args.get("path"):
-            return {
-                "deleted": False,
-                "code": "path_not_accepted",
-                "detail": "出于安全考虑，清理只接受迁移记录标识（record_id），"
-                          "不接受直接指定路径。请改用迁移完成后返回的 recordId。",
-            }
-
-        raw_ids = args.get("record_ids")
-        if raw_ids is None:
-            raw_ids = [args.get("record_id")]
-        elif isinstance(raw_ids, str):
-            raw_ids = [raw_ids]
-        record_ids = [str(item).strip() for item in raw_ids if str(item or "").strip()]
-        if not record_ids:
-            return {
-                "deleted": False,
-                "code": "missing_record_id",
-                "detail": "缺少迁移记录标识（record_id），拒绝清理。",
-            }
-
-        confirm = bool(args.get("confirm", False))
-
-        deleted: list[dict[str, Any]] = []
-        refused: list[dict[str, Any]] = []
-        for record_id in record_ids:
-            record = migration_ledger.find_record(record_id)
-            try:
-                path = migration_ledger.validate_cleanup_target(record, confirm=confirm)
-            except migration_ledger.CleanupRefused as refusal:
-                refused.append({"recordId": record_id, "detail": str(refusal)})
-                continue
-            try:
-                shutil.rmtree(path)
-            except OSError as error:
-                refused.append({
-                    "recordId": record_id,
-                    "detail": f"删除失败：{type(error).__name__}: {error}",
-                })
-                continue
-            deleted.append({"recordId": record_id, "path": str(path)})
-            _event("migration", phase="cleaned", key=str(record.get("key", "")),
-                   recordId=record_id, path=str(path))
-
-        return {
-            "deleted": bool(deleted),
-            "paths": [item["path"] for item in deleted],
-            "cleaned": deleted,
-            "refused": refused,
-            "ok": not refused,
-            "detail": ("" if deleted else
-                       (refused[0]["detail"] if refused else "没有可清理的项目")),
-        }
 
     # ================================================================== 后台作业
     #
     # 这三个命令让"长任务"变成可观察、可取消的对象（工作单 §3.3）。
     # 它们本身是**控制命令**，在读循环线程上直接执行，不排进作业队列 ——
     # 否则"查询任务状态"要先等任务跑完，就成了自相矛盾。
-    def _cmd_job_list(self, args: dict[str, Any]) -> dict[str, Any]:
-        """列出任务。默认只回还活着的，``include_finished=True`` 回最近的历史。"""
-        runner = self._job_runner
-        if runner is None:
-            return {"jobs": [], "active": []}
-        jobs = runner.list_jobs(active_only=not bool(args.get("include_finished")))
-        return {"jobs": [job.snapshot() for job in jobs],
-                "active": runner.active_job_names()}
 
-    def _cmd_job_status(self, args: dict[str, Any]) -> dict[str, Any]:
-        """按 jobId 查任务状态。"""
-        runner = self._job_runner
-        job_id = str(args.get("job_id") or args.get("jobId") or "")
-        if runner is None:
-            return {"ok": False, "code": "no_runner", "detail": "作业执行器未启用"}
-        job = runner.get(job_id)
-        if job is None:
-            return {"ok": False, "code": "unknown_job", "detail": f"没有这个任务：{job_id}"}
-        return {"ok": True, "job": job.snapshot()}
 
-    def _cmd_cancel_job(self, args: dict[str, Any]) -> dict[str, Any]:
-        """请求取消。
 
-        返回 ``cancelling`` 表示"已受理"，**不等于**已取消：真正的
-        ``cancelled`` 由执行器在安全边界落定，并通过 job 事件送达。
-        """
-        runner = self._job_runner
-        job_id = str(args.get("job_id") or args.get("jobId") or "")
-        if runner is None:
-            return {"ok": False, "code": "no_runner", "detail": "作业执行器未启用"}
-        try:
-            return runner.cancel(job_id)
-        except Exception as error:  # noqa: BLE001
-            return {"ok": False, "code": type(error).__name__, "detail": str(error)}
-
-    def _cmd_render_ocr_image(self, args: dict[str, Any]) -> dict[str, Any]:
-        """把译文画回原图，生成「译后图片」（Qt 版 render_translated_image 的等价实现）。
-
-        为什么不用 Qt 那份：它在 voxsub/ui/ 里且依赖 QImage/QPainter。
-        Electron 版没有 Qt，这里用 PIL 重写同一套算法：
-          · 背景色从原图对应框的边框采样（取上下边中点与四角，求均值）
-          · 文字颜色按背景亮度在浅/深之间二选一
-          · 圆角矩形填充 + 内缩绘制文字
-        """
-        from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
-
-        source_path = Path(str(args.get("source", "")))
-        target_path = Path(str(args.get("target", "")))
-        raw = args.get("lines") or []
-
-        with Image.open(source_path) as handle:
-            canvas = handle.convert("RGB").copy()
-
-        if not raw:
-            canvas.save(target_path)
-            return {"path": str(target_path), "lines": 0}
-
-        draw = ImageDraw.Draw(canvas)
-        width, height = canvas.size
-        painted = 0
-
-        for item in raw:
-            text = str(item.get("translation") or "").strip()
-            box = _normalize_box(item.get("box"), width, height)
-            if not text or box is None:
-                continue
-            left, top, right, bottom = box
-            if right - left < 4 or bottom - top < 4:
-                continue
-
-            background = _sample_background(canvas, (left, top, right, bottom))
-            text_color = (17, 24, 39) if _luminance(background) >= 150 else (249, 250, 251)
-
-            radius = min(7, (bottom - top) // 3)
-            draw.rounded_rectangle((left, top, right - 1, bottom - 1),
-                                   radius=max(0, radius), fill=background)
-
-            # 字号以框高为基准，逐级缩小直到文字能放进框内
-            size = max(8, int((bottom - top) * 0.68))
-            font = _load_font(size)
-            inset = max(2, (bottom - top) // 8)
-            while size > 8:
-                measured = draw.textbbox((0, 0), text, font=font)
-                if (measured[2] - measured[0]) <= (right - left - 2 * inset):
-                    break
-                size -= 1
-                font = _load_font(size)
-
-            draw.multiline_text(
-                (left + inset, top + inset),
-                text,
-                font=font,
-                fill=text_color,
-                spacing=max(1, size // 5),
-            )
-            painted += 1
-
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        canvas.save(target_path)
-        return {"path": str(target_path), "lines": painted, "width": width, "height": height}
 
     def _translator(self) -> Any:
         """取当前翻译器；未启动会话时按配置现建一个。
@@ -1603,24 +546,6 @@ class BackendService:
             print(f"[ocr] 翻译器不可用，仅返回识别结果: {error}", file=sys.stderr)
             return None
 
-    def _cmd_ocr_translate(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
-        """把已识别的文本交给当前翻译配置。
-
-        必须走 self._translator()：它会依次尝试「运行中会话的翻译器 →
-        OCR 自己的缓存 → 按配置现建一个」。此前这里写的是
-        ``pipeline.translator[1]`` —— 该属性**不存在**（Pipeline 内部叫
-        _translator），于是只要 pipeline 建好过，OCR 翻译就必然抛
-        AttributeError，整个功能不可用。
-        """
-        text = str(args.get("text", ""))
-        translator = self._translator()
-        if translator is None or not text:
-            return {"translation": ""}
-        translation = translator.translate(
-            text,
-            str(args.get("source", "auto")),
-            str(args.get("target", "zh")))
-        return {"translation": translation}
 
     # ================================================================== 关闭
     def close(self) -> None:
@@ -1661,21 +586,8 @@ for _name in (
         _fn._needs_pipeline = False  # type: ignore[attr-defined]
 
 
-def _now_iso() -> str:
-    import datetime  # noqa: PLC0415
-
-    return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _human_size(num: int) -> str:
-    if num <= 0:
-        return "内置"
-    value = float(num)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
-            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
-        value /= 1024
-    return f"{value:.1f} GB"
 
 
 def _ensure_first_run_defaults() -> dict[str, Any]:
