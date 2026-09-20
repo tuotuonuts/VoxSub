@@ -318,37 +318,141 @@ class TestMigrationCommands:
         assert "models_root" in result["configUpdates"]
         assert result["configUpdates"]["models_root"] == str(dst)
 
-    def test_cleanup_refuses_protected_dirs(self, service, tmp_path):
-        """拒绝删除系统目录 —— 这是最后一道保险。
-
-        用 C:\\ 的**字符串**验证拒绝逻辑，而不是真的去删它；
-        同时验证一个正常目录能通过守卫（否则守卫太严会挡住正常用法）。
-        """
-        from pathlib import Path as _P
-
-        # 受保护路径必须被拒（用 resolve 后的形式构造，避免真去访问）
-        for protected in ("C:\\", "C:\\Windows", "C:\\Users"):
-            guard = str(_P(protected).resolve()).lower()
-            assert guard.rstrip("\\") in ("c:", "c:\\windows", "c:\\users"), \
-                f"{protected} 应落在守卫名单里"
-
-        # 正常目录不该被守卫拦住（只是不允许删不存在的）
-        result = service._cmd_cleanup_migrated_source({"path": str(tmp_path / "gone")})
-        assert result["deleted"] is False
-        assert "不存在" in result["detail"]
-
-    def test_cleanup_reports_missing_dir(self, service, tmp_path):
-        result = service._cmd_cleanup_migrated_source({"path": str(tmp_path / "nope")})
-        assert result["deleted"] is False
-
-    def test_cleanup_deletes_real_dir(self, service, tmp_path):
+    def test_cleanup_refuses_path_argument(self, service, tmp_path):
+        """**回归测试**：旧契约是"给我路径我就删"，等于把删哪个目录的决定权
+        交给了调用方 —— 手写一次 IPC 就能删任意目录。现在只认台账记录。"""
         victim = tmp_path / "to-remove"
         victim.mkdir()
         (victim / "f.bin").write_bytes(b"x")
 
-        result = service._cmd_cleanup_migrated_source({"path": str(victim)})
+        result = service._cmd_cleanup_migrated_source(
+            {"path": str(victim), "confirm": True})
+
+        assert result["deleted"] is False
+        assert result["code"] == "path_not_accepted"
+        assert victim.is_dir(), "任意路径绝不能被删掉"
+
+    def test_cleanup_requires_record_id(self, service):
+        result = service._cmd_cleanup_migrated_source({"confirm": True})
+        assert result["deleted"] is False
+        assert result["code"] == "missing_record_id"
+
+    def test_cleanup_refuses_unknown_record_id(self, service, tmp_path):
+        victim = tmp_path / "dir"
+        victim.mkdir()
+
+        result = service._cmd_cleanup_migrated_source(
+            {"record_id": "not-a-real-record", "confirm": True})
+
+        assert result["deleted"] is False
+        assert "没有对应的迁移记录" in result["detail"]
+        assert victim.is_dir()
+
+    def _record(self, source, target, *, key="models", verified=True):
+        import migration_ledger
+
+        record = migration_ledger.build_record(
+            key=key, source=str(source), target=str(target), mode="copy",
+            verified=verified)
+        migration_ledger.record_migrations([record])
+        return record
+
+    def test_cleanup_requires_explicit_confirm(self, service, isolated_config,
+                                               tmp_path):
+        """前端确认框不是防线 —— 后端必须有显式 confirm。"""
+        source = tmp_path / "old-models"
+        source.mkdir()
+        record = self._record(source, tmp_path / "new-models")
+
+        result = service._cmd_cleanup_migrated_source({"record_id": record["id"]})
+
+        assert result["deleted"] is False
+        assert "缺少用户确认" in result["detail"]
+        assert source.is_dir()
+
+    def test_cleanup_refuses_unverified_record(self, service, isolated_config,
+                                               tmp_path):
+        source = tmp_path / "old-models"
+        source.mkdir()
+        record = self._record(source, tmp_path / "new-models", verified=False)
+
+        result = service._cmd_cleanup_migrated_source(
+            {"record_id": record["id"], "confirm": True})
+
+        assert result["deleted"] is False
+        assert "未通过迁移校验" in result["detail"]
+        assert source.is_dir()
+
+    def test_cleanup_deletes_only_the_recorded_source(self, service,
+                                                      isolated_config, tmp_path):
+        """端到端：记录里的源被删，隔壁目录毫发无损。"""
+        source = tmp_path / "old-models"
+        source.mkdir()
+        (source / "f.bin").write_bytes(b"x")
+        bystander = tmp_path / "bystander"
+        bystander.mkdir()
+        (bystander / "keep.bin").write_bytes(b"y")
+
+        record = self._record(source, tmp_path / "new-models")
+        result = service._cmd_cleanup_migrated_source(
+            {"record_id": record["id"], "confirm": True})
+
         assert result["deleted"] is True
-        assert not victim.exists()
+        assert result["ok"] is True
+        assert not source.exists()
+        assert bystander.is_dir() and (bystander / "keep.bin").exists()
+
+    def test_start_migration_writes_ledger_for_cleanup(self, service,
+                                                       isolated_config, tmp_path):
+        """迁移成功必须落台账 —— 否则用户点"清理旧目录"会因为查不到记录被拒。"""
+        import migration_ledger
+
+        src = tmp_path / "src-obsolete"
+        (src / "nested").mkdir(parents=True)
+        (src / "nested" / "blob.bin").write_bytes(b"payload" * 64)
+        dst = tmp_path / "dst-current"
+
+        result = service._cmd_start_migration({"steps": [{
+            "key": "models", "source": str(src), "target": str(dst),
+        }]})
+
+        assert result["ok"] is True
+        assert result["done"], "迁移应成功"
+        record_id = result["done"][0].get("recordId")
+        assert record_id, "成功项必须带回 recordId 供后续清理使用"
+        assert migration_ledger.find_record(record_id) is not None
+
+    def test_import_models_uses_the_module_that_actually_defines_it(self, service,
+                                                                   isolated_config,
+                                                                   tmp_path):
+        """**回归测试**：命令原来从 ``voxsub.model_catalog`` 导入
+        ``migrate_models``，而它实际定义在 ``voxsub.model_storage``。
+        打包版实测直接失败：
+            ImportError: cannot import name 'migrate_models' from 'voxsub.model_catalog'
+        """
+        import voxsub.model_catalog as model_catalog
+        import voxsub.model_storage as model_storage
+
+        assert hasattr(model_storage, "migrate_models")
+        assert not hasattr(model_catalog, "migrate_models"), \
+            "函数若真搬到了 model_catalog，这条守卫要跟着改（它守的是导入来源）"
+
+        source = tmp_path / "foreign-models"
+        (source / "some-model").mkdir(parents=True)
+        (source / "some-model" / "model.bin").write_bytes(b"x" * 64)
+        destination = tmp_path / "library"
+
+        result = service._cmd_import_models({
+            "source": str(source), "destination": str(destination),
+        })
+
+        assert result["destination"] == str(destination)
+        assert isinstance(result["moved"], int)
+        assert isinstance(result["skipped"], int)
+
+    def test_import_models_rejects_missing_source(self, service, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            service._cmd_import_models({"source": str(tmp_path / "nope")})
 
     def test_migration_decision_persists(self, service, isolated_config):
         from legacy_migration import read_state

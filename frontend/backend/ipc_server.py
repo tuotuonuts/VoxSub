@@ -86,6 +86,10 @@ except (AttributeError, OSError):
     pass
 
 _PROTOCOL_OUT = sys.stdout
+
+#: 保护 stdout 写入。读循环线程与作业 worker 线程都会写，必须串行化，
+#: 否则两行 JSON 可能交错，前端只能丢弃坏行。
+_PROTOCOL_LOCK = threading.Lock()
 sys.stdout = sys.stderr
 
 # 模块级 logger：挂在 "voxsub" 下，因此既进 voxsub.log 文件，也经日志桥
@@ -103,15 +107,32 @@ except Exception:  # noqa: BLE001 - 日志设施不可用时退回标准库
 
 
 def _emit(payload: dict[str, Any]) -> None:
-    try:
-        _PROTOCOL_OUT.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        _PROTOCOL_OUT.flush()
-    except (BrokenPipeError, ValueError):
-        raise SystemExit(0) from None
+    # 加锁的理由：读循环线程（控制命令）和作业 worker 线程会同时写 stdout。
+    # 没有锁就可能把两行 JSON 交错在一起，前端收到半截 JSON 只能丢包。
+    with _PROTOCOL_LOCK:
+        try:
+            _PROTOCOL_OUT.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            _PROTOCOL_OUT.flush()
+        except (BrokenPipeError, ValueError):
+            raise SystemExit(0) from None
 
 
 def _event(kind: str, **fields: Any) -> None:
     _emit({"event": kind, **fields})
+
+
+def _cancel_requested() -> bool:
+    """当前作业是否被请求取消。
+
+    长任务实现用它在**安全边界**检查取消：迁移在每步之间查，OCR 这类
+    无法立即打断的原生调用则不查 —— 由作业执行器在结果返回后丢弃，
+    并落 ``cancelled`` 终态（不谎报、不提前解除退出保护）。
+    """
+    try:
+        import job_runner  # noqa: PLC0415
+    except ImportError:
+        return False
+    return job_runner.cancel_requested()
 
 
 def _exit_process() -> None:
@@ -277,6 +298,26 @@ class BackendService:
         self._lock = threading.RLock()
         self._log_buffer: list[dict[str, Any]] = []
         self._log_sink_installed = False
+        # 后台作业执行器。由 main() 在启动时注入 —— 命令实现只读它，
+        # 不自己创建线程，避免"谁都能起线程"的失控。
+        self._job_runner: Any = None
+
+    def bind_job_runner(self, runner: Any) -> None:
+        """注入作业执行器（测试可直接传入假执行器）。"""
+        self._job_runner = runner
+
+    def has_command(self, command: str) -> bool:
+        """命令是否存在。
+
+        读循环用它做"未知命令"的**前置**校验：不存在的命令要在排队前就被拒，
+        而不是变成一条注定失败的作业让调用方白等。
+        """
+        name = str(command or "").strip()
+        if not name:
+            return False
+        if name in ("ping", "shutdown"):
+            return True
+        return callable(getattr(self, f"_cmd_{name}", None))
 
     # ------------------------------------------------------------------ 基础设施
     def ensure_pipeline(self) -> Any:
@@ -916,7 +957,10 @@ class BackendService:
 
     def _cmd_import_models(self, args: dict[str, Any]) -> dict[str, Any]:
         """把别处的模型并入当前模型目录（Qt 版「迁移已有模型」）。"""
-        from voxsub.model_catalog import migrate_models  # noqa: PLC0415
+        # migrate_models 定义在 voxsub.model_storage，**不在** model_catalog。
+        # 之前写错模块名，打包版实测直接 ImportError：
+        #   ImportError: cannot import name 'migrate_models' from 'voxsub.model_catalog'
+        from voxsub.model_storage import migrate_models  # noqa: PLC0415
 
         source = Path(str(args.get("source", "")))
         if not source.is_dir():
@@ -1202,6 +1246,15 @@ class BackendService:
         failures: list[dict[str, Any]] = []
 
         for index, step in enumerate(steps):
+            # 协作式取消：迁移是"每一步之间"可以安全停下的长任务。
+            # 不在这里检查的话，用户点了取消仍要等全部步骤跑完 ——
+            # 那就违背了"停止和取消不排在普通耗时任务后面"。
+            if _cancel_requested():
+                print("[migration] 收到取消请求，已在步骤边界停下", file=sys.stderr)
+                _event("migration", phase="cancelled", completed=len(done),
+                       total=len(steps))
+                break
+
             source = Path(str(step.get("source", "")))
             target = Path(str(step.get("target", "")))
             key = str(step.get("key", f"item{index}"))
@@ -1245,8 +1298,8 @@ class BackendService:
                     _event("migration", phase="failed", key=key, error="校验未通过")
                     continue
 
-                done.append({"key": key, "mode": mode, "target": str(target),
-                             "verify": check})
+                done.append({"key": key, "mode": mode, "source": str(source),
+                             "target": str(target), "verify": check})
                 _event("migration", phase="done", key=key, target=str(target))
 
             except Exception as error:  # noqa: BLE001 - 逐步报告，不中断整体
@@ -1254,6 +1307,33 @@ class BackendService:
                 _event("migration", phase="failed", key=key, error=str(error))
 
         elapsed = int((time.monotonic() - started) * 1000)
+
+        # 迁移成功 → 记入台账。
+        #
+        # 台账是"清理授权"的唯一依据：cleanup_migrated_source 只认这里的记录，
+        # 不认调用方给的路径。所以这一步必须在报告成功**之前**做 ——
+        # 少了它，用户点"清理旧目录"会因为"没有对应记录"被拒（安全但难用）；
+        # 有了它，能删的范围就被钉死在"本次真实校验通过的迁移项"上。
+        try:
+            import migration_ledger  # noqa: PLC0415
+
+            records = [
+                migration_ledger.build_record(
+                    key=item["key"],
+                    source=item["source"],
+                    target=item["target"],
+                    mode=item["mode"],
+                    verified=True,
+                )
+                for item in done
+            ]
+            if records:
+                migration_ledger.record_migrations(records)
+                for item, record in zip(done, records):
+                    item["recordId"] = record["id"]
+        except Exception as error:  # noqa: BLE001 - 台账失败不该否定已完成的迁移
+            print(f"[migration] 台账写入失败: {type(error).__name__}: {error}",
+                  file=sys.stderr)
 
         # 关键收尾：把配置指针指到新位置。
         # 不更新配置的话，文件搬走了但应用仍去旧路径找 —— "迁移成功"却不可用，
@@ -1297,21 +1377,120 @@ class BackendService:
 
         单独一个命令而不是放在 start_migration 里自动做：删除是不可逆的，
         校验通过也不代表用户此刻就想删原件。
+
+        安全模型（工作单 §3.8，**授权优先，不靠目录黑名单**）：
+
+          · 入参只接受台账记录标识 ``record_id``（或 ``record_ids`` 数组），
+            **不接受路径**。路径由后端从台账解析 —— 于是"手写一次 IPC 就能
+            删掉任意目录"在结构上不成立：攻击者必须先让一次真实迁移成功，
+            而迁移的源和目标都要通过校验。
+          · 必须显式 ``confirm=True``。前端的确认框只是体验，不是防线。
+          · 每条记录逐条过 :func:`migration_ledger.validate_cleanup_target`
+            的白名单/空路径/卷根/受保护目录/重解析点/数据根归属检查。
+          · 拒绝时**不抛异常**，而是回 ``deleted: false`` + 可读原因 ——
+            这样界面能把"为什么不让删"直接告诉用户。
+
+        历史包袱说明：旧版本接受 ``path`` 参数并在校验后 ``rmtree``，
+        等于把"删哪个目录"的决定权交给了调用方。现在传 ``path`` 一律拒绝，
+        见下面 ``args.get("path")`` 那个分支。
         """
         import shutil  # noqa: PLC0415
 
-        path = Path(str(args.get("path", "")))
-        if not path.is_dir():
-            return {"deleted": False, "detail": f"目录不存在：{path}"}
+        import migration_ledger  # noqa: PLC0415
 
-        # 安全阀：拒绝删除明显的系统/用户关键目录
-        guard = str(path.resolve()).lower()
-        for forbidden in ("c:\\", "c:\\windows", "c:\\users", "c:\\program files"):
-            if guard.rstrip("\\") == forbidden:
-                raise ValueError(f"拒绝删除受保护目录：{path}")
+        if args.get("path"):
+            return {
+                "deleted": False,
+                "code": "path_not_accepted",
+                "detail": "出于安全考虑，清理只接受迁移记录标识（record_id），"
+                          "不接受直接指定路径。请改用迁移完成后返回的 recordId。",
+            }
 
-        shutil.rmtree(path)
-        return {"deleted": True, "path": str(path)}
+        raw_ids = args.get("record_ids")
+        if raw_ids is None:
+            raw_ids = [args.get("record_id")]
+        elif isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        record_ids = [str(item).strip() for item in raw_ids if str(item or "").strip()]
+        if not record_ids:
+            return {
+                "deleted": False,
+                "code": "missing_record_id",
+                "detail": "缺少迁移记录标识（record_id），拒绝清理。",
+            }
+
+        confirm = bool(args.get("confirm", False))
+
+        deleted: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        for record_id in record_ids:
+            record = migration_ledger.find_record(record_id)
+            try:
+                path = migration_ledger.validate_cleanup_target(record, confirm=confirm)
+            except migration_ledger.CleanupRefused as refusal:
+                refused.append({"recordId": record_id, "detail": str(refusal)})
+                continue
+            try:
+                shutil.rmtree(path)
+            except OSError as error:
+                refused.append({
+                    "recordId": record_id,
+                    "detail": f"删除失败：{type(error).__name__}: {error}",
+                })
+                continue
+            deleted.append({"recordId": record_id, "path": str(path)})
+            _event("migration", phase="cleaned", key=str(record.get("key", "")),
+                   recordId=record_id, path=str(path))
+
+        return {
+            "deleted": bool(deleted),
+            "paths": [item["path"] for item in deleted],
+            "cleaned": deleted,
+            "refused": refused,
+            "ok": not refused,
+            "detail": ("" if deleted else
+                       (refused[0]["detail"] if refused else "没有可清理的项目")),
+        }
+
+    # ================================================================== 后台作业
+    #
+    # 这三个命令让"长任务"变成可观察、可取消的对象（工作单 §3.3）。
+    # 它们本身是**控制命令**，在读循环线程上直接执行，不排进作业队列 ——
+    # 否则"查询任务状态"要先等任务跑完，就成了自相矛盾。
+    def _cmd_job_list(self, args: dict[str, Any]) -> dict[str, Any]:
+        """列出任务。默认只回还活着的，``include_finished=True`` 回最近的历史。"""
+        runner = self._job_runner
+        if runner is None:
+            return {"jobs": [], "active": []}
+        jobs = runner.list_jobs(active_only=not bool(args.get("include_finished")))
+        return {"jobs": [job.snapshot() for job in jobs],
+                "active": runner.active_job_names()}
+
+    def _cmd_job_status(self, args: dict[str, Any]) -> dict[str, Any]:
+        """按 jobId 查任务状态。"""
+        runner = self._job_runner
+        job_id = str(args.get("job_id") or args.get("jobId") or "")
+        if runner is None:
+            return {"ok": False, "code": "no_runner", "detail": "作业执行器未启用"}
+        job = runner.get(job_id)
+        if job is None:
+            return {"ok": False, "code": "unknown_job", "detail": f"没有这个任务：{job_id}"}
+        return {"ok": True, "job": job.snapshot()}
+
+    def _cmd_cancel_job(self, args: dict[str, Any]) -> dict[str, Any]:
+        """请求取消。
+
+        返回 ``cancelling`` 表示"已受理"，**不等于**已取消：真正的
+        ``cancelled`` 由执行器在安全边界落定，并通过 job 事件送达。
+        """
+        runner = self._job_runner
+        job_id = str(args.get("job_id") or args.get("jobId") or "")
+        if runner is None:
+            return {"ok": False, "code": "no_runner", "detail": "作业执行器未启用"}
+        try:
+            return runner.cancel(job_id)
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "code": type(error).__name__, "detail": str(error)}
 
     def _cmd_render_ocr_image(self, args: dict[str, Any]) -> dict[str, Any]:
         """把译文画回原图，生成「译后图片」（Qt 版 render_translated_image 的等价实现）。
@@ -1467,6 +1646,8 @@ for _name in (
     "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",
     "detect_legacy", "plan_migration", "start_migration", "verify_copy",
     "write_model_snapshot", "cleanup_migrated_source", "migration_decision",
+    # 后台作业查询/取消只是读执行器状态，不该为此拉起推理栈。
+    "job_list", "job_status", "cancel_job",
     "list_devices", "hardware_profile", "list_audio_devices",
     "list_capture_targets", "export_subtitles", "ocr_recognize",
     # 调优元数据只读配置，不需要拉起 pipeline —— 界面上打开设置页就会调它，
@@ -1557,10 +1738,22 @@ def _ensure_first_run_defaults() -> dict[str, Any]:
 def main() -> int:
     service = BackendService()
     service._install_log_sink()  # noqa: SLF001
+
+    # 后台作业执行器：耗时命令交给它，读循环因此保持可响应。
+    # 单 worker 是刻意的 —— OCR 引擎不能被并发调用，迁移也不能并行。
+    # 真正执行什么、终态回给谁，由 IpcLoop 接管（它持有原始请求参数）。
+    from ipc_loop import IpcLoop  # noqa: PLC0415
+    from job_runner import JobRunner  # noqa: PLC0415
+
+    runner = JobRunner()
+    service.bind_job_runner(runner)
+    loop = IpcLoop(service, runner, _emit)
+
     try:
         from voxsub import __version__  # noqa: PLC0415
 
-        _event("ready", version=__version__, frozen=FROZEN)
+        loop.handshake(version=__version__, frozen=FROZEN,
+                       backend_generation=str(os.getpid()))
     except Exception as exc:  # noqa: BLE001
         _event("error", message=f"后端初始化失败: {type(exc).__name__}: {exc}")
         return 2
@@ -1572,30 +1765,13 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[init] 首启动初始化异常: {exc}", file=sys.stderr)
 
-    for raw in sys.stdin:
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            _event("log", level="WARNING",
-                   message=f"无法解析的输入: {line[:200]}", ts=_now_iso())
-            continue
-
-        req_id = message.get("id")
-        command = str(message.get("command", ""))
-        try:
-            data = service.handle(command, message.get("args"))
-        except Exception as exc:  # noqa: BLE001 - 单条命令失败不能杀死进程
-            _emit({"id": req_id, "ok": False,
-                   "error": f"{type(exc).__name__}: {exc}"})
-            _event("log", level="ERROR", ts=_now_iso(),
-                   message=traceback.format_exc())
-        else:
-            _emit({"id": req_id, "ok": True, "data": data})
-
-    service.close()
+    runner.start()
+    try:
+        loop.serve(sys.stdin)
+    finally:
+        # 退出前不打断在途任务，但要给出共享截止时间，而不是逐个叠加长超时。
+        runner.stop(timeout=5.0)
+        service.close()
     return 0
 
 

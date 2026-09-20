@@ -121,17 +121,58 @@ class LlamaRuntime:
         return "cpu"
 
 
+def _ansi_encoding() -> str:
+    """本机 ANSI 代码页名（Windows 上即 ``mbcs``，中文系统为 CP936）。"""
+    try:
+        import locale  # noqa: PLC0415
+
+        encoding = locale.getpreferredencoding(False)
+    except Exception:  # noqa: BLE001
+        return "mbcs"
+    return encoding or "mbcs"
+
+
+def decode_console_output(raw: bytes | str | None) -> str:
+    """把 Windows 控制台工具的输出解成字符串。
+
+    为什么需要它：``pnputil`` / ``powershell`` / ``nvidia-smi`` 在中文
+    Windows 上输出的是 OEM/ANSI 代码页（CP936），而 ``subprocess`` 配
+    ``text=True`` 时按 UTF-8 解码 —— 解码异常发生在**读取线程**里，
+    ``result.stdout`` 直接变成空串。表现是"机器上明明有 NPU，探测却什么都
+    读不到"，而主流程完全看不到异常，只在测试里留一条资源警告。
+
+    这里按 UTF-8 → 本机 ANSI 代码页 → 替换式 UTF-8 依次尝试：既保住中文
+    设备名，又保证最坏情况下有可读文本而不是空串。
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    encodings = ["utf-8", _ansi_encoding()]
+    for encoding in dict.fromkeys(encodings):
+        try:
+            return raw.decode(encoding).strip()
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace").strip()
+
+
 def _run_powershell(script: str, timeout: float = 4.0) -> str:
     if os.name != "nt":
         return ""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
+        # 刻意不传 text=True：让 subprocess 交回原始字节，由
+        # decode_console_output 按本机代码页解码。交给 subprocess 自己解
+        # 会在读取线程里抛 UnicodeDecodeError，把 stdout 变成空串。
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True, text=True, timeout=timeout, check=False,
+            capture_output=True, timeout=timeout, check=False,
             creationflags=flags,
         )
-        return result.stdout.strip() if result.returncode == 0 else ""
+        if result.returncode != 0:
+            return ""
+        return decode_console_output(result.stdout)
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -180,13 +221,13 @@ def _pnputil_npu_devices() -> list[str]:
     try:
         result = subprocess.run(
             ["pnputil.exe", "/enum-devices", "/connected"],
-            capture_output=True, text=True, timeout=8, check=False,
+            capture_output=True, timeout=8, check=False,
             creationflags=flags,
         )
     except (OSError, subprocess.SubprocessError):
         return []
     names: list[str] = []
-    for line in (result.stdout or "").splitlines():
+    for line in decode_console_output(result.stdout).splitlines():
         if not _NPU_NAME_PATTERN.search(line):
             continue
         value = line.split(":", 1)[-1].strip()
@@ -350,11 +391,12 @@ def _nvidia_inventory() -> tuple[str, float]:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3, check=False,
+            capture_output=True, timeout=3, check=False,
             creationflags=flags,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            first = result.stdout.strip().splitlines()[0]
+        text = decode_console_output(result.stdout)
+        if result.returncode == 0 and text:
+            first = text.splitlines()[0]
             name, memory = [part.strip() for part in first.rsplit(",", 1)]
             return name, float(memory) / 1024.0
     except (OSError, ValueError, subprocess.SubprocessError):

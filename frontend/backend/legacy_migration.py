@@ -33,6 +33,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+try:  # 共享的原子写入（唯一临时名 + fsync + Windows 瞬时占用重试）
+    from voxsub.file_io import write_text_atomically as _write_text_atomically
+except ImportError:  # 独立脚本运行（python backend/legacy_migration.py）时 voxsub 可能不在路径上
+    _write_text_atomically = None  # type: ignore[assignment]
+
 # ------------------------------------------------------------------ 常量
 
 #: 旧版安装器（installer.iss）在安装时即声明删除的目录。
@@ -397,9 +402,14 @@ def write_state(**updates: Any) -> dict[str, Any]:
     state.update(updates)
     target = state_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(target)
+    payload = json.dumps(state, ensure_ascii=False, indent=2)
+    if _write_text_atomically is not None:
+        # 共享实现：唯一临时文件名 + fsync + Windows 瞬时占用重试。
+        _write_text_atomically(target, payload, encoding="utf-8")
+    else:  # pragma: no cover - 只有独立脚本运行且 voxsub 不在 sys.path 上时走这里
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(target)
     return state
 
 

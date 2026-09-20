@@ -37,6 +37,14 @@ hiddenimports = [
     "voxsub.subtitles",
     "voxsub.config_store",
     "voxsub.file_io",
+    # 适配层自己的模块。它们都是函数级 import（为了"取不到就不影响主流程"），
+    # 静态分析同样看不到 —— 漏一个的后果是打包版上这条命令直接 ImportError，
+    # 而源码运行完全正常（`import_models` 就这么踩过一次）。
+    "job_runner",
+    "ipc_loop",
+    "legacy_migration",
+    "migration_ledger",
+    "contract_validation",
 ]
 
 # 这些包内含二进制/数据文件，必须整体收集

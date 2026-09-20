@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voxsub.local/contracts/protocol.json",
+  "title": "VoxSub IPC 协议信封契约",
+  "description": "NDJSON over stdio 的信封格式、握手字段、作业语义与版本策略。信封三种形态：request（入站命令）、response（出站应答）、event（出站事件）。三者用 oneOf 严格互斥，一条线上消息只能命中一种。",
+  "protocolVersion": "2.0.0",
+  "contractDocumentVersionNote": "protocolVersion 是**契约文档**的版本（本仓库 contracts/ 的演进），不是线上字段。线上的协议版本由后端自己在握手时给出，见 wireProtocolVersion。",
+  "wireProtocolVersion": {
+    "field": "ready.protocolVersion",
+    "sourceConstant": "ipc_loop.PROTOCOL_VERSION",
+    "value": 1,
+    "relation": "契约文档版本（semver 2.0.0）与线上整数（1）**不是**同一个序列，也没有机械映射 —— 线上整数只做粗粒度兼容判断，契约文档版本记录契约本身的演进。测试断言这里的 value 与 ipc_loop.PROTOCOL_VERSION 相等（改一处必须改另一处），但不试图把两者换算。",
+    "recommendation": "主代理接线时二选一：① 握手同时发整数 protocolVersion 与 semver protocolRevision；② 统一为 semver 字符串。保持现状也可以，只要前端只做\"主版本不等即拒绝\"这一种判断。"
+  },
+  "appVersionAtAuthoring": "0.9.0-beta",
+  "status": "phase-1：契约与校验器已产出；把 ContractRegistry 接进 ipc_loop.py / ipc_server.py 的边界留给主代理",
+  "generatedFrom": {
+    "python": [
+      "frontend/backend/ipc_server.py",
+      "frontend/backend/ipc_loop.py",
+      "frontend/backend/job_runner.py"
+    ],
+    "typescript": [
+      "frontend/src/renderer/protocol.ts",
+      "frontend/src/main/preload.ts",
+      "frontend/src/main/backend.ts"
+    ],
+    "method": "从源码枚举（ast 静态解析 _cmd_* / _event(...) / 常量；文本解析 TS 声明），非人工推测",
+    "revision": {
+      "gitHeadAtDerivation": "0882505ff52dd3c5e8ff691043e33ad0f47b8c10",
+      "note": "backend 与前端在活跃开发中（本次工作期间 ipc_server.py 从 1603 行改到 1779 行，并新增 ipc_loop.py / job_runner.py / migration_ledger.py；protocol.ts 也被重写过两次）。下面这些哈希只是**出处记录**，不是断言 —— 测试不会因源码变了就红，只会因契约与代码对不上而红。",
+      "sha256": {
+        "ipc_server.py": "f570078f3d67b9813631003c5f5029fc59877f6e5d25c06ceb514c41bbb9a0f3",
+        "ipc_loop.py": "ec0d1eb6dd544265eee44e2c514807f6e48efc7c01a201d645050601e33b0b4f",
+        "job_runner.py": "2a5e5d76525fed94988fbee584502f98bbfe5b969f063a86959fca41c34ca762",
+        "frontend/src/renderer/protocol.ts": "f14c1454d0c0e1ca35ed8a606b10f22c753d9f93208e1cc8db55a8e527288812",
+        "frontend/src/main/backend.ts": "69e39b1bc111336193d5cf230139b9b6772edf59b20f0de35601054666ce82b4",
+        "frontend/src/main/preload.ts": "77a2384ca5ffec87464c4613dd943e41652b1461ac9cfda82ab08edc79e23530"
+      }
+    }
+  },
+  "protocolVersionIntegerNote": "见 wireProtocolVersion。",
+
+  "transport": {
+    "kind": "ndjson",
+    "direction": "request: stdin / response+event: stdout",
+    "encoding": "utf-8",
+    "newline": "\\n",
+    "stdoutIsProtocolOnly": true,
+    "diagnostics": "stderr（Electron 侧按级别解析后转发到界面日志区）",
+    "maxLineBytes": 33554432,
+    "maxLineBytesSource": "ipc_loop.MAX_LINE_CHARS = 32 * 1024 * 1024 —— 给得宽是因为 OCR 会传 base64 图片；但仍有界，防止畸形输入把内存吃光",
+    "stdoutWriter": "frontend/backend/ipc_server.py::_emit",
+    "readLoop": "frontend/backend/ipc_loop.py::IpcLoop.handle_line / serve",
+    "dispatch": "frontend/backend/ipc_server.py::BackendService.handle（命令层）"
+  },
+
+  "versioning": {
+    "field": "protocolVersion",
+    "semantics": "semver，与 appVersion（voxsub.__version__）解耦",
+    "major": "信封/握手/已有字段语义的破坏性变更；旧前端必须拒绝或降级",
+    "minor": "新增命令、新增事件、新增可选字段（旧对端可忽略）",
+    "patch": "文案、description、错误码说明等无语义变更",
+    "wireAdvertised": "ready.protocolVersion（整数，当前 1）+ ready.backendGeneration（字符串）",
+    "currentRevision": "2.0.0 —— 相对最初的 1.0.0：应答新增可选的 jobId / code 字段；握手改为 protocolVersion + backendGeneration + readiness + session；新增 job 事件；命令层新增 job_list / job_status / cancel_job；cleanup_migrated_source 的参数从 path 改为 record_id/record_ids + confirm。这些都是破坏性变更（旧的 path 参数已被显式拒绝），故 major +1。"
+  },
+
+  "$defs": {
+    "StatePayload": {
+      "type": "object",
+      "description": "会话状态快照。命令返回值与 state 事件共用同一份（ipc_server.py::BackendService._state_payload）。",
+      "required": ["running", "paused", "mode", "state"],
+      "additionalProperties": false,
+      "properties": {
+        "running": { "type": "boolean", "description": "pipeline.is_running()" },
+        "paused": { "type": "boolean", "description": "pipeline.is_paused()" },
+        "mode": { "type": "string", "description": "pipeline.mode，当前实现取值 a / b / c" },
+        "state": { "type": "string", "description": "pipeline.state 枚举值（PipelineState.value）" }
+      }
+    },
+
+    "Request": {
+      "type": "object",
+      "description": "入站命令。args 允许缺失或为 null —— 前端 call(CMD.x) 不传 args 时 JSON.stringify 会整键丢弃。",
+      "required": ["id", "command"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": ["integer", "null"],
+          "description": "请求序号，由 BackendBridge.nextId++ 生成，应答原样回带。协议允许 null（读循环会对缺失 id 直接拒绝，见 code=missing_id）。"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "命令名，取值集合见 contracts/commands.json"
+        },
+        "args": {
+          "type": ["object", "null"],
+          "description": "命令参数；缺省视为 {}。非对象会被读循环以 code=bad_args 拒绝。"
+        }
+      }
+    },
+
+    "SuccessResponse": {
+      "type": "object",
+      "description": "ok:true 的应答。jobId 只在经作业队列执行的命令上出现（表示这条应答对应哪个后台任务）。",
+      "required": ["id", "ok", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": ["integer", "null"] },
+        "ok": { "const": true },
+        "data": {
+          "description": "命令返回值；无返回值的命令为 null。每个命令的具体形状见 contracts/commands.json。**例外**：请求带 args.async=true 时，这条应答是提前回执，data 是 AsyncAccepted 形状而非命令的最终返回值。",
+          "type": ["object", "array", "string", "number", "integer", "boolean", "null"]
+        },
+        "jobId": { "type": "string", "description": "后台任务 id（uuid4 hex）" }
+      }
+    },
+
+    "ErrorResponse": {
+      "type": "object",
+      "description": "ok:false 的应答。两种来源：① 命令执行抛异常 → error=\"<异常类名>: <消息>\"，无 code（作业路径下有 code=异常类名）；② 读循环在排队前就拒绝 → error 是可读中文原因，code 是稳定标识（见 error-codes.json#/wireCodes）。",
+      "required": ["id", "ok", "error"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": ["integer", "null"] },
+        "ok": { "const": false },
+        "error": {
+          "type": "string",
+          "minLength": 1,
+          "description": "人类可读的错误原因。命令执行路径下形如 \"<异常类名>: <消息>\"；读循环拒绝路径下是中文短语。**不能为空**，也不允许是 null —— 前端把它直接显示给用户。"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "机器可判定的错误码。**两种风格**：读循环自己的拒绝用 snake_case（unknown_command / bad_args / queue_full ...），作业终态用异常类名（ValueError）或保留字 cancelled / failed。前端应把未知 code 当\"未分类失败\"处理，而不是崩掉。取值清单见 error-codes.json#/wireCodes。"
+        },
+        "jobId": { "type": "string", "description": "失败的后台任务 id" }
+      }
+    },
+
+    "Event": {
+      "type": "object",
+      "description": "出站事件。具体载荷形状见 contracts/events.json，由 event 字段的值选择。",
+      "required": ["event"],
+      "properties": {
+        "event": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "事件名，取值集合见 contracts/events.json"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+
+  "envelope": {
+    "request": { "$ref": "#/$defs/Request" },
+    "success": { "$ref": "#/$defs/SuccessResponse" },
+    "error": { "$ref": "#/$defs/ErrorResponse" },
+    "response": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessResponse" },
+        { "$ref": "#/$defs/ErrorResponse" }
+      ],
+      "description": "ok:true 必须带 data，ok:false 必须带 error；两者互斥，用 oneOf 而非 anyOf 才能拒绝 {\"ok\":true,\"error\":\"...\"} 这类自相矛盾的消息。"
+    },
+    "event": { "$ref": "#/$defs/Event" },
+    "inbound": {
+      "oneOf": [
+        { "$ref": "#/$defs/Request" }
+      ],
+      "description": "入站只允许 request。事件与应答出现在 stdin 上是协议违规。"
+    },
+    "outbound": {
+      "oneOf": [
+        { "$ref": "#/$defs/SuccessResponse" },
+        { "$ref": "#/$defs/ErrorResponse" },
+        { "$ref": "#/$defs/Event" }
+      ],
+      "description": "出站三选一。注意 Response 与 Event 都允许 id 缺失，所以判定顺序应为：先看 id 是否为 number → response，否则看 event 是否为 string → event。"
+    },
+    "classifyOrder": "backend.ts BackendBridge._route 与 ipc_loop 的实际顺序：数字 id 优先，其次 event 字符串。测试会断言两边顺序一致。"
+  },
+
+  "commandArgs": {
+    "async": {
+      "type": "boolean",
+      "default": false,
+      "description": "**所有非控制命令的通用可选参数**（由 ipc_loop._submit 读取，命令实现本身不读它）。true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达；缺省 false 表示同步语义（结果仍经作业队列执行，但应答会在终态时发出）。",
+      "controlCommandsExempt": true
+    }
+  },
+
+  "dispatch": {
+    "twoPaths": "ipc_loop.Handle_line 分两条路：控制命令在读循环线程**立刻**执行；其余命令交给 job_runner 的单 worker 串行执行。",
+    "controlCommands": {
+      "source": "job_runner.CONTROL_COMMANDS",
+      "values": ["ping", "state", "shutdown", "job_status", "job_list", "cancel_job"],
+      "reason": "参数校验、状态查询、任务提交要快速返回；\"停止和取消不排在普通耗时任务后面\"（工作单 §3.3）。"
+    },
+    "jobSemantics": {
+      "states": ["queued", "running", "succeeded", "failed", "cancelling", "cancelled"],
+      "terminal": ["succeeded", "failed", "cancelled"],
+      "cancellingIsNotCancelled": "cancelling 只表示\"收到取消请求\"；真正的 cancelled 由 worker 在安全边界落定。原生推理/复制卷无法立刻打断，因此界面不能把 cancelling 显示成已取消。",
+      "queueBound": 16,
+      "historyBound": 50,
+      "queueFull": "队列满时以 code=queue_full 拒绝，不无限堆积。"
+    },
+    "preflightRejects": {
+      "note": "读循环在任何命令分派**之前**做的校验。这些拒绝不经过命令层，错误码见 error-codes.json#/wireCodes。",
+      "order": [
+        "raw 为 None → empty_message",
+        "长度 > maxLineChars → message_too_large",
+        "空行 → 静默忽略（不回执）",
+        "非 JSON → 只发 log 事件，不回执",
+        "非对象 → not_an_object",
+        "缺 id → missing_id",
+        "缺 command → missing_command",
+        "args 非对象 → bad_args",
+        "命令不存在 → unknown_command"
+      ]
+    }
+  },
+
+  "handshake": {
+    "event": "ready",
+    "emittedBy": "frontend/backend/ipc_loop.py::IpcLoop.handshake",
+    "timing": "进程启动后、进入 stdin 读取循环之前，只发一次",
+    "wired": true,
+    "current": {
+      "type": "object",
+      "description": "握手现状（已接线，与工作单 §3.6 的字段要求对齐）：协议版本、backend generation、就绪状态与活动任务快照、当前会话状态一并发出。",
+      "required": ["event", "version", "frozen", "protocolVersion", "backendGeneration", "readiness", "session"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "const": "ready" },
+        "version": { "type": "string", "description": "voxsub.__version__，当前 0.9.0-beta" },
+        "frozen": { "type": "boolean", "description": "sys.frozen —— true 表示 PyInstaller sidecar 形态" },
+        "protocolVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "协议大版本（ipc_loop.PROTOCOL_VERSION）。整数而非 semver —— 见 protocolVersionIntegerNote。"
+        },
+        "backendGeneration": {
+          "type": "string",
+          "description": "后端代次标识。区分\"同一次运行\"与\"重启过\"，用于丢弃上一代仍在途的应答。当前缺省空串（主进程尚未注入）。"
+        },
+        "readiness": {
+          "type": "object",
+          "required": ["ready", "activeJobs"],
+          "additionalProperties": false,
+          "properties": {
+            "ready": { "type": "boolean", "description": "就绪状态。true 表示可以接受命令。" },
+            "activeJobs": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "启动瞬间仍在途的任务**命令名**列表（job_runner.active_job_names()），不是 jobId 列表。用途：界面重载后重建进度提示。"
+            }
+          }
+        },
+        "session": {
+          "description": "当前会话状态快照；没有 pipeline 实例时为 null。",
+          "oneOf": [
+            { "$ref": "#/$defs/StatePayload" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "gap": "已接线部分：协议版本 / backend generation / 就绪状态与活动任务快照 / 会话状态全部在 ready 里。仍未做的三点（留给主代理）：① 主进程尚未注入 backendGeneration（当前恒为空串），因此\"区分代次\"暂时没有实际判别力；② ready 的 protocolVersion 是整数 1，而契约文件用 semver 2.0.0，两处需归一；③ 前端尚未在 ready 分支校验 protocolVersion 主版本 —— 不匹配时应拒绝启动并给出可读提示，现在会静默继续。"
+  },
+
+  "responseCorrelation": {
+    "rule": "应答按 id 配对，事件不参与配对",
+    "pipeline": "BackendBridge.pending: Map<number, resolver>",
+    "timeoutMs": 30000,
+    "timeoutError": "命令超时",
+    "timeoutIsNotFailure": "前端超时只表示\"这次没等到回话\"，**不能**据此改写任务状态。任务状态只由后端说了算（job_runner 是权威定义）。",
+    "staleResponse": "id 未命中 pending 时静默丢弃；主代理接线后应改为\"按 backendGeneration 丢弃上一代应答\"。"
+  },
+
+  "outboundFieldOwnership": {
+    "description": "一条应答里字段由谁写，接线时必须清楚 —— 混用会导致\"命令返回值和信封字段打架\"。",
+    "id": "读循环（原样回带请求 id）",
+    "ok": "读循环",
+    "data": "命令实现（BackendService._cmd_*）",
+    "error": "读循环（拒绝路径）或读循环从异常生成（执行路径）",
+    "code": "读循环（拒绝路径 / 作业终态）",
+    "jobId": "读循环（作业路径）"
+  }
+}

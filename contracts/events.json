@@ -1,0 +1,610 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voxsub.local/contracts/events.json",
+  "title": "VoxSub 出站事件契约",
+  "description": "stdout 上每一条 {\"event\": ...} 消息的载荷形状。全部事件由 ast 静态解析前/后端源码里的 _event(...) 调用点枚举得到（ipc_server.py 的命令实现 + ipc_loop.py 的读循环/握手 + job_runner.py 经回调转发），不包含推测。",
+  "protocolVersion": "2.0.0",
+  "generatedFrom": "ipc_server.py 的 _event(...) 字面调用点 + ipc_loop.py 的 _event/握手 + job_runner.JobRunner._emit(kind='job', ...)",
+  "emitHelpers": {
+    "commandLayer": "ipc_server.py::_event(kind, **fields) -> _emit({\"event\": kind, **fields})",
+    "readLoop": "ipc_loop.py::IpcLoop._event / handshake",
+    "jobLayer": "job_runner.py::JobRunner._emit -> ipc_loop._on_job_event -> _event(kind, **payload)"
+  },
+  "uiUnlistedEvents": {
+    "events": [
+      "first_run"
+    ],
+    "reason": "first_run 在 main() 里于 stdin 循环**之前**（甚至 args 解析之前）发出，此刻前端还没挂上 backend:event 监听器，因此 frontend/src/renderer/protocol.ts 的 BackendEvent 联合类型里没有它。它仍然算契约内事件（sidecar 会写进 stdout），但不该被 UI 依赖。若将来需要在界面上处理它，先把它加进 protocol.ts 再从这个清单里移除。"
+  },
+  "uiFieldDrift": [
+    {
+      "event": "ready",
+      "missingInTs": [
+        "frozen"
+      ],
+      "extraInTs": [],
+      "reason": "protocol.ts 的 ready 声明了 version / protocolVersion? / backendGeneration? / readiness? / session?，但漏了 frozen。后四项都写成可选（老后端不发这些字段时 渲染层不能报错），这一点是对的；frozen 一直在发、只是没声明。",
+      "note": "另有类型级不一致，字段级检查看不出来：TS 的 readiness.activeJobs 声明为 number，后端实际发的是**命令名字符串数组**（job_runner.active_job_names()）。前端若按 number 用会得到 NaN。",
+      "fix": "给 ready 补上 frozen?: boolean，并把 activeJobs 改成 string[]；改完从本清单删掉。"
+    },
+    {
+      "event": "migration",
+      "missingInTs": [
+        "completed",
+        "keys",
+        "path",
+        "recordId",
+        "source"
+      ],
+      "extraInTs": [],
+      "reason": "migration 事件已有 7 种 phase（含新增的 cancelled / cleaned），阶段字段比 TS 声明多：source（start 用）、completed（progress / cancelled 用）、keys（config 用）、recordId 与 path（cleaned 用）。TS 里 phase 只是 string、字段全 optional，于是漏读不会报错、只会显示不全。",
+      "fix": "把 migration 收敛成按 phase 判别的联合类型，或拆成多个事件（见 events.json#/events/migration/payload/phaseFields）；改完从本清单删掉。"
+    }
+  ],
+  "frontendSynthesizedEvents": {
+    "events": [
+      "disconnected",
+      "request-timeout"
+    ],
+    "source": "Electron 主进程（frontend/src/main/backend.ts 与命令桥），**不由 Python 后端发出**",
+    "reason": "这两个事件永远不出现在 stdout 上，但被 protocol.ts 的 BackendEvent 声明、被 store.ts 消费。把它们和后端事件放在同一个命名空间里，前端就能用同一个 switch 处理；但契约必须**分开登记**，否则\"后端发出的事件\"这条覆盖检查会被前端自产的事件污染（会误以为后端承诺要发 disconnected）。",
+    "detail": {
+      "disconnected": "子进程退出时主进程发（backend.ts 的 exit 回调），带上 reason=code=<退出码>。语义是一个**状态**：界面必须把\"运行中\"收回去、会话视图归零，只改提示文案是骗人的。",
+      "request-timeout": "主进程在长任务（迁移/模型下载/OCR）超过时限、请求尚未返回时发。**不是失败** —— 任务仍在进行，后续事件与最终结果照常送达。"
+    },
+    "namingNote": "request-timeout 用了连字符，与本文件里其它事件的蛇形命名不一致。既有定义如此，契约如实记录；将来若统一命名，属于 major 变更。"
+  },
+  "$defs": {
+    "StatePayload": {
+      "$comment": "与 contracts/protocol.json#/$defs/StatePayload 保持一致（测试会断言两者字段完全相同）",
+      "type": "object",
+      "required": [
+        "running",
+        "paused",
+        "mode",
+        "state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "running": {
+          "type": "boolean"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      }
+    },
+    "LogLevelName": {
+      "description": "Python logging 的 levelname，或调用方手写的字符串（大小写两种都实测存在：\"error\" 在 close() 的退出路径、\"ERROR\" 在读循环里）。",
+      "enum": [
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL",
+        "debug",
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ]
+    }
+  },
+  "events": {
+    "ready": {
+      "summary": "握手。进程启动后只发一次，先于任何命令应答。字段与 protocol.json#/handshake.current 必须逐项一致。",
+      "emittedBy": "ipc_loop.IpcLoop.handshake",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "version",
+          "frozen",
+          "protocolVersion",
+          "backendGeneration",
+          "readiness",
+          "session"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "ready"
+          },
+          "version": {
+            "type": "string"
+          },
+          "frozen": {
+            "type": "boolean"
+          },
+          "protocolVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "backendGeneration": {
+            "type": "string"
+          },
+          "readiness": {
+            "type": "object",
+            "required": [
+              "ready",
+              "activeJobs"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ready": {
+                "type": "boolean"
+              },
+              "activeJobs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "session": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/StatePayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "status": {
+      "summary": "一行人类可读的状态文案（pipeline.on_status）。",
+      "emittedBy": "BackendService.ensure_pipeline 的回调注册",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "status"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "utterance": {
+      "summary": "一句定稿字幕（原文 + 译文）。UI 据此把结果落入字幕列表。",
+      "emittedBy": "pipeline.on_utterance",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "source",
+          "translation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "utterance"
+          },
+          "source": {
+            "type": "string"
+          },
+          "translation": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "draft": {
+      "summary": "整段草稿（原文 + 译文），用于草稿区滚动显示，不落字幕列表。",
+      "emittedBy": "pipeline.on_draft",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "source",
+          "translation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "draft"
+          },
+          "source": {
+            "type": "string"
+          },
+          "translation": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "partial": {
+      "summary": "实时部分识别文本（未定稿），高频，UI 只覆盖显示。",
+      "emittedBy": "pipeline.on_partial",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "partial"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "progress": {
+      "summary": "会话级进度（pipeline.on_progress）。",
+      "emittedBy": "pipeline.on_progress",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "completed",
+          "total",
+          "stage"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "progress"
+          },
+          "completed": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          },
+          "stage": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "state": {
+      "summary": "会话状态变化（自主转换也走这里：文件播完、出错回 IDLE）。",
+      "emittedBy": "pipeline.on_state",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "running",
+          "paused",
+          "mode",
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "state"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "description": "字段集合必须与 protocol.json#/$defs/StatePayload 完全相同 —— 它就是 _event(\"state\", **self._state_payload(pipeline))，测试会钉住这一点。"
+      }
+    },
+    "session": {
+      "summary": "会话边界标记。前端据此重置时间基准（导出 SRT 需要相对时间）。",
+      "emittedBy": "BackendService._cmd_start / _cmd_stop",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "action"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "session"
+          },
+          "action": {
+            "enum": [
+              "start",
+              "stop"
+            ]
+          }
+        }
+      }
+    },
+    "job": {
+      "summary": "后台作业的生命周期事件（工作单 §3.3）。每一条都带 jobId 与 sequence，前端据此丢弃迟到/乱序事件。",
+      "emittedBy": "job_runner.JobRunner._emit → ipc_loop.IpcLoop._on_job_event → _event(\"job\", ...)",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "jobId",
+          "command",
+          "sequence",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "job"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "uuid4 hex"
+          },
+          "command": {
+            "type": "string",
+            "description": "被提交的命令名，取值见 commands.json"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "该任务的单调事件序号，从 1 开始"
+          },
+          "error": {
+            "type": "string",
+            "description": "仅终态事件带；成功时为空串"
+          },
+          "code": {
+            "type": "string",
+            "description": "仅终态事件带；失败时是异常类名，取消时是 \"cancelled\"，成功时为空串"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "description": "**cancelling 不等于 cancelled**：前者只表示已受理取消请求，后者才是终态。界面不得把 cancelling 显示成已取消。"
+          }
+        }
+      }
+    },
+    "download": {
+      "summary": "模型下载进度（install_model 内的 progress_callback）。",
+      "emittedBy": "BackendService._cmd_install_model",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "modelId",
+          "completed",
+          "total",
+          "stage"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "download"
+          },
+          "modelId": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          },
+          "stage": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "migration": {
+      "summary": "迁移向导与清理的逐步进度。同一个事件名承载 7 种 phase，字段按 phase 取值不同。",
+      "emittedBy": "BackendService._cmd_start_migration / _cmd_cleanup_migrated_source",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "phase"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "migration"
+          },
+          "phase": {
+            "enum": [
+              "start",
+              "progress",
+              "done",
+              "failed",
+              "config",
+              "cancelled",
+              "cleaned"
+            ],
+            "description": "cancelled 是**协作式取消**：迁移在每一步之间检查取消请求，在安全边界停下并报告已完成步数。cleaned 是清理命令删除某条台账记录后的确认。"
+          },
+          "key": {
+            "type": "string",
+            "description": "迁移项的 key（models / cache / ...）"
+          },
+          "recordId": {
+            "type": "string",
+            "description": "台账记录 id，仅 cleaned 带"
+          },
+          "path": {
+            "type": "string",
+            "description": "被删除的源目录路径，仅 cleaned 带"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "number"
+          },
+          "error": {
+            "type": "string"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "phaseFields": {
+          "start": [
+            "key",
+            "index",
+            "total",
+            "source",
+            "target"
+          ],
+          "progress": [
+            "key",
+            "completed",
+            "total"
+          ],
+          "done": [
+            "key",
+            "target"
+          ],
+          "failed": [
+            "key",
+            "error"
+          ],
+          "config": [
+            "keys"
+          ],
+          "cancelled": [
+            "completed",
+            "total"
+          ],
+          "cleaned": [
+            "key",
+            "recordId",
+            "path"
+          ],
+          "description": "同一个事件名承载多种形状是历史包袱 —— 客户端必须按 phase 分流，不能假定字段恒在。已登记为待收敛项：将来可以拆成 migration_start / migration_progress / ... 或统一成一个带 phase 的判别联合。"
+        }
+      }
+    },
+    "log": {
+      "summary": "结构化日志行。日志桥（logging.Handler）与读循环/命令层的各类告警共用。",
+      "emittedBy": "BackendService._install_log_sink 的 _Bridge.emit / IpcLoop._reject / IpcLoop.serve",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "ts",
+          "level",
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "log"
+          },
+          "ts": {
+            "type": "string",
+            "description": "本地 ISO8601，秒精度（_now_iso）"
+          },
+          "level": {
+            "$ref": "#/$defs/LogLevelName"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "error": {
+      "summary": "后端初始化级错误，仅在后端启动时 voxsub 导入失败的情况下发出，随后进程以退出码 2 结束。",
+      "emittedBy": "后端入口 main()",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "error"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "first_run": {
+      "summary": "打包安装形态的首次运行：模型目录被确定下来。",
+      "emittedBy": "_ensure_first_run_defaults()",
+      "payload": {
+        "type": "object",
+        "required": [
+          "event",
+          "modelsRoot"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "const": "first_run"
+          },
+          "modelsRoot": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "emitterContract": {
+    "note": "事件载荷只允许在 events.json 登记的字段出现；新增字段 = 改契约，必须同时：① 在此登记 ② 若有 UI 消费者，更新 protocol.ts 的 BackendEvent 联合类型 ③ 按 protocol.json#/versioning 递增 minor。",
+    "forbidden": "绕过 _event() 直接写 {\"event\": \"x\"} 的裸字典 —— 那样会跳过契约登记。测试会扫源码拦住它。"
+  },
+  "knownGaps": {
+    "description": "已知的、尚未修的契约缺口。每条都是**棘轮**：登记的调用点集合必须与实测完全相等 —— 多一处会失败（不允许静默扩大），修好一处也会失败（提醒把登记删掉）。缺口只能被显式登记，不能被静默接受。",
+    "wrappedEmitters": [
+      {
+        "event": "job",
+        "emitter": "job_runner.JobRunner._emit",
+        "fields": [
+          "jobId",
+          "command",
+          "sequence"
+        ],
+        "reason": "这三个字段由 JobRunner._emit 在组装 payload 时统一注入（payload = {\"jobId\", \"command\", \"sequence\", **fields}），所以调用点只传 action/error/code。必需字段检查必须知道这个隐式来源；test_作业事件字段由_emit_统一注入 会静态验证它。"
+      }
+    ]
+  },
+  "uiPendingEventsNote": "job 曾经登记在 uiPendingEvents（TS 未声明）；现已通过 JobEvent 别名声明，因此本键已被删除。测试会在「无待接线项却留着空壳键」时失败。"
+}

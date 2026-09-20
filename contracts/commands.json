@@ -1,0 +1,3356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voxsub.local/contracts/commands.json",
+  "title": "VoxSub IPC 命令契约",
+  "description": "每一条 IPC 命令的名称、参数、返回结果与可能错误码。命令集合由 ast 静态解析 frontend/backend/ipc_server.py 得到，共 55 条。与 frontend/src/renderer/protocol.ts 的 CMD 表逐项对齐（测试会断言双向相等）。",
+  "protocolVersion": "2.0.0",
+  "generatedFrom": {
+    "python": [
+      "frontend/backend/ipc_server.py",
+      "frontend/backend/ipc_loop.py",
+      "frontend/backend/job_runner.py"
+    ],
+    "pythonSha256": {
+      "ipc_server.py": "f570078f3d67b9813631003c5f5029fc59877f6e5d25c06ceb514c41bbb9a0f3",
+      "ipc_loop.py": "ec0d1eb6dd544265eee44e2c514807f6e48efc7c01a201d645050601e33b0b4f",
+      "job_runner.py": "2a5e5d76525fed94988fbee584502f98bbfe5b969f063a86959fca41c34ca762"
+    },
+    "typescript": "frontend/src/renderer/protocol.ts（CMD 表）",
+    "protocolTsSha256": "f14c1454d0c0e1ca35ed8a606b10f22c753d9f93208e1cc8db55a8e527288812",
+    "hashIsProvenanceNotAssertion": "哈希只是出处记录，不是断言 —— 源码变了不会让测试红，只有契约与代码对不上才会。",
+    "method": "命令集合由 ast 静态解析得到：① ipc_server.BackendService 上的 _cmd_<name> 方法 ② ipc_server.BackendService.handle 里 command == \"...\" 的特判分支（ping / shutdown）。"
+  },
+  "dispatch": {
+    "entry": "ipc_loop.IpcLoop.handle_line（读循环与前置校验）→ ipc_server.BackendService.handle（命令层）",
+    "twoPaths": "控制命令（controlCommand=true）在读循环线程立刻执行；其余命令经 job_runner 的单 worker 串行执行后回执。",
+    "controlCommands": {
+      "values": [
+        "ping",
+        "state",
+        "shutdown",
+        "job_status",
+        "job_list",
+        "cancel_job"
+      ],
+      "source": "job_runner.CONTROL_COMMANDS",
+      "reason": "参数校验、状态查询、任务提交要快速返回；\"停止和取消不排在普通耗时任务后面\"。"
+    },
+    "argsNormalization": "args 缺失/null 一律视为 {}；非对象被读循环以 code=bad_args 拒绝（读循环在命令层之前）。",
+    "resolution": "ipc_server.BackendService.handle 用 getattr(self, f\"_cmd_{command}\")；找不到即 raise ValueError",
+    "pipelineGate": "getattr(handler, \"_needs_pipeline\", True)：为 True 时先 ensure_pipeline() 再把 pipeline 作为第一个实参传入",
+    "whitelistSource": "ipc_server.py 模块级 `for _name in (...)` 循环",
+    "nullResult": "标记为 returnsNone 的命令在成功时 data 为 null",
+    "preflightReject": "未知命令在读循环里就被拒（ipc_loop._is_known_command → has_command），不会变成一条注定失败的作业。"
+  },
+  "errorPolicy": {
+    "description": "每个命令的 errors 数组只列**该命令特有**的错误码。所有命令都还可能返回 error-codes.json#/universal 里的兜底码（ValueError / OSError / AttributeError / TypeError / ImportError / RuntimeError / MemoryError / TimeoutError）。",
+    "wireShape": "{\"id\": N, \"ok\": false, \"error\": \"<ClassName>: <message>\"}",
+    "unknownCommand": "契约里没有的命令名会得到 \"ValueError: 未知命令: <name>\"，source ipc_server.py:491",
+    "jobErrors": "经作业队列执行的命令，失败时的 error 形如 \"<异常类名>: <消息>\" 且 code 为异常类名；被取消时 code=\"cancelled\"、error=\"已取消\"。前端应**先看 code**，别拿 error 文本做判断。"
+  },
+  "$defs": {
+    "StatePayload": {
+      "type": "object",
+      "required": [
+        "running",
+        "paused",
+        "mode",
+        "state"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "running": {
+          "type": "boolean"
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        }
+      }
+    },
+    "ConfigDict": {
+      "type": "object",
+      "description": "用户配置字典。键集合随功能演进，前端按需读取，因此这里只约束是对象、不约束键集合。已知键（实测）：api_key, asr_beam_paths, asr_context_correction, asr_context_hold_ms, asr_filler_mode, asr_hotwords, asr_live_draft_enabled, asr_max_new_tokens, asr_tuning_profile, capture_process_id, capture_window_title, lang_pair, last_input_file, loopback_device_id, mic_device_id, mode, models_root, models_root_mode, ocr_cache_root, ocr_model_id, record_with_translation, translate_model_id, translate_tier。",
+      "additionalProperties": true
+    },
+    "AudioDevice": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "WASAPI 端点 ID；假设备无 ID 时回落为设备名"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "mic",
+            "loopback"
+          ]
+        }
+      }
+    },
+    "CaptureTarget": {
+      "type": "object",
+      "required": [
+        "pid",
+        "processName",
+        "windowTitle",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pid": {
+          "type": "integer"
+        },
+        "processName": {
+          "type": "string"
+        },
+        "windowTitle": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "ModelEntry": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "task",
+        "quality",
+        "sizeLabel",
+        "sizeBytes",
+        "installedBytes",
+        "installed",
+        "builtin",
+        "runtime",
+        "license",
+        "languages",
+        "description",
+        "gpuSupported",
+        "igpuSupported",
+        "npuSupported",
+        "minRamGb"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "quality": {
+          "type": "integer"
+        },
+        "sizeLabel": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer"
+        },
+        "installedBytes": {
+          "type": "integer"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "builtin": {
+          "type": "boolean"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "languages": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "gpuSupported": {
+          "type": "boolean"
+        },
+        "igpuSupported": {
+          "type": "boolean"
+        },
+        "npuSupported": {
+          "type": "boolean"
+        },
+        "minRamGb": {
+          "type": "number"
+        }
+      }
+    },
+    "ModelCatalogResult": {
+      "type": "object",
+      "required": [
+        "models",
+        "modelsRoot",
+        "lookupRoots",
+        "diagnostics"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelEntry"
+          }
+        },
+        "modelsRoot": {
+          "type": "string"
+        },
+        "lookupRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "非致命诊断行。**非空不表示失败**，而是表示部分模型的安装状态确实算不出来（契约禁止把失败吞成 installed:false 还不留痕）。"
+        }
+      }
+    },
+    "AsrTuningMeta": {
+      "type": "object",
+      "required": [
+        "presets",
+        "controlled",
+        "editable",
+        "effective"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "presets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          }
+        },
+        "controlled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "editable": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "effective": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "TranslateTierInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "langs",
+        "supportsPair"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "langs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supportsPair": {
+          "type": "boolean"
+        }
+      }
+    },
+    "TranslateTierMeta": {
+      "type": "object",
+      "required": [
+        "tiers",
+        "source",
+        "target",
+        "selected",
+        "effective",
+        "substitutedFrom"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TranslateTierInfo"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "selected": {
+          "type": "string"
+        },
+        "effective": {
+          "type": "string"
+        },
+        "substitutedFrom": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SelfCheckItem": {
+      "type": "object",
+      "required": [
+        "check",
+        "status",
+        "detail"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        }
+      }
+    },
+    "LogEntry": {
+      "type": "object",
+      "required": [
+        "ts",
+        "level",
+        "message"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ts": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "DeviceEntry": {
+      "type": "object",
+      "required": [
+        "provider",
+        "name",
+        "kind",
+        "scoreMs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "scoreMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "HardwareProfile": {
+      "type": "object",
+      "required": [
+        "cpu",
+        "physicalCores",
+        "logicalCores",
+        "ramGb",
+        "gpu",
+        "vramGb",
+        "gpuProvider",
+        "npu"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "type": "string"
+        },
+        "physicalCores": {
+          "type": "integer"
+        },
+        "logicalCores": {
+          "type": "integer"
+        },
+        "ramGb": {
+          "type": "number"
+        },
+        "gpu": {
+          "type": "string"
+        },
+        "vramGb": {
+          "type": "number"
+        },
+        "gpuProvider": {
+          "type": "string"
+        },
+        "npu": {
+          "type": "string"
+        }
+      }
+    },
+    "SubtitleLineIn": {
+      "type": "object",
+      "description": "调用方提供的字幕行（导出用）。tsMs 缺省时回落 startMs，再缺省则按序号推进 30s/句。",
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "translation": {
+          "type": "string"
+        },
+        "tsMs": {
+          "type": "integer"
+        },
+        "startMs": {
+          "type": "integer"
+        },
+        "isFinal": {
+          "type": "boolean"
+        }
+      }
+    },
+    "OcrLineIn": {
+      "type": "object",
+      "description": "render_ocr_image 的输入行：只需要译文与框。",
+      "additionalProperties": false,
+      "properties": {
+        "translation": {
+          "type": "string"
+        },
+        "box": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "OcrLineOut": {
+      "type": "object",
+      "required": [
+        "text",
+        "box",
+        "translation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "box": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "[left, top, right, bottom] 扁平四元组"
+        },
+        "translation": {
+          "type": "string"
+        }
+      }
+    },
+    "MigrationStep": {
+      "type": "object",
+      "required": [
+        "source",
+        "target"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string",
+          "description": "缺省为 item<index>；取值 models / cache / ... 会被写回配置"
+        },
+        "bytes": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  "commands": {
+    "ping": {
+      "implementedBy": "BackendService.handle",
+      "handleSpecial": true,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "探活并取后端版本。不需要 pipeline，可在启动早期调用。",
+      "source": "ipc_server.py:479",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [],
+      "controlCommand": true
+    },
+    "shutdown": {
+      "implementedBy": "BackendService.handle",
+      "handleSpecial": true,
+      "needsPipeline": false,
+      "returnsNone": true,
+      "summary": "关闭后端：停 pipeline，0.2s 后在计时器线程里 SystemExit(0)。应答先于退出发出。",
+      "source": "ipc_server.py:484",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [],
+      "controlCommand": true
+    },
+    "start": {
+      "implementedBy": "_cmd_start",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "开始会话。返回最新状态，并另发 session{action:start} 事件。",
+      "source": "ipc_server.py:503",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/StatePayload"
+      },
+      "errors": [
+        "RuntimeError"
+      ],
+      "sideEffects": [
+        "event:session",
+        "event:state"
+      ],
+      "controlCommand": false
+    },
+    "stop": {
+      "implementedBy": "_cmd_stop",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "停止会话。返回最新状态，并另发 session{action:stop} 事件。",
+      "source": "ipc_server.py:509",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/StatePayload"
+      },
+      "errors": [
+        "RuntimeError"
+      ],
+      "sideEffects": [
+        "event:session",
+        "event:state"
+      ],
+      "controlCommand": false
+    },
+    "pause": {
+      "implementedBy": "_cmd_pause",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "暂停会话。只返回状态，不发 session 事件。",
+      "source": "ipc_server.py:514",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/StatePayload"
+      },
+      "errors": [
+        "RuntimeError"
+      ],
+      "controlCommand": false
+    },
+    "resume": {
+      "implementedBy": "_cmd_resume",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "恢复会话。只返回状态，不发 session 事件。",
+      "source": "ipc_server.py:518",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/StatePayload"
+      },
+      "errors": [
+        "RuntimeError"
+      ],
+      "controlCommand": false
+    },
+    "state": {
+      "implementedBy": "_cmd_state",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "读取当前状态。返回值与 state 事件共用 _state_payload，避免两处口径不一致。",
+      "source": "ipc_server.py:522",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "result": {
+        "$ref": "#/$defs/StatePayload"
+      },
+      "errors": [],
+      "controlCommand": true
+    },
+    "set_mode": {
+      "implementedBy": "_cmd_set_mode",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "切换工作模式。",
+      "source": "ipc_server.py:526",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "default": "a",
+            "description": "a / b / c；后端原样交给 pipeline.set_mode"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "set_langs": {
+      "implementedBy": "_cmd_set_langs",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "设置源/目标语言。",
+      "source": "ipc_server.py:529",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "default": "auto"
+          },
+          "target": {
+            "type": "string",
+            "default": "zh"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "set_input_file": {
+      "implementedBy": "_cmd_set_input_file",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "指定 C 模式的输入音视频文件。",
+      "source": "ipc_server.py:533",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ""
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "FileNotFoundError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "list_audio_devices": {
+      "implementedBy": "_cmd_list_audio_devices",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "列出麦克风与回环设备。不需要 pipeline。",
+      "source": "ipc_server.py:537",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "microphones",
+          "loopbacks"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "microphones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AudioDevice"
+            }
+          },
+          "loopbacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/AudioDevice"
+            }
+          }
+        }
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "list_capture_targets": {
+      "implementedBy": "_cmd_list_capture_targets",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "列出可捕获的可见窗口（B 模式按应用隔离）。枚举失败时**不抛错**，而是返回空列表 + error 字段。",
+      "source": "ipc_server.py:566",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "targets"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "targets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CaptureTarget"
+            }
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "set_audio_devices": {
+      "implementedBy": "_cmd_set_audio_devices",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "设置麦克风/回环端点。",
+      "source": "ipc_server.py:597",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "microphone": {
+            "type": "string",
+            "default": ""
+          },
+          "loopback": {
+            "type": "string",
+            "default": ""
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "set_capture_process": {
+      "implementedBy": "_cmd_set_capture_process",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "设置要按应用隔离捕获的目标进程。",
+      "source": "ipc_server.py:602",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "default": 0,
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "default": ""
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "set_stt": {
+      "implementedBy": "_cmd_set_stt",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "切换识别后端。",
+      "source": "ipc_server.py:607",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "default": "local"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {}
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "set_translator": {
+      "implementedBy": "_cmd_set_translator",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "切换翻译档位/翻译器。tier 优先于 kind：给了 tier 就忽略 kind，由后端按配置映射成实际 kind。传入的 config 会先与已保存配置合并。",
+      "source": "ipc_server.py:611",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tier": {
+            "enum": [
+              "fast",
+              "quality",
+              "cloud"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "default": "opus-fast"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {}
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "resolution": "tier 优先：给了 tier 就忽略 kind（不是错误，仅记录该优先级）",
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError",
+        "ImportError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "set_asr_model": {
+      "implementedBy": "_cmd_set_asr_model",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "切换识别模型。",
+      "source": "ipc_server.py:645",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "default": ""
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "KeyError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "set_asr_tuning": {
+      "implementedBy": "_cmd_set_asr_tuning",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "应用识别调优参数。",
+      "source": "ipc_server.py:648",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tuning": {
+            "type": "object",
+            "additionalProperties": true,
+            "default": {}
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "asr_tuning_meta": {
+      "implementedBy": "_cmd_asr_tuning_meta",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "识别调优分页所需的全部元数据。只读配置，特意不拉起 pipeline（打开设置页就会调它）。",
+      "source": "ipc_server.py:651",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/AsrTuningMeta"
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "set_tts": {
+      "implementedBy": "_cmd_set_tts",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "开关语音合成。",
+      "source": "ipc_server.py:678",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "set_tts_models": {
+      "implementedBy": "_cmd_set_tts_models",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "设置角色→模型映射。键值都会被 str() 强制转换。",
+      "source": "ipc_server.py:681",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "models": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {}
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "set_recording": {
+      "implementedBy": "_cmd_set_recording",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": true,
+      "summary": "开关字幕录音并指定目录。directory 明确允许 null（表示用默认目录）。",
+      "source": "ipc_server.py:685",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "directory": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "null"
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "translate_tiers": {
+      "implementedBy": "_cmd_translate_tiers",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "各翻译档位对当前语言对的能力。只读配置不加载模型。source/target 可显式传；缺任一个就从配置 lang_pair 推。",
+      "source": "ipc_server.py:689",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/TranslateTierMeta"
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "last_recording": {
+      "implementedBy": "_cmd_last_recording",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "最近一次录音文件路径。需要 pipeline（读 last_recording_path 属性）。",
+      "source": "ipc_server.py:715",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "list_models": {
+      "implementedBy": "_cmd_list_models",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "模型广场清单。models_root 传 null 表示启用多根目录查找（新旧存储位置都看）。",
+      "source": "ipc_server.py:744",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/ModelCatalogResult"
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "install_model": {
+      "implementedBy": "_cmd_install_model",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "下载并安装模型。过程中持续发 download 事件。",
+      "source": "ipc_server.py:802",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "default": ""
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "model_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "KeyError",
+        "OSError",
+        "TimeoutError"
+      ],
+      "sideEffects": [
+        "event:download"
+      ],
+      "controlCommand": false
+    },
+    "uninstall_model": {
+      "implementedBy": "_cmd_uninstall_model",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "卸载模型。",
+      "source": "ipc_server.py:814",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "default": ""
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "model_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "KeyError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "model_dir": {
+      "implementedBy": "_cmd_model_dir",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "模型目录：已安装给真实所在目录（可能在旧存储位置），未安装给即将写入的位置。",
+      "source": "ipc_server.py:820",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "default": ""
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path",
+          "installed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "errors": [
+        "KeyError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "get_config": {
+      "implementedBy": "_cmd_get_config",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "读取用户配置全量。",
+      "source": "ipc_server.py:833",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/ConfigDict"
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "set_config": {
+      "implementedBy": "_cmd_set_config",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "增量写配置，返回写入后的全量配置。",
+      "source": "ipc_server.py:838",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "updates"
+        ],
+        "properties": {
+          "updates": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/ConfigDict"
+      },
+      "errors": [
+        "OSError",
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "run_self_check": {
+      "implementedBy": "_cmd_run_self_check",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "跑一遍自检项。",
+      "source": "ipc_server.py:847",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SelfCheckItem"
+            }
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "export_diagnostics": {
+      "implementedBy": "_cmd_export_diagnostics",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "导出诊断报告。给了 path 就写盘并回 {path,bytes}，否则回 {text}。log_text 会被拼在报告之后（日志导出复用同一入口）。",
+      "source": "ipc_server.py:859",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ""
+          },
+          "log_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "bytes"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "recent_logs": {
+      "implementedBy": "_cmd_recent_logs",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "最近日志。source=memory（默认）读本进程环形缓冲，只含本次运行；source=file 读磁盘 voxsub.log 尾部，能拿到历史运行记录。返回值形状随 source 不同。",
+      "source": "ipc_server.py:877",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "default": 200,
+            "minimum": 0
+          },
+          "source": {
+            "enum": [
+              "memory",
+              "file"
+            ],
+            "default": "memory"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "logs",
+              "source"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "logs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/LogEntry"
+                }
+              },
+              "source": {
+                "const": "memory"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "source",
+              "lines"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "source": {
+                "const": "file"
+              },
+              "lines": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "clear_logs": {
+      "implementedBy": "_cmd_clear_logs",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "清除本机日志（活动日志就地截断、历史轮转删除；模型/配置/凭据不动）。返回形状取决于 voxsub 的实现，前端按「对象且值都是数字」处理。",
+      "source": "ipc_server.py:895",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "log_path": {
+      "implementedBy": "_cmd_log_path",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "日志目录路径。取不到时回落到 %LOCALAPPDATA%\\VoxSub\\logs（不抛错）。",
+      "source": "ipc_server.py:907",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [],
+      "controlCommand": false
+    },
+    "import_models": {
+      "implementedBy": "_cmd_import_models",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "把别处的模型并入当前模型目录。source 不是目录时抛 FileNotFoundError（不静默成功）。",
+      "source": "ipc_server.py:917",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "destination": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "moved",
+          "skipped",
+          "destination"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "moved": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          },
+          "destination": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "FileNotFoundError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "release_notes": {
+      "implementedBy": "_cmd_release_notes",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "更新日志。默认只回最近一版；include_history=true 回全部。language 以 \"en\" 开头即用英文。",
+      "source": "ipc_server.py:937",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "language": {
+            "type": "string",
+            "default": "zh"
+          },
+          "include_history": {
+            "type": "boolean",
+            "default": false
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "notes",
+          "total"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "version",
+                "title",
+                "body"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "body": {
+                  "type": "string",
+                  "description": "条目已用 \"· \" 前缀拼成单个字符串"
+                }
+              }
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "errors": [
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "list_devices": {
+      "implementedBy": "_cmd_list_devices",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "枚举推理设备。",
+      "source": "ipc_server.py:960",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/DeviceEntry"
+            }
+          }
+        }
+      },
+      "errors": [
+        "ImportError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "hardware_profile": {
+      "implementedBy": "_cmd_hardware_profile",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "本机硬件画像（CPU/内存/GPU/NPU）。",
+      "source": "ipc_server.py:973",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/$defs/HardwareProfile"
+      },
+      "errors": [
+        "ImportError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "export_subtitles": {
+      "implementedBy": "_cmd_export_subtitles",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "导出字幕。格式由扩展名决定：.srt / .vtt / 其它按 srt。",
+      "source": "ipc_server.py:989",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\.[A-Za-z]{2,4}$"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/SubtitleLineIn"
+            },
+            "default": []
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path",
+          "count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "ValueError"
+      ],
+      "controlCommand": false
+    },
+    "ocr_recognize": {
+      "implementedBy": "_cmd_ocr_recognize",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "对一张图片做识别（可选逐行翻译）。像素只在本机内存处理。translate 接受布尔或字符串（\"false\" 亦视为关）。",
+      "source": "ipc_server.py:1027",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "translate": {
+            "type": [
+              "boolean",
+              "string"
+            ],
+            "default": true
+          },
+          "source": {
+            "type": "string",
+            "default": "auto"
+          },
+          "target": {
+            "type": "string",
+            "default": "zh"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "text",
+          "translation",
+          "lines",
+          "ocrElapsedMs",
+          "translateElapsedMs",
+          "width",
+          "height",
+          "sourcePath"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "各行原文以 \\n 连接"
+          },
+          "translation": {
+            "type": "string",
+            "description": "各行译文以 \\n 连接；未翻译时为空串"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/OcrLineOut"
+            }
+          },
+          "ocrElapsedMs": {
+            "type": "integer"
+          },
+          "translateElapsedMs": {
+            "type": "integer"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
+          "sourcePath": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "MemoryError"
+      ],
+      "controlCommand": false
+    },
+    "copy_file": {
+      "implementedBy": "_cmd_copy_file",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "复制文件（导出译后图片等）。目标已存在时覆盖。",
+      "source": "ipc_server.py:1088",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "target"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path",
+          "bytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          }
+        }
+      },
+      "errors": [
+        "FileNotFoundError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "ocr_cache_dir": {
+      "implementedBy": "_cmd_ocr_cache_dir",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "OCR 临时图片目录。解析失败时回落到 %LOCALAPPDATA%\\VoxSub\\cache\\ocr 并带 fallback:true（不抛错）。",
+      "source": "ipc_server.py:1100",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "fallback": {
+            "type": "boolean"
+          }
+        }
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "detect_legacy": {
+      "implementedBy": "_cmd_detect_legacy",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "检测旧版（Qt 版）安装与数据风险。只读，不写任何文件。",
+      "source": "ipc_server.py:1116",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "legacy",
+          "storage",
+          "overallRisk",
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "legacy": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "storage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "overallRisk": {
+            "enum": [
+              "safe",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "state": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "migration_decision": {
+      "implementedBy": "_cmd_migration_decision",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "记录用户对迁移向导的决定，避免反复打扰。返回写入后的状态对象。",
+      "source": "ipc_server.py:1132",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "enum": [
+              "dismiss",
+              "complete",
+              "reset"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "dismissed": {
+            "type": "boolean"
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "errors": [
+        "ValueError",
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "plan_migration": {
+      "implementedBy": "_cmd_plan_migration",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "规划迁移步骤（纯计算，不碰文件系统）。target_root 缺省时按旧版所在盘推 <盘>:\\VoxSub\\Data。",
+      "source": "ipc_server.py:1145",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "target_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "keys": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "targetRoot",
+          "steps",
+          "totalBytes",
+          "freeBytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "targetRoot": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "totalBytes": {
+            "type": "integer"
+          },
+          "freeBytes": {
+            "type": "integer"
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "write_model_snapshot": {
+      "implementedBy": "_cmd_write_model_snapshot",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "写入模型快照（逃生舱：数据丢了也知道曾经有什么、多大、从哪下）。",
+      "source": "ipc_server.py:1166",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "root",
+          "exists",
+          "entries"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "bytes",
+                "files"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "files": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "manifest": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "catalog_installs": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "verify_copy": {
+      "implementedBy": "_cmd_verify_copy",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "三层复制校验（文件数+字节 / manifest sha256 / 关键目录可加载由调用方做）。目标不存在时只回 structure 层失败。",
+      "source": "ipc_server.py:1173",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "target"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "layers",
+          "ok"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "layers": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "errors": [
+        "OSError"
+      ],
+      "controlCommand": false
+    },
+    "start_migration": {
+      "implementedBy": "_cmd_start_migration",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "执行迁移。复制优先、绝不删源；同卷用原子 rename。逐步发 migration 事件，收尾把配置指针指到新位置。 成功项会写入迁移台账并带回 recordId —— 那是后续清理授权的唯一依据。迁移在每一步之间检查取消请求（协作式取消），收到取消会以 migration/phase=cancelled 事件报告并停下。",
+      "source": "ipc_server.py:1179",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/MigrationStep"
+            }
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "done",
+          "failed",
+          "elapsedMs",
+          "configUpdates",
+          "ok"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "done": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "mode",
+                "source",
+                "target"
+              ],
+              "additionalProperties": true,
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "mode": {
+                  "enum": [
+                    "move_same_volume",
+                    "copy"
+                  ]
+                },
+                "source": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "recordId": {
+                  "type": "string",
+                  "description": "迁移台账记录 id。**清理命令唯一接受的入参**；台账写入失败时该字段缺失（此时清理会被拒，安全但难用）。"
+                },
+                "verify": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "elapsedMs": {
+            "type": "integer"
+          },
+          "configUpdates": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "= 没有 failed 项。**注意**：与信封的 ok 字段同名但不同义，一个是命令执行成功，一个是迁移作业全成功。"
+          }
+        }
+      },
+      "errors": [
+        "ValueError",
+        "OSError"
+      ],
+      "sideEffects": [
+        "event:migration"
+      ],
+      "controlCommand": false
+    },
+    "cleanup_migrated_source": {
+      "implementedBy": "_cmd_cleanup_migrated_source",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "删除迁移后的源目录。**必须由用户单独二次确认**。安全模型是\"授权优先，不靠目录黑名单\"：只接受台账记录标识（record_id / record_ids），由后端从台账解析路径 —— 于是\"手写一条 IPC 就能删任意目录\"在结构上不成立。旧的 path 参数一律被拒绝（code=path_not_accepted）。拒绝时**不抛异常**，而是回 deleted:false + 可读原因，好让界面把\"为什么不让删\"直接告诉用户。",
+      "source": "ipc_server.py::_cmd_cleanup_migrated_source",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "description": "单条台账记录 id（来自 start_migration 结果里的 recordId）"
+          },
+          "record_ids": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "多条记录；与 record_id 同时给时 record_ids 优先。字符串会被当成单元素数组。"
+          },
+          "confirm": {
+            "type": "boolean",
+            "default": false,
+            "description": "必须显式为 true。**前端的确认框只是体验，不是防线** —— 后端不信任它。"
+          },
+          "path": {
+            "type": "string",
+            "description": "已废弃且被显式拒绝：传了它一定回 deleted:false / code=path_not_accepted，无论路径多安全。"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "早期拒绝（传了 path，或没给任何 record_id）。",
+            "required": [
+              "deleted",
+              "code",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "deleted": {
+                "const": false
+              },
+              "code": {
+                "enum": [
+                  "path_not_accepted",
+                  "missing_record_id"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "实际执行过清理尝试。refused 非空表示部分（或全部）被拒；ok = 没有 refused。",
+            "required": [
+              "deleted",
+              "paths",
+              "cleaned",
+              "refused",
+              "ok",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "deleted": {
+                "type": "boolean",
+                "description": "是否至少删掉了一个目录"
+              },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cleaned": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "recordId",
+                    "path"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "recordId": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "refused": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "recordId",
+                    "detail"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "recordId": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "errors": [
+        "ValueError",
+        "OSError"
+      ],
+      "controlCommand": false,
+      "sideEffects": [
+        "event:migration"
+      ]
+    },
+    "render_ocr_image": {
+      "implementedBy": "_cmd_render_ocr_image",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "把译文画回原图生成「译后图片」。无输入行时只复制原图并回 lines:0（不带 width/height）。",
+      "source": "ipc_server.py:1316",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "target"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/OcrLineIn"
+            },
+            "default": []
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "lines"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "lines": {
+                "type": "integer"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "path",
+              "lines",
+              "width",
+              "height"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "lines": {
+                "type": "integer"
+              },
+              "width": {
+                "type": "integer"
+              },
+              "height": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "errors": [
+        "OSError",
+        "FileNotFoundError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "ocr_translate": {
+      "implementedBy": "_cmd_ocr_translate",
+      "handleSpecial": false,
+      "needsPipeline": true,
+      "returnsNone": false,
+      "summary": "把已识别的文本交给当前翻译配置。翻译器不可用或文本为空时回 {translation: \"\"}（不抛错）。",
+      "source": "ipc_server.py:1427",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "default": ""
+          },
+          "source": {
+            "type": "string",
+            "default": "auto"
+          },
+          "target": {
+            "type": "string",
+            "default": "zh"
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "translation"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "translation": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "OSError",
+        "ImportError"
+      ],
+      "controlCommand": false
+    },
+    "job_list": {
+      "implementedBy": "_cmd_job_list",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": true,
+      "summary": "列出后台任务。默认只回还活着的；include_finished=true 回最近的历史（有界保留 50 条）。作业执行器未启用时回空列表而不是报错。",
+      "source": "ipc_server.py::_cmd_job_list",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "include_finished": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "jobs",
+          "active"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "任务快照。**不包含** args / result 原文，避免把 api_key 之类经事件泄露出去。",
+              "required": [
+                "jobId",
+                "command",
+                "status",
+                "sequence"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelling",
+                    "cancelled"
+                  ],
+                  "description": "cancelling 不是终态；只有 succeeded / failed / cancelled 是。"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "elapsedMs": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "active": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "仍在途任务的**命令名**列表（active_job_names），不是 jobId 列表。"
+          }
+        }
+      },
+      "errors": []
+    },
+    "job_status": {
+      "implementedBy": "_cmd_job_status",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": true,
+      "summary": "按 jobId 查任务状态。**注意**：任务失败不抛异常，而是回 ok:false + code，调用方必须自己看 ok。",
+      "source": "ipc_server.py::_cmd_job_status",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "驼峰别名；两者都接受，job_id 优先。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "job"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "job": {
+                "type": "object",
+                "description": "任务快照。**不包含** args / result 原文，避免把 api_key 之类经事件泄露出去。",
+                "required": [
+                  "jobId",
+                  "command",
+                  "status",
+                  "sequence"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "jobId": {
+                    "type": "string"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "queued",
+                      "running",
+                      "succeeded",
+                      "failed",
+                      "cancelling",
+                      "cancelled"
+                    ],
+                    "description": "cancelling 不是终态；只有 succeeded / failed / cancelled 是。"
+                  },
+                  "sequence": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "elapsedMs": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "code",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "const": false
+              },
+              "code": {
+                "enum": [
+                  "unknown_job",
+                  "no_runner"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "errors": []
+    },
+    "cancel_job": {
+      "implementedBy": "_cmd_cancel_job",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": true,
+      "summary": "请求取消后台任务。返回 status=\"cancelling\" 只表示**已受理**，不等于已取消 —— 真正的 cancelled 由执行器在安全边界落定并经 job 事件送达。已结束的任务不会被改写。",
+      "source": "ipc_server.py::_cmd_cancel_job",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "驼峰别名；两者都接受，job_id 优先。"
+          }
+        }
+      },
+      "result": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "status"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "status": {
+                "const": "cancelling"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "code",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "const": false
+              },
+              "code": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "status",
+              "code",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "const": false
+              },
+              "status": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "cancelled"
+                ]
+              },
+              "code": {
+                "const": "already_finished"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "errors": [],
+      "sideEffects": [
+        "event:job"
+      ]
+    }
+  }
+}

@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -22,6 +24,15 @@ logger = get_logger("config_store")
 CONFIG_VERSION = 2
 _CONFIG_LOCK = threading.RLock()
 _URL_KEYS = frozenset({"stt_base_url", "translate_base_url", "base_url", "sentry_dsn"})
+
+
+class ConfigVersionTooNew(RuntimeError):
+    """磁盘上的配置版本比当前程序支持的更新。
+
+    这种情况下**必须拒绝**读取改写：旧程序按自己的 schema 归一化再写回，
+    会把新版本写入的字段悄悄抹掉，用户看到的是"设置莫名其妙丢了"。
+    宁可让功能暂时不可用并给出明确提示，也不做破坏性降级。
+    """
 
 
 def _normalize_scalar(default: Any, value: Any) -> Any:
@@ -202,12 +213,28 @@ APP_CONFIG_SCHEMA = ConfigSchema(
 )
 
 
-def _migrate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """Apply ordered migrations to a copy of persisted configuration data."""
-    migrated = dict(raw)
+def _config_version_of(raw: Mapping[str, Any]) -> int:
+    """从原始配置里读出 ``config_version``。缺字段/类型不对一律当 0（最老的版本）。"""
     version = raw.get("config_version", 0)
     if not isinstance(version, int) or isinstance(version, bool):
-        version = 0
+        return 0
+    return version
+
+
+def _migrate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply ordered migrations to a copy of persisted configuration data.
+
+    **只迁移已知的旧版本。**遇到比当前程序更新的版本不做任何改写，
+    而是抛 :class:`ConfigVersionTooNew` —— 静默降级比报错危险得多。
+    """
+    migrated = dict(raw)
+    version = _config_version_of(raw)
+    if version > CONFIG_VERSION:
+        raise ConfigVersionTooNew(
+            f"配置文件版本为 {version}，当前程序只支持到 {CONFIG_VERSION}。"
+            "已拒绝读取与保存，避免把设置降级写坏。"
+            "请升级到较新版本的程序，或先备份config.json后手动处理。"
+        )
     if version < 1:
         if "translate_api_key" not in migrated and migrated.get("api_key"):
             migrated["translate_api_key"] = migrated["api_key"]
@@ -226,27 +253,83 @@ class ConfigStore:
 
     def __init__(self, path: Path | str | None = None) -> None:
         self.path = Path(path) if path is not None else _default_config_path()
+        # 只读锁：磁盘上的配置比程序新时置上，之后所有写入都拒绝。
+        self._locked_reason = ""
+        # 磁盘上存在、但当前 schema 不认识的字段。保存时原样带回，
+        # 不执行、也不抹掉（工作单 §3.5）。
+        self._unknown_fields: dict[str, Any] = {}
+        self._corrupt_backed_up = False
 
     def load(self) -> dict[str, Any]:
         """Read known keys and merge defaults; never overwrite a bad file."""
         with _CONFIG_LOCK:
             return self._load_unlocked()
 
+    def load_raw(self) -> dict[str, Any]:
+        """读取**未经归一化**的原始配置（诊断用）。
+
+        与 :meth:`load` 的区别：这里是磁盘上的原样内容，包含当前版本不认识的
+        字段。给"配置到底怎么了"这类排查用，不参与业务逻辑。
+        """
+        with _CONFIG_LOCK:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return {}
+            return raw if isinstance(raw, dict) else {}
+
+    @property
+    def locked_reason(self) -> str:
+        """非空表示配置处于只读保护状态（版本比程序新）。"""
+        return self._locked_reason
+
     def _load_unlocked(self) -> dict[str, Any]:
         data: dict[str, Any] = dict(self.DEFAULTS)
+        self._locked_reason = ""
+        self._unknown_fields = {}
         if self.path.exists():
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(raw, dict):
+                    known = set(self.DEFAULTS)
+                    self._unknown_fields = {
+                        key: value for key, value in raw.items()
+                        if key not in known and key != "config_version"
+                    }
                     migrated = _migrate_config(raw)
                     data = APP_CONFIG_SCHEMA.normalize_mapping(migrated)
                     invalid = [key for key in self.DEFAULTS
                                if key in migrated and data[key] != migrated[key]]
                     if invalid:
                         logger.warning("配置值无效并已安全回落: keys=%s", ",".join(invalid))
+            except ConfigVersionTooNew as exc:
+                # 不降级、不覆盖：保持只读，把原因原样告诉上层。
+                self._locked_reason = str(exc)
+                logger.error("配置版本过新，已转入只读保护: %s", exc)
+                return dict(self.DEFAULTS)
             except (json.JSONDecodeError, OSError) as exc:
                 logger.debug("配置读取失败(%s), 回落默认值", exc)
+                self._backup_corrupt_config()
         return data
+
+    def _backup_corrupt_config(self) -> None:
+        """读不动的配置先留一份再回落。
+
+        不备份的后果：下次保存会把它整个覆盖掉，用户的设置就永久没了，
+        而且没人知道曾经有过内容。
+        """
+        if self._corrupt_backed_up:
+            return
+        self._corrupt_backed_up = True
+        try:
+            if not self.path.exists():
+                return
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            backup = self.path.with_name(f"{self.path.name}.corrupt-{stamp}")
+            shutil.copy2(self.path, backup)
+            logger.warning("配置文件无法解析，已备份到 %s 并回落默认值", backup)
+        except OSError as error:  # pragma: no cover - 依赖具体权限环境
+            logger.debug("配置文件备份失败: %s", error)
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.load().get(key, default)
@@ -272,6 +355,11 @@ class ConfigStore:
             self._save_unlocked(data)
 
     def _save_unlocked(self, data: dict[str, Any]) -> None:
+        # 只读保护：磁盘上的配置比程序新时，任何写入都拒绝。
+        # 先前这里会照写不误 —— 结果是把新版本的字段悄悄抹掉（降级写坏）。
+        if self._locked_reason:
+            raise ConfigVersionTooNew(self._locked_reason)
+
         # 洗掉不成对的代理字符：这类码元无法编码成 UTF-8，会让整次写入抛
         # UnicodeEncodeError（用户看到 "set_config 失败: ... surrogates not allowed"，
         # 设置没保存）。来源通常是 Windows 窗口标题 —— 见 file_io.sanitize_text。
@@ -280,12 +368,16 @@ class ConfigStore:
         if clean != normalized:
             # 真出现才记一条：说明还有别的入口在往里塞非法码元，值得知道。
             logger.warning("配置含不成对的代理字符，已替换为 U+FFFD（该码元无法写入 UTF-8）")
-            normalized = clean
+
+        # 未知字段原样带回：它们可能是更新的版本写的，当前版本不认识，
+        # 但也**不该**因为一次保存就被抹掉（工作单 §3.5）。
+        payload = sanitize_for_json({**self._unknown_fields, **clean})
         write_text_atomically(
             self.path,
-            json.dumps(normalized, ensure_ascii=False, indent=2),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
 
-__all__ = ["APP_CONFIG_SCHEMA", "CONFIG_VERSION", "ConfigSchema", "ConfigStore"]
+__all__ = ["APP_CONFIG_SCHEMA", "CONFIG_VERSION", "ConfigSchema", "ConfigStore",
+           "ConfigVersionTooNew"]

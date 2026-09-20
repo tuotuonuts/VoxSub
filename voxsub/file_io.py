@@ -4,8 +4,34 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+#: ``os.replace`` 的有界重试次数与间隔。
+#:
+#: 为什么需要重试：Windows 上同步盘（本项目仓库就在 OneDrive 下）和杀毒软件
+#: 会短暂持有刚写完的文件句柄，``os.replace`` 于是零星抛
+#: ``PermissionError: [WinError 5] 拒绝访问``。全量测试里表现为"跟代码无关的
+#: 随机失败"—— 这类失败最消耗排查时间，所以在这里统一兜住：
+#: 每次 50ms、最多 4 次，累计约 0.2 秒，远小于重跑一次测试的成本。
+_REPLACE_ATTEMPTS = 5
+_REPLACE_DELAY_SECONDS = 0.05
+
+
+def _replace_with_retry(temporary: str, destination: Path) -> None:
+    """把临时文件原子地发布到目标位置，容忍 Windows 上的瞬时占用。"""
+    last_error: OSError | None = None
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, destination)
+            return
+        except PermissionError as error:  # WinError 5 / 32：被占用
+            last_error = error
+            if attempt + 1 < _REPLACE_ATTEMPTS:
+                time.sleep(_REPLACE_DELAY_SECONDS)
+    assert last_error is not None
+    raise last_error
 
 
 def sanitize_text(text: str) -> str:
@@ -59,7 +85,7 @@ def write_text_atomically(path: Path | str, text: str, *, encoding: str = "utf-8
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_name, destination)
+        _replace_with_retry(temporary_name, destination)
         return destination
     finally:
         if temporary_name:
@@ -84,7 +110,7 @@ def copy_file_atomically(source: Path | str, destination: Path | str) -> Path:
             shutil.copyfileobj(source_handle, destination_handle)
             destination_handle.flush()
             os.fsync(destination_handle.fileno())
-        os.replace(temporary_name, destination_path)
+        _replace_with_retry(temporary_name, destination_path)
         return destination_path
     finally:
         if temporary_name:

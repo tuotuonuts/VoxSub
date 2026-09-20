@@ -1,14 +1,20 @@
 """Accelerator ordering and llama.cpp backend discovery tests."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from voxsub.hardware import (
     GIB,
     HardwareProfile,
     _is_integrated_gpu,
     _is_virtual_display,
+    _pnputil_npu_devices,
     _windows_ram_gb,
+    decode_console_output,
     intel_llama_npu_driver_outdated,
     llama_accelerators,
     select_llama_runtime,
@@ -233,3 +239,56 @@ def test_windows_ram_fallback_rejects_missing_or_invalid_values(monkeypatch) -> 
         monkeypatch.setattr(
             "voxsub.hardware._run_powershell", lambda _script, value=value: value)
         assert _windows_ram_gb() is None
+
+
+# ------------------------------------------------------------------ 控制台解码
+#
+# 回归背景：中文 Windows 上 pnputil / powershell / nvidia-smi 的输出是
+# CP936，而 subprocess 配 text=True 时按 UTF-8 解码 —— 解码异常发生在读取
+# 线程里，result.stdout 直接变成空串。表现是"机器上明明有 NPU，探测却读不到"，
+# 且主流程看不到任何异常。这几条测试把这个坑钉死。
+
+def test_decode_console_output_handles_gbk_bytes() -> None:
+    raw = "设备描述: Intel(R) AI Boost".encode("gbk")
+    assert "AI Boost" in decode_console_output(raw)
+
+
+def test_decode_console_output_prefers_utf8() -> None:
+    assert decode_console_output("设备描述".encode("utf-8")) == "设备描述"
+
+
+def test_decode_console_output_never_raises() -> None:
+    """最坏情况也要给可读文本，而不是抛异常或空串。"""
+    assert decode_console_output(b"\xb9\xff\xff\xfe") != ""
+
+
+def test_decode_console_output_accepts_none_and_str() -> None:
+    assert decode_console_output(None) == ""
+    assert decode_console_output("  x  ") == "x"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="pnputil 只在 Windows 上存在")
+def test_pnputil_npu_devices_survives_non_utf8_output(monkeypatch) -> None:
+    """有 NPU 就必须读得出来 —— 不能因为编码问题静默退化成空列表。"""
+    payload = (
+        "实例 ID: PCI\\VEN_8086&DEV_7D1D\r\n"
+        "设备描述: Intel(R) AI Boost\r\n"
+    ).encode("gbk")
+    monkeypatch.setattr(
+        "voxsub.hardware.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=payload,
+                                                stderr=b""))
+
+    names = _pnputil_npu_devices()
+    assert names, "stdout 又被解码问题弄空了"
+    assert any("AI Boost" in item for item in names)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="pnputil 只在 Windows 上存在")
+def test_pnputil_returns_empty_on_process_failure(monkeypatch) -> None:
+    """工具不存在/超时都要安静地返回空，不能把探测流程带崩。"""
+    def boom(*args, **kwargs):
+        raise OSError("not found")
+
+    monkeypatch.setattr("voxsub.hardware.subprocess.run", boom)
+    assert _pnputil_npu_devices() == []

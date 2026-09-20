@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voxsub.local/contracts/error-codes.json",
+  "title": "VoxSub IPC 错误码契约",
+  "description": "协议里有**两套**错误标识，职责不同，别混用：① 应答的 error 字符串（人读）② 应答/事件的 code 字段（机读）。本文件是 code 的权威清单，并记录 error 文本的两种形态。",
+  "protocolVersion": "2.0.0",
+
+  "wireFormat": {
+    "error": {
+      "field": "error",
+      "shape": "\"<异常类名>: <消息>\" 或 中文可读短语",
+      "note": "两种来源。① 命令执行抛异常（含作业终态）→ \"ValueError: 未知模型 id：xxx\"；② 读循环在排队前拒绝 → \"未知命令: xxx\" 这类短语，没有类名前缀。所以**不要**用正则去解析类名，要看 code 字段。",
+      "rule": "error 必填且非空；它是给用户看的，界面直接显示。"
+    },
+    "code": {
+      "field": "code",
+      "shape": "snake_case 保留码 或 异常类名",
+      "note": "读循环的拒绝路径与作业终态会带 code；命令层直接抛异常时（同步、非作业路径）**不带** code。前端必须容忍 code 缺失，并容忍未知 code。",
+      "reservedStyle": "^[a-z][a-z0-9_]*$",
+      "exceptionStyle": "^[A-Za-z_][A-Za-z0-9_]*Error$|^[A-Za-z_][A-Za-z0-9_]*Exception$"
+    }
+  },
+
+  "wireCodes": {
+    "description": "code 字段的完整取值来源。每条都标注发生它的位置。",
+    "readLoopRejects": {
+      "source": "ipc_loop.IpcLoop._reject / handle_line / _submit",
+      "codes": [
+        { "code": "empty_message", "when": "整行为 None（不是空串 —— 空串走\"静默忽略\"）" },
+        { "code": "message_too_large", "when": "行长超过 MAX_LINE_CHARS（32 MiB）；在 json.loads **之前**判定" },
+        { "code": "not_an_object", "when": "JSON 合法但顶层不是对象（如 [1,2] 或 \"x\"）" },
+        { "code": "missing_id", "when": "顶层没有 id（或为 null）。协议要求每条请求带 id 才能配对" },
+        { "code": "missing_command", "when": "command 缺失或为空白串" },
+        { "code": "bad_args", "when": "args 存在但不是对象（数组/字符串/数字）" },
+        { "code": "unknown_command", "when": "has_command() 判定命令不存在 —— **在排队之前**就拒，不会变成一条注定失败的作业" },
+        { "code": "queue_full", "when": "待执行队列已满（job_runner.MAX_PENDING = 16）" }
+      ]
+    },
+    "jobTerminal": {
+      "source": "ipc_loop.IpcLoop._complete",
+      "codes": [
+        { "code": "cancelled", "when": "任务被取消并已到达安全边界。**这是明确终态，不是失败** —— 界面不该弹红色错误框。" },
+        { "code": "failed", "when": "任务失败但没有具体异常类名时的兜底值" },
+        { "code": "<异常类名>", "when": "任务抛异常，code = type(error).__name__，例如 ValueError / FileNotFoundError / OSError" }
+      ]
+    },
+    "commandResults": {
+      "description": "以下 code 出现在命令**返回值**里（不是信封的 code 字段）—— 即命令自己用 ok:false 表达\"业务上没做成\"，而不是抛异常。这类命令调用方必须自己检查返回值里的 ok。",
+      "source": "ipc_server.BackendService._cmd_job_status / _cmd_cancel_job / _cmd_cleanup_migrated_source",
+      "codes": [
+        { "code": "unknown_job", "when": "jobId 不存在" },
+        { "code": "no_runner", "when": "作业执行器未启用（_job_runner 为 None）" },
+        { "code": "already_finished", "when": "任务已进入终态，取消请求不改写它" },
+        { "code": "path_not_accepted", "when": "cleanup_migrated_source 收到已废弃的 path 参数" },
+        { "code": "missing_record_id", "when": "cleanup_migrated_source 没有拿到任何 record_id" }
+      ]
+    }
+  },
+
+  "universal": {
+    "description": "任何命令都可能抛出并变成 error 的兜底异常类型。它们是动态分派的代价：前后端契约漂移时不会变成编译错误，而是在运行时表现为这些类型。这正是本契约要治的问题。",
+    "codes": [
+      {
+        "code": "ValueError",
+        "when": "未知命令（ipc_server.handle 的 raise ValueError(f\"未知命令: {command}\")）；各命令显式校验失败（未知迁移决定、空迁移计划、受保护目录…）"
+      },
+      {
+        "code": "OSError",
+        "when": "文件读写失败。含 PermissionError / FileNotFoundError / IsADirectoryError / PIL 的 UnidentifiedImageError 等子类；OneDrive 同步盘上卸载/删除偶发拒绝访问（os error 5）"
+      },
+      {
+        "code": "AttributeError",
+        "when": "契约漂移：调用了不存在的属性。历史上真实发生过 —— pipeline.translator[1]、AudioDeviceInfo.device_id 都是这样炸的"
+      },
+      {
+        "code": "TypeError",
+        "when": "契约漂移：参数个数/类型不符。历史上真实发生过 —— 把 @property last_recording_path 当方法调用"
+      },
+      {
+        "code": "ImportError",
+        "when": "运行环境缺模块（含 ModuleNotFoundError）。voxsub.ui.* 在无 Qt 打包形态下会中招"
+      },
+      {
+        "code": "RuntimeError",
+        "when": "pipeline 状态机拒绝该操作；或作业执行器未注入 execute"
+      },
+      {
+        "code": "QueueFull",
+        "when": "**不会**出现在 error 里 —— 读循环把它转成 code=queue_full 的拒绝，见 wireCodes"
+      },
+      {
+        "code": "MemoryError",
+        "when": "超大图 OCR / 一次性读入大文件"
+      },
+      {
+        "code": "TimeoutError",
+        "when": "子进程或外部工具调用超时"
+      }
+    ]
+  },
+
+  "commandSpecific": {
+    "unknown_model_id": {
+      "code": "KeyError",
+      "detail": "_spec() 里 get_model() 返回 None 时抛 KeyError(f\"未知模型 id：{model_id}\")",
+      "affects": ["install_model", "uninstall_model", "model_dir"]
+    },
+    "missing_source_directory": {
+      "code": "FileNotFoundError",
+      "detail": "import_models 检到 source 不是目录"
+    },
+    "missing_source_file": {
+      "code": "FileNotFoundError",
+      "detail": "copy_file 检到 source 不是文件"
+    },
+    "unknown_migration_decision": {
+      "code": "ValueError",
+      "detail": "migration_decision 只接受 dismiss / complete / reset"
+    },
+    "empty_migration_plan": {
+      "code": "ValueError",
+      "detail": "start_migration 收到空 steps"
+    },
+    "unreadable_image": {
+      "code": "OSError",
+      "detail": "PIL 对非法/损坏图片抛 UnidentifiedImageError（OSError 子类）",
+      "affects": ["ocr_recognize", "render_ocr_image"]
+    },
+    "cleanup_refused": {
+      "code": "（不是异常）",
+      "detail": "migration_ledger.CleanupRefused 被 catch 住，转成 result.refused[] 里的一条 detail —— 清理命令**故意不抛异常**，这样界面能把\"为什么不让删\"直接显示出来"
+    }
+  },
+
+  "notErrors": {
+    "description": "以下情形**不会**产生 error 字段，不要把它们写成错误分支。",
+    "items": [
+      "入站 JSON 无法解析：只发一条 log 事件（level=WARNING），命令被丢弃，无应答 —— 前端那条 id 会一直等到 30s 超时。这是既有行为，已知的体验缺口。",
+      "入站是空行：静默忽略，连 log 都不发。",
+      "job 事件的中间态（queued/running/cancelling）：不是错误，也不该显示成错误。",
+      "OCR 单行翻译失败：只把该行 translation 置空并写 stderr，整张图仍算成功。",
+      "撤销：cancelling 状态本身不是失败；只有 cancelled / failed 才是终态。"
+    ]
+  }
+}
