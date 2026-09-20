@@ -6,6 +6,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 /.pytest-*/
+# 唯一的测试临时目录：由 scripts/run_tests.py 管理。
+# 不要再手工传 --basetemp 到仓库根 —— 那正是 240+ 个 .pytest-* 的来源。
+/.pytest-run/
 
 # 本地硬件探针 / 冒烟测试临时目录
 /.npu-probe/
@@ -22,6 +25,9 @@ dist/
 
 # 修改前备份（不提交备份内容）
 .backups/
+
+# 前端临时产物：bundle 编译校验会往这里写，属于可再生成的中间物
+/frontend/tmp/
 
 # 运行时数据（模型/下载缓存不入库）
 models/
