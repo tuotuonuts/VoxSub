@@ -62,7 +62,8 @@
         "running",
         "paused",
         "mode",
-        "state"
+        "state",
+        "configGeneration"
       ],
       "additionalProperties": false,
       "properties": {
@@ -77,6 +78,11 @@
         },
         "state": {
           "type": "string"
+        },
+        "configGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "影响结果的配置代次。任何会改变译文/识别结果的配置变更（语言对、翻译档位、ASR 模型、模型目录、调优档位）都会 +1；同值重发不加。在途任务用它判断自己的快照是否已过期。"
         }
       }
     },
@@ -287,7 +293,8 @@
           "running",
           "paused",
           "mode",
-          "state"
+          "state",
+          "configGeneration"
         ],
         "additionalProperties": false,
         "properties": {
@@ -305,6 +312,11 @@
           },
           "state": {
             "type": "string"
+          },
+          "configGeneration": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "影响结果的配置代次。任何会改变译文/识别结果的配置变更（语言对、翻译档位、ASR 模型、模型目录、调优档位）都会 +1；同值重发不加。在途任务用它判断自己的快照是否已过期。"
           }
         },
         "description": "字段集合必须与 protocol.json#/$defs/StatePayload 完全相同 —— 它就是 _event(\"state\", **self._state_payload(pipeline))，测试会钉住这一点。"

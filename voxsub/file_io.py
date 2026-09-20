@@ -19,8 +19,19 @@ _REPLACE_ATTEMPTS = 5
 _REPLACE_DELAY_SECONDS = 0.05
 
 
-def _replace_with_retry(temporary: str, destination: Path) -> None:
-    """把临时文件原子地发布到目标位置，容忍 Windows 上的瞬时占用。"""
+def _replace_with_retry(temporary: str | Path, destination: Path) -> None:
+    """把临时文件/目录原子地发布到目标位置，容忍 Windows 上的瞬时占用。
+
+    为什么需要重试：Windows 上同步盘（本项目仓库就在 OneDrive 下）与杀毒软件会
+    短暂持有刚写完的文件句柄，``os.replace`` 于是零星抛
+    ``PermissionError: [WinError 5] 拒绝访问``。全量测试里表现为"跟代码无关的随机
+    失败"—— 这类失败最消耗排查时间，所以在这里统一兜住：
+    每次 50ms、最多 4 次，累计约 0.2 秒，远小于重跑一次测试的成本。
+
+    **公共规则只允许一处实现**：任何需要原子发布的地方都走这里，不要各自写
+    ``os.replace`` 然后各自忘记重试（``llama_runtime`` 就漏过一次，实测在全量
+    跑里偶发失败）。
+    """
     last_error: OSError | None = None
     for attempt in range(_REPLACE_ATTEMPTS):
         try:
@@ -32,6 +43,10 @@ def _replace_with_retry(temporary: str, destination: Path) -> None:
                 time.sleep(_REPLACE_DELAY_SECONDS)
     assert last_error is not None
     raise last_error
+
+
+#: 公开别名：跨模块复用同一个实现（不要各写一套）。
+replace_with_retry = _replace_with_retry
 
 
 def sanitize_text(text: str) -> str:

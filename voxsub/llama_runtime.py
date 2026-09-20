@@ -19,6 +19,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from voxsub.file_io import replace_with_retry
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("llama_runtime")
@@ -166,7 +167,7 @@ def _download_verified(archive: Path) -> None:
                     "OpenVINO 运行时 SHA256 校验失败 "
                     f"(expected={OPENVINO_SHA256} actual={actual} size={size} prefix={prefix})"
                 )
-            os.replace(partial, archive)
+            replace_with_retry(partial, archive)
             return
         except Exception as exc:
             last_failure = str(exc)
@@ -225,8 +226,10 @@ def _extract_verified_runtime(archive: Path, staging: Path, pending: Path) -> No
 def _install_runtime(destination: Path, pending: Path) -> None:
     backup = destination.parent / (".openvino.backup-" + uuid.uuid4().hex)
     if destination.exists():
-        os.replace(destination, backup)
-    os.replace(pending, destination)
+        # 目录替换同样会撞上瞬时占用（实测：全量跑里这一步偶发 WinError 5，
+        # 表现为"跟代码无关的随机失败"）。走共享的重试实现，不要自己写 os.replace。
+        replace_with_retry(destination, backup)
+    replace_with_retry(pending, destination)
     if backup.exists():
         shutil.rmtree(backup, ignore_errors=True)
 

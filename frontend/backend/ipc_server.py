@@ -305,12 +305,19 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
     @staticmethod
     def _state_payload(pipeline: Any) -> dict[str, Any]:
-        """当前会话状态。命令返回值与 state 事件共用，避免两处口径不一致。"""
+        """当前会话状态。命令返回值与 state 事件共用，避免两处口径不一致。
+
+        ``configGeneration`` 是"影响结果的配置代次"（语言对/翻译档位/ASR 模型/
+        模型目录/调优档位），由 pipeline 拥有并只读暴露。放在 state 里的用途是
+        让界面能判断：**在途任务用的是哪一代配置** —— 于是"运行中改了语言，
+        旧任务还在用旧快照"这件事是可观测的，而不是只有日志里才有。
+        """
         return {
             "running": bool(pipeline.is_running()),
             "paused": bool(pipeline.is_paused()),
             "mode": str(pipeline.mode),
             "state": str(getattr(pipeline.state, "value", pipeline.state)),
+            "configGeneration": int(getattr(pipeline, "config_generation", 0) or 0),
         }
 
     def _install_log_sink(self) -> None:

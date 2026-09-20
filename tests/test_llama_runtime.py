@@ -91,6 +91,18 @@ def test_bootstrap_downloads_validated_archive_atomically(tmp_path: Path, monkey
     assert not list(target.parent.glob(".openvino.pending-*"))
 
 
+def test_runtime_install_uses_the_shared_atomic_publish() -> None:
+    """运行时安装必须复用共享的重试实现，不能自己写 os.replace。
+
+    实测背景：这一步在目录替换时撞上过瞬时占用，全量跑里偶发 WinError 5，
+    表现成"跟代码无关的随机失败"。用 `is` 断言**同一个函数对象**，防止有人
+    在本地复制一份"长得像"的实现 —— 那样两边的重试参数会慢慢跑偏。
+    """
+    from voxsub import file_io
+
+    assert runtime.replace_with_retry is file_io.replace_with_retry
+
+
 @pytest.mark.skipif(os.name != "nt", reason="OpenVINO bootstrap is Windows-only")
 def test_bootstrap_failure_is_reported_without_raising(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))

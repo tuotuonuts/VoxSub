@@ -211,6 +211,42 @@ def test_production_queues_have_explicit_capacity() -> None:
     assert not violations, "Unbounded production queues:\n" + "\n".join(violations)
 
 
+# ------------------------------------------------------------------ 原子发布
+
+#: 只允许这一个文件调用 ``os.replace``：原子发布的唯一实现。
+_ATOMIC_PUBLISH_OWNER = "voxsub/file_io.py"
+
+
+def test_atomic_publish_goes_through_the_shared_helper() -> None:
+    """禁止在 ``file_io`` 之外手写 ``os.replace``——**零豁免**。
+
+    原因：Windows 上同步盘（本仓库就在 OneDrive 下）与杀毒软件会短暂持有刚写完的
+    文件句柄，裸 ``os.replace`` 会零星抛 ``[WinError 5] 拒绝访问``。全量测试里表现
+    为"跟代码无关的随机失败"，是**最消耗排查时间**的一类问题。
+
+    这个坑踩过两次（``file_io`` 自己一次、``llama_runtime`` 一次），所以不再靠
+    "记得加重试"：要原子发布就 ``from voxsub.file_io import replace_with_retry``。
+    """
+    offenders: list[str] = []
+    for path, label in _iter_project_python():
+        if label == _ATOMIC_PUBLISH_OWNER:
+            continue  # 实现本身
+        for node in ast.walk(_parse(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "replace"):
+                continue
+            if isinstance(func.value, ast.Name) and func.value.id == "os":
+                offenders.append(f"{label}:{node.lineno}")
+
+    assert not offenders, (
+        "这些地方绕过了共享的原子发布实现（Windows 上会偶发 WinError 5，"
+        "表现为随机失败）。请改用 voxsub.file_io.replace_with_retry：\n"
+        + "\n".join(offenders)
+    )
+
+
 # ------------------------------------------------------------------ 测试卫生
 
 def test_single_test_entry_point_and_isolated_basetemp() -> None:

@@ -916,7 +916,8 @@ def test_拒绝自相矛盾的应答(registry):
 
 
 def test_接受合法应答(registry):
-    registry.validate_response({"id": 7, "ok": True, "data": {"running": False, "paused": False, "mode": "a", "state": "IDLE"}})
+    registry.validate_response({"id": 7, "ok": True, "data": {"running": False, "paused": False, "mode": "a", "state": "IDLE",
+                                       "configGeneration": 0}})
     # 命令层抛异常：error 是 "<类名>: <消息>"，可以没有 code
     registry.validate_response({"id": 8, "ok": False, "error": "ValueError: 未知命令: nope"})
     # 读循环拒绝：error 是中文短语，带 code
@@ -973,7 +974,8 @@ def test_拒绝缺字段或类型错的事件(registry):
 
 
 def test_接受合法事件(registry):
-    registry.validate_event({"event": "state", "running": True, "paused": False, "mode": "a", "state": "RUNNING"})
+    registry.validate_event({"event": "state", "running": True, "paused": False,
+                             "mode": "a", "state": "RUNNING", "configGeneration": 3})
     registry.validate_event({"event": "utterance", "source": "你好", "translation": "hello"})
     registry.validate_event({"event": "log", "ts": "2026-09-21T05:00:00", "level": "ERROR", "message": "x"})
     registry.validate_event({"event": "migration", "phase": "start", "key": "models", "index": 0, "total": 1, "source": "C:\\a", "target": "D:\\b"})
@@ -988,7 +990,8 @@ def test_接受合法事件(registry):
         "event": "ready", "version": "0.9.0-beta", "frozen": False,
         "protocolVersion": 1, "backendGeneration": "3",
         "readiness": {"ready": True, "activeJobs": ["start_migration"]},
-        "session": {"running": True, "paused": False, "mode": "a", "state": "RUNNING"},
+        "session": {"running": True, "paused": False, "mode": "a", "state": "RUNNING",
+                    "configGeneration": 1},
     })
     # 握手：没有 pipeline 时 session 为 null
     registry.validate_event({
