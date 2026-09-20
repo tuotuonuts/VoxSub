@@ -214,6 +214,8 @@ cp frontend/backend/ipc_server.py .backups/<改动名>-<时间戳>/
 | 文档 | 内容 |
 |---|---|
 | `docs/ARCHITECTURE.md` | 分层、模块职责、状态所有权、后台任务规则、资源所有权规则、契约与配置规则 |
+| `docs/MODULE_CATALOG.md` | **公共组件/服务目录**：每个公共组件在哪、谁管状态、怎么复用、不要做什么 |
+| `docs/DECISIONS.md` | **重要技术决策及理由**（含"我们放弃了什么"）|
 | `docs/HANDOVER.md`（本文件） | 上手路径、加功能流程、测试分层、门禁清单、构建发布、回滚、常见坑 |
 | `docs/MAINTAINABILITY_REPORT.md` | 本轮改了什么、14 项缺陷核验表、验证证据、NOT_RUN、备份回滚、剩余风险 |
 | `contracts/README.md` | 怎么加一条命令/事件、协议版本怎么递增、契约测试红了怎么办、待修清单 |
