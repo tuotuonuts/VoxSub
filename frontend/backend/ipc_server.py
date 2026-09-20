@@ -558,6 +558,14 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
     def close(self) -> None:
         with self._lock:
             pipeline, self._pipeline = self._pipeline, None
+            ocr_translator, self._ocr_translator = getattr(self, "_ocr_translator", None), None
+
+        # OCR 自建的翻译器**必须自己收**（工作单 §3.4：一个资源只有一个负责人）。
+        # 以前的写法是 `if pipeline is None: return` —— 而 OCR 是独立工作区，
+        # 用户可以不点"开始"就直接框选屏幕，这时 pipeline 从未创建，于是那个
+        # 自建翻译器（每个可能是一个 llama-server 子进程）永远不会被关。
+        self._close_quietly(ocr_translator, label="OCR 翻译器")
+
         if pipeline is None:
             return
         for action in ("stop", "close"):
@@ -569,6 +577,20 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             except Exception:  # noqa: BLE001 - 退出路径尽力而为
                 _event("log", level="error", ts=_now_iso(),
                        message=traceback.format_exc())
+
+    @staticmethod
+    def _close_quietly(component: Any, *, label: str) -> None:
+        """尽力回收一个组件；失败只记日志（退出路径不该因为一个组件抛错而中断）。"""
+        if component is None:
+            return
+        close = getattr(component, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:  # noqa: BLE001
+            _event("log", level="error", ts=_now_iso(),
+                   message=f"{label}回收失败\n{traceback.format_exc()}")
 
 
 # ---- 标记哪些命令不需要 pipeline --------------------------------------------

@@ -126,8 +126,26 @@ class OcrHandlers:
         import time  # noqa: PLC0415
 
         started = time.monotonic()
+        # 引擎必须在本次请求结束时回收（工作单 §3.4：OCR 独立运行时必须独立回收）。
+        #
+        # 此前这里 `engine = RapidOcrEngine()` 之后就再没人管它 —— 每做一次识别就
+        # 留下一组加载好的 ONNX 会话（旧版 RapidOcrEngine 连 close() 都没有，
+        # 于是泄漏是静默的）。`try/finally` 是**最小正确修复**：不改复用语义
+        # （仍然一次请求一个引擎），只是保证每次都用完放掉。
+        #
+        # 刻意不做实例复用：工作单说"第一阶段优先正确性，不为减少少量重复加载
+        # 引入复杂资源池"。要复用要单独一轮，并且得先证明复用不会让 GPU 回退状态
+        # 跨请求串味。
         engine = RapidOcrEngine()
-        result = engine.recognize(frame)
+        try:
+            result = engine.recognize(frame)
+        finally:
+            release = getattr(engine, "close", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception as error:  # noqa: BLE001 - 回收失败不该丢掉识别结果
+                    print(f"[ocr] 引擎回收失败: {error}", file=sys.stderr)
         ocr_ms = int((time.monotonic() - started) * 1000)
 
         raw_lines = list(getattr(result, "lines", ()) or ())

@@ -603,3 +603,117 @@ class TestProtocolChannel:
         # 关键：后面的命令仍然得到应答（说明没崩）
         second = next(item for item in lines if item.get("id") == 2)
         assert second["ok"] is True
+
+
+class TestOcrResourceOwnership:
+    """OCR 自建资源的回收（工作单 §3.4：独立运行时必须独立回收、一个资源一个负责人）。
+
+    回归背景（两个真缺陷）：
+      1. `handlers/ocr.py` 每次 `ocr_recognize` 都新建 `RapidOcrEngine()` 之后
+         从不管它 —— 每做一次识别泄漏一组加载好的 ONNX 会话。旧版引擎连
+         `close()` 都没有，所以泄漏是静默的。
+      2. `BackendService.close()` 以前是 `if pipeline is None: return`，而 OCR 是
+         **独立工作区**（用户不点"开始"也能直接框选屏幕）—— 那种情况下 pipeline
+         从未创建，OCR 自己按配置建的翻译器（可能是个 llama-server 子进程）
+         永远不会被关。
+    """
+
+    def test_engine_is_released_even_when_recognition_fails(self, service,
+                                                            isolated_config, tmp_path,
+                                                            monkeypatch):
+        """识别失败也必须回收引擎 —— try/finally 的意义就在这里。"""
+        from PIL import Image
+
+        from voxsub import ocr as ocr_module
+
+        image_path = tmp_path / "shot.png"
+        Image.new("RGB", (8, 8), "white").save(image_path)
+
+        released: list[str] = []
+
+        class _ExplodingEngine:
+            def recognize(self, _frame):  # noqa: ANN001
+                raise RuntimeError("识别炸了")
+
+            def close(self) -> None:
+                released.append("closed")
+
+        monkeypatch.setattr(ocr_module, "RapidOcrEngine", _ExplodingEngine)
+
+        with pytest.raises(RuntimeError, match="识别炸了"):
+            service._cmd_ocr_recognize({"path": str(image_path), "translate": False})
+
+        assert released == ["closed"], "识别失败时引擎没被回收"
+
+    def test_engine_is_released_after_a_successful_recognition(self, service,
+                                                               isolated_config, tmp_path,
+                                                               monkeypatch):
+        from PIL import Image
+
+        from voxsub import ocr as ocr_module
+
+        image_path = tmp_path / "shot.png"
+        Image.new("RGB", (8, 8), "white").save(image_path)
+
+        released: list[str] = []
+
+        class _Engine:
+            def recognize(self, _frame):  # noqa: ANN001
+                from types import SimpleNamespace
+
+                return SimpleNamespace(lines=[])
+
+            def close(self) -> None:
+                released.append("closed")
+
+        monkeypatch.setattr(ocr_module, "RapidOcrEngine", _Engine)
+
+        result = service._cmd_ocr_recognize(
+            {"path": str(image_path), "translate": False})
+
+        assert result["lines"] == []
+        assert released == ["closed"], "识别成功后引擎没被回收"
+
+    def test_close_releases_ocr_owned_translator_without_a_pipeline(self, service):
+        """OCR 自建的翻译器必须由 BackendService 自己收，不能依赖 pipeline 是否存在。"""
+        closed: list[str] = []
+
+        class _Translator:
+            def translate(self, text, _src, _dst, **_kw):  # noqa: ANN001
+                return text
+
+            def close(self) -> None:
+                closed.append("closed")
+
+        service._ocr_translator = _Translator()  # noqa: SLF001
+        assert service._pipeline is None, "本用例要覆盖的正是“pipeline 从未创建”的情形"  # noqa: SLF001
+
+        service.close()
+
+        assert closed == ["closed"], "没有 pipeline 时 OCR 自建翻译器被漏关了"
+        assert service._ocr_translator is None  # noqa: SLF001
+
+    def test_close_is_idempotent_for_ocr_owned_translator(self, service):
+        """重复 close 不能重复关、也不能报错（退出路径会被调用多次）。"""
+        closed: list[str] = []
+
+        class _Translator:
+            def close(self) -> None:
+                closed.append("closed")
+
+        service._ocr_translator = _Translator()  # noqa: SLF001
+        service.close()
+        service.close()
+
+        assert closed == ["closed"], "重复 close 把翻译器关了多次"
+
+    def test_close_survives_a_failing_ocr_translator(self, service):
+        """回收抛错不能中断退出路径（其他资源还要继续收）。"""
+
+        class _Hostile:
+            def close(self) -> None:
+                raise OSError("关不掉")
+
+        service._ocr_translator = _Hostile()  # noqa: SLF001
+        service.close()  # 不该抛
+        assert service._ocr_translator is None  # noqa: SLF001
