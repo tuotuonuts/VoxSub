@@ -13,9 +13,17 @@
  * 弹窗塞不下且用户无法回看。页面化后每一步都能返回上一步。
  */
 import { h, on } from "../dom";
-import { call } from "../store";
-import { CMD } from "../protocol";
+import { call, callWithOutcome, store } from "../store";
+import { CMD, type CleanupResult } from "../protocol";
 import { tr } from "../i18n";
+import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
+import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
+import {
+  buildCleanupRequest,
+  cleanupNotice,
+  cleanupSucceeded,
+  isCleanupRequest,
+} from "../../shared/migration-cleanup";
 
 /* ---------------------------------------------------------------- 类型 */
 
@@ -76,7 +84,19 @@ interface VerifyLayer {
 }
 
 interface MigrationReport {
-  done: Array<{ key: string; mode: string; target: string; verify: { ok: boolean } }>;
+  done: Array<{
+    key: string;
+    mode: string;
+    target: string;
+    verify: { ok: boolean };
+    /**
+     * 后端为这次搬迁生成的记录 ID。
+     *
+     * 清理原目录只能用它（`cleanup_migrated_source` 已不再接受 `path`）。
+     * 后端不返回时该字段缺失：界面就不提供"清理"入口，而不是硬拼一个路径去调。
+     */
+    recordId?: string;
+  }>;
   failed: Array<{ key: string; error: string; verify?: { layers: Record<string, VerifyLayer> } }>;
   elapsedMs: number;
   ok: boolean;
@@ -87,10 +107,18 @@ type Step = "detect" | "overview" | "plan" | "running" | "report";
 /* ---------------------------------------------------------------- 状态 */
 
 let containerEl: HTMLElement | null = null;
+/**
+ * 向导级生命周期（缺陷 #10）：逐步切换时各步自己退订，但整个向导被
+ * 关闭/替换时也要能一次收掉（原先只靠 `voxsub:leaving` 事件，页面被顶掉时
+ * 事件不会来人，订阅于是留着不走）。
+ */
+let wizardLifecycle: PageLifecycle | null = null;
 let current: Step = "detect";
 let detection: DetectResult | null = null;
 let plan: PlanResult | null = null;
 let report: MigrationReport | null = null;
+/** 最近一次清理原目录的结果（供报告页展示；null 表示还没清理过）。 */
+let cleanupState: { skipped: boolean; detail: string; ok?: boolean } | null = null;
 /** 用户在清单里勾选的项（key 集合）。 */
 const selected = new Set<string>();
 /** 迁移期间后端推来的每项进度：key -> 百分比 */
@@ -389,15 +417,30 @@ async function startMigration(): Promise<void> {
 
   progress.clear();
   overallProgress = 0;
+  cleanupState = null;
   go("running");
 
   // 迁移是长任务，期间必须阻止退出（与设置页的 busy 语义一致）
   void window.voxsub?.app.setBusy(true, tr("数据正在迁移，请等待完成后再退出应用。"));
 
-  const result = await call<MigrationReport>(CMD.startMigration, { steps });
+  // 超时**不等于失败**（缺陷 #4）。
+  //
+  // 请求层到时限只会发一条"超过时限"的通知，请求本身保持挂起，后端送回真实
+  // 结果时这个 await 才继续 —— 所以这里可以按"还没结束"来写：
+  //   · 超时（含硬性上限）绝不能解除退出保护；
+  //   · 也绝不能跳到"迁移失败"的报告页；
+  //   · 迁移进度事件照常到达，运行页继续更新。
+  const { outcome, data } = await callWithOutcome<MigrationReport>(CMD.startMigration, { steps });
+
+  if (isTaskRunning(outcome)) {
+    // 任务仍在进行：留在「正在迁移」页，退出保护保持有效。
+    // 文案只说明"这次请求还没回来"，不出现"失败"。
+    store.patch({ statusText: describeOutcome(outcome, tr("数据迁移")) });
+    return;
+  }
 
   void window.voxsub?.app.setBusy(false);
-  report = result ?? { done: [], failed: [{ key: "?", error: tr("迁移未返回结果") }], elapsedMs: 0, ok: false };
+  report = data ?? { done: [], failed: [{ key: "?", error: tr("迁移未返回结果") }], elapsedMs: 0, ok: false };
   go("report");
 }
 
@@ -472,12 +515,50 @@ function viewRunning(): HTMLElement {
 
   // 离开这一页时退订，避免回调打到已移除的节点
   body.addEventListener("voxsub:leaving", () => off?.(), { once: true });
+  // 向导被整体替换/关闭时也要退订（缺陷 #10：订阅只增不减）
+  wizardLifecycle?.add(() => off?.());
 
   return frame(tr("正在迁移"), tr("每项数据有独立进度，完成后会自动校验"), body,
     actionsRow([h("span", { class: "tuning-actions__state", text: tr("请勿关闭应用") })]));
 }
 
 /* ------------------------------------------------------------ 步骤 5 */
+
+/**
+ * 清理已迁移的原目录。
+ *
+ * 后端契约（**已变更**）：`cleanup_migrated_source` 不再接受 `path`，
+ * 只接受 `record_id` / `record_ids`，并且**必须显式带 `confirm: true`**。
+ * 标识只从 `start_migration` 回传的 `done[].recordId` 取 —— 路径不是标识。
+ * 失败（含 `path_not_accepted` / `missing_record_id` / 缺确认）时把后端给的
+ * `detail` **原样展示**，绝不吞掉：否则用户只看到"清理失败"却不知道为什么。
+ */
+async function cleanupMigratedSources(): Promise<void> {
+  const records = (report?.done ?? []).filter((item) => item.recordId);
+  const decision = buildCleanupRequest(records, window.confirm(
+    `${tr("删除是不可逆的")}：${tr("确认清理已迁移的原目录？")}\n${records.map((r) => r.key).join("、")}`,
+  ));
+  if (!isCleanupRequest(decision)) {
+    cleanupState = {
+      skipped: true,
+      detail: decision.reason === "no_user_confirm"
+        ? tr("已取消：没有确认就不会删除任何原目录")
+        : tr("没有可清理的记录（后端只接受记录 ID）"),
+    };
+    go("report");
+    return;
+  }
+
+  const result = await call<CleanupResult>(CMD.cleanupMigratedSource, decision);
+  cleanupState = { skipped: false, detail: cleanupNotice(result), ok: cleanupSucceeded(result) };
+  store.patch({ statusText: cleanupNotice(result) });
+  store.pushLog({
+    ts: new Date().toISOString(),
+    level: cleanupSucceeded(result) ? "INFO" : "WARNING",
+    message: `清理已迁移原目录：${cleanupNotice(result)}`,
+  });
+  go("report");
+}
 
 function viewReport(): HTMLElement {
   const body = h("div", { class: "wiz__body" });
@@ -505,6 +586,26 @@ function viewReport(): HTMLElement {
       list.append(row);
     }
     body.append(list);
+  }
+
+  // 清理区：搬迁完成后才问"要不要删掉原来的目录"。
+  // 删除不可逆，所以这里的按钮只负责唤起一次确认，确认之后才带 confirm: true 发命令。
+  const cleanable = report.done.filter((item) => item.recordId);
+  if (cleanable.length > 0) {
+    const card = h("div", { class: `card ${cleanupState?.ok === false ? "is-fail" : ""}` });
+    card.append(h("h3", { class: "card__title", text: tr("原目录清理") }));
+    card.append(h("p", {
+      class: "field__hint",
+      text: tr("数据已在新位置并通过校验。是否删除已迁移的原目录由你决定，删除不可逆。"),
+    }));
+    card.append(h("p", {
+      class: `field__hint ${cleanupState?.ok === false ? "is-fail" : ""}`,
+      text: cleanupState ? cleanupState.detail : `${cleanable.length} ${tr("项可清理")}`,
+    }));
+    card.append(h("div", { class: "tuning-actions" }, [
+      button(tr("清理已迁移的原目录"), "ghost", () => void cleanupMigratedSources()),
+    ]));
+    body.append(card);
   }
 
   // 失败项：给出可复制的摘要，便于反馈开发者
@@ -587,11 +688,25 @@ function go(step: Step): void {
 export function closeWizard(completed = false): void {
   void call(CMD.migrationDecision, { decision: completed ? "complete" : "dismiss" });
   const layer = containerEl?.closest<HTMLElement>(".page-layer");
+  releaseWizard();
   layer?.setAttribute("hidden", "");
   // 与 closePage 一致地清空内容：留着隐藏的向导会继续持有 DOM 与订阅
   layer?.replaceChildren();
   containerEl = null;
   void window.voxsub?.app.setBusy(false);
+}
+
+/**
+ * 释放向导持有的资源（订阅）。
+ *
+ * 刻意**不碰**退出保护：迁移进行中时 `setBusy(true)` 必须继续有效，直到
+ * `startMigration()` 拿到真正的终态（见那里的超时处理）。
+ */
+function releaseWizard(): void {
+  wizardLifecycle?.dispose();
+  wizardLifecycle = null;
+  // 通知当前步骤做清理（例如运行页的进度订阅）
+  containerEl?.querySelector(".wiz__body")?.dispatchEvent(new Event("voxsub:leaving"));
 }
 
 /* ---------------------------------------------------------------- 入口 */
@@ -613,17 +728,35 @@ export async function shouldOfferMigration(): Promise<DetectResult | null> {
   return result;
 }
 
-export function buildMigrationWizard(initial: DetectResult): HTMLElement {
+export function buildMigrationWizard(initial: DetectResult): PageHandle {
+  // 上一个向导若还在（重开向导、或检测被触发两次），先释放它的订阅
+  releaseWizard();
+  const lifecycle = new PageLifecycle();
+  wizardLifecycle = lifecycle;
+
   detection = initial;
   current = "detect";
   containerEl = h("div", { class: "wiz-host" });
   render();
-  return containerEl;
+  const host = containerEl;
+
+  return {
+    element: host,
+    dispose: () => {
+      releaseWizard();
+      if (containerEl === host) containerEl = null;
+    },
+  };
 }
 
 /** 从设置页重新打开向导（用户跳过之后反悔的入口）。 */
-export async function reopenWizard(host: HTMLElement): Promise<void> {
+export async function reopenWizard(host: HTMLElement): Promise<PageHandle> {
   const result = await call<DetectResult>(CMD.detectLegacy);
-  if (!result) return;
-  host.replaceChildren(buildMigrationWizard(result));
+  if (!result) {
+    // 检测结果拿不到就不开向导（与原先一致）。返回一个空句柄，调用点不必分支。
+    return { element: host, dispose: () => undefined };
+  }
+  const handle = buildMigrationWizard(result);
+  host.replaceChildren(handle.element);
+  return handle;
 }

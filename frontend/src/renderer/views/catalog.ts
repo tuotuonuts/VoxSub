@@ -5,9 +5,10 @@
  * 结构沿用"展位格"：密铺网格、格内贴元数据小字、选中被圈出。
  */
 import { h, on, scorePips, percent } from "../dom";
-import { call, store } from "../store";
+import { call, callWithOutcome, store } from "../store";
 import { CMD, type ModelCatalogResult, type ModelEntry } from "../protocol";
 import { tr } from "../i18n";
+import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
 
 type TaskFilter = "all" | "asr" | "translate" | "tts" | "ocr";
 
@@ -218,14 +219,30 @@ async function installModel(model: ModelEntry): Promise<void> {
     },
   });
   renderGrid();
-  const result = await call(CMD.installModel, {
+
+  // 下载是长任务：30 秒超时**不是失败**（缺陷 #4）。
+  // 请求层到时限只发通知、请求保持挂起，后端送回真实结果时这里才继续 ——
+  // 因此中途不做任何"清理下载条目"的动作，否则界面会显示成"没在下载"，
+  // 而磁盘上其实还在写。
+  const { outcome, data } = await callWithOutcome<unknown>(CMD.installModel, {
     model_id: model.id,
     models_root: modelsRoot || null,
   });
+
+  if (isTaskRunning(outcome)) {
+    // 仍在下载：保留下载条目与进度，让 download 事件继续驱动界面
+    store.pushLog({
+      ts: new Date().toISOString(),
+      level: "WARNING",
+      message: describeOutcome(outcome, `${tr("下载")} ${model.id}`),
+    });
+    return;
+  }
+
   const downloads = { ...store.get().downloads };
   delete downloads[model.id];
   store.patch({ downloads });
-  if (result) await loadModels();
+  if (data !== null) await loadModels();
   else renderGrid();
 }
 

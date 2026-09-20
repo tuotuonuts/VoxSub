@@ -21,6 +21,7 @@ import { buildSettings, loadConfig } from "./views/settings";
 import { buildDiagnostics, detachDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
 import { buildMigrationWizard, shouldOfferMigration } from "./views/migration";
+import { staticPage, type Disposer, type PageHandle } from "../shared/page-lifecycle";
 
 type Mode = "a" | "b" | "c" | "d";
 
@@ -50,6 +51,32 @@ let workspaceSlot: HTMLElement | null = null;
 let pageLayer: HTMLElement | null = null;
 type PageName = "settings" | "diagnostics" | "catalog";
 let currentPage: "none" | PageName = "none";
+
+/**
+ * 当前页面内容的释放句柄。
+ *
+ * 为什么必须有（缺陷 #10）：页面切换原先只有 `replaceChildren`，注册在
+ * window/document 上的监听器（设置页的 `voxsub:settings`、工作区的
+ * `voxsub:state`、工作区那个 1 秒计时器）**只增不减** —— 用得越久越慢，
+ * 回调还会打到已经移除的节点上。现在每个页面构建时返回 `{element, dispose}`，
+ * 关闭/替换/换页三处统一释放。
+ */
+let pageDispose: Disposer | null = null;
+let workspaceDispose: Disposer | null = null;
+
+/** 释放当前页面内容（关页、换页、被向导顶掉都要走这里）。 */
+function disposePageContent(): void {
+  const dispose = pageDispose;
+  pageDispose = null;
+  dispose?.();
+}
+
+/** 释放当前工作区（切换模式时会替换整块）。 */
+function disposeWorkspace(): void {
+  const dispose = workspaceDispose;
+  workspaceDispose = null;
+  dispose?.();
+}
 
 /* ------------------------------------------------------------- 令牌应用 */
 
@@ -100,6 +127,10 @@ function wrapPage(page: PageName, content: HTMLElement): HTMLElement {
 
 function openPage(page: PageName): void {
   if (!pageLayer) return;
+  // 换页前先释放上一页：监听器、定时器、订阅都在这里收掉
+  disposePageContent();
+  if (currentPage === "diagnostics") detachDiagnostics();
+
   currentPage = page;
   pageLayer.hidden = false;
 
@@ -107,18 +138,23 @@ function openPage(page: PageName): void {
   // 试过先 await loadConfig() 再渲染：点"设置"后会空白约 1 秒才出现，
   // 冒烟测试与用户都判定为"点了没反应"。配置改为在 boot() 阶段预取，
   // 页面内的异步刷新（buildSettings 里）负责补上最新值。
-  const builders: Record<PageName, () => HTMLElement> = {
+  const builders: Record<PageName, () => PageHandle> = {
     settings: buildSettings,
     diagnostics: buildDiagnostics,
-    catalog: buildModelCatalog,
+    // 目录页与会话无关、也没有全局监听，不需要释放动作
+    catalog: () => staticPage(buildModelCatalog()),
   };
-  pageLayer.replaceChildren(wrapPage(page, builders[page]()));
+  const handle = builders[page]();
+  pageDispose = handle.dispose;
+  pageLayer.replaceChildren(wrapPage(page, handle.element));
   // 打开后焦点给返回按钮：键盘用户一按 Enter 就能回去
   pageLayer.querySelector<HTMLButtonElement>(".page__back")?.focus();
 }
 
 function closePage(): void {
   if (!pageLayer) return;
+  // 释放页面：结束监听器、定时器与订阅（缺陷 #10）
+  disposePageContent();
   // 通知页面内的在途异步回调停止写 DOM（诊断自检要跑 4-6 秒）
   if (currentPage === "diagnostics") detachDiagnostics();
   currentPage = "none";
@@ -233,8 +269,13 @@ async function switchMode(mode: Mode): Promise<void> {
 
 function renderWorkspace(): void {
   if (!workspaceSlot) return;
+  // 切模式会整块替换工作区：先释放上一块（监听器 + 会话计时器），
+  // 否则每切一次模式就多一个 `voxsub:state` 监听和一个永不停走的 1 秒定时器。
+  disposeWorkspace();
   const mode = store.get().mode;
-  workspaceSlot.replaceChildren(mode === "d" ? buildOcrWorkspace() : buildWorkspace());
+  const handle: PageHandle = mode === "d" ? buildOcrWorkspace() : buildWorkspace();
+  workspaceDispose = handle.dispose;
+  workspaceSlot.replaceChildren(handle.element);
 }
 
 /* ------------------------------------------------------------- 展牌 */
@@ -320,8 +361,12 @@ function boot(): void {
   // 放在 render 之后异步执行 —— 检测要读注册表与遍历目录，不能阻塞首屏。
   void shouldOfferMigration().then((result) => {
     if (!result || !pageLayer) return;
+    // 打开前先释放可能已有的页面内容（向导会顶掉当前页）
+    disposePageContent();
+    const wizard = buildMigrationWizard(result);
+    pageDispose = wizard.dispose;
     pageLayer.hidden = false;
-    pageLayer.replaceChildren(buildMigrationWizard(result));
+    pageLayer.replaceChildren(wizard.element);
   });
 
   // store 变化 → 增量刷新；不做整页重建，避免输入框失焦与滚动跳动

@@ -5,6 +5,29 @@
  * 页面渲染只读 store，写只经 command 封装，避免多个页面各自持有副本后失同步。
  */
 import { CMD, type BackendEvent, type CommandName, type LogEntry } from "./protocol";
+import {
+  INITIAL_BACKEND_STATUS,
+  backendNotice,
+  needsResync,
+  normalizeMode,
+  parseReadyPayload,
+  reduceBackendStatus,
+  sessionViewFor,
+  type BackendPhase,
+  type BackendStatus,
+  type BackendStatusEvent,
+  type SessionView,
+} from "../shared/backend-status";
+import { reduceSessionEvent } from "../shared/session-timeline";
+import {
+  classifyCommandResult,
+  describeOutcome,
+  isJobFailure,
+  isTerminalJobStatus,
+  parseJobEvent,
+  type CommandResultLike,
+  type RequestOutcome,
+} from "../shared/request-outcome";
 
 type Listener = () => void;
 
@@ -38,6 +61,16 @@ export interface AppState {
   cacheRoot: string;
   /** 更新日志（版本 → 说明），供设置页「关于」渲染 */
   releaseNotes: Array<{ version: string; date?: string; body: string }>;
+  /**
+   * 后端连接阶段。
+   *
+   * 独立于 `connected` 的原因（缺陷 #11）：后端**进程退出**与"从来没连上"
+   * 是两回事，提示与后续动作都不同；界面也必须在断连时把"运行中"收回去，
+   * 而不是只把 statusText 改一句话。
+   */
+  backendPhase: BackendPhase;
+  /** 断连 / 启动失败的原因；null 表示无异常。 */
+  backendReason: string | null;
 }
 
 const MAX_LOG_LINES = 400;
@@ -63,6 +96,8 @@ function initialState(): AppState {
     modelsRoot: "",
     cacheRoot: "",
     releaseNotes: [],
+    backendPhase: "connecting",
+    backendReason: null,
   };
 }
 
@@ -109,20 +144,97 @@ class Store {
 
   applyEvent(event: BackendEvent): void {
     switch (event.type) {
-      case "ready":
+      case "ready": {
+        // 后端新增了握手字段（protocolVersion / backendGeneration /
+        // readiness / session）：**只挑认识的字段，多出来的字段一律忽略**，
+        // 否则老渲染层会把新字段当异常。
         this.patch({ connected: true, version: event.version });
+        setBackendStatus({ type: "ready" });
+        const handshake = parseReadyPayload(event);
+        if (handshake) {
+          const extras: string[] = [];
+          if (handshake.protocolVersion) extras.push(`协议 ${handshake.protocolVersion}`);
+          if (handshake.backendGeneration) extras.push(`后端代号 ${handshake.backendGeneration}`);
+          if (handshake.activeJobs !== null) extras.push(`在途任务 ${handshake.activeJobs}`);
+          if (extras.length > 0) {
+            this.pushLog({
+              ts: new Date().toISOString(),
+              level: "INFO",
+              message: `后端握手：v${handshake.version}${extras.length ? ` · ${extras.join(" · ")}` : ""}`,
+            });
+          }
+          // 握手自带的会话状态：比再发一次 state 命令更快，且避免"重载后先显示错状态"
+          if (handshake.session) applySessionState(handshake.session);
+        }
+        break;
+      }
+      case "job": {
+        // 后台任务事件（async 命令的进度与终态）。缺陷 #4 的"超时后仍能收到
+        // 后续事件与最终终态"就是靠这条通道：超时不结束任务，任务继续发事件。
+        const job = parseJobEvent(event);
+        if (!job) break;
+        const terminal = isTerminalJobStatus(job.status);
+        this.pushLog({
+          ts: new Date().toISOString(),
+          level: isJobFailure(job.status) ? "ERROR" : "INFO",
+          message: `任务 ${job.command || job.jobId} ${job.status}${job.error ? `：${job.error}` : ""}`,
+        });
+        if (terminal) {
+          // 终态：把任务的去向写进状态行，用户不必去日志里找。
+          // 三个终态各有各的说法 —— 尤其"已取消"不能显示成"失败"（用户自己
+          // 点的取消，弹红字是骗人的），也不能显示成"已完成"。
+          const label =
+            job.status === "succeeded" ? "已完成" : job.status === "failed" ? "失败" : "已取消";
+          this.patch({ statusText: `${job.command || job.jobId} ${label}` });
+        }
+        break;
+      }
+      case "disconnected": {
+        // 后端进程退出（缺陷 #11）。
+        //
+        // 原先这里什么都不做：主进程只发一条 status 文案，界面把文案写进
+        // statusText，`running` 仍是 true —— 状态灯还亮着"运行中"、主按钮还写着
+        // "结束"。后端已经没了，界面说的每一句都是错的。
+        //
+        // 现在：独立的断连态 + 会话视图强制归零 + 明确的一句话。
+        this.patch({ connected: false });
+        const reason = event.reason;
+        setBackendStatus(reason ? { type: "disconnected", reason } : { type: "disconnected" });
+        this.patch({
+          ...sessionViewFor(backendStatus.phase, { running: this.state.running, paused: this.state.paused }),
+          statusText: backendNotice(backendStatus),
+        });
+        break;
+      }
+      case "request-timeout":
+        // 请求超时**不是失败**：任务可能仍在进行（缺陷 #4）。
+        // 记一条 WARNING 说明情况，不写 ERROR —— 写 ERROR 会让用户以为任务挂了。
+        this.pushLog({
+          ts: new Date().toISOString(),
+          level: "WARNING",
+          message: describeOutcome("timeout", event.command),
+        });
         break;
       case "status":
         this.patch({ statusText: event.text });
         break;
-      case "session":
-        // 会话开始：重置时间基准，导出时间轴从零算起
+      case "session": {
+        // 按 action 区分（缺陷 #2）：只有 start 才重置字幕与时间基准。
+        //
+        // 原先无条件 `subtitles: []`，而停止会话时后端恰好会发
+        // `{type:"session", action:"stop"}`，于是用户一点"结束"，整场字幕被清空，
+        // 接着"导出会话"因为字幕为空直接 return（workspace.ts 的早退），
+        // 表现得像点了没反应。
+        const action = event.action;
         this.patch({
-          sessionStartedAt: performance.now(),
-          subtitles: [],
-          draft: null,
+          ...reduceSessionEvent(action, performance.now()),
+          // 会话事件同时也是最直接的运行状态来源：start 即在跑，stop 即已停。
+          // 认不出的 action 不乱改状态（reduceSessionEvent 会按 stop 保守处理）。
+          running: action === "start" ? true : this.state.running,
+          ...(action === "stop" ? { paused: false } : {}),
         });
         break;
+      }
       case "state":
         // 会话状态（运行中 / 已暂停）。
         //
@@ -180,6 +292,30 @@ export interface CommandResult<T = unknown> {
   ok: boolean;
   error?: string;
   data?: T;
+  /** 请求在时限内没返回（后端仍在处理）；超时**不是**失败，也不是取消。 */
+  timedOut?: boolean;
+  /** 请求没能发出（后端未运行 / 未初始化）。 */
+  unavailable?: boolean;
+}
+
+/* ------------------------------------------------------------ 后端状态机 */
+
+/**
+ * 当前后端状态（渲染层的单一事实来源）。
+ *
+ * 与 `backendReady`（就绪门开关）分开：就绪门只关心"能不能发命令"，
+ * 状态机还要表达"后端是起来了、还是退了、还是压根没起来"。
+ */
+let backendStatus: BackendStatus = INITIAL_BACKEND_STATUS;
+
+/** 把状态机事件落到 store。所有相位变化都必须走这里，避免两处口径不一致。 */
+function setBackendStatus(event: BackendStatusEvent): void {
+  backendStatus = reduceBackendStatus(backendStatus, event);
+  store.patch({ backendPhase: backendStatus.phase, backendReason: backendStatus.reason });
+}
+
+export function getBackendStatus(): BackendStatus {
+  return backendStatus;
 }
 
 /* ------------------------------------------------------------ 后端就绪门 */
@@ -207,6 +343,7 @@ function settleReadiness(): void {
 export function markBackendReady(failure: string | null = null): void {
   backendReady = true;
   backendFailed = failure;
+  setBackendStatus(failure ? { type: "failed", reason: failure } : { type: "ready" });
   settleReadiness();
 }
 
@@ -218,16 +355,30 @@ function whenBackendReady(): Promise<void> {
   if (backendReady) return Promise.resolve();
   return new Promise((resolve) => {
     readinessWaiters.push(resolve);
-    // 超时兜底：后端起不来时给出明确报错，而不是让界面永远转圈
+    // 超时兜底：后端起不来时给出明确报错，而不是让界面永远转圈。
+    // 注意这里只表示"就绪事件没等到"，不代表后端失败 —— 失败由 backendFailed
+    // 与 backendPhase 单独表达。
     setTimeout(resolve, READY_TIMEOUT_MS);
   });
 }
 
-/** 统一的命令调用：等待后端就绪，失败时写入日志，避免调用点各自处理。 */
-export async function call<T = unknown>(
+/** 一次命令调用的结果：结果分类 + 数据。 */
+export interface CallOutcome<T> {
+  outcome: RequestOutcome;
+  data: T | null;
+}
+
+/**
+ * 统一的命令调用：等待后端就绪，结果写入日志，避免调用点各自处理。
+ *
+ * **超时不是失败**（缺陷 #4）：`outcome === "timeout"` 表示本次请求没在时限内
+ * 返回，任务可能仍在进行。调用点若要区分（长任务），用这个函数；
+ * 只关心数据的调用点用 `call()`（返回 data，超时同样是 null）。
+ */
+export async function callWithOutcome<T = unknown>(
   command: CommandName,
   args: unknown = null,
-): Promise<T | null> {
+): Promise<CallOutcome<T>> {
   const api = window.voxsub;
   if (!api) {
     store.pushLog({
@@ -235,7 +386,7 @@ export async function call<T = unknown>(
       level: "ERROR",
       message: `IPC 不可用，无法执行 ${command}`,
     });
-    return null;
+    return { outcome: "unavailable", data: null };
   }
 
   await whenBackendReady();
@@ -246,27 +397,52 @@ export async function call<T = unknown>(
       level: "ERROR",
       message: `${command} 未执行：后端启动失败（${backendFailed}）`,
     });
-    return null;
+    return { outcome: "unavailable", data: null };
   }
 
   const result = (await api.backend.command(command, args)) as CommandResult<T>;
-  if (!result.ok) {
-    store.pushLog({
-      ts: new Date().toISOString(),
-      level: "ERROR",
-      message: `${command} 失败: ${result.error ?? "未知错误"}`,
-    });
-    return null;
+  const outcome = classifyCommandResult(result as CommandResultLike);
+  if (outcome === "ok") {
+    return { outcome, data: (result.data ?? null) as T | null };
   }
-  return (result.data ?? null) as T | null;
+
+  // 失败与超时分开记：把"还没回来"写成 ERROR「失败」会让用户以为任务挂了，
+  // 而实际上后端仍在搬数据/下模型（缺陷 #4）。
+  store.pushLog({
+    ts: new Date().toISOString(),
+    level: outcome === "timeout" ? "WARNING" : "ERROR",
+    message: `${describeOutcome(outcome, command)}${result.error ? `: ${result.error}` : ""}`,
+  });
+  return { outcome, data: null };
+}
+
+/** 只要数据的调用点用这个（超时同样是 null，语义与原先一致）。 */
+export async function call<T = unknown>(
+  command: CommandName,
+  args: unknown = null,
+): Promise<T | null> {
+  return (await callWithOutcome<T>(command, args)).data;
 }
 
 /**
  * 把会话状态写进 store。事件与主动拉取共用，避免两处口径不一致。
+ *
+ * 两条纪律：
+ *   1. **后端不在时不得显示"运行中"**（缺陷 #11）—— 由 sessionViewFor 统一裁掉；
+ *   2. payload 里带 `mode` 时一并恢复模式 —— 渲染层重载后界面显示的模式必须
+ *      跟后端实际模式一致，否则"暂停按钮该不该出现"这类判断会跟着错。
  */
-export function applySessionState(payload: { running?: boolean; paused?: boolean } | null): void {
+export function applySessionState(
+  payload: { running?: boolean; paused?: boolean; mode?: string } | null,
+): void {
   if (!payload) return;
-  store.patch({ running: Boolean(payload.running), paused: Boolean(payload.paused) });
+  const commanded: SessionView = { running: Boolean(payload.running), paused: Boolean(payload.paused) };
+  const patch: { running: boolean; paused: boolean; mode?: AppState["mode"] } = {
+    ...sessionViewFor(backendStatus.phase, commanded),
+  };
+  const mode = normalizeMode(payload.mode);
+  if (mode) patch.mode = mode;
+  store.patch(patch);
 }
 
 /**
@@ -274,10 +450,67 @@ export function applySessionState(payload: { running?: boolean; paused?: boolean
  *
  * 用途：界面在后端已经在跑的情况下才连上时（后端重启、渲染层重载），
  * state 事件已经错过，必须主动拉一次，否则按钮会停在"开始"而会话实际在运行。
+ * 拉回来的载荷里带 `mode`，模式一起恢复 —— 只补按钮文案是不够的。
  */
 export async function refreshSessionState(): Promise<void> {
-  const result = await call<{ running: boolean; paused: boolean }>(CMD.state);
+  const result = await call<{ running: boolean; paused: boolean; mode?: string }>(CMD.state);
   applySessionState(result);
+}
+
+/* ------------------------------------------------------------ 后台任务 */
+
+export interface JobSummary {
+  jobId?: string;
+  command?: string;
+  status?: string;
+  sequence?: number;
+  detail?: string;
+}
+
+/** 异步发起命令时后端立刻返回的受理凭据。 */
+export interface JobAccept {
+  jobId: string;
+  accepted: boolean;
+  status: string;
+}
+
+/**
+ * 列出后台任务（后端 `job_list`）。
+ *
+ * 用途：界面重载后仍能看到后端正在跑的长任务（迁移 / 下载），
+ * 而不是"重载完就什么都不知道了"。
+ */
+export async function listJobs(): Promise<JobSummary[] | null> {
+  const result = await call<{ jobs?: JobSummary[] } | JobSummary[]>(CMD.jobList);
+  if (!result) return null;
+  return Array.isArray(result) ? result : (result.jobs ?? []);
+}
+
+/** 查询单个后台任务（后端 `job_status`，arg 名固定为 job_id）。 */
+export async function jobStatus(jobId: string): Promise<JobSummary | null> {
+  return call<JobSummary>(CMD.jobStatus, { job_id: jobId });
+}
+
+/** 取消后台任务（后端 `cancel_job`，arg 名固定为 job_id）。 */
+export async function cancelJob(jobId: string): Promise<JobSummary | null> {
+  return call<JobSummary>(CMD.cancelJob, { job_id: jobId });
+}
+
+/**
+ * 以异步方式发起一条命令（`args.async = true`）。
+ *
+ * 后端立刻返回 `{jobId, accepted, status}`，之后的进度与**最终终态**通过
+ * `event: "job"` 事件送达（见 store 的 `case "job"`）。这正是缺陷 #4 需要的能力：
+ * 长任务不必再和"请求超时"纠缠 —— 它要么同步返回，要么立刻受理 + 事件收尾。
+ * 不带 async 时后端保持原同步语义不变。
+ */
+export async function callAsync(
+  command: CommandName,
+  args: Record<string, unknown> = {},
+): Promise<JobAccept | null> {
+  const data = await call<JobAccept>(command, { ...args, async: true });
+  if (!data || typeof data.jobId !== "string" || data.jobId === "") return null;
+  return data;
 }
 
 /** 启动后端并接上事件流。返回取消订阅函数。 */
@@ -304,7 +537,10 @@ export function connectBackend(): () => void {
       // 为什么不能只靠 state 事件：界面可能在后端**已经在跑**的情况下才连上
       // （后端重启、渲染层重载）。那时事件已经错过了，界面会停在"开始"，
       // 而实际会话正在运行 —— 用户点下去反而会再启一个会话。
-      void refreshSessionState();
+      //
+      // 补拉的条件收在 needsResync 里：只有真正连上才拉，且拉回来的载荷
+      // 会把 running / paused / mode 一起恢复（见 applySessionState）。
+      if (needsResync(backendStatus.phase)) void refreshSessionState();
     }
   });
 

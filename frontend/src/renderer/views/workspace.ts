@@ -10,6 +10,8 @@ import { h, on, percent } from "../dom";
 import { applySessionState, call, store } from "../store";
 import { CMD } from "../protocol";
 import { tr } from "../i18n";
+import { hasExportableSubtitles } from "../../shared/session-timeline";
+import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 
 let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
@@ -220,7 +222,9 @@ export function updateProgress(): void {
 /** 会话导出：把当前双语历史写成 SRT / VTT / TXT。 */
 async function exportSession(): Promise<void> {
   const state = store.get();
-  if (state.subtitles.length === 0) return;
+  // 字幕的去留由 store 的 session 事件决定：**停止会话不再清空字幕**
+  // （缺陷 #2，原先停止后这里必然是空的，导出表现得像点了没反应）。
+  if (!hasExportableSubtitles(state)) return;
   const api = window.voxsub;
   if (!api) return;
 
@@ -308,8 +312,12 @@ function fileName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-export function buildWorkspace(): HTMLElement {
+export function buildWorkspace(): PageHandle {
   const state = store.get();
+
+  // 页面级生命周期（缺陷 #10）：这一页注册的监听器与会话计时器都记在这里，
+  // 切模式/关页时一次释放 —— 原先监听器与 1 秒定时器只增不减。
+  const lifecycle = new PageLifecycle();
 
   const pane = h("section", { class: "workspace" });
 
@@ -409,12 +417,29 @@ export function buildWorkspace(): HTMLElement {
   syncControls();
   startClock();
 
-  window.addEventListener("voxsub:state", () => {
+  lifecycle.listen(window, "voxsub:state", () => {
     filePanel.hidden = store.get().mode !== "c";
     syncControls();
   });
 
-  return pane;
+  // 释放：停表 + 让所有模块级的节点引用失效。
+  // 引用必须置空：index.ts 的刷新循环（updateStatus/updateStream/updateProgress）
+  // 是常驻的，不置空就会往已经脱离文档的节点上继续写。
+  lifecycle.add(() => {
+    stopClock();
+    streamEl = null;
+    statusTextEl = null;
+    progressWrap = null;
+    fileLabelEl = null;
+    recordHintEl = null;
+    clockEl = null;
+    ctaEl = null;
+    pauseBtnEl = null;
+    recInputEl = null;
+    recDotEl = null;
+  });
+
+  return { element: pane, dispose: () => lifecycle.dispose() };
 }
 
 export function setWorkspaceFile(path: string): void {

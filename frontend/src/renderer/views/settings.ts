@@ -9,8 +9,18 @@ import { call, store } from "../store";
 import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry, type TranslateTierMeta } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
+import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 
 type Config = Record<string, unknown>;
+
+/**
+ * 当前设置页的生命周期（页面被替换/关闭后为 null）。
+ *
+ * 设置页的各个分页构建函数是模块级函数，拿不到 buildSettings 的局部变量；
+ * 而"打开迁移向导"这类动作会把向导塞进整个页面层，需要把向导的释放动作
+ * 挂到设置页的生命周期上，才能保证关页时一并释放。
+ */
+let settingsLifecycle: PageLifecycle | null = null;
 
 let config: Config = {};
 let microphones: AudioDevice[] = [];
@@ -924,7 +934,10 @@ function storageTab(): HTMLElement {
   });
   on(legacyOpen, "click", () => {
     const host = document.querySelector<HTMLElement>(".page-layer");
-    if (host) void reopenWizard(host);
+    if (!host) return;
+    // 向导顶掉的是整个页面层，因此它的释放动作也挂到设置页的 lifecycle 上：
+    // 设置页被关闭/替换时，向导的订阅一并收掉（缺口 #10 的同一类泄漏）。
+    void reopenWizard(host).then((wizard) => settingsLifecycle?.add(wizard.dispose));
   });
 
   page.append(
@@ -1003,8 +1016,17 @@ function applyThemeChoice(choice: string): void {
   store.patch({ theme: resolved as "dark" | "light" });
 }
 
-export function buildSettings(): HTMLElement {
+export function buildSettings(): PageHandle {
   const shell = h("div", { class: "settings" });
+
+  // 页面生命周期（缺陷 #10）。
+  //
+  // 设置页是在 window 上订阅 `voxsub:settings` 的页面：原先每打开一次就多一个
+  // 订阅，且永远不解除 —— 每个订阅都还闭包持有一整页已被移除的 DOM。
+  // 现在统一登记在这里，页面被关闭/替换时一次释放；
+  // 在途的异步刷新用 guard 包住，页面已关闭就不再重绘。
+  const lifecycle = new PageLifecycle();
+  settingsLifecycle = lifecycle;
 
   const tabs: ReadonlyArray<readonly [string, () => HTMLElement]> = [
     [tr("翻译"), translationTab],
@@ -1044,12 +1066,15 @@ export function buildSettings(): HTMLElement {
   shell.append(nav, panes);
   renderPane();
 
+  // 页面失效后（已被关闭/替换）不再重绘：在途的配置/设备请求回来时页面可能早就没了。
+  const refreshPane = lifecycle.guard(() => renderPane());
+
   // 配置与设备列表可能在 boot 之后才到齐，这里补一次刷新。
   // 只在配置**尚未就绪**时重绘：已就绪还重绘会把用户正在输入的内容清掉。
   const needsConfigRefresh = !isConfigReady();
   void Promise.all([loadDevices(), loadCaptureTargets(), needsConfigRefresh ? loadConfig() : null]).then(
     () => {
-      if (needsConfigRefresh || current === 2) renderPane();
+      if (needsConfigRefresh || current === 2) refreshPane();
     },
   );
 
@@ -1061,14 +1086,21 @@ export function buildSettings(): HTMLElement {
   const metaBefore = JSON.stringify(tierMeta);
   const langState = store.get();
   void loadTierMeta(langState.sourceLang, langState.targetLang).then(() => {
-    if (JSON.stringify(tierMeta) !== metaBefore) renderPane();
+    if (JSON.stringify(tierMeta) !== metaBefore) refreshPane();
   });
 
-  window.addEventListener("voxsub:settings", () => {
-    void loadConfig().then(renderPane);
+  // 订阅走 lifecycle：页面被替换时会被真正移除（缺陷 #10）。
+  lifecycle.listen(window, "voxsub:settings", () => {
+    void loadConfig().then(refreshPane);
   });
 
-  return shell;
+  return {
+    element: shell,
+    dispose: () => {
+      lifecycle.dispose();
+      if (settingsLifecycle === lifecycle) settingsLifecycle = null;
+    },
+  };
 }
 
 /** 设备枚举可能较慢，单独加载，不阻塞设置页渲染。 */

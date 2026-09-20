@@ -79,6 +79,11 @@ export const CMD = {
   cleanupMigratedSource: "cleanup_migrated_source",
   migrationDecision: "migration_decision",
   ocrTranslate: "ocr_translate",
+
+  // 后台任务（长任务的异步形态：args.async = true 立刻返回 jobId）
+  jobList: "job_list",
+  jobStatus: "job_status",
+  cancelJob: "cancel_job",
 } as const;
 
 export type CommandName = (typeof CMD)[keyof typeof CMD];
@@ -240,9 +245,69 @@ export interface OcrResult {
 
 /* ---------------------------------------------------------------- 事件类型 */
 
+/** 后台任务的终态与进行中状态（后端 `job` 事件与 job_status 的 status 字段）。 */
+/**
+ * 任务状态。**词汇表必须与后端 `job_runner.py` 的状态机逐字一致** ——
+ * 权威定义在那边。六个状态：`queued` / `running` / `cancelling` 进行中
+ * （`cancelling` 不等于已取消），`succeeded` / `failed` / `cancelled` 终态。
+ */
+export type JobStatus = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
+
+/** 后端 `job` 事件：长任务的进度/终态（async 命令的结果走这条路送达）。 */
+export interface JobEvent {
+  type: "job";
+  jobId: string;
+  command: string;
+  status: JobStatus;
+  /** 事件顺序号；前端据此丢弃迟到/乱序事件。 */
+  sequence?: number;
+  /** 失败/取消原因（后端 `error` 字段）。 */
+  error?: string;
+  /** 可识别错误码（后端 `code` 字段），例如 `cancelled`。 */
+  code?: string;
+}
+
+/** `cleanup_migrated_source` 的返回值（新增字段见后端契约）。 */
+export interface CleanupResult {
+  deleted?: boolean;
+  code?: string;
+  detail?: string;
+  ok?: boolean;
+  paths?: string[];
+  cleaned?: string[];
+  refused?: unknown[];
+}
+
 export type BackendEvent =
-  | { type: "ready"; version: string }
+  | {
+      type: "ready";
+      version: string;
+      /**
+       * 后端新增的握手字段（协议版本 / 后端代号 / 就绪快照 / 当前会话）。
+       * 全部可选：老后端不发这些字段，渲染层不能因为"多了字段"就报错。
+       */
+      protocolVersion?: number | string;
+      backendGeneration?: number | string;
+      readiness?: { ready?: boolean; activeJobs?: number };
+      session?: { running?: boolean; paused?: boolean; mode?: string };
+    }
   | { type: "status"; text: string }
+  /**
+   * 后端进程退出。
+   *
+   * 独立事件而不是复用 status 文案（缺陷 #11）：断连是一个**状态**，
+   * 界面必须把"运行中"收回去、把会话视图归零，只改提示文案是骗人的。
+   */
+  | { type: "disconnected"; reason?: string }
+  /**
+   * 请求超过时限未返回 —— **不是失败**（缺陷 #4）。
+   *
+   * 由主进程在长任务（迁移/模型下载/OCR）超过时限时发出；任务仍在进行，
+   * 后续事件与最终结果照常送达。
+   */
+  | { type: "request-timeout"; command: string; hint?: string }
+  /** 后台任务事件（async 命令的进度与终态）。 */
+  | JobEvent
   | { type: "session"; action: "start" | "stop" }
   | { type: "state"; running: boolean; paused: boolean; mode: string; state: string }
   | { type: "migration"; phase: string; key?: string; index?: number; total?: number; error?: string; target?: string }

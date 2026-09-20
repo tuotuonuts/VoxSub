@@ -16,12 +16,22 @@ export interface BackendEventShape {
   level?: string;
   message?: string;
   version?: string;
+  /** session 事件的动作（"start" | "stop"）。 */
+  action?: string;
+  /** disconnected 事件的原因。 */
+  reason?: string;
+  /** request-timeout 事件对应的命令名。 */
+  command?: string;
 }
 
 export interface CommandResult<T = unknown> {
   ok: boolean;
   error?: string;
   data?: T;
+  /** 请求未在时限内返回：**不是失败**，后端任务可能仍在进行。 */
+  timedOut?: boolean;
+  /** 请求没能发出（后端未运行 / 未初始化）。 */
+  unavailable?: boolean;
 }
 
 export interface SelectionAreaShape {
@@ -101,6 +111,8 @@ declare global {
      * 用户的麦克风/系统声音，自动化测试不允许。这个入口走的是与真实事件
      * 完全相同的代码路径，因此能真实反映按钮是否跟着状态变。
      */
-    __applySessionState?: (payload: { running?: boolean; paused?: boolean } | null) => void;
+    __applySessionState?: (
+      payload: { running?: boolean; paused?: boolean; mode?: string } | null,
+    ) => void;
   }
 }

@@ -16,6 +16,7 @@ import { call, store } from "../store";
 import { CMD, type DeviceEntry, type HardwareProfile, type SelfCheckItem } from "../protocol";
 import { tr } from "../i18n";
 import { guessStderrLevel, splitStderrLines } from "../../shared/log-levels";
+import { type PageHandle } from "../../shared/page-lifecycle";
 
 let resultsEl: HTMLElement | null = null;
 let logEl: HTMLElement | null = null;
@@ -185,7 +186,7 @@ async function loadDevicesAndHardware(): Promise<void> {
   deviceEl.replaceChildren(...blocks);
 }
 
-export function buildDiagnostics(): HTMLElement {
+export function buildDiagnostics(): PageHandle {
   const shell = h("div", { class: "settings" });
 
   const tabs = [
@@ -233,7 +234,12 @@ export function buildDiagnostics(): HTMLElement {
   });
 
   renderPane();
-  return shell;
+  return {
+    element: shell,
+    // 诊断页的在途结果（自检 4-6 秒）不应写到已移除的节点：关闭时统一置空。
+    // 这与既有的 `voxsub:pageclosed` 机制等价，但由页面生命周期统一驱动。
+    dispose: () => detachDiagnostics(),
+  };
 }
 
 /** 关闭覆盖页时调用，让诊断页的在途异步结果停止写 DOM。 */

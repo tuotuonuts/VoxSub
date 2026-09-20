@@ -298,9 +298,17 @@ async function runLiveOcrTick(): Promise<void> {
 
 function registerIpc(): void {
   /* ---- 后端 ---- */
-  ipcMain.handle("backend:start", () => {
+  ipcMain.handle("backend:start", (event) => {
     if (!bridge) return { ok: false, error: "后端未初始化" };
-    return bridge.start();
+    // 后端已经在跑：说明这是**渲染层重载**后的重新连接（或第二个窗口来连）。
+    // ready 事件只在后端启动时发过一次，早错过了；这里给发请求的这个渲染进程
+    // 补发一条，界面才能把"已连接"和会话状态恢复回来（缺陷 #11 的渲染层重载部分）。
+    const alreadyRunning = bridge.isRunning();
+    const result = bridge.start();
+    if (result.ok && alreadyRunning && lastReadyEvent) {
+      event.sender.send("backend:event", lastReadyEvent);
+    }
+    return result;
   });
 
   ipcMain.handle("backend:stop", () => {
@@ -541,12 +549,19 @@ function stamp(): string {
 
 function wireBackendEvents(source: BackendBridge): void {
   source.onEvent((event: BackendEvent) => {
+    // 记住最后一条 ready：渲染层重载（或换窗口）后重新连上时，原始的 ready
+    // 事件早已错过，必须能补发 —— 否则界面的就绪门一直等不到事件，
+    // 所有命令都要先干等 30 秒超时（表现为"刚重载完什么都点不动"）。
+    if (event.type === "ready") lastReadyEvent = event;
     mainWindow?.webContents.send("backend:event", event);
     overlayWindow?.webContents.send("backend:event", event);
     // 实时 OCR 期间，把识别结果转发给覆盖窗
     ocrOverlayWindow?.webContents.send("backend:event", event);
   });
 }
+
+/** 最后一条 ready 事件（用于渲染层重载后的补发）。 */
+let lastReadyEvent: BackendEvent | null = null;
 
 /**
  * 单实例锁 —— 防止双开。

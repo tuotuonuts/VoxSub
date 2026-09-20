@@ -15,10 +15,13 @@ import * as readline from "node:readline";
 import { app } from "electron";
 
 import { guessStderrLevel, localIsoNow, splitStderrLines } from "../shared/log-levels";
+import { REQUEST_HARD_DEADLINE_MS, SLOW_REQUEST_NOTICE_MS } from "../shared/request-outcome";
 
 export type BackendEvent =
   | { type: "ready"; version: string }
   | { type: "status"; text: string }
+  | { type: "disconnected"; reason?: string }
+  | { type: "request-timeout"; command: string; hint?: string }
   | { type: "utterance"; source: string; translation: string }
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }
@@ -30,19 +33,39 @@ export interface CommandResult {
   ok: boolean;
   error?: string;
   data?: unknown;
+  /** 请求未在时限内返回：**不是失败**，后端可能仍在处理（见下方 command()）。 */
+  timedOut?: boolean;
+  /** 请求没能发出（后端未运行 / 未初始化）。 */
+  unavailable?: boolean;
 }
 
 type Listener = (event: BackendEvent) => void;
 
+/** 一次待返回的请求。 */
+interface PendingRequest {
+  resolve: (result: CommandResult) => void;
+  /** 已经发过"超过时限"的通知，避免重复刷。 */
+  notified: boolean;
+  /** 首次通知的定时器。 */
+  noticeTimer: NodeJS.Timeout;
+  /** 硬性上限的定时器。 */
+  deadlineTimer: NodeJS.Timeout;
+}
+
 export class BackendBridge {
   private child: ChildProcessWithoutNullStreams | null = null;
   private listeners: Listener[] = [];
-  private pending = new Map<number, (result: CommandResult) => void>();
+  private pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private disposed = false;
 
   onEvent(listener: Listener): void {
     this.listeners.push(listener);
+  }
+
+  /** 后端是否已在运行（渲染层重载后重新连上时要靠它决定补发 ready）。 */
+  isRunning(): boolean {
+    return this.child !== null;
   }
 
   private emit(event: BackendEvent): void {
@@ -175,9 +198,12 @@ export class BackendBridge {
 
     child.on("exit", (code) => {
       this.child = null;
-      this.emit({ type: "status", text: `后端已退出（code=${code ?? "null"}）` });
-      for (const [, resolve] of this.pending) {
-        resolve({ ok: false, error: "后端已退出" });
+      // 独立事件：后端**退出了**，不是"启动失败"，也不是一句提示文案。
+      // 渲染层据此进入 disconnected 状态，把"运行中"收回去（缺陷 #11）。
+      this.emit({ type: "disconnected", reason: `code=${code ?? "null"}` });
+      this.emit({ type: "log", ts: localIsoNow(), level: "WARNING", message: `后端已退出（code=${code ?? "null"}）` });
+      for (const [id, request] of this.pending) {
+        this.settle(id, request, { ok: false, unavailable: true, error: "后端已退出" });
       }
       this.pending.clear();
     });
@@ -199,11 +225,10 @@ export class BackendBridge {
 
     const id = payload["id"];
     if (typeof id === "number") {
-      const resolver = this.pending.get(id);
-      if (resolver) {
-        this.pending.delete(id);
+      const request = this.pending.get(id);
+      if (request) {
         const ok = payload["ok"] !== false;
-        resolver({
+        this.settle(id, request, {
           ok,
           ...(typeof payload["error"] === "string" ? { error: payload["error"] } : {}),
           data: payload["data"],
@@ -219,27 +244,77 @@ export class BackendBridge {
   }
 
   command(name: string, args: unknown): Promise<CommandResult> {
-    if (!this.child) return Promise.resolve({ ok: false, error: "后端未运行" });
+    if (!this.child) {
+      // 请求根本没发出去 —— 与"后端报错"分开，界面能据此说清是哪种情况。
+      return Promise.resolve({ ok: false, unavailable: true, error: "后端未运行" });
+    }
     const id = this.nextId++;
     const payload = JSON.stringify({ id, command: name, args }) + "\n";
     return new Promise<CommandResult>((resolve) => {
-      this.pending.set(id, resolve);
+      // ---- 超时处理（缺陷 #4）----
+      //
+      // 原实现在 30 秒后把请求**判成失败**（`ok:false, error:"命令超时"`）并从
+      // pending 里删掉。两处后果都很严重：
+      //   · 界面记 ERROR「失败: 命令超时」—— 而迁移/下载/OCR 这些长任务这时候
+      //     还在正常跑（30 秒对它们只是起步）；
+      //   · 后端**稍后送回的真实结果会被丢弃**（handleLine 找不到请求就 return），
+      //     调用点于是拿不到终态，还会顺手解除退出保护（migration.ts 的
+      //     setBusy(false)）—— 用户此时退出就留下半个模型库。
+      //
+      // 现在的语义：
+      //   · 到时限只发一条**通知**（request-timeout），请求保持挂起，任务状态不变；
+      //   · 后端真的返回时，这个 promise 用**真实结果**兑现（数据不丢）；
+      //   · 只有超过硬性上限（30 分钟）才兑现成 timedOut —— 仍然**不是 failed**，
+      //     且明确告诉调用点"我们没拿到结果"，而不是"任务失败了"。
+      const noticeTimer = setTimeout(() => {
+        const request = this.pending.get(id);
+        if (!request || request.notified) return;
+        request.notified = true;
+        this.emit({
+          type: "request-timeout",
+          command: name,
+          hint: `${name} 超过 ${Math.round(SLOW_REQUEST_NOTICE_MS / 1000)} 秒未返回：任务仍在进行`,
+        });
+      }, SLOW_REQUEST_NOTICE_MS);
+
+      const deadlineTimer = setTimeout(() => {
+        const request = this.pending.get(id);
+        if (!request) return;
+        this.settle(id, request, {
+          ok: false,
+          timedOut: true,
+          error: `请求未在 ${Math.round(REQUEST_HARD_DEADLINE_MS / 60_000)} 分钟内返回（不代表任务失败，也不代表已取消）`,
+        });
+      }, REQUEST_HARD_DEADLINE_MS);
+
+      this.pending.set(id, { resolve, notified: false, noticeTimer, deadlineTimer });
       this.child?.stdin.write(payload, (error) => {
         if (error) {
-          this.pending.delete(id);
-          resolve({ ok: false, error: error.message });
+          const request = this.pending.get(id);
+          if (request) {
+            this.settle(id, request, { ok: false, error: error.message });
+          }
         }
       });
-      // 超时兜底：后端卡死时不能永久挂起 UI
-      setTimeout(() => {
-        if (this.pending.delete(id)) resolve({ ok: false, error: "命令超时" });
-      }, 30_000);
     });
+  }
+
+  /**
+   * 兑现一次请求：清掉两个定时器、从 pending 移除、再 resolve。
+   *
+   * 收在一处是为了保证**每个出口都清定时器** —— 漏掉一个就会留下一个
+   * 30 分钟的悬挂定时器（Electron 退出时表现为进程迟迟不退）。
+   */
+  private settle(id: number, request: PendingRequest, result: CommandResult): void {
+    clearTimeout(request.noticeTimer);
+    clearTimeout(request.deadlineTimer);
+    this.pending.delete(id);
+    request.resolve(result);
   }
 
   stop(): CommandResult {
     if (!this.child) return { ok: true };
-    this.command("shutdown", null).catch(() => undefined);
+    void this.command("shutdown", null).catch(() => undefined);
     return { ok: true };
   }
 
@@ -247,7 +322,9 @@ export class BackendBridge {
     this.disposed = true;
     const child = this.child;
     this.child = null;
-    for (const [, resolve] of this.pending) resolve({ ok: false, error: "正在退出" });
+    for (const [id, request] of this.pending) {
+      this.settle(id, request, { ok: false, unavailable: true, error: "正在退出" });
+    }
     this.pending.clear();
     if (!child) return;
     try {

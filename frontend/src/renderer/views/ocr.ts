@@ -12,6 +12,7 @@ import { h, on } from "../dom";
 import { call, store } from "../store";
 import { CMD, type OcrResult, type OcrLine } from "../protocol";
 import { tr } from "../i18n";
+import { type PageHandle } from "../../shared/page-lifecycle";
 
 type OcrMode = "shot" | "live";
 
@@ -304,7 +305,7 @@ function buildLivePage(): HTMLElement {
   return page;
 }
 
-export function buildOcrWorkspace(): HTMLElement {
+export function buildOcrWorkspace(): PageHandle {
   const pane = h("section", { class: "workspace ocr" });
 
   const head = h("header", { class: "workspace__head" });
@@ -347,5 +348,20 @@ export function buildOcrWorkspace(): HTMLElement {
 
   pane.append(bar, body);
   render();
-  return pane;
+
+  // 释放：让模块级节点引用失效（缺陷 #10）。
+  // 在途的识别/渲染结果回来时页面可能已经被换走，置空可避免往脱离文档的节点写。
+  return {
+    element: pane,
+    dispose: () => {
+      statusEl = null;
+      sourceEl = null;
+      translationEl = null;
+      previewEl = null;
+      previewWrapEl = null;
+      exportBtnEl = null;
+      sourceTabBtn = null;
+      translatedTabBtn = null;
+    },
+  };
 }
