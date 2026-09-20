@@ -9,8 +9,12 @@
 
 进程管理:
 - lazy 启动: 首次 translate 时 spawn; 每次从非热门动态端口区随机选择端口。
-- close(): terminate 子进程 (幂等)。
-- 启动失败 (exe 缺失 / 随机端口竞争 / 起不来) → 抛清晰 TranslationError。
+- close(): terminate 子进程 (幂等), 只终止本实例持有的进程句柄。
+- 并发生命周期: 存活检查 / 旧实例摘除 / 新实例初始化在 self._lifecycle_lock 内
+  **一次性决策**, 并发调用者不可能基于过期快照关掉后来者刚建好的实例;
+  self._generation 记录实例 epoch, close(generation=...) 可避免误关新实例。
+- 启动失败 (exe 缺失 / 随机端口竞争 / 起不来) → 抛清晰 TranslationError;
+  半成功启动 (进程已创建但激活/验证失败) 原子回滚, 不留孤儿进程与残留状态。
 """
 from __future__ import annotations
 
@@ -155,7 +159,14 @@ class QwenQualityTranslator(Translator):
         self._start_port = port
         self._proc: subprocess.Popen | None = None
         self._port: int | None = None
+        # 两把锁, 获取顺序固定为 _lifecycle_lock -> _lock, 任何路径不得反向获取:
+        #   _lock           : 串行化针对当前实例的 HTTP 请求 (含请求期间的状态读取);
+        #   _lifecycle_lock : 串行化"存活检查 + 摘除旧实例 + 初始化新实例"整段决策,
+        #                     使并发调用者无法基于过期快照去关闭后来者的实例。
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
+        # 实例 epoch: 每次实例状态变更递增。持旧 epoch 的 close() 不得关掉后来者。
+        self._generation = 0
         self._endpoint: str | None = None
         # A backend that failed to start must not be retried for every subtitle.
         # The blacklist is scoped to this translator/model instance.
@@ -261,10 +272,13 @@ class QwenQualityTranslator(Translator):
             logger.debug("读取 llama-server 输出失败", exc_info=True)
 
     def _clear_server_state(self) -> tuple[subprocess.Popen | None, int | None]:
+        """摘除当前实例状态并返回 (proc, port); 幂等。"""
         proc, self._proc = self._proc, None
         port = self._port
         self._endpoint = None
         self._port = None
+        # 状态已变更: 推进 epoch, 持旧 epoch 的 close() 不再拥有实例。
+        self._generation += 1
         return proc, port
 
     @staticmethod
@@ -399,14 +413,26 @@ class QwenQualityTranslator(Translator):
             self._server_exe = runtime.server_exe
         elif self._explicit_server_exe is None:
             self._runtime = None
+            # 注意：这里**不动** self._server_exe（保持上一次的选择）。
+            #
+            # 于是下面对 exe 的存在性检查会拿"上一次用过的那个 exe"继续跑，
+            # 而它可能正是这次因为进不了 _failed_runtimes 而被排除的加速器运行时。
+            # 是否应该改成"选不出运行时就直接拒绝启动"属于**产品行为决策**
+            # （保守 vs 尽力而为），不在本轮擅自改 —— 已登记为待甲方确认项。
+            # 但**日志不能说谎**：下面不能再笼统写 "CPU fallback"，否则排查时
+            # 会以为跑的是 CPU，实际跑的是被排除的加速器 exe。
+            logger.warning(
+                "没有可用的 llama 运行时（已排除: %s），将复用上一次的 exe: %s",
+                ", ".join(sorted(self._failed_runtimes)) or "无", self._server_exe)
         if not self._server_exe.exists():
             logger.warning("llama-server 缺失, 拒绝 spawn: %s (应含配套 DLL)",
                            self._server_exe)
             raise TranslationError(
                 f"llama-server 缺失: {self._server_exe} (应含配套 DLL, 见 tools/llama/)")
-        logger.info("质量翻译运行时已选择: %s requested_target=%s reason=%s",
+        logger.info("质量翻译运行时已选择: %s requested_target=%s reason=%s exe=%s",
                     self._runtime_summary(runtime), requested_target or "auto",
-                    runtime.selection_reason if runtime else "CPU fallback")
+                    runtime.selection_reason if runtime else "未选到运行时，复用既有 exe",
+                    self._server_exe)
         return profile, runtime
 
     def _start_server_process(self, cmd: list[str], child_env: dict[str, str]) -> None:
@@ -488,8 +514,15 @@ class QwenQualityTranslator(Translator):
             port, plan.gpu_layers, plan.context_size, self._n_threads,
         )
         self._start_server_process(list(plan.command), plan.environment)
-        self._activate_server(port, runtime, plan.gpu_layers, plan.context_size)
-        self._validate_server_startup(port, runtime)
+        try:
+            self._activate_server(port, runtime, plan.gpu_layers, plan.context_size)
+            self._validate_server_startup(port, runtime)
+        except BaseException:
+            # 半成功启动必须原子回滚: 否则 _ensure 的下一次尝试会覆盖 self._proc,
+            # 把这条已创建的进程变成无人回收的孤儿, 并留下端口/句柄不一致的状态。
+            # _retire_locked() 幂等 (validate 阶段可能已经清过一次)。
+            self._retire_locked()
+            raise
 
     def _probe_runtime_inference(self, timeout_sec: float = 180.0) -> None:
         """Require one real completion before accepting a candidate NPU route."""
@@ -582,51 +615,81 @@ class QwenQualityTranslator(Translator):
             logger.error("llama-server 最近输出: %s", detail)
         raise TranslationError(f"llama-server {timeout:.0f}s 内未就绪 (port {port})")
 
-    def _ensure(self) -> str:
-        """保证 llama-server 就绪并返回 endpoint。
+    def _live_endpoint_locked(self) -> str | None:
+        """返回当前存活实例的 endpoint; 调用方必须持有 _lifecycle_lock。
 
-        并发安全 (double-checked locking): 检查在锁外做(快速路径), 但**重新检查**
-        在锁内做——两个线程并发首次调用时, 只有第一个真正 spawn, 第二个
-        看到 endpoint 已就绪直接复用, 避免双开 llama-server 导致孤儿进程
-        (每孤儿 ~1.5GB 模型驻留, 且耗尽 8080-8089 端口范围)。
+        一次性读取状态快照: 不再有"锁外先读 self._proc, 再读 self._proc.poll()"
+        这种两次读取之间被别的线程清空而抛 AttributeError 的窗口。
         """
-        if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
-            # close() 内部也拿 self._lock (threading.Lock 非可重入),
-            # 故必须在锁外调用, 否则首次冷启动死锁 (2026-08-17 冒烟实测卡死)
-            self.close()
-            with self._lock:
-                # 锁内二次检查: 并发发起方可能已在等待时完成 spawn
-                if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
-                    last_error: TranslationError | None = None
-                    while True:
-                        try:
-                            self._spawn()
-                            break
-                        except TranslationError as exc:
-                            last_error = exc
-                            key = self._runtime_key(self._runtime)
-                            requested_target = _requested_llama_target()
-                            if requested_target is not None:
-                                raise TranslationError(
-                                    "强制 llama 目标 "
-                                    f"{requested_target.upper()} 启动或真实推理失败: {exc}"
-                                ) from exc
-                            if (self._explicit_server_exe is not None or
-                                    key is None or key[0] == "cpu"):
-                                raise
-                            self._failed_runtimes.add(key)
-                            logger.warning(
-                                "llama 运行时启动失败，切换下一后端: backend=%s target=%s error=%s",
-                                key[0], key[1], exc)
-                            self._runtime = None
-                    if last_error is not None and self._endpoint is None:
-                        raise last_error
-                else:
-                    logger.debug("_ensure 竞态收敛: 并发线程已先行完成 spawn, 复用 endpoint")
-        # 若 _spawn 抛错, 此处不会到达; endpoint 由 _spawn 赋值
-        endpoint = self._endpoint
-        assert endpoint is not None
+        proc, endpoint = self._proc, self._endpoint
+        if proc is None or endpoint is None:
+            return None
+        if proc.poll() is not None:
+            return None
         return endpoint
+
+    def _retire_locked(self) -> bool:
+        """摘除并终止当前实例; 调用方必须持有 _lifecycle_lock。幂等。
+
+        只终止 self._proc 指向的、本实例拥有的子进程句柄, 绝不按进程名宽杀。
+        """
+        with self._lock:
+            proc, port = self._clear_server_state()
+        if proc is None:
+            return False
+        logger.info("关闭质量档 llama-server (pid=%s, port=%s)",
+                    getattr(proc, "pid", "?"), port)
+        self._terminate_process(proc, port)
+        return True
+
+    def _ensure_instance(self) -> tuple[str, int]:
+        """保证 llama-server 就绪, 返回 (endpoint, 实例 epoch)。
+
+        同步策略: 存活检查 + 旧实例摘除 + 新实例初始化在 _lifecycle_lock 内
+        **一次决策**完成。旧实现把"判定陈旧"放在锁外、摘除却是无条件
+        ``self.close()``, 于是并发发起方可能在等锁后才真正执行摘除, 把另一个
+        线程刚建好的健康实例关掉 (缺陷 #7a/#7b)。现在不存在这样的窗口: 并发
+        调用者要么复用已就绪实例, 要么在锁上等待后复用, 不会误关后建实例。
+        """
+        with self._lifecycle_lock:
+            endpoint = self._live_endpoint_locked()
+            if endpoint is None:
+                self._retire_locked()
+                last_error: TranslationError | None = None
+                while True:
+                    try:
+                        self._spawn()
+                        break
+                    except TranslationError as exc:
+                        last_error = exc
+                        key = self._runtime_key(self._runtime)
+                        requested_target = _requested_llama_target()
+                        if requested_target is not None:
+                            raise TranslationError(
+                                "强制 llama 目标 "
+                                f"{requested_target.upper()} 启动或真实推理失败: {exc}"
+                            ) from exc
+                        if (self._explicit_server_exe is not None or
+                                key is None or key[0] == "cpu"):
+                            raise
+                        self._failed_runtimes.add(key)
+                        logger.warning(
+                            "llama 运行时启动失败，切换下一后端: backend=%s target=%s error=%s",
+                            key[0], key[1], exc)
+                        self._runtime = None
+                # 锁内确认新实例真的活着 (proc 已退出/spawn 未赋值都算失败)
+                endpoint = self._live_endpoint_locked()
+                if endpoint is None:
+                    if last_error is not None:
+                        raise last_error
+                    raise TranslationError("llama-server 未能就绪 (endpoint 缺失)")
+            else:
+                logger.debug("_ensure 复用已就绪实例 (并发调用已收敛)")
+            return endpoint, self._generation
+
+    def _ensure(self) -> str:
+        """保证 llama-server 就绪并返回 endpoint。"""
+        return self._ensure_instance()[0]
 
     # ------------------------------------------------------------------
     def translate(self, text: str, src_lang: str, dst_lang: str, *,
@@ -647,7 +710,7 @@ class QwenQualityTranslator(Translator):
             return text
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
-            endpoint = self._ensure()
+            endpoint, generation = self._ensure_instance()
             try:
                 with self._lock:
                     out = self._request_translation(endpoint, text, names, timeout_ms)
@@ -676,7 +739,7 @@ class QwenQualityTranslator(Translator):
                     "backend=%s target=%s error=%s",
                     key[0], key[1], exc,
                 )
-                self.close()
+                self.close(generation=generation)
                 continue
             reason = _translation_invalid_reason(text, cleaned, src_lang, dst_lang)
             if reason is not None:
@@ -712,7 +775,7 @@ class QwenQualityTranslator(Translator):
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
-            endpoint = self._ensure()
+            endpoint, generation = self._ensure_instance()
             try:
                 with self._lock:
                     raw = self._request_translation_batch(
@@ -734,7 +797,7 @@ class QwenQualityTranslator(Translator):
                     "backend=%s target=%s error=%s",
                     key[0], key[1], exc,
                 )
-                self.close()
+                self.close(generation=generation)
                 continue
             except TranslationError as exc:
                 if not allow_single_fallback:
@@ -891,12 +954,19 @@ class QwenQualityTranslator(Translator):
             "repeat_penalty": 1.05,
         }
 
-    def close(self) -> None:
-        with self._lock:
-            proc, port = self._clear_server_state()
-        if proc is not None:
-            logger.info("关闭质量档 llama-server (pid=%s, port=%s)", proc.pid, port)
-            self._terminate_process(proc, port)
+    def close(self, generation: int | None = None) -> None:
+        """终止本实例拥有的 llama-server 子进程 (幂等)。
+
+        ``generation`` 是可选 epoch 守卫: 仅当当前实例仍属于调用方观测到的那一代
+        实例时才关闭。请求失败后降级重试的调用方用它避免关掉其他线程刚重建的实例。
+        只终止 self._proc 这一个句柄, 不做按进程名/全局状态的宽杀。
+        """
+        with self._lifecycle_lock:
+            if generation is not None and generation != self._generation:
+                logger.debug("忽略过期 close(): generation=%s 当前=%s",
+                             generation, self._generation)
+                return
+            self._retire_locked()
 
     def warmup(self) -> bool:
         """Start and health-check the local server before the first sentence.

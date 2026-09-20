@@ -1,10 +1,16 @@
 """QwenQualityTranslator 并发安全回归测试。
 
-问题（独立审查发现的 TOCTOU 竞态）: _ensure() 检查在锁外做, _spawn() 无条件执行
-→ 并发初次调用可双开 llama-server 孤儿化第一个。
+测试纪律 (缺陷 #7 工作单)
+------------------------
+* 被测的生命周期/同步逻辑必须真跑: ``_ensure`` / ``_ensure_instance`` / ``_spawn`` /
+  ``_spawn_once`` / ``_activate_server`` / ``_clear_server_state`` / ``close`` 不被替换。
+* 只替换外部边界: ``subprocess.Popen`` (OS 进程)、``urllib.request.urlopen`` 与
+  ``chat_completion`` (HTTP)、硬件/运行时探测 (系统设备)。
+* 历史教训: 旧版本把 ``_spawn`` 与 ``close`` 一起换成假实现 (``close`` 直接返回 None),
+  于是"并发首次调用只 spawn 一次"的断言恒真, 而 ``_ensure`` 在锁外调用 ``close()``
+  摘除新实例的真实缺陷被彻底掩盖。这里不再 mock 生命周期方法。
 
-修复: double-checked locking。本测试 monkeypatch _spawn 只做计数,
-验证"并发 N 线程首次 _ensure 只 spawn 一次"——不启动真进程避免真实 spawn 语义。
+共享替身/工厂见 ``tests/test_qwen_lifecycle.py``。
 """
 from __future__ import annotations
 
@@ -16,106 +22,100 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from tests.test_qwen_lifecycle import (  # noqa: E402
+    FakeProcess,
+    install_boundaries,
+    install_cpu_runtime,
+    make_translator,
+    prepare,
+)
 from voxsub.hardware import HardwareProfile, LlamaRuntime  # noqa: E402
+from voxsub.llama_runtime import RuntimeStatus  # noqa: E402
+from voxsub.translate import qwen as qwen_module  # noqa: E402
 from voxsub.translate._http_client import OpenAICompatError  # noqa: E402
 from voxsub.translate.base import TranslationError  # noqa: E402
-from voxsub.translate.qwen import QwenQualityTranslator, _requested_llama_target  # noqa: E402
-from voxsub.translate.qwen import _clean, _invalid_translation  # noqa: E402
-from voxsub.translate import qwen as qwen_module  # noqa: E402
-from voxsub.llama_runtime import RuntimeStatus  # noqa: E402
+from voxsub.translate.qwen import (  # noqa: E402
+    QwenQualityTranslator,
+    _clean,
+    _invalid_translation,
+    _requested_llama_target,
+)
 
 
-class _FakeProc:
-    """最小"存活进程"替身: 提供 _ensure 依赖的 poll() (返回 None = 存活)。"""
-
-    def __init__(self, pid: int = 1) -> None:
-        self.pid = pid
-
-    def poll(self):  # noqa: A003 - 对齐 subprocess.Popen.poll 语义
-        return None  # None = 仍在运行
-
-    def wait(self, timeout: float | None = None) -> int:
-        return 0  # 假进程立即退出
-
-    def terminate(self) -> None:
-        pass
+def _cpu_and_gpu_runtimes(tmp_path: Path, translator: QwenQualityTranslator):
+    """(加速器运行时, CPU 运行时) —— 两者都指向真实存在的假 exe 文件。"""
+    gpu_exe = tmp_path / "openvino" / "llama-server.exe"
+    gpu_exe.parent.mkdir(parents=True, exist_ok=True)
+    gpu_exe.write_bytes(b"MZ fake openvino llama-server")
+    return (
+        LlamaRuntime(gpu_exe, "openvino", "GPU"),
+        LlamaRuntime(Path(translator._server_exe), "cpu", "CPU"),
+    )
 
 
-def _make_qwen(tmp_path: Path) -> QwenQualityTranslator:
-    """构造未就绪的 translator (model_path 指向存在的伪 gguf, server 可递归寻找)。"""
-    tools = tmp_path / "tools" / "llama"
-    tools.mkdir(parents=True)
-    fake_exe = tools / "llama-server.exe"
-    fake_exe.write_bytes(b"MZ fake")
-    models = tmp_path / "models" / "llm"
-    models.mkdir(parents=True)
-    gguf = models / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    gguf.write_bytes(b"x" * 600_000)
-    # 强制 monkeypatch 默认路径, 让构造不因缺模型抛错
-    q = QwenQualityTranslator(model_path=gguf, n_ctx=64, n_threads=1)
-    return q
+def _install_runtime_sequence(monkeypatch, runtimes) -> None:
+    """按顺序返回给定运行时 (硬件/运行时发现边界替身)。"""
+    remaining = list(runtimes)
+
+    def select(*_args, **_kwargs):
+        return remaining.pop(0) if remaining else runtimes[-1]
+
+    monkeypatch.setattr(qwen_module, "detect_hardware",
+                        lambda: HardwareProfile("test cpu", 4, 8, 16.0))
+    monkeypatch.setattr(qwen_module, "discover_llama_runtimes", lambda: list(runtimes))
+    monkeypatch.setattr(qwen_module, "select_llama_runtime", select)
 
 
+# ---------------------------------------------------------------------------
+# 并发初始化: 真实生命周期 (不再 mock _spawn / close)
+# ---------------------------------------------------------------------------
 def test_concurrent_first_ensure_spawns_once(tmp_path: Path, monkeypatch) -> None:
-    """8 线程并发首次 _ensure: 只有一次 _spawn (双检锁回归)。"""
-    q = _make_qwen(tmp_path)
-    # 用最小假 server: monkeypatch _spawn 使其快速"成功"并记录调用次数
-    spawned = {"n": 0}
+    """8 线程并发首次 _ensure: 只启动一个子进程, 全部复用同一 endpoint。"""
+    import threading
 
-    def fake_spawn(self) -> None:
-        spawned["n"] += 1
-        self._proc = _FakeProc(9999)      # 带 poll() 的假进程
-        self._port = 9999
-        self._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-
-    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
-    monkeypatch.setattr(QwenQualityTranslator, "close", lambda self: None)
-
+    translator, boundary = prepare(tmp_path, monkeypatch)
     barrier = threading.Barrier(8)
     endpoints: list[str] = []
-    errors: list[Exception] = []
+    errors: list[BaseException] = []
 
     def worker() -> None:
-        barrier.wait()
+        barrier.wait(timeout=10.0)
         try:
-            endpoints.append(q._ensure())
-        except Exception as exc:  # noqa: BLE001
+            endpoints.append(translator._ensure())
+        except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join(timeout=10)
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
 
-    # _spawn 必须恰好执行一次 (并发竞态修复前会是多次)
-    assert spawned["n"] == 1, f"并发首次调用应只 spawn 1 次, 实际 {spawned['n']}"
-    # 所有线程拿到同一 endpoint
-    assert len(errors) == 0, f"不应有线程抛错: {errors}"
-    assert all(e == "http://127.0.0.1:9999/v1/chat/completions" for e in endpoints)
+    assert errors == [], f"不应有线程抛错: {errors}"
     assert len(endpoints) == 8
+    assert len(boundary.launches) == 1, (
+        f"并发首次调用应只启动一个子进程, 实际 {len(boundary.launches)}")
+    assert set(endpoints) == {translator._endpoint}
+    assert boundary.launches[0].proc.terminate_calls == 0
+    assert translator._proc is boundary.launches[0].proc
 
 
 def test_healthy_reuses_endpoint_no_respawn(tmp_path: Path, monkeypatch) -> None:
-    """server 已就绪时反复 _ensure 不重复 spawn。"""
-    q = _make_qwen(tmp_path)
-    q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
-    q._port = 9999
-    n = {"val": 0}
+    """server 已就绪时反复 _ensure 不重复 spawn (真实 spawn 一次 + 复用)。"""
+    translator, boundary = prepare(tmp_path, monkeypatch)
+    first = translator._ensure()
+    assert len(boundary.launches) == 1
 
-    def fake_spawn(self) -> None:
-        n["val"] += 1
-
-    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
     for _ in range(5):
-        assert q._ensure() == q._endpoint
-    assert n["val"] == 0  # 就绪时绝不重 spawn
+        assert translator._ensure() == first
+
+    assert len(boundary.launches) == 1, "就绪时绝不重 spawn"
+    assert boundary.launches[0].proc.terminate_calls == 0
 
 
 def test_health_rejects_corrupt_catalog_model_before_runtime_probe(tmp_path: Path,
                                                                     monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._expected_size = 1
     q._expected_sha256 = "0" * 64
     monkeypatch.setattr(qwen_module, "detect_hardware",
@@ -128,32 +128,38 @@ def test_health_rejects_corrupt_catalog_model_before_runtime_probe(tmp_path: Pat
 def test_first_ensure_cold_start_no_deadlock(tmp_path: Path, monkeypatch) -> None:
     """回归: 首次冷启动 _ensure 不死锁 (2026-08-17 冒烟抓到)。
 
-    曾把 close() 放在 with self._lock 内调用, 而 close() 内部也拿同一把
-    非可重入锁 -> 死锁卡死。修复: close() 移到锁外。
+    旧实现把 close() 放在非可重入的 self._lock 内调用会自死锁。这里用**真实**的
+    close()/摘除路径并发跑冷启动: 必须在超时内返回。
     """
-    q = _make_qwen(tmp_path)
-    # close() 需能容忍 _FakeProc (无真进程), 走快速路径
-    monkeypatch.setattr(QwenQualityTranslator, "close", lambda self: None)
+    import threading
 
-    spawned = {"n": 0}
+    translator, boundary = prepare(tmp_path, monkeypatch)
+    done = threading.Event()
+    outcome: dict[str, object] = {}
 
-    def fake_spawn(self) -> None:
-        spawned["n"] += 1
-        self._proc = _FakeProc(1)
-        self._port = 9999
-        self._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
+    def run() -> None:
+        try:
+            outcome["endpoint"] = translator._ensure()
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+        finally:
+            done.set()
 
-    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
-    # 冷启动(未就绪) -> _ensure 必须在超时内返回, 不死锁
-    endpoint = q._ensure()
-    assert endpoint == "http://127.0.0.1:9999/v1/chat/completions"
-    assert spawned["n"] == 1
+    thread = threading.Thread(target=run, name="cold-start")
+    thread.start()
+    assert done.wait(timeout=10.0), "冷启动 _ensure 卡死 (疑似死锁)"
+    assert "error" not in outcome, outcome.get("error")
+    assert outcome["endpoint"] == translator._endpoint
+    assert len(boundary.launches) == 1
 
 
+# ---------------------------------------------------------------------------
+# 端口选择 / 端口竞争重试
+# ---------------------------------------------------------------------------
 def test_port_picker_falls_back_when_preferred_range_is_busy(
         tmp_path: Path, monkeypatch) -> None:
     """All 8080-8089 ports being busy must not disable local translation."""
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
 
     class _FakeSocket:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -183,7 +189,7 @@ def test_port_picker_falls_back_when_preferred_range_is_busy(
 def test_port_picker_changes_random_port_after_collision(
         tmp_path: Path, monkeypatch) -> None:
     """A busy random candidate is skipped instead of reused."""
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     candidates = iter([848, 849])  # 50000, then 50001
 
     class _FakeSocket:
@@ -213,56 +219,64 @@ def test_port_picker_changes_random_port_after_collision(
 
 
 def test_spawn_retries_after_port_race(tmp_path: Path, monkeypatch) -> None:
-    """A bind race after selection gets a new port before backend fallback."""
-    q = _make_qwen(tmp_path)
-    attempts = {"count": 0}
+    """A bind race after selection gets a new port before backend fallback.
 
-    def fake_spawn_once(self) -> None:
-        attempts["count"] += 1
-        if attempts["count"] == 1:
-            self._server_output_tail.append("bind failed: Address already in use")
-            raise TranslationError("llama-server 端口启动失败")
-        self._proc = _FakeProc(42)
-        self._port = 50001
-        self._endpoint = "http://127.0.0.1:50001/v1/chat/completions"
+    真实 ``_spawn``/``_spawn_once``: 第一个子进程因端口占用启动失败 (stdout 有
+    bind 报错 → 状态清空 + 进程回收), 第二个用新端口起成功。
+    """
+    import threading
 
-    monkeypatch.setattr(QwenQualityTranslator, "_spawn_once", fake_spawn_once)
-    q._spawn()
-    assert attempts["count"] == 2
-    assert q._endpoint.endswith("50001/v1/chat/completions")
+    ports = iter([50100, 50101])
+    translate = make_translator(tmp_path, monkeypatch)
+    install_cpu_runtime(monkeypatch, translate)
+    boundary = install_boundaries(monkeypatch, plan=[
+        {"kwargs": {
+            "exit_code": 1,
+            "stdout_lines": ["llama-server: error: failed to bind to 127.0.0.1:50100"],
+            "drain_event": threading.Event(),
+        }},
+        {},
+    ])
+    monkeypatch.setattr(translate, "_pick_free_port", lambda: next(ports))
+
+    translate._spawn()
+
+    assert [launch.port for launch in boundary.launches] == [50100, 50101]
+    assert boundary.launches[0].proc.terminate_calls == 1, "端口竞争失败的进程必须回收"
+    assert translate._endpoint.endswith(":50101/v1/chat/completions")
+    assert translate._port == 50101
+    assert translate._proc is boundary.launches[1].proc
 
 
 def test_failed_accelerator_falls_back_once(tmp_path: Path, monkeypatch) -> None:
     """A crashed accelerator is blacklisted before the next spawn attempt."""
-    q = _make_qwen(tmp_path)
-    monkeypatch.setattr(QwenQualityTranslator, "close", lambda self: None)
-    attempts: list[tuple[str, str]] = []
+    translator = make_translator(tmp_path, monkeypatch)
+    gpu_runtime, cpu_runtime = _cpu_and_gpu_runtimes(tmp_path, translator)
+    _install_runtime_sequence(monkeypatch, [gpu_runtime, cpu_runtime])
+    boundary = install_boundaries(monkeypatch, plan=[
+        {"kwargs": {"exit_code": 0xC0000005,
+                    "stdout_lines": ["llama: openvino GPU graph execution failed"]}},
+        {},
+    ])
 
-    def fake_spawn(self) -> None:
-        if not attempts:
-            runtime = LlamaRuntime(Path("npu/llama-server.exe"), "openvino", "NPU")
-            self._runtime = runtime
-            attempts.append((runtime.backend, runtime.target))
-            raise TranslationError("exit code 0xC0000005")
-        runtime = LlamaRuntime(Path("cpu/llama-server.exe"), "cpu", "CPU")
-        self._runtime = runtime
-        attempts.append((runtime.backend, runtime.target))
-        self._proc = _FakeProc(2)
-        self._port = 9998
-        self._endpoint = "http://127.0.0.1:9998/v1/chat/completions"
+    endpoint = translator._ensure()
 
-    monkeypatch.setattr(QwenQualityTranslator, "_spawn", fake_spawn)
-    assert q._ensure().endswith("9998/v1/chat/completions")
-    assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
-    assert ("openvino", "NPU") in q._failed_runtimes
-    q._proc = None
-    q._endpoint = None
+    assert endpoint == translator._endpoint
+    assert len(boundary.launches) == 2, "加速后端失败后应换后端重建一个实例"
+    assert boundary.launches[0].proc.terminate_calls == 1, "崩溃实例必须被回收"
+    assert ("openvino", "GPU") in translator._failed_runtimes
+    assert translator._server_exe == cpu_runtime.server_exe
+    assert boundary.launches[1].command[0] == str(cpu_runtime.server_exe)
+    assert translator._proc is boundary.launches[1].proc
 
 
+# ---------------------------------------------------------------------------
+# 运行时选择 (真实 _select_runtime, 只替换硬件发现边界)
+# ---------------------------------------------------------------------------
 def test_select_runtime_repairs_missing_openvino_before_npu_selection(
         tmp_path: Path, monkeypatch) -> None:
     """An Intel NPU first provisions OpenVINO, then is selected after rediscovery."""
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     server = tmp_path / "openvino" / "llama-server.exe"
     server.parent.mkdir(parents=True)
     server.write_bytes(b"MZ")
@@ -297,7 +311,7 @@ def test_select_runtime_repairs_missing_openvino_before_npu_selection(
 def test_select_runtime_falls_back_when_openvino_repair_fails(
         tmp_path: Path, monkeypatch) -> None:
     """A failed bootstrap is logged and leaves the normal CPU fallback intact."""
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     cpu_server = tmp_path / "cpu" / "llama-server.exe"
     cpu_server.parent.mkdir(parents=True)
     cpu_server.write_bytes(b"MZ")
@@ -340,7 +354,7 @@ def test_requested_llama_target_accepts_known_values_and_ignores_invalid(
 
 def test_forced_npu_reports_unavailable_runtime_without_cpu_fallback(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     profile = HardwareProfile("test cpu", 4, 8, 16.0, npu_name="Intel AI Boost")
     select_calls: list[dict] = []
     monkeypatch.setenv("VOXSUB_LLAMA_TARGET", "npu")
@@ -362,45 +376,40 @@ def test_forced_npu_reports_unavailable_runtime_without_cpu_fallback(
     assert select_calls[0]["preferred_target"] == "npu"
 
 
+# ---------------------------------------------------------------------------
+# 请求期失败降级 (真实 _ensure + 真实 close)
+# ---------------------------------------------------------------------------
 def test_translation_retries_same_sentence_after_accelerator_failure(
         tmp_path: Path, monkeypatch) -> None:
     """A live accelerator request failure must fall back before dropping text."""
-    q = _make_qwen(tmp_path)
-    runtimes = [
-        LlamaRuntime(Path("npu/llama-server.exe"), "openvino", "NPU"),
-        LlamaRuntime(Path("cpu/llama-server.exe"), "cpu", "CPU"),
-    ]
-    attempts: list[tuple[str, str]] = []
+    translator = make_translator(tmp_path, monkeypatch)
+    gpu_runtime, cpu_runtime = _cpu_and_gpu_runtimes(tmp_path, translator)
+    _install_runtime_sequence(monkeypatch, [gpu_runtime, cpu_runtime])
+    boundary = install_boundaries(monkeypatch)
+    endpoints: list[str] = []
 
-    def fake_ensure() -> str:
-        runtime = runtimes.pop(0)
-        q._runtime = runtime
-        q._proc = _FakeProc()
-        q._endpoint = f"http://127.0.0.1:{len(attempts) + 1}/v1/chat/completions"
-        return q._endpoint
-
-    def fake_request(*_args, **_kwargs) -> str:
-        assert q._runtime is not None
-        attempts.append((q._runtime.backend, q._runtime.target))
-        if q._runtime.target == "NPU":
-            raise OpenAICompatError("NPU graph execution failed")
+    def fake_chat(endpoint, **_kwargs) -> str:
+        endpoints.append(endpoint)
+        assert translator._runtime is not None
+        if translator._runtime.target == "GPU":
+            raise OpenAICompatError("GPU graph execution failed")
         return "Hello."
 
-    monkeypatch.setattr(q, "_ensure", fake_ensure)
-    monkeypatch.setattr(q, "_request_translation", fake_request)
-    monkeypatch.setattr(q, "close", lambda: None)
+    monkeypatch.setattr(qwen_module, "chat_completion", fake_chat)
 
-    assert q.translate("你好。", "zh", "en") == "Hello."
-    assert attempts == [("openvino", "NPU"), ("cpu", "CPU")]
-    assert ("openvino", "NPU") in q._failed_runtimes
-    q._proc = None
-    q._endpoint = None
+    assert translator.translate("你好。", "zh", "en") == "Hello."
+    assert len(endpoints) == 2 and endpoints[0] != endpoints[1]
+    assert ("openvino", "GPU") in translator._failed_runtimes
+    assert len(boundary.launches) == 2
+    assert boundary.launches[0].proc.terminate_calls == 1, "失败实例必须被摘除回收"
+    assert translator._proc is boundary.launches[1].proc
+    assert translator._endpoint == endpoints[1]
 
 
 def test_spawn_requests_openvino_device_and_disables_npu_fallback(
         tmp_path: Path, monkeypatch) -> None:
     """NPU launches must select OPENVINO0 and reject silent CPU fallback."""
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     fake_server = tmp_path / "tools" / "llama" / "llama-server.exe"
     runtime = LlamaRuntime(fake_server, "openvino", "NPU")
     q._runtime = runtime
@@ -409,14 +418,10 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
     q._model_path.write_bytes(b"model")
     captured: dict = {}
 
-    class _Proc(_FakeProc):
-        stdout = None
-        returncode = None
-
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs["env"]
-        return _Proc(42)
+        return FakeProcess(pid=42)
 
     monkeypatch.setattr(q, "_pick_free_port", lambda: 8090)
     wait_ready: dict = {}
@@ -450,10 +455,13 @@ def test_spawn_requests_openvino_device_and_disables_npu_fallback(
     q.close()
 
 
+# ---------------------------------------------------------------------------
+# 提示词 / 输出清洗 (不涉及生命周期)
+# ---------------------------------------------------------------------------
 def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     captured: dict = {}
 
     def fake_chat(_endpoint, *, messages, **_kwargs):
@@ -469,10 +477,10 @@ def test_quality_translation_uses_system_constraint(tmp_path: Path, monkeypatch)
 
 def test_hy_mt2_uses_official_single_user_prompt_and_sampling(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._prompt_style = "hy-mt2"
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     captured: dict = {}
 
     def fake_chat(_endpoint, *, messages, **kwargs):
@@ -498,10 +506,10 @@ def test_hy_mt2_uses_official_single_user_prompt_and_sampling(
 
 def test_hy_mt2_retry_keeps_direct_prompt_and_expands_long_output_budget(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._prompt_style = "hy-mt2"
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     calls: list[dict] = []
     answers = iter(["This translation has an explanation.", "Hello."])
 
@@ -520,13 +528,13 @@ def test_hy_mt2_retry_keeps_direct_prompt_and_expands_long_output_budget(
 
 
 def test_selected_gpu_backend_offloads_layers(tmp_path: Path) -> None:
-    q = _make_qwen(tmp_path)
     profile = HardwareProfile(
         "Intel Core Ultra", 4, 8, 16.0,
         integrated_gpu_name="Intel Arc Graphics",
     )
+    translator = QwenQualityTranslator(model_path=tmp_path / "m.gguf")
     runtime = LlamaRuntime(tmp_path / "llama-server.exe", "vulkan", "GPU")
-    assert q._auto_gpu_layers(profile, runtime) == 999
+    assert translator._auto_gpu_layers(profile, runtime) == 999
 
 
 def test_clean_removes_prompt_echo_and_control_tokens() -> None:
@@ -547,9 +555,9 @@ def test_clean_removes_prompt_echo_and_control_tokens() -> None:
 
 
 def test_quality_translation_rejects_explanatory_answer(tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     answers = iter([
         "Here's the English translation:\nHello.\n\nThis translation attempts to explain it.",
         "Hello.",
@@ -562,9 +570,9 @@ def test_quality_translation_rejects_explanatory_answer(tmp_path: Path, monkeypa
 
 def test_quality_ocr_batch_uses_one_request_and_preserves_order(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     calls: list[dict] = []
 
     def fake_chat(_endpoint, **kwargs):
@@ -582,9 +590,9 @@ def test_quality_ocr_batch_uses_one_request_and_preserves_order(
 
 def test_quality_ocr_single_paragraph_uses_large_batch_budget(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     calls: list[dict] = []
 
     def fake_chat(_endpoint, **kwargs):
@@ -604,10 +612,10 @@ def test_quality_ocr_single_paragraph_uses_large_batch_budget(
 
 def test_hy_mt2_ocr_batch_avoids_system_role_and_source_tags(
         tmp_path: Path, monkeypatch) -> None:
-    q = _make_qwen(tmp_path)
+    q = make_translator(tmp_path, monkeypatch)
     q._prompt_style = "hy-mt2"
     q._endpoint = "http://127.0.0.1:9999/v1/chat/completions"
-    q._proc = _FakeProc(1)
+    q._proc = FakeProcess(pid=1)
     captured: dict = {}
 
     def fake_chat(_endpoint, **kwargs):
