@@ -20,7 +20,11 @@ from typing import Callable, Iterable
 from urllib import request as urlrequest
 
 from voxsub.logging_setup import get_logger
-from voxsub.file_io import copy_file_atomically, write_text_atomically
+from voxsub.file_io import (
+    copy_file_atomically,
+    replace_with_retry,
+    write_text_atomically,
+)
 from voxsub.hardware import HardwareProfile, detect_hardware, discover_llama_runtimes
 from voxsub.model_storage import model_lookup_roots, resolve_models_root
 from voxsub.models import DownloadCancelled, fetch_file, sha256_of
@@ -1083,7 +1087,7 @@ class ModelMarketplace:
             final = target / model.asset_name
             if final.exists():
                 final.unlink()
-            download.replace(final)
+            replace_with_retry(download, final)
         return target
 
     def _install_remote_files(self, model: ModelSpec, source: ModelSource,

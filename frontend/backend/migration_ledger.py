@@ -61,6 +61,15 @@ class CleanupRefused(ValueError):
     """清理请求被拒绝。消息面向开发者/日志，不直接当用户文案。"""
 
 
+class MigrationSourceRefused(ValueError):
+    """迁移的**源**被拒绝。
+
+    删除授权链的第一环就在这里：清理侧只认台账记录，而台账是 ``start_migration``
+    写的。如果 ``start_migration`` 不校验源，那么"两步 IPC 删掉任意目录"依然成立 ——
+    这是独立审查实测出来的（跨卷复制时源仍在，而 C:→D: 正是本项目的常规迁移方向）。
+    """
+
+
 def ledger_path() -> Path:
     """台账文件位置。与 migration-state.json 同目录。"""
     local = os.environ.get("LOCALAPPDATA") or str(Path.home())
@@ -250,6 +259,57 @@ def contains_active_app_root(source: Path | str,
         if _norm(source) == _norm(root) or is_inside(root, source):
             return Path(root)
     return None
+
+
+def validate_migration_source(source: Path | str, *,
+                              allowed_sources: Sequence[Path]) -> Path:
+    """校验"能不能把**这个目录**当作迁移的源"，返回归一化后的源路径。
+
+    为什么需要它（独立审查实测出的真问题）：
+
+      清理侧只认台账记录，看起来"手写一次 IPC 就能删任意目录"不成立。但台账是
+      ``start_migration`` 写的，而 ``start_migration`` 以前对 ``source`` **只检查
+      "是不是目录"**。于是两步就能删掉任意仍存在的用户目录：
+
+          1. start_migration({source: <任意用户目录>, target: <攻击者选的目录>})
+             → 校验"通过"、台账写入 verified=True、跨卷复制后源仍在
+          2. cleanup_migrated_source({record_id, confirm: true}) → rmtree
+
+      同卷 rename 会让源消失（被"源目录不存在"挡住），但**跨卷复制是常规用法** ——
+      C: 到 D:/VoxSub 正是本项目自己的默认迁移方向。所以这条链真的能走通。
+
+    授权依据：**源必须是应用自己认的数据位置**（``allowed_sources`` 由调用方给出，
+    来自 ``legacy_migration.assess_storage`` 的探测结果与当前配置的模型/缓存根）。
+    这与清理侧同一套思路 —— 不是"猜哪些路径好"，而是"证明它是我们的东西"。
+    **未知即拒绝。**
+    """
+    raw = str(source or "").strip()
+    if not raw:
+        raise MigrationSourceRefused("迁移源为空，拒绝")
+
+    path = Path(raw)
+
+    if is_unc_or_device_path(raw):
+        raise MigrationSourceRefused(f"拒绝迁移网络/设备路径：{raw}")
+    if is_volume_root(path):
+        raise MigrationSourceRefused(f"拒绝迁移卷根：{path}")
+    if is_protected(path):
+        raise MigrationSourceRefused(f"拒绝迁移受保护目录：{path}")
+    if not path.is_dir():
+        raise MigrationSourceRefused(f"迁移源不是目录：{path}")
+    if is_reparse_point(path):
+        raise MigrationSourceRefused(f"拒绝迁移重解析点（symlink/junction）：{path}")
+
+    authorized = [Path(item) for item in allowed_sources if str(item).strip()]
+    if not authorized:
+        raise MigrationSourceRefused(
+            "没有探测到任何属于本应用的数据位置，拒绝迁移（无法证明这个源是我们的）")
+
+    if not any(_norm(path) == _norm(root) or is_inside(path, root) for root in authorized):
+        raise MigrationSourceRefused(
+            f"迁移源不在本应用已知的数据位置内，拒绝：{path}")
+
+    return path
 
 
 def source_is_inside_recorded_target(record: dict[str, Any]) -> bool:

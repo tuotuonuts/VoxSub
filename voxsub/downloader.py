@@ -9,6 +9,7 @@ from typing import Callable, Iterable
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from voxsub.file_io import replace_with_retry
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("downloader")
@@ -80,7 +81,7 @@ class _DownloadTarget:
                 return True
             if (not self.part.exists() and self.expected_size is not None and
                     self.destination.stat().st_size < self.expected_size):
-                self.destination.replace(self.part)
+                replace_with_retry(self.destination, self.part)
                 logger.info("恢复旧版未完成下载为断点文件: %s (%d/%d)",
                             self.part, self.part.stat().st_size, self.expected_size)
             else:
@@ -104,7 +105,7 @@ class _DownloadTarget:
                 self.part.unlink(missing_ok=True)
                 return False
             print("  SHA256 校验通过")
-        self.part.replace(self.destination)
+        replace_with_retry(self.part, self.destination)
         size_mb = self.destination.stat().st_size / 1e6
         print(f"  下载完成: {self.destination.name} ({size_mb:.1f} MB)")
         logger.info("下载完成: %s (%.1f MB)", self.destination.name, size_mb)

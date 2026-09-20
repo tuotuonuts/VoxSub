@@ -34,9 +34,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:  # 共享的原子写入（唯一临时名 + fsync + Windows 瞬时占用重试）
-    from voxsub.file_io import write_text_atomically as _write_text_atomically
+    from voxsub.file_io import replace_with_retry, write_text_atomically as _write_text_atomically
 except ImportError:  # 独立脚本运行（python backend/legacy_migration.py）时 voxsub 可能不在路径上
     _write_text_atomically = None  # type: ignore[assignment]
+
+    def replace_with_retry(source, destination):  # type: ignore[misc]
+        """独立脚本运行时的兜底：voxsub 不在路径上，退回朴素实现。"""
+        source.replace(destination)
 
 # ------------------------------------------------------------------ 常量
 
@@ -407,9 +411,12 @@ def write_state(**updates: Any) -> dict[str, Any]:
         # 共享实现：唯一临时文件名 + fsync + Windows 瞬时占用重试。
         _write_text_atomically(target, payload, encoding="utf-8")
     else:  # pragma: no cover - 只有独立脚本运行且 voxsub 不在 sys.path 上时走这里
+        # 这一支只在"voxsub 不在 sys.path"（直接 python backend/legacy_migration.py）时
+        # 生效；真实运行路径都走上面的共享实现。用 replace_with_retry 而不是裸
+        # Path.replace：Windows 上同步盘/杀毒会瞬时占用，裸调用是"随机失败"的来源。
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(target)
+        replace_with_retry(tmp, target)
     return state
 
 
@@ -550,9 +557,13 @@ def write_model_snapshot(models_root: str | Path) -> dict[str, Any]:
 
     target = snapshot_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(target)
+    payload = json.dumps(snapshot, ensure_ascii=False, indent=2)
+    if _write_text_atomically is not None:
+        _write_text_atomically(target, payload, encoding="utf-8")
+    else:  # pragma: no cover - 独立脚本运行且 voxsub 不在路径上时
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        replace_with_retry(tmp, target)
     return {"path": str(target), "entries": len(snapshot["entries"])}
 
 

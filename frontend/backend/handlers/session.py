@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ipc_protocol import _event
+from ipc_protocol import _event, _now_iso
 
 
 class SessionHandlers:
@@ -21,8 +21,20 @@ class SessionHandlers:
 
     def _cmd_start(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:
         pipeline.start()
-        # 通知界面"新的会话开始"：前端据此重置时间基准（导出 SRT 需要相对时间）
-        _event("session", action="start")
+        # 通知界面"新的会话开始"：前端据此重置时间基准（导出 SRT 需要相对时间）。
+        #
+        # **只在真的在跑时才发**：这条事件会让渲染层清空整场字幕并重置时间基准，
+        # 一旦 start() 在某个状态下静默不做（例如"停止中"），发了就等于告诉界面
+        # "新会话开始了、旧字幕可以扔了" —— 用户会看到"开始了但字幕全没了"。
+        # start() 现在会在这类状态下抛错，这里再加一道，防的是以后又出现
+        # "静默不启动"的路径。
+        if pipeline.is_running():
+            _event("session", action="start")
+        else:
+            # 日志事件必须带 ts：UI 的 LogEntry 要它排序与显示时间。
+            # （ipc_loop 的 log 事件有统一注入点，但这条不在那条路径上。）
+            _event("log", level="WARNING", ts=_now_iso(),
+                   message="start 之后 pipeline 并未进入运行态，已跳过 session=start 事件")
         return self._state_payload(pipeline)
 
     def _cmd_stop(self, pipeline: Any, _args: dict[str, Any]) -> dict[str, Any]:

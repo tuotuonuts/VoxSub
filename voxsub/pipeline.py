@@ -1733,6 +1733,18 @@ class Pipeline:
 
     # ---- 启停 ----
     def start(self) -> None:
+        if self._is_settling():
+            # 收尾窗口里**必须报错，不能静默 return**（缺陷 #6 的修复带出来的回归）。
+            #
+            # 状态是 STOPPING 时 is_running() 也为真，所以原来的 `if self.is_running(): return`
+            # 会把它当成"已经在跑、无需重复启动"而静默返回；上层的 _cmd_start 随后
+            # **无条件**发 session=start，渲染层据此清空整场字幕并重置时间基准 ——
+            # 用户看到的是"好像开始了，但字幕全没了"，导出也随之变空。
+            # 而且这个窗口比修复前更宽（8 秒 join + 30 秒观察者）。
+            #
+            # 旧语义（状态落 IDLE + 活线程）在这里是抛错的，这里恢复那个诚实的报错。
+            names = ", ".join(_thread_label(t) for t in self._workers_alive())
+            raise RuntimeError(f"上一任务仍在安全收尾（{names or '停止中'}），请稍后再开始")
         if self.is_running():
             return
         # 清理上次异常退出留下的线程引用与旧音频块。

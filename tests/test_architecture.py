@@ -38,6 +38,14 @@ COMPLEXITY_BASELINE: dict[str, int] = {
     "contract_validation.py:_collect_object": 17,
 }
 
+#: 基线允许的条目数上限。**新增条目必须同时改这个数字**。
+#:
+#: 棘轮只强制"登记"，不强制"正当性" —— 理论上新写一个复杂度 40 的函数、顺手在
+#: COMPLEXITY_BASELINE 里加一行，两道棘轮测试都会绿（因为 ceiling 必须等于实测、
+#: 而且没有上界）。这个上限就是那道额外的编辑动作：它不会阻止新增，但会让 review
+#: 看见"有人往棘轮里加了东西"并追问为什么。**只允许调小，调大等于放宽门禁。**
+COMPLEXITY_BASELINE_SIZE_CAP = 8
+
 #: 核心包绝不依赖适配层与 UI 框架：依赖方向只能是"适配层 → 核心"。
 FORBIDDEN_CORE_IMPORTS = frozenset({
     "ipc_server", "ipc_loop", "job_runner", "migration_ledger",
@@ -155,6 +163,19 @@ def _complexity_scores() -> dict[str, int]:
     return scores
 
 
+def test_complexity_baseline_count_only_shrinks() -> None:
+    """基线条目数不许增长 —— 否则棘轮会变成"允许超标清单"。
+
+    审查指出：`test_complexity_baseline_only_shrinks` 只要求 `actual >= ceiling`，
+    于是新写一个超复杂函数 + 顺手加一行基线，两道测试都会绿。这条把条目数也钉住。
+    """
+    assert len(COMPLEXITY_BASELINE) <= COMPLEXITY_BASELINE_SIZE_CAP, (
+        f"基线条目数 {len(COMPLEXITY_BASELINE)} 超过上限 {COMPLEXITY_BASELINE_SIZE_CAP} —— "
+        "新增超标函数必须先把别的拆掉，或者明确说明为什么这次例外（并同步把上限**调小**，"
+        "不是调大）"
+    )
+
+
 def test_production_functions_stay_below_complexity_budget() -> None:
     """Force new branch-heavy orchestration to be split before it lands.
 
@@ -211,40 +232,131 @@ def test_production_queues_have_explicit_capacity() -> None:
     assert not violations, "Unbounded production queues:\n" + "\n".join(violations)
 
 
+def test_adapter_scan_set_is_never_empty() -> None:
+    """四条适配层门禁共用一个扫描函数 —— 它返回空集时它们会**全部静默通过**。
+
+    这正是缺陷 #13 要防的"扫不到就以为没问题"（旧门禁只扫 `voxsub/`，适配层完全
+    在检查之外，却一直是绿的）。所以单独一条断言把扫描集钉住：目录改名/移动后
+    会立刻红，而不是变成四条恒绿的空壳。
+    """
+    scanned = _iter_project_python()
+    labels = {label for _path, label in scanned}
+    assert any(label.startswith("frontend/backend/") for label in labels), (
+        f"适配层扫描集为空 —— 四条适配层规则其实什么都没查。实际标签示例：{sorted(labels)[:5]}"
+    )
+    assert any(label.startswith("voxsub/") for label in labels), (
+        "核心包扫描集为空 —— 核心侧规则其实什么都没查"
+    )
+    # 打包产物与缓存不该被算进代码门禁
+    assert not any("dist/" in label or "__pycache__" in label for label in labels), (
+        "扫描集混进了 dist/__pycache__，门禁结果会被第三方代码噪声淹没"
+    )
+
+
 # ------------------------------------------------------------------ 原子发布
 
-#: 只允许这一个文件调用 ``os.replace``：原子发布的唯一实现。
-_ATOMIC_PUBLISH_OWNER = "voxsub/file_io.py"
+#: 只允许这些文件自己调 ``os.replace`` / ``Path.replace``。
+#:
+#: · ``voxsub/file_io.py`` —— 共享实现本身；
+#: · ``frontend/backend/legacy_migration.py`` —— 它要支持**独立脚本运行**
+#:   （``python backend/legacy_migration.py``，此时 voxsub 不在 sys.path 上），
+#:   所以共享导入失败时得有一个就地兜底。除这个兜底分支外，该文件都走共享实现。
+_ATOMIC_PUBLISH_OWNERS = frozenset({
+    "voxsub/file_io.py",
+    "frontend/backend/legacy_migration.py",
+})
 
 
-def test_atomic_publish_goes_through_the_shared_helper() -> None:
-    """禁止在 ``file_io`` 之外手写 ``os.replace``——**零豁免**。
+def _atomic_publish_offenders() -> list[str]:
+    """找出绕过共享原子发布的调用点。
 
-    原因：Windows 上同步盘（本仓库就在 OneDrive 下）与杀毒软件会短暂持有刚写完的
-    文件句柄，裸 ``os.replace`` 会零星抛 ``[WinError 5] 拒绝访问``。全量测试里表现
-    为"跟代码无关的随机失败"，是**最消耗排查时间**的一类问题。
+    覆盖**两种等价形态**：
 
-    这个坑踩过两次（``file_io`` 自己一次、``llama_runtime`` 一次），所以不再靠
-    "记得加重试"：要原子发布就 ``from voxsub.file_io import replace_with_retry``。
+      · ``os.replace(a, b)`` / ``os.rename(a, b)``
+      · ``a.replace(b)`` / ``a.rename(b)`` —— ``Path.replace`` / ``Path.rename``
+
+    为什么必须覆盖第二种：第一版门禁只匹配 ``os.replace``，于是仓库里
+    ``downloader.py`` 的 ``self.part.replace(self.destination)``、
+    ``model_catalog.py`` 的 ``download.replace(final)``、
+    ``handlers/migration.py`` 的 ``source.rename(target)`` 全部**通过门禁**，
+    而它们与 ``os.replace`` 走同一个 WinAPI、同样会偶发 ``[WinError 5]``。
+    门禁给了"已消除"的错觉 —— 这比没有门禁更糟。
+
+    怎么区分 ``Path.replace`` 与 ``str.replace``：``str.replace`` 必须有
+    两个参数，``Path.replace`` 只有一个。所以"恰好一个位置参数、无关键字"
+    就是 Path 形态，误报率极低。
     """
     offenders: list[str] = []
     for path, label in _iter_project_python():
-        if label == _ATOMIC_PUBLISH_OWNER:
-            continue  # 实现本身
+        if label in _ATOMIC_PUBLISH_OWNERS:
+            continue
         for node in ast.walk(_parse(path)):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Attribute) and func.attr == "replace"):
+            if not isinstance(func, ast.Attribute):
                 continue
-            if isinstance(func.value, ast.Name) and func.value.id == "os":
-                offenders.append(f"{label}:{node.lineno}")
+            # os.replace / os.rename
+            if (func.attr in ("replace", "rename")
+                    and isinstance(func.value, ast.Name) and func.value.id == "os"):
+                offenders.append(f"{label}:{node.lineno} os.{func.attr}(...)")
+                continue
+            # Path.replace / Path.rename（恰好一个参数）
+            if func.attr in ("replace", "rename") and len(node.args) == 1 and not node.keywords:
+                offenders.append(f"{label}:{node.lineno} .{func.attr}(1 arg)")
+    return offenders
 
+
+def test_atomic_publish_goes_through_the_shared_helper() -> None:
+    """禁止在共享实现之外做原子发布——覆盖 ``os.replace`` 与 ``Path.replace`` 两种形态。
+
+    原因：Windows 上同步盘（本仓库就在 OneDrive 下）与杀毒软件会短暂持有刚写完的
+    文件句柄，裸调用会零星抛 ``[WinError 5] 拒绝访问``。全量测试里表现为"跟代码无关
+    的随机失败"，是**最消耗排查时间**的一类问题，本项目已经踩过四次
+    （file_io 自己、llama_runtime、bootstrap_models、模型下载发布）。
+
+    所以不再靠"记得加重试"：要原子发布就 ``from voxsub.file_io import replace_with_retry``。
+    """
+    offenders = _atomic_publish_offenders()
     assert not offenders, (
         "这些地方绕过了共享的原子发布实现（Windows 上会偶发 WinError 5，"
         "表现为随机失败）。请改用 voxsub.file_io.replace_with_retry：\n"
         + "\n".join(offenders)
     )
+
+
+def test_atomic_publish_gate_is_not_vacuous() -> None:
+    """反空转守卫：门禁必须**真的能抓到东西**，而不是因为扫不到文件而恒绿。
+
+    做法是拿一份人造源码树验证判定逻辑 —— 如果哪天扫描根改名、或 `_iter_project_python`
+    返回空集，四条适配层规则会全部静默通过（正是缺陷 #13 要防的"扫不到就以为没问题"）。
+    """
+    sample = (
+        "import os\n"
+        "def publish(a, b):\n"
+        "    os.replace(a, b)\n"
+        "def publish2(a, b):\n"
+        "    a.replace(b)\n"
+        "def publish3(a, b):\n"
+        "    a.rename(b)\n"
+        "def safe(text, a, b):\n"
+        "    return text.replace(a, b)  # str.replace：两个参数，不该被抓\n"
+    )
+    calls: list[str] = []
+    for node in ast.walk(ast.parse(sample)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        func = node.func
+        if (func.attr in ("replace", "rename")
+                and isinstance(func.value, ast.Name) and func.value.id == "os") or \
+           (func.attr in ("replace", "rename") and len(node.args) == 1 and not node.keywords):
+            calls.append(func.attr)
+    assert calls == ["replace", "replace", "rename"], (
+        f"判定逻辑漏抓或误抓：{calls} —— 门禁的形态匹配已经失效，别再信它的绿灯"
+    )
+
+    # 同时确认当前真实扫描集非空（改了目录名会让四条适配层规则一起失效）
+    assert _iter_project_python(), "扫描集为空 —— 适配层的四条门禁其实什么都没查"
 
 
 # ------------------------------------------------------------------ 测试卫生

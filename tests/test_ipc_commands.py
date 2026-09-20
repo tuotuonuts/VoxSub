@@ -241,6 +241,29 @@ class TestCaptureTargets:
 # ------------------------------------------------------------------ 迁移命令分发
 
 class TestMigrationCommands:
+    """迁移命令。
+
+    注意：**迁移的源必须有授权凭据**（见 migration_ledger.validate_migration_source）。
+    这个助手把测试用的临时目录"证明成本应用自己的数据位置" —— 模拟真实场景里
+    assess_storage() 报出旧版数据目录。不调用它的用例会得到"源不在已知数据位置内"，
+    那是对的（独立审查实测过：以前不校验源，两步 IPC 就能 rmtree 任意用户目录）。
+    """
+
+    @staticmethod
+    def _authorize(monkeypatch, *sources):
+        import legacy_migration as lm
+        from legacy_migration import StorageCheck
+
+        checks = [
+            StorageCheck(key="models", path=str(source), exists=True, bytes=0,
+                         file_count=0, inside_install=False, risk="safe",
+                         purpose="测试用：模拟探测到的旧版数据位置")
+            for source in sources
+        ]
+        monkeypatch.setattr(lm, "assess_storage", lambda _legacy: checks)
+        monkeypatch.setattr(lm, "detect_legacy_install", lambda: None)
+
+
     def test_detect_legacy_returns_structure(self, service, isolated_config):
         result = service._cmd_detect_legacy({})
         assert set(result) >= {"legacy", "storage", "overallRisk", "state"}
@@ -271,10 +294,11 @@ class TestMigrationCommands:
         assert result["ok"] is False
         assert result["failed"][0]["key"] == "models"
 
-    def test_start_migration_refuses_nonempty_target(self, service, tmp_path):
+    def test_start_migration_refuses_nonempty_target(self, service, tmp_path, monkeypatch):
         """目标非空时拒绝 —— 覆盖已有数据是数据丢失风险。"""
         src = tmp_path / "src"
         src.mkdir()
+        self._authorize(monkeypatch, src)
         (src / "f.bin").write_bytes(b"x" * 100)
         dst = tmp_path / "dst"
         dst.mkdir()
@@ -286,10 +310,11 @@ class TestMigrationCommands:
         assert result["ok"] is False
         assert "非空" in result["failed"][0]["error"]
 
-    def test_start_migration_moves_and_verifies(self, service, tmp_path):
+    def test_start_migration_moves_and_verifies(self, service, tmp_path, monkeypatch):
         """同卷场景：原子改名 + 校验通过。"""
         src = tmp_path / "src"
         src.mkdir()
+        self._authorize(monkeypatch, src)
         (src / "f.bin").write_bytes(b"x" * 1000)
         (src / "manifest.json").write_text(
             json.dumps({"version": 1, "files": {}}), encoding="utf-8")
@@ -308,6 +333,7 @@ class TestMigrationCommands:
         """迁移后必须更新配置指针 —— 否则文件搬了但应用仍去旧路径找。"""
         src = tmp_path / "src"
         src.mkdir()
+        self._authorize(monkeypatch, src)
         (src / "f.bin").write_bytes(b"x" * 100)
         dst = tmp_path / "dst"
 
@@ -403,13 +429,14 @@ class TestMigrationCommands:
         assert bystander.is_dir() and (bystander / "keep.bin").exists()
 
     def test_start_migration_writes_ledger_for_cleanup(self, service,
-                                                       isolated_config, tmp_path):
+                                                       isolated_config, tmp_path, monkeypatch):
         """迁移成功必须落台账 —— 否则用户点"清理旧目录"会因为查不到记录被拒。"""
         import migration_ledger
 
         src = tmp_path / "src-obsolete"
         (src / "nested").mkdir(parents=True)
         (src / "nested" / "blob.bin").write_bytes(b"payload" * 64)
+        self._authorize(monkeypatch, src)
         dst = tmp_path / "dst-current"
 
         result = service._cmd_start_migration({"steps": [{
@@ -421,6 +448,66 @@ class TestMigrationCommands:
         record_id = result["done"][0].get("recordId")
         assert record_id, "成功项必须带回 recordId 供后续清理使用"
         assert migration_ledger.find_record(record_id) is not None
+
+    def test_start_migration_refuses_a_source_that_is_not_ours(self, service,
+                                                              isolated_config,
+                                                              tmp_path, monkeypatch):
+        """**独立审查实测过的那条链，现在必须被拦住。**
+
+        链：`start_migration(任意用户目录 → 攻击者目标)` 之后
+        `cleanup_migrated_source(record_id)` 就能 rmtree 掉那个目录。
+        以前 start_migration 对源**只检查"是不是目录"**，而同卷 rename 会让源消失
+        （被"源目录不存在"挡住）—— 跨卷复制则源仍在，而 C: → D:/VoxSub 正是本项目
+        自己的常规迁移方向，所以这条链真的能走通。
+
+        现在源必须有授权凭据（必须是应用自己探测到的数据位置）。
+        """
+        import migration_ledger
+
+        victim = tmp_path / "Documents"
+        victim.mkdir()
+        (victim / "thesis.docx").write_bytes(b"very important")
+        target = tmp_path / "attacker-chosen-target"
+
+        # 真实场景里这台机器上**确实有**属于我们的旧数据位置；受害者目录只是不在其中。
+        decoy = tmp_path / "VoxSub" / "models"
+        decoy.mkdir(parents=True)
+        self._authorize(monkeypatch, decoy)
+
+        result = service._cmd_start_migration({"steps": [{
+            "key": "cache", "source": str(victim), "target": str(target),
+        }]})
+
+        assert result["ok"] is False, "任意目录不该被当成可迁移的源"
+        assert "不在本应用已知的数据位置内" in result["failed"][0]["error"]
+
+        # 最关键的一条：**没有台账记录**，所以清理那一环根本无从下手
+        assert not any(item.get("source") == str(victim)
+                       for item in migration_ledger.read_ledger())
+        assert victim.is_dir() and (victim / "thesis.docx").is_file(), "受害者目录被动了"
+
+    def test_start_migration_refuses_everything_when_nothing_is_ours(self, service,
+                                                                     isolated_config,
+                                                                     tmp_path, monkeypatch):
+        """探测不到任何属于我们的数据位置时，**一律拒绝**（默认拒绝）。
+
+        这不是过度保守：那意味着这台机器上没有可迁移的旧数据，此时"能迁"本身就是
+        一个不该出现的状态。
+        """
+        import legacy_migration as lm
+
+        monkeypatch.setattr(lm, "assess_storage", lambda _legacy: [])
+        monkeypatch.setattr(lm, "detect_legacy_install", lambda: None)
+
+        src = tmp_path / "src"
+        src.mkdir()
+
+        result = service._cmd_start_migration({"steps": [{
+            "key": "models", "source": str(src), "target": str(tmp_path / "dst"),
+        }]})
+
+        assert result["ok"] is False
+        assert "没有探测到任何属于本应用的数据位置" in result["failed"][0]["error"]
 
     def test_import_models_uses_the_module_that_actually_defines_it(self, service,
                                                                    isolated_config,

@@ -16,6 +16,60 @@ from typing import Any
 from ipc_protocol import _cancel_requested, _event
 from ipc_support import _free_bytes, _resolve_models_root
 
+import migration_ledger  # noqa: E402  (与 ipc_server 同目录的兄弟模块)
+
+
+def _authorized_migration_sources() -> list[Path]:
+    """应用**自己认的**数据位置 —— 迁移的源只能来自这里。
+
+    独立审查实测出的一条链：清理侧只认台账记录，但台账是 start_migration 写的，
+    而它以前对源只检查"是不是目录"。于是 `start_migration(任意用户目录 → 攻击者目标)`
+    再 `cleanup_migrated_source(record_id)` 就能 rmtree 掉任意仍存在的用户目录。
+
+    这里给出"证明这个源是我们的"的凭据，来源是应用自己的探测结果，不是猜测：
+      · `legacy_migration.assess_storage()` 报出的旧版数据位置（models/cache/tools…）
+      · 当前配置里的模型根与 OCR 缓存根
+
+    取不到就等于"没有可迁移的东西"，此时**拒绝迁移**才是正确行为。
+    """
+    sources: list[Path] = []
+
+    try:
+        from legacy_migration import assess_storage, detect_legacy_install  # noqa: PLC0415
+
+        for check in assess_storage(detect_legacy_install()):
+            if getattr(check, "exists", False) and str(getattr(check, "path", "")).strip():
+                sources.append(Path(str(check.path)))
+    except Exception as error:  # noqa: BLE001 - 探测失败不该让命令崩，但会因此拒绝迁移
+        print(f"[migration] 旧版数据位置探测失败: {error}", file=sys.stderr)
+
+    try:
+        from voxsub.config_store import ConfigStore  # noqa: PLC0415
+
+        config = ConfigStore().load()
+        for key in ("models_root", "ocr_cache_root"):
+            value = str(config.get(key) or "").strip()
+            if value:
+                sources.append(Path(value))
+    except Exception as error:  # noqa: BLE001
+        print(f"[migration] 读取已配置的数据根失败: {error}", file=sys.stderr)
+
+    return sources
+
+
+def _step_source_problem(source: Path, authorized_sources: list[Path]) -> str:
+    """校验一步的迁移源；通过返回空串，不通过返回可读原因。
+
+    单独抽出来有两个原因：`_cmd_start_migration` 的分支已经贴着复杂度预算，
+    而且"什么样的源才算我们的"属于规则，单独一个函数才答得清楚。
+    """
+    try:
+        migration_ledger.validate_migration_source(
+            source, allowed_sources=authorized_sources)
+    except migration_ledger.MigrationSourceRefused as refusal:
+        return str(refusal)
+    return ""
+
 
 class MigrationHandlers:
     """旧版迁移：探测、规划、执行、校验、清理授权。"""
@@ -104,6 +158,9 @@ class MigrationHandlers:
         if not steps:
             raise ValueError("没有要迁移的项目")
 
+        # 授权凭据只取一次：它是"这块磁盘上属于我们的旧数据都在哪儿"的快照。
+        authorized_sources = _authorized_migration_sources()
+
         started = time.monotonic()
         done: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
@@ -122,8 +179,14 @@ class MigrationHandlers:
             target = Path(str(step.get("target", "")))
             key = str(step.get("key", f"item{index}"))
 
-            if not source.is_dir():
-                failures.append({"key": key, "error": f"源目录不存在：{source}"})
+            # 源必须存在、且必须有授权凭据 —— 删除授权链的第一环。
+            # 一次校验覆盖多种拒绝理由：不存在 / 不是目录 / 卷根 / 受保护目录 /
+            # 重解析点 / 网络与设备路径 / 不在本应用已知的数据位置内
+            # （见 migration_ledger.validate_migration_source）。
+            problem = _step_source_problem(source, authorized_sources)
+            if problem:
+                failures.append({"key": key, "error": problem})
+                _event("migration", phase="failed", key=key, error=problem)
                 continue
             if target.exists() and any(target.iterdir()):
                 failures.append({"key": key, "error": f"目标已存在且非空：{target}"})
@@ -139,7 +202,12 @@ class MigrationHandlers:
                 target.parent.mkdir(parents=True, exist_ok=True)
 
                 if _same_volume(source, target):
-                    source.rename(target)
+                    # 同卷用原子 rename。走共享重试：rename 是原子的，重试安全；
+                    # 而 Windows 上同步盘/杀毒瞬时占用会让裸调用偶发 WinError 5
+                    # （"跟代码无关的随机失败"那一类，本项目踩过三次）。
+                    from voxsub.file_io import replace_with_retry  # noqa: PLC0415
+
+                    replace_with_retry(source, target)
                     mode = "move_same_volume"
                 else:
                     shutil.copytree(
@@ -178,8 +246,9 @@ class MigrationHandlers:
         # 少了它，用户点"清理旧目录"会因为"没有对应记录"被拒（安全但难用）；
         # 有了它，能删的范围就被钉死在"本次真实校验通过的迁移项"上。
         try:
-            import migration_ledger  # noqa: PLC0415
-
+            # migration_ledger 已在模块级导入；这里**不要**再局部导入 ——
+            # 局部 import 会让它在整个函数里变成局部名，在 import 之前使用就
+            # UnboundLocalError（本文件踩过一次）。
             records = [
                 migration_ledger.build_record(
                     key=item["key"],
@@ -258,8 +327,6 @@ class MigrationHandlers:
         见下面 ``args.get("path")`` 那个分支。
         """
         import shutil  # noqa: PLC0415
-
-        import migration_ledger  # noqa: PLC0415
 
         if args.get("path"):
             return {
