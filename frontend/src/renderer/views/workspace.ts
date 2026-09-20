@@ -12,10 +12,13 @@ import { CMD } from "../protocol";
 import { tr } from "../i18n";
 import { hasExportableSubtitles } from "../../shared/session-timeline";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
+import { buildProgressBar, type ProgressBar } from "../ui/progress";
 
 let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
 let progressWrap: HTMLElement | null = null;
+/** 进度条内芯（组件：轨道 + 填充 + 标签）。 */
+let progressBar: ProgressBar | null = null;
 let fileLabelEl: HTMLElement | null = null;
 /** 录音提示行：说明音频存到哪，而不是解释操作步骤。 */
 let recordHintEl: HTMLElement | null = null;
@@ -205,7 +208,7 @@ function syncClock(): void {
 
 export function updateProgress(): void {
   const state = store.get();
-  if (!progressWrap) return;
+  if (!progressWrap || !progressBar) return;
   const progress = state.progress;
   // 进度只在 C 模式有意义；其他模式隐藏，避免空白条占位
   if (!progress || state.mode !== "c") {
@@ -213,10 +216,9 @@ export function updateProgress(): void {
     return;
   }
   progressWrap.hidden = false;
-  const bar = progressWrap.querySelector<HTMLElement>(".progress__fill");
-  const label = progressWrap.querySelector<HTMLElement>(".progress__label");
-  if (bar) bar.style.width = percent(progress.completed, progress.total);
-  if (label) label.textContent = `${progress.stage} · ${percent(progress.completed, progress.total)}`;
+  // 总数为 0 时进度未知：宽度不动，标签显示「—」（与原实现一致）
+  progressBar.setPercent(progress.total > 0 ? (progress.completed / progress.total) * 100 : null);
+  progressBar.setLabel(`${progress.stage} · ${percent(progress.completed, progress.total)}`);
 }
 
 /** 会话导出：把当前双语历史写成 SRT / VTT / TXT。 */
@@ -399,11 +401,9 @@ export function buildWorkspace(): PageHandle {
   fileLabelEl = h("span", { class: "file-panel__name", text: tr("尚未选择文件") });
   filePanel.append(pickBtn, fileLabelEl);
 
-  progressWrap = h("div", { class: "progress", hidden: true });
-  progressWrap.append(
-    h("div", { class: "progress__track" }, [h("div", { class: "progress__fill" })]),
-    h("div", { class: "progress__label", text: "" }),
-  );
+  // 进度条内芯（JobProgress 组件）：轨道 + 填充 + 标签，宽度按百分比写入
+  progressBar = buildProgressBar();
+  progressWrap = h("div", { class: "progress", hidden: true }, [progressBar.track, progressBar.label]);
   filePanel.append(progressWrap);
   // 文件区只在 C 模式出现
   filePanel.hidden = state.mode !== "c";
@@ -430,6 +430,7 @@ export function buildWorkspace(): PageHandle {
     streamEl = null;
     statusTextEl = null;
     progressWrap = null;
+    progressBar = null;
     fileLabelEl = null;
     recordHintEl = null;
     clockEl = null;

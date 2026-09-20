@@ -10,6 +10,8 @@ import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type Har
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
+import { buildField } from "../ui/field";
+import { buildPathPicker } from "../ui/path-picker";
 
 type Config = Record<string, unknown>;
 
@@ -191,22 +193,15 @@ async function saveConfig(updates: Config): Promise<void> {
 /* ------------------------------------------------------------ 通用控件 */
 
 /**
- * 字段容器。
+ * 字段容器（SettingsField 组件的本页适配）。
  *
- * `disabledBy` 非空时表示"这一项当前不可改"，并给出被谁接管 ——
- * 只把控件置灰而不说原因，用户会以为界面坏了；说清"由预设决定"才可理解。
+ * 实现已抽到 `renderer/ui/field.ts`（同一份表现在有 26 处，
+ * 禁用原因的行为由 `tools/test-ui-components.mjs` 离线钉住）。
+ * 这里保留位置参数写法只是为了让本页 26 个调用点不必一起改写 ——
+ * 换成对象参数只会制造一大片无信息的 diff，不带来任何收益。
  */
 function field(label: string, control: HTMLElement, hint?: string, disabledBy?: string): HTMLElement {
-  const wrap = h("div", { class: disabledBy ? "field is-locked" : "field" });
-  wrap.append(h("label", { class: "field__label", text: label }));
-  wrap.append(control);
-  const notes: string[] = [];
-  if (disabledBy) notes.push(disabledBy);
-  if (hint) notes.push(hint);
-  for (const note of notes) {
-    wrap.append(h("p", { class: "field__hint", text: note }));
-  }
-  return wrap;
+  return buildField({ label, control, hint, lockedBy: disabledBy });
 }
 
 function textInput(value: string, onChange: (v: string) => void, opts?: { type?: string; placeholder?: string }): HTMLElement {
@@ -631,11 +626,9 @@ function buildTuningContent(
     });
     wrap.append(input, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: label }));
     if (!locked) return wrap;
-    // 置灰时包一层容器放原因。不复用 field()：开关自己已经带标签，
+    // 置灰时包一层容器放原因。不给组件传 label：开关自己已经带标签，
     // 再套一层会出现两个标题。
-    const box = h("div", { class: "field is-locked" });
-    box.append(wrap, h("p", { class: "field__hint", text: lockedReason(key) }));
-    return box;
+    return buildField({ control: wrap, lockedBy: lockedReason(key) });
   };
 
   const selectField = (
@@ -764,38 +757,32 @@ function storageTab(): HTMLElement {
   const modelsRoot = String(config["models_root"] ?? "");
   const modelsMode = String(config["models_root_mode"] ?? "default");
 
-  const pathValue = h("span", {
-    class: "readonly-value",
-    text: modelsRoot || "使用默认位置",
-  });
-  const modeNote = h("p", {
-    class: "field__hint",
-    text:
+  // 路径选择（PathPicker 组件）：显示当前路径 + 打开 + 更改。
+  // 取消契约由组件保证 —— 用户点取消不会写配置、不会刷新页面。
+  const modelsPicker = buildPathPicker({
+    label: tr("当前位置"),
+    value: modelsRoot,
+    emptyText: "使用默认位置",
+    hint:
       modelsMode === "custom"
         ? tr("模型保存在自定义位置。更新软件不会清空这个文件夹。")
         : tr("模型保存在默认位置。可改到其它磁盘以避免占用系统盘。"),
-  });
-
-  const openFolder = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开文件夹") });
-  on(openFolder, "click", () => {
-    const target = modelsRoot || store.get().modelsRoot || "";
+    openLabel: tr("打开文件夹"),
+    changeLabel: tr("更改保存位置"),
     // 传原始路径给主进程，不要再拼 file:/// —— 主进程的 open-external 只放行
     // http/https，file:// 会被直接拒掉，表现就是"点了没反应"。
-    if (target) void window.voxsub?.dialog.openPath(target);
-  });
-
-  const changeFolder = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("更改保存位置"),
-  });
-  on(changeFolder, "click", async () => {
-    const api = window.voxsub;
-    if (!api) return;
-    const picked = await api.dialog.pickDirectory();
-    if (!picked) return;
-    await saveConfig({ models_root: picked, models_root_mode: "custom" });
-    window.dispatchEvent(new Event("voxsub:settings"));
+    openFor: () => modelsRoot || store.get().modelsRoot || "",
+    onOpen: (target) => void window.voxsub?.dialog.openPath(target),
+    pick: async () => {
+      const api = window.voxsub;
+      if (!api) return null;
+      return api.dialog.pickDirectory();
+    },
+    onPicked: async (picked) => {
+      await saveConfig({ models_root: picked, models_root_mode: "custom" });
+      modelsPicker.setValue(picked);
+      window.dispatchEvent(new Event("voxsub:settings"));
+    },
   });
 
   page.append(
@@ -804,19 +791,14 @@ function storageTab(): HTMLElement {
         class: "field__hint",
         text: tr("识别、翻译、语音模型会按用途整理在这里。更新软件不会清空这个文件夹。"),
       }),
-      field(tr("当前位置"), pathValue, modeNote.textContent ?? undefined),
-      h("div", { class: "tuning-actions" }, [openFolder, changeFolder]),
+      modelsPicker.field,
+      modelsPicker.actions,
     ]),
   );
 
   // ---- OCR 缓存 ----
   const cacheRoot = String(config["ocr_cache_root"] ?? "");
   const cacheLimit = Number(config["ocr_cache_limit"] ?? 15);
-
-  const cachePathValue = h("span", {
-    class: "readonly-value",
-    text: cacheRoot || tr("使用默认位置"),
-  });
 
   const limitInput = h("input", {
     class: "input",
@@ -832,24 +814,25 @@ function storageTab(): HTMLElement {
     void saveConfig({ ocr_cache_limit: value });
   });
 
-  const openCache = h("button", { class: "btn btn--ghost", type: "button", text: tr("打开缓存") });
-  on(openCache, "click", () => {
+  const cachePicker = buildPathPicker({
+    label: tr("当前位置"),
+    value: cacheRoot,
+    emptyText: tr("使用默认位置"),
+    openLabel: tr("打开缓存"),
+    changeLabel: tr("更改缓存位置"),
     // 同「打开文件夹」：必须走 openPath，openExternal 只认 http/https
-    if (cacheRoot) void window.voxsub?.dialog.openPath(cacheRoot);
-  });
-
-  const changeCache = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("更改缓存位置"),
-  });
-  on(changeCache, "click", async () => {
-    const api = window.voxsub;
-    if (!api) return;
-    const picked = await api.dialog.pickDirectory();
-    if (!picked) return;
-    await saveConfig({ ocr_cache_root: picked });
-    window.dispatchEvent(new Event("voxsub:settings"));
+    openFor: () => cacheRoot,
+    onOpen: (target) => void window.voxsub?.dialog.openPath(target),
+    pick: async () => {
+      const api = window.voxsub;
+      if (!api) return null;
+      return api.dialog.pickDirectory();
+    },
+    onPicked: async (picked) => {
+      await saveConfig({ ocr_cache_root: picked });
+      cachePicker.setValue(picked);
+      window.dispatchEvent(new Event("voxsub:settings"));
+    },
   });
 
   page.append(
@@ -858,9 +841,9 @@ function storageTab(): HTMLElement {
         class: "field__hint",
         text: tr("上传/截图原图与译后覆盖图分开保存，绝不写入 C 盘。默认每类保留最近 15 张；设为 0 表示无限保留。"),
       }),
-      field(tr("当前位置"), cachePathValue),
+      cachePicker.field,
       field(tr("每类保留"), limitInput, tr("设为 0 表示无限保留。")),
-      h("div", { class: "tuning-actions" }, [openCache, changeCache]),
+      cachePicker.actions,
     ]),
   );
 

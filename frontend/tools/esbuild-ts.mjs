@@ -33,11 +33,14 @@ function ensureOutDir() {
  * 编译并加载 `src/` 下的一个或一组 TS 模块。
  *
  * @param {string | string[]} relativePaths 相对 frontend/ 的路径，例如 "src/shared/backend-status.ts"
+ * @param {{ bundle?: boolean }} [options] bundle=true 时把相对导入一起打进产物
+ *   （用于加载 `src/renderer/**` 这类有内部 import 的模块；纯 `src/shared/*.ts` 单文件不需要）
  * @returns {Promise<any | any[]>} 单个路径 → 模块；数组 → 模块数组（顺序一致）
  */
-export async function importShared(relativePaths) {
+export async function importShared(relativePaths, options = {}) {
   const single = typeof relativePaths === "string";
   const files = single ? [relativePaths] : relativePaths;
+  const bundle = options.bundle === true;
 
   const esbuild = join(
     ROOT,
@@ -55,10 +58,14 @@ export async function importShared(relativePaths) {
     const source = join(ROOT, relative);
     if (!existsSync(source)) throw new Error(`源文件不存在：${source}`);
     const outFile = join(dir, `${relative.replace(/[\\/]/g, "_").replace(/\.ts$/, "")}.mjs`);
-    const built = spawnSync(
-      esbuild,
-      [source, "--format=esm", `--outfile=${outFile}`, "--log-level=warning"],
-      {
+    const args = [
+      source,
+      "--format=esm",
+      `--outfile=${outFile}`,
+      "--log-level=warning",
+      ...(bundle ? ["--bundle", "--platform=node", "--target=node20"] : []),
+    ];
+    const built = spawnSync(esbuild, args, {
         cwd: ROOT,
         stdio: "pipe",
         encoding: "utf-8",

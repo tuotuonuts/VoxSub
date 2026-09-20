@@ -12,7 +12,7 @@ import { h, on } from "../dom";
 import { call, store } from "../store";
 import { CMD, type OcrResult, type OcrLine } from "../protocol";
 import { tr } from "../i18n";
-import { type PageHandle } from "../../shared/page-lifecycle";
+import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 
 type OcrMode = "shot" | "live";
 
@@ -24,6 +24,28 @@ let previewWrapEl: HTMLElement | null = null;
 let exportBtnEl: HTMLButtonElement | null = null;
 let sourceTabBtn: HTMLButtonElement | null = null;
 let translatedTabBtn: HTMLButtonElement | null = null;
+
+/**
+ * 页面生命周期（缺陷 #10）：OCR 的识别 + 译后渲染是本项目最长的
+ * 前后端往返（截图 → 识别 → 翻译 → 画回图片），期间用户完全可以切走模式或
+ * 关页。这里登记页面有效性，供每个 await 之后的复查使用。
+ */
+let pageLifecycle: PageLifecycle | null = null;
+
+/**
+ * 子页面代号。
+ *
+ * OCR 工作区分「截图翻译 / 实时区域」两页，切页会整块替换 DOM 并重新指向
+ * 模块级节点引用。若只判断"页面还在不在"，切页期间回来的旧结果就会写进
+ * **新的**子页面（表现为：切到实时区域，却看到上一次截图的识别结果）。
+ * 每次构建子页面时 +1，请求发起时记住它，回来时不一致就丢弃。
+ */
+let viewToken = 0;
+
+/** 异步结果回来时页面是否仍然有效（页面未释放 + 仍是同一个子页面）。 */
+function onPage(token: number): boolean {
+  return Boolean(pageLifecycle && !pageLifecycle.disposed) && token === viewToken;
+}
 
 /** 最近一次结果：预览切换与导出都基于它。 */
 let lastResult: OcrResult | null = null;
@@ -74,6 +96,8 @@ function renderText(): void {
 
 /** 识别 + 翻译 + 渲染译后图片。 */
 async function processImage(imagePath: string): Promise<void> {
+  // 记住发起请求时所在的子页面：回来时若已切页，结果就该丢弃
+  const token = viewToken;
   const state = store.get();
   setStatus(tr("正在识别…"));
 
@@ -83,6 +107,7 @@ async function processImage(imagePath: string): Promise<void> {
     source: state.sourceLang,
     target: state.targetLang,
   });
+  if (!onPage(token)) return;
   if (!result) {
     setStatus(tr("识别失败，详见日志"));
     return;
@@ -106,6 +131,7 @@ async function processImage(imagePath: string): Promise<void> {
     target: temporaryPath("translated"),
     lines: lines.map((l: OcrLine) => ({ translation: l.translation, box: l.box })),
   });
+  if (!onPage(token)) return;
   translatedImagePath = rendered?.path ?? "";
   showingTranslated = true;
   renderPreview();
@@ -129,7 +155,10 @@ function temporaryPath(kind: string): string {
 async function pickImage(): Promise<void> {
   const api = window.voxsub;
   if (!api) return;
+  const token = viewToken;
   const path = await api.dialog.pickImage();
+  // 选文件期间用户可能已经切页/关页：此时不该再启动识别
+  if (!onPage(token)) return;
   if (!path) return;
   await processImage(path);
 }
@@ -137,9 +166,11 @@ async function pickImage(): Promise<void> {
 async function selectScreenArea(): Promise<void> {
   const api = window.voxsub;
   if (!api) return;
+  const token = viewToken;
   setStatus(tr("拖动选择区域，Esc 取消"));
   // 框选在主进程完成（需隐藏自身窗口、等待桌面合成），返回截图临时路径
   const path = await api.ocr.selectArea();
+  if (!onPage(token)) return;
   if (!path) {
     setStatus(tr("已取消框选"));
     return;
@@ -154,22 +185,28 @@ async function exportTranslatedImage(): Promise<void> {
   }
   const api = window.voxsub;
   if (!api) return;
+  const token = viewToken;
   const target = await api.dialog.saveImage();
+  if (!onPage(token)) return;
   if (!target) return;
   const saved = await call<{ path: string }>(CMD.copyFile, {
     source: translatedImagePath,
     target,
   });
+  if (!onPage(token)) return;
   setStatus(saved ? `${tr("已导出译后图片")}：${target}` : tr("导出失败"));
 }
 
 async function copyText(which: "source" | "translation"): Promise<void> {
+  const token = viewToken;
   const text = which === "source" ? sourceEl?.textContent ?? "" : translationEl?.textContent ?? "";
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
+    if (!onPage(token)) return;
     setStatus(which === "source" ? tr("已复制原文") : tr("已复制译文"));
   } catch {
+    if (!onPage(token)) return;
     setStatus(tr("复制失败"));
   }
 }
@@ -192,6 +229,8 @@ async function stopLiveRegion(): Promise<void> {
 
 function buildShotPage(): HTMLElement {
   const page = h("div", { class: "ocr-page" });
+  // 新子页面：作废旧代号，让在途的识别结果不再写进这一页
+  viewToken += 1;
 
   // 动作行
   const actions = h("div", { class: "workspace__actions" });
@@ -280,6 +319,8 @@ function buildShotPage(): HTMLElement {
 
 function buildLivePage(): HTMLElement {
   const page = h("div", { class: "ocr-page" });
+  // 新子页面：作废旧代号（见 viewToken 的说明）
+  viewToken += 1;
 
   const intro = h("div", { class: "card" });
   intro.append(
@@ -307,6 +348,9 @@ function buildLivePage(): HTMLElement {
 
 export function buildOcrWorkspace(): PageHandle {
   const pane = h("section", { class: "workspace ocr" });
+  // 页面生命周期（缺陷 #10）：在途的识别/渲染结果靠它判断页面是否还在
+  const lifecycle = new PageLifecycle();
+  pageLifecycle = lifecycle;
 
   const head = h("header", { class: "workspace__head" });
   head.append(h("h2", { class: "workspace__title", text: tr("OCR 图片与屏幕翻译") }));
@@ -350,10 +394,17 @@ export function buildOcrWorkspace(): PageHandle {
   render();
 
   // 释放：让模块级节点引用失效（缺陷 #10）。
-  // 在途的识别/渲染结果回来时页面可能已经被换走，置空可避免往脱离文档的节点写。
+  // 在途的识别/渲染结果回来时页面可能已经被换走，置空可避免往脱离文档的节点写；
+  // 同时清掉上一次的识别结果，避免下次进入时显示上一条截图的内容。
   return {
     element: pane,
     dispose: () => {
+      lifecycle.dispose();
+      if (pageLifecycle === lifecycle) pageLifecycle = null;
+      viewToken += 1;
+      lastResult = null;
+      translatedImagePath = "";
+      showingTranslated = true;
       statusEl = null;
       sourceEl = null;
       translationEl = null;

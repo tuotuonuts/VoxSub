@@ -17,17 +17,27 @@ import { CMD, type DeviceEntry, type HardwareProfile, type SelfCheckItem } from 
 import { tr } from "../i18n";
 import { guessStderrLevel, splitStderrLines } from "../../shared/log-levels";
 import { type PageHandle } from "../../shared/page-lifecycle";
+import { runAfterConfirm } from "../../shared/confirm-action";
+import { buildStatusRow } from "../ui/status-row";
 
 let resultsEl: HTMLElement | null = null;
 let logEl: HTMLElement | null = null;
 let deviceEl: HTMLElement | null = null;
 let logStateEl: HTMLElement | null = null;
 
+/**
+ * 页面是否已失效。
+ *
+ * 自检要跑 4-6 秒、设备枚举与日志读取也是异步的 —— 结果回来时页面可能早已
+ * 关闭或被替换。原先靠一个自定义 DOM 事件（`voxsub:pageclosed`）通知，
+ * 而那个事件的投递方式是 `document.querySelector(".settings")`：设置页与
+ * 诊断页共用同一个 `.settings` 类名，靠"文档里恰好只有一个"来选对节点。
+ * 现在改成模块级标志，由页面句柄的 dispose 统一置位，不再依赖 DOM 巧合。
+ */
+let detached = false;
+
 /** 日志来源：live=实时事件流；file=磁盘日志（含历史运行）。 */
 let logSource: "live" | "file" = "live";
-
-const STATUS_MARK: Record<string, string> = { ok: "✓", warn: "!", fail: "✕" };
-const STATUS_CLASS: Record<string, string> = { ok: "is-ok", warn: "is-warn", fail: "is-fail" };
 
 async function runCheck(): Promise<void> {
   if (!resultsEl) return;
@@ -40,17 +50,16 @@ async function runCheck(): Promise<void> {
   // 自检要跑 4-6 秒；期间用户可能切走分页或关掉诊断页，
   // 那时 resultsEl 已被置空、target 也已脱离文档。这里必须复查，
   // 不能再依赖函数开头那次判断（否则 await 之后会往 null 上写而抛错）。
-  if (!resultsEl || resultsEl !== target) return;
+  if (detached || !resultsEl || resultsEl !== target) return;
 
   const list = h("div", { class: "check-list" });
   for (const item of items) {
-    const row = h("div", { class: `check-row ${STATUS_CLASS[item.status] ?? ""}` });
-    row.append(
-      h("span", { class: "check-row__mark", text: STATUS_MARK[item.status] ?? "?" }),
-      h("span", { class: "check-row__name", text: item.check }),
-      h("span", { class: "check-row__detail", text: item.detail }),
-    );
-    list.append(row);
+    // 结果行统一由 StatusRow 组件渲染（三处调用点共用同一份状态→类名/标记映射）
+    list.append(buildStatusRow({
+      level: item.status,
+      name: item.check,
+      detail: item.detail,
+    }));
   }
 
   const summary = items.every((i) => i.status === "ok")
@@ -144,6 +153,10 @@ async function loadDevicesAndHardware(): Promise<void> {
     call<HardwareProfile>(CMD.hardwareProfile),
   ]);
 
+  // 页面可能在这两次请求期间被关掉/替换（deviceEl 已被置空）。
+  // 原先这里直接 `deviceEl.replaceChildren(...)`，会往 null 上写而抛错。
+  if (detached || !deviceEl) return;
+
   const blocks: HTMLElement[] = [];
 
   if (profile) {
@@ -188,6 +201,7 @@ async function loadDevicesAndHardware(): Promise<void> {
 
 export function buildDiagnostics(): PageHandle {
   const shell = h("div", { class: "settings" });
+  detached = false;
 
   const tabs = [
     { label: tr("自检结果"), build: buildCheckTab },
@@ -228,23 +242,26 @@ export function buildDiagnostics(): PageHandle {
 
   shell.append(nav, panes);
 
-  // 关闭页面时同样置空，避免在途结果写到已脱离文档的节点
-  shell.addEventListener("voxsub:pageclosed", () => {
-    resultsEl = logEl = deviceEl = logStateEl = null;
-  });
-
   renderPane();
   return {
     element: shell,
-    // 诊断页的在途结果（自检 4-6 秒）不应写到已移除的节点：关闭时统一置空。
-    // 这与既有的 `voxsub:pageclosed` 机制等价，但由页面生命周期统一驱动。
-    dispose: () => detachDiagnostics(),
+    // 关闭/替换页面时统一在途结果失效：自检（4-6 秒）与设备枚举回来时
+    // 不再往已移除的节点上写。由页面生命周期驱动，不再依赖 DOM 事件。
+    dispose: () => detach(),
   };
 }
 
-/** 关闭覆盖页时调用，让诊断页的在途异步结果停止写 DOM。 */
+/** 让诊断页的在途异步结果停止写 DOM（由页面句柄的 dispose 调用）。 */
 export function detachDiagnostics(): void {
-  document.querySelector(".settings")?.dispatchEvent(new Event("voxsub:pageclosed"));
+  detach();
+}
+
+function detach(): void {
+  detached = true;
+  resultsEl = null;
+  logEl = null;
+  deviceEl = null;
+  logStateEl = null;
 }
 
 function buildCheckTab(): HTMLElement {
@@ -300,18 +317,12 @@ function buildLogTab(): HTMLElement {
 
   // 清除本机日志：破坏性操作，需二次确认
   const clearBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("清除本机日志") });
-  on(clearBtn, "click", async () => {
-    if (!window.confirm(tr("将删除本机全部日志文件（不影响模型、配置与已导出的报告）。确定继续？"))) {
-      return;
-    }
-    const result = await call<Record<string, number>>(CMD.clearLogs);
-    store.patch({ logs: [] });
-    if (logStateEl) {
-      const removed = result ? Object.values(result).reduce((a, b) => a + Number(b || 0), 0) : 0;
-      logStateEl.textContent = `${tr("已清除")} · ${removed} ${tr("个文件")}`;
-    }
-    if (logSource === "file") void renderFileLog();
-    else renderLog();
+  on(clearBtn, "click", () => {
+    // 确认闸门（ConfirmAction）：用户取消时 clearLocalLogs 一次都不会被调用
+    runAfterConfirm(
+      () => window.confirm(tr("将删除本机全部日志文件（不影响模型、配置与已导出的报告）。确定继续？")),
+      () => void clearLocalLogs(),
+    );
   });
 
   actions.append(
@@ -330,6 +341,23 @@ function buildLogTab(): HTMLElement {
 
   markSource("live");
   return page;
+}
+
+/**
+ * 清除本机日志（截断活动日志 + 删轮转文件，不动模型与配置）。
+ *
+ * 由确认闸门在用户同意之后调用 —— 这里不再自己问一次，
+ * 否则"确认"与"执行"会分散在两处、容易漏。
+ */
+async function clearLocalLogs(): Promise<void> {
+  const result = await call<Record<string, number>>(CMD.clearLogs);
+  store.patch({ logs: [] });
+  if (logStateEl) {
+    const removed = result ? Object.values(result).reduce((a, b) => a + Number(b || 0), 0) : 0;
+    logStateEl.textContent = `${tr("已清除")} · ${removed} ${tr("个文件")}`;
+  }
+  if (logSource === "file") void renderFileLog();
+  else renderLog();
 }
 
 /** 导出当前日志视图到用户指定文件。 */

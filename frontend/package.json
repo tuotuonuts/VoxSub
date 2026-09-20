@@ -17,7 +17,7 @@
     "test:request-outcome": "node tools/test-request-outcome.mjs",
     "test:page-lifecycle": "node tools/test-page-lifecycle.mjs",
     "test:migration-cleanup": "node tools/test-migration-cleanup.mjs",
-    "test:logic": "npm run test:session-timeline && npm run test:backend-status && npm run test:request-outcome && npm run test:page-lifecycle && npm run test:migration-cleanup",
+    "test:logic": "npm run test:session-timeline && npm run test:backend-status && npm run test:request-outcome && npm run test:page-lifecycle && npm run test:migration-cleanup && npm run test:ui-components && npm run test:progress-bar && npm run test:confirm-action && npm run test:page-dispose",
     "check": "npm run typecheck && npm run verify:palette && npm run test:logic",
     "start": "npm run build && electron .",
     "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch",
@@ -55,7 +55,11 @@
     "test:log-levels": "node tools/test-log-levels.mjs",
     "test:translate-tiers": "node tools/test-translate-tiers.mjs",
     "test:overlay-sentence": "node tools/test-overlay-current-sentence.mjs",
-    "test:launcher-debug-args": "node tools/test-launcher-debug-args.mjs"
+    "test:launcher-debug-args": "node tools/test-launcher-debug-args.mjs",
+    "test:ui-components": "node tools/test-ui-components.mjs",
+    "test:progress-bar": "node tools/test-progress-bar.mjs",
+    "test:confirm-action": "node tools/test-confirm-action.mjs",
+    "test:page-dispose": "node tools/test-page-dispose.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

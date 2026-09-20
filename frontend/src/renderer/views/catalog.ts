@@ -9,6 +9,8 @@ import { call, callWithOutcome, store } from "../store";
 import { CMD, type ModelCatalogResult, type ModelEntry } from "../protocol";
 import { tr } from "../i18n";
 import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
+import { type PageHandle } from "../../shared/page-lifecycle";
+import { buildProgressBar } from "../ui/progress";
 
 type TaskFilter = "all" | "asr" | "translate" | "tts" | "ocr";
 
@@ -94,16 +96,15 @@ function modelCell(model: ModelEntry): HTMLElement {
   if (model.license) facts.append(h("span", { text: model.license }));
   if (facts.childElementCount) card.append(facts);
 
-  // 下载进度（只在下载中显示）
+  // 下载进度（只在下载中显示）—— 内芯用 ProgressBar 组件，外层仍是本页的
+  // `.cell__progress`（标签字号与独立页面不同，所以类名单独传）。
   if (active) {
-    const bar = h("div", { class: "cell__progress" });
-    bar.append(
-      h("div", { class: "progress__track" }, [
-        h("div", { class: "progress__fill", style: `width:${percent(active.completed, active.total)}` }),
-      ]),
-      h("span", { class: "cell__progress-label", text: `${active.stage} ${percent(active.completed, active.total)}` }),
-    );
-    card.append(bar);
+    const bar = buildProgressBar({ labelClass: "cell__progress-label" });
+    bar.setPercent(active.total > 0 ? (active.completed / active.total) * 100 : null);
+    bar.setLabel(`${active.stage} ${percent(active.completed, active.total)}`);
+    bar.setState("running");
+    const box = h("div", { class: "cell__progress" }, [bar.track, bar.label]);
+    card.append(box);
   }
 
   // 底部：硬件标签 + 操作
@@ -265,7 +266,7 @@ export function refreshDownloads(): void {
  *
  * 页面里提供：标题 + 计数 + 空间提示 + 刷新，按任务筛选，密铺网格。
  */
-export function buildModelCatalog(): HTMLElement {
+export function buildModelCatalog(): PageHandle {
   const page = h("div", { class: "catalog-page" });
 
   // 标题由二级页面外壳统一渲染（返回栏里已有「模型」），
@@ -296,7 +297,23 @@ export function buildModelCatalog(): HTMLElement {
   page.append(sheet);
 
   void loadModels().then(updateDiskUsage);
-  return page;
+
+  // 页面句柄（缺陷 #10 的统一收口）。
+  //
+  // 目录页原先返回裸 HTMLElement、由路由用 staticPage 包起来 —— 也就是说
+  // **没有任何释放动作**。而它有三个模块级的节点引用（网格/计数/占用），
+  // 关页后 `loadModels()`、`updateDiskUsage()` 与下载事件驱动的 `refreshDownloads()`
+  // 都还会往这些已脱离文档的节点上写。这里统一置空，异步回调的 null 检查
+  // （renderGrid / updateDiskUsage）就真的生效了。
+  return {
+    element: page,
+    dispose: () => {
+      gridEl = null;
+      countEl = null;
+      diskEl = null;
+      filterBarEl = null;
+    },
+  };
 }
 
 /** 显示模型目录占用，以及已装模型的合计体积。 */

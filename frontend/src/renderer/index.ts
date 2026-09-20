@@ -18,10 +18,10 @@ import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
 import { buildModelCatalog, refreshDownloads } from "./views/catalog";
 import { buildSettings, loadConfig } from "./views/settings";
-import { buildDiagnostics, detachDiagnostics, refreshLogView } from "./views/diagnostics";
+import { buildDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
 import { buildMigrationWizard, shouldOfferMigration } from "./views/migration";
-import { staticPage, type Disposer, type PageHandle } from "../shared/page-lifecycle";
+import { type Disposer, type PageHandle } from "../shared/page-lifecycle";
 
 type Mode = "a" | "b" | "c" | "d";
 
@@ -127,9 +127,8 @@ function wrapPage(page: PageName, content: HTMLElement): HTMLElement {
 
 function openPage(page: PageName): void {
   if (!pageLayer) return;
-  // 换页前先释放上一页：监听器、定时器、订阅都在这里收掉
+  // 换页前先释放上一页：监听器、定时器、订阅、在途回调都在这里收掉
   disposePageContent();
-  if (currentPage === "diagnostics") detachDiagnostics();
 
   currentPage = page;
   pageLayer.hidden = false;
@@ -138,11 +137,14 @@ function openPage(page: PageName): void {
   // 试过先 await loadConfig() 再渲染：点"设置"后会空白约 1 秒才出现，
   // 冒烟测试与用户都判定为"点了没反应"。配置改为在 boot() 阶段预取，
   // 页面内的异步刷新（buildSettings 里）负责补上最新值。
+  //
+  // 三个页面**都**返回 `{ element, dispose }`：目录页也走同一条释放路径
+  // （它原来返回裸元素、被 staticPage 包成空 dispose，关页后异步回调仍会
+  // 往已移除的网格上写）。
   const builders: Record<PageName, () => PageHandle> = {
     settings: buildSettings,
     diagnostics: buildDiagnostics,
-    // 目录页与会话无关、也没有全局监听，不需要释放动作
-    catalog: () => staticPage(buildModelCatalog()),
+    catalog: buildModelCatalog,
   };
   const handle = builders[page]();
   pageDispose = handle.dispose;
@@ -153,10 +155,8 @@ function openPage(page: PageName): void {
 
 function closePage(): void {
   if (!pageLayer) return;
-  // 释放页面：结束监听器、定时器与订阅（缺陷 #10）
+  // 释放页面：结束监听器、定时器与订阅，并让在途异步回调停止写 DOM（缺陷 #10）
   disposePageContent();
-  // 通知页面内的在途异步回调停止写 DOM（诊断自检要跑 4-6 秒）
-  if (currentPage === "diagnostics") detachDiagnostics();
   currentPage = "none";
   pageLayer.hidden = true;
   pageLayer.replaceChildren();
@@ -361,6 +361,10 @@ function boot(): void {
   // 放在 render 之后异步执行 —— 检测要读注册表与遍历目录，不能阻塞首屏。
   void shouldOfferMigration().then((result) => {
     if (!result || !pageLayer) return;
+    // 异步回调返回后复查页面状态（缺陷 #10 的同一类纪律）：检测期间用户可能
+    // 已经打开设置/诊断页 —— 那说明他在做别的事，此时把向导顶上去会把他正在
+    // 看的页面换掉。这种情况直接放弃自动弹出（设置页里仍有手动入口）。
+    if (currentPage !== "none") return;
     // 打开前先释放可能已有的页面内容（向导会顶掉当前页）
     disposePageContent();
     const wizard = buildMigrationWizard(result);

@@ -17,6 +17,9 @@ import { call, callWithOutcome, store } from "../store";
 import { CMD, type CleanupResult } from "../protocol";
 import { tr } from "../i18n";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
+import { runAfterConfirm } from "../../shared/confirm-action";
+import { buildProgressBar, type ProgressBar } from "../ui/progress";
+import { buildStatusRow } from "../ui/status-row";
 import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
 import {
   buildCleanupRequest,
@@ -138,6 +141,19 @@ const RISK_CLASS: Record<string, string> = {
   safe: "is-ok",
   conditional: "is-warn",
   exposed: "is-fail",
+};
+
+/**
+ * 风险等级 → 结果行等级。
+ *
+ * 业务词汇（safe/conditional/exposed）留在这里，组件只认 ok/warn/fail ——
+ * 这样"状态 → 类名 + 标记符号"的映射只有 buildStatusRow 一处，而"风险等级叫什么"
+ * 仍然只由迁移页定义。
+ */
+const RISK_LEVEL: Record<string, "ok" | "warn" | "fail"> = {
+  safe: "ok",
+  conditional: "warn",
+  exposed: "fail",
 };
 
 /* ---------------------------------------------------------------- 渲染 */
@@ -280,19 +296,22 @@ function viewOverview(): HTMLElement {
 
   const list = h("div", { class: "check-list" });
   for (const check of checks) {
-    const row = h("div", { class: `check-row ${RISK_CLASS[check.risk] ?? ""}` });
-    row.append(
-      h("span", { class: "check-row__mark", text: check.risk === "safe" ? "✓" : check.risk === "conditional" ? "!" : "✕" }),
-      h("span", { class: "check-row__name", text: check.key }),
-      h("span", { class: "check-row__detail" }, [
+    // 状态 → 结果行交给 buildStatusRow：类名与标记符号的映射只该有一处。
+    // 业务词汇（safe/conditional/exposed）到 ok/warn/fail 的翻译留在本页 ——
+    // 组件刻意不认识业务词汇。
+    // 未知等级退到 "fail"：原实现会给空类名 + "✕" 标记，这里类名变成 is-fail；
+    // 风险等级只由后端 assess_storage 产出三种值，未知值不可能出现。
+    list.append(buildStatusRow({
+      level: RISK_LEVEL[check.risk] ?? "fail",
+      name: check.key,
+      detail: [
         h("strong", { text: `${human(check.bytes)} · ${check.file_count} ${tr("文件")}` }),
         h("br"),
         h("code", { text: check.path }),
         ...(check.purpose ? [h("br"), h("span", { text: check.purpose })] : []),
         ...(check.detail ? [h("br"), h("span", { text: check.detail })] : []),
-      ]),
-    );
-    list.append(row);
+      ],
+    }));
   }
   body.append(list);
 
@@ -453,28 +472,25 @@ function viewRunning(): HTMLElement {
   }));
   body.append(warn);
 
-  // 总进度
-  const overall = h("div", { class: "progress" });
-  const overallFill = h("div", { class: "progress__fill" });
-  overall.append(
-    h("div", { class: "progress__track" }, [overallFill]),
-    h("div", { class: "progress__label", text: "0%" }),
-  );
-  body.append(overall);
+  // 总进度 + 每项独立进度条（内芯用 JobProgress 组件：轨道 + 填充 + 标签）
+  const overall = buildProgressBar({ labelText: "0%" });
+  overall.setState("running");
+  body.append(h("div", { class: "progress" }, [overall.track, overall.label]));
 
   // 每项独立进度条
   const list = h("div", { class: "mig-progress" });
   const chosen = plan?.steps.filter((s) => selected.has(s.key)) ?? [];
+  /** 每项一条：按 key 取回，避免再从 DOM 上查 fill/label（查一次就多一处耦合）。 */
+  const bars = new Map<string, ProgressBar>();
   for (const step of chosen) {
-    const row = h("div", { class: "mig-progress__row" });
-    const fill = h("div", { class: "progress__fill" });
-    const label = h("span", { class: "progress__label", text: "0%" });
-    row.append(
+    const bar = buildProgressBar({ labelText: "0%" });
+    const row = h("div", { class: "mig-progress__row" }, [
       h("span", { class: "mig-progress__name", text: step.key }),
-      h("div", { class: "progress__track" }, [fill]),
-      label,
-    );
+      bar.track,
+      bar.label,
+    ]);
     row.dataset["key"] = step.key;
+    bars.set(step.key, bar);
     list.append(row);
   }
   body.append(list);
@@ -484,33 +500,34 @@ function viewRunning(): HTMLElement {
     const event = raw as { type?: string; phase?: string; key?: string; completed?: number; total?: number };
     if (event.type !== "migration" || !event.key) return;
 
-    const row = list.querySelector<HTMLElement>(`[data-key="${CSS.escape(event.key)}"]`);
+    const bar = bars.get(event.key);
     if (event.phase === "start") {
-      row?.querySelector(".progress__label")!.replaceChildren(document.createTextNode(tr("进行中…")));
+      bar?.setLabel(tr("进行中…"));
       return;
     }
     if (event.phase === "done" || event.phase === "failed") {
       progress.set(event.key, 100);
-      row?.querySelector(".progress__fill")!.setAttribute("style", "width:100%");
-      row?.querySelector(".progress__label")!.replaceChildren(
-        document.createTextNode(event.phase === "done" ? tr("完成") : tr("失败")),
-      );
+      if (bar) {
+        bar.setPercent(100);
+        bar.setLabel(event.phase === "done" ? tr("完成") : tr("失败"));
+        bar.setState(event.phase === "done" ? "done" : "failed");
+      }
     } else if (event.phase === "progress") {
       // percent() 返回的是带 % 的字符串，这里要的是数值宽度
       const raw = event.total ? Math.round(((event.completed ?? 0) / event.total) * 100) : 100;
       const pct = Math.max(0, Math.min(100, raw));
       progress.set(event.key, pct);
-      row?.querySelector(".progress__fill")!.setAttribute("style", `width:${pct}%`);
-      row?.querySelector(".progress__label")!.replaceChildren(document.createTextNode(`${pct}%`));
+      if (bar) {
+        bar.setPercent(pct);
+        bar.setLabel(`${pct}%`);
+      }
     }
 
     // 总进度 = 已完成项数占比
     const finished = chosen.filter((s) => progress.get(s.key) === 100).length;
     overallProgress = chosen.length ? Math.round((finished / chosen.length) * 100) : 0;
-    overallFill.setAttribute("style", `width:${overallProgress}%`);
-    overall.querySelector(".progress__label")!.replaceChildren(
-      document.createTextNode(`${overallProgress}%`),
-    );
+    overall.setPercent(overallProgress);
+    overall.setLabel(`${overallProgress}%`);
   });
 
   // 离开这一页时退订，避免回调打到已移除的节点
@@ -525,6 +542,28 @@ function viewRunning(): HTMLElement {
 /* ------------------------------------------------------------ 步骤 5 */
 
 /**
+ * 报告页的清理按钮：先问，再动。
+ *
+ * 确认闸门（ConfirmAction）在这里负责三件事，缺一不可：
+ *   · 不确认 → **绝不发清理命令**，只在报告页留下"已取消"的说明；
+ *   · 确认 → 才进入 `cleanupMigratedSources`（那里构造带 `confirm: true` 的请求）；
+ *   · 两者都留在报告页，用户能看清发生了什么。
+ */
+function requestCleanup(): void {
+  const records = (report?.done ?? []).filter((item) => item.recordId);
+  runAfterConfirm(
+    () => window.confirm(
+      `${tr("删除是不可逆的")}：${tr("确认清理已迁移的原目录？")}\n${records.map((r) => r.key).join("、")}`,
+    ),
+    () => void cleanupMigratedSources(records),
+    () => {
+      cleanupState = { skipped: true, detail: tr("已取消：没有确认就不会删除任何原目录") };
+      go("report");
+    },
+  );
+}
+
+/**
  * 清理已迁移的原目录。
  *
  * 后端契约（**已变更**）：`cleanup_migrated_source` 不再接受 `path`，
@@ -532,18 +571,15 @@ function viewRunning(): HTMLElement {
  * 标识只从 `start_migration` 回传的 `done[].recordId` 取 —— 路径不是标识。
  * 失败（含 `path_not_accepted` / `missing_record_id` / 缺确认）时把后端给的
  * `detail` **原样展示**，绝不吞掉：否则用户只看到"清理失败"却不知道为什么。
+ *
+ * 进到这里就意味着用户已经确认过（见 requestCleanup），所以确认参数恒为 true。
  */
-async function cleanupMigratedSources(): Promise<void> {
-  const records = (report?.done ?? []).filter((item) => item.recordId);
-  const decision = buildCleanupRequest(records, window.confirm(
-    `${tr("删除是不可逆的")}：${tr("确认清理已迁移的原目录？")}\n${records.map((r) => r.key).join("、")}`,
-  ));
+async function cleanupMigratedSources(records: Array<{ key: string; recordId?: string }>): Promise<void> {
+  const decision = buildCleanupRequest(records, true);
   if (!isCleanupRequest(decision)) {
     cleanupState = {
       skipped: true,
-      detail: decision.reason === "no_user_confirm"
-        ? tr("已取消：没有确认就不会删除任何原目录")
-        : tr("没有可清理的记录（后端只接受记录 ID）"),
+      detail: tr("没有可清理的记录（后端只接受记录 ID）"),
     };
     go("report");
     return;
@@ -577,13 +613,12 @@ function viewReport(): HTMLElement {
   if (report.done.length) {
     const list = h("div", { class: "check-list" });
     for (const item of report.done) {
-      const row = h("div", { class: "check-row is-ok" });
-      row.append(
-        h("span", { class: "check-row__mark", text: "✓" }),
-        h("span", { class: "check-row__name", text: item.key }),
-        h("span", { class: "check-row__detail", text: item.target }),
-      );
-      list.append(row);
+      // 成功项固定 ok，交给结果行组件（与上面风险清单同一处映射）。
+      list.append(buildStatusRow({
+        level: "ok",
+        name: item.key,
+        detail: item.target,
+      }));
     }
     body.append(list);
   }
@@ -603,7 +638,7 @@ function viewReport(): HTMLElement {
       text: cleanupState ? cleanupState.detail : `${cleanable.length} ${tr("项可清理")}`,
     }));
     card.append(h("div", { class: "tuning-actions" }, [
-      button(tr("清理已迁移的原目录"), "ghost", () => void cleanupMigratedSources()),
+      button(tr("清理已迁移的原目录"), "ghost", () => requestCleanup()),
     ]));
     body.append(card);
   }
