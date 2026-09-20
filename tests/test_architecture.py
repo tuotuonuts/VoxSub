@@ -367,6 +367,11 @@ def test_single_test_entry_point_and_isolated_basetemp() -> None:
     历史问题：仓库根堆了 240+ 个 ``.pytest-*``（500MB+），因为大家各传各的
     ``--basetemp``。统一入口 + gitignore 把这个口子堵上 —— 靠"记得别传"
     是堵不住的。
+
+    另一半同样重要：入口**每次运行要用自己的子目录**。曾经把它写成固定的
+    ``.pytest-run``，结果并发跑两次时后启动的那次会 rmtree 掉前一次正在用的
+    tmp_path，冒出一批与代码无关的 fixture 报错（实测一次全量里 14 个 ERROR，
+    单独跑全绿）。
     """
     runner = REPO_ROOT / "scripts" / "run_tests.py"
     assert runner.is_file(), "缺少唯一测试入口 scripts/run_tests.py"
@@ -376,7 +381,11 @@ def test_single_test_entry_point_and_isolated_basetemp() -> None:
 
     body = runner.read_text(encoding="utf-8")
     assert "--basetemp" in body, "入口脚本必须固定 basetemp"
-    assert "shutil.rmtree" in body, "入口脚本必须在每次运行前清空自己的临时目录"
+    assert "shutil.rmtree" in body, "入口脚本必须能清理自己的临时目录"
+    # 每次运行独占一个子目录 —— 否则并发跑会互相踩（见上面那段实测）
+    assert "os.getpid()" in body and "_own_basetemp" in body, (
+        "basetemp 必须带本次运行的标识（pid + 时间戳），否则并发跑两次会互相清掉"
+    )
 
 
 # ------------------------------------------------------------------ 子进程解码
