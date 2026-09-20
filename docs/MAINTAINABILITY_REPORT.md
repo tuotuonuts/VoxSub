@@ -36,10 +36,10 @@
 | 3 | Electron 实时 OCR 采集→译文浮窗事件链未接通 | **确认成立** | `preload.ts:76-77` 声明 `ocr:translated`/`ocr:frame-failed`，但全仓库 **零发送方**；`ocr-overlay.ts:93-111` 订阅了它们 | **未修**：需要真实屏幕采集做端到端验证，无硬件不可假装完成 |
 | 4 | 30 秒请求超时释放迁移保护 | 确认成立（前端请求层） | 前端请求封装 | 交前端专项代理修 |
 | 5 | OCR/迁移阻塞 IPC 控制命令 | **确认成立** | 旧 `main()`：`for raw in sys.stdin:` 内同步 `service.handle(...)`，长任务期间 `state`/`stop` 全排队 | **已修**：读出 job 执行器 + 读循环分派，见 §三.2 |
-| 6 | Pipeline stop 超时仍进 IDLE，可被提前换资源 | 确认成立（部分修复） | `pipeline.py` 相关 stop 路径 | **未修**：属资源生命周期第二阶段，规则已写入文档待接续 |
-| 7 | Qwen 并发初始化竞态 + 测试过度 mock | 确认成立 | `voxsub/translate/qwen.py` | **未修**：同上，属资源生命周期第二阶段 |
-| 8 | OCR 缓存配置失效与独立 close 缺失 | 确认成立 | `voxsub/ocr.py`、`voxsub/ocr_cache.py` | **未修**：同上 |
-| 9 | 语言切换缺在途任务快照 | 确认成立（部分修复） | pipeline 语言切换路径 | **未修**：同上 |
+| 6 | Pipeline 停止超时仍进 IDLE，可被提前换资源 | **确认成立** | `pipeline.py` stop() 超时后无条件落 IDLE | **已修**：超时保持 STOPPING（`is_running()` 仍真 → 门禁关闭）；新增 `_may_replace_resources()` 作为「能否替换被 worker 持有资源」的唯一权威判断，`set_models_dir`/`set_translator`/`set_asr_model`/`set_tts*` 全改走它；有界单例观察者等 worker 真退出才落 IDLE（否则「诚实」会变「卡死」）。12 条测试 |
+| 7 | Qwen 并发初始化竞态 + 过度 mock 的测试 | **确认成立（实测复现，非理论）** | 修复前两个并发 `_ensure` 开出 2 个子进程（端口 61841/61421），8 线程冷启动开出 5 个 | **已修**：检查+摘除+重建在生命周期锁内一次决策；`_generation` epoch 守卫 `close(generation=)`；半成功启动原子回滚；去掉了替换 `_spawn`/`close` 的过度 mock。**负例对照**：HEAD 版 4/7 红，修复版 7/7 绿 |
+| 8 | OCR 缓存配置失效与独立 close 缺失 | **确认成立**（字面「图片指纹当键」已随 Qt 前端删除、零调用方，但同类真缺陷成立） | 实测 `_translator_key({'api_key':'one'}) == ({'api_key':'two'})`（都等于 5 个空串）；实测 `hasattr(RapidOcrEngine,'close') == False`；close 后仍静默重建继续用 | **partial**：模块内已修（配置维度指纹驱动缓存键、引擎独立幂等终止性 close、借用协议均已实现并真跑 45 条测试）；**适配层只接了一半** —— 引擎回收与 OCR 自建翻译器回收已接，但译后成图仍绕过 `OcrImageCache`、OCR 逐行翻译未走带指纹的缓存。差的两条见「剩余风险」 |
+| 9 | 切语言时旧任务缺少快照 | **确认成立** | 实测症状：整句被源语言拦截规则丢弃（日志 `翻译前拦截非指定源语言文本 expected=ja text='第一句'`） | **已修**：`_LangSnapshot` + `_QueuedTranslation` + `config_generation`；在途任务用提交时快照、新任务用新配置、已显示结果不清屏；`configGeneration` 已接入 `state` 负载。19 条用例 + 负例对照（旧行为 4 例红） |
 | 10 | 设置页全局订阅累积 | **确认成立** | 渲染层 12 处 window/document 监听，**0 处移除** | 交前端专项代理修（PageLifecycle / dispose） |
 | 11 | 断连与渲染重载状态恢复不完整 | 确认成立 | `store.ts:194-227`、`284-322` | 交前端专项代理修 |
 | 12 | 未来版本配置被降级、未知字段被丢弃 | **确认成立** | `config_store.py` `_migrate_config` 无条件把 `config_version` 写回当前版本 | **已修**：见 §三.3 |
@@ -313,6 +313,9 @@ cp .backups/phase1_20260921_042735/pytest.ini pytest.ini
 | 台账文件可被本地篡改 | 威胁模型是"协议层攻击者无法指定路径"。有本机写权限的攻击者可以改台账 JSON —— 这已在文档里写明，不在本轮防御范围 | 护栏（受保护目录/卷根/正在使用的数据根）仍然拦住最危险的那些 |
 | 复杂度棘轮基线会腐化 | 基线表可能被后来者当成"允许超标清单" | `test_complexity_baseline_only_shrinks` 强制条目只能删不能改大 |
 | 打包版与源码不同步 | 当前 `dist/` 是旧构建，修复未进入打包产物 | 需要重新打包（见 §六.2） |
+| **OCR 译后成图绕过统一缓存** | `render_ocr_image` 仍直接往 OCR 缓存根写 `ocr-translated-<stamp>.png`，没有 originals/translated 分离、没有有界淘汰 —— 即工作单 §3.4 警告的"另写一套不完整缓存" | 改用 `OcrImageCache.allocate/finalize/cache_file` + 设置保存后 `invalidate_stale()`。属用户可见缓存行为变更，需甲方确认后再动 |
+| **OCR 逐行翻译未走带指纹的缓存** | OCR 翻译仍直调 `translator.translate(...)`，没用上"改配置即失效"的译文缓存 | 改走 `OcrTranslationService.translate_frame(...)`；同样属行为变更 |
+| **Qwen 选不出运行时时的回退策略** | `runtime is None` 时只重置 `_runtime` 不动 `_server_exe`，可能拿一个已被排除的加速器 exe 当 CPU 继续跑。本轮只把日志改成实话（打印实际 exe 与已排除清单），**未改策略** | "保守拒绝启动" vs "尽力而为"是产品行为决策，需甲方定；定了之后是一处小改动 |
 
 ---
 
