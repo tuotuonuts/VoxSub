@@ -24,6 +24,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_RELEASE_PY = ROOT / "frontend" / "tools" / "build-release.py"
+
+
+def _cli_python() -> str:
+    """跑 CLI 用哪个解释器。
+
+    **优先仓库自带的 venv，没有就退回"正在跑测试的这个解释器"**。
+
+    为什么必须这样：原来硬编码 ``ROOT/.venv/Scripts/python.exe``，在**干净检出**
+    （只有 git 里的东西，没有 venv）上直接 ``FileNotFoundError`` —— 于是"干净检出
+    能复现构建"这条验收标准会被三条与代码无关的测试失败挡住。CI 里 workflow 会先
+    建 .venv 所以看不出来，本地干净检出一定会踩到。
+    """
+    if VENV_PY.is_file():
+        return str(VENV_PY)
+    return sys.executable
+
+
 VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
 
 # 权威版本用的假版本（与仓库真实版本无关，避免真实发版时测试变红）
@@ -573,7 +590,7 @@ def test_real_repo_protocol_axis_has_a_stable_shape(br):
 def test_cli_check_only_exits_zero_on_real_repo():
     """真实入口：--check-only 必须能在不打包的情况下跑完并返回 0。"""
     result = subprocess.run(
-        [str(VENV_PY), str(BUILD_RELEASE_PY), "--check-only"],
+        [_cli_python(), str(BUILD_RELEASE_PY), "--check-only"],
         cwd=str(ROOT), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=300,
     )
@@ -585,7 +602,7 @@ def test_cli_check_only_exits_zero_on_real_repo():
 def test_cli_manifest_only_writes_real_manifest():
     """真实入口：--manifest-only 必须在 build/ 下产出一份结构完整的清单。"""
     result = subprocess.run(
-        [str(VENV_PY), str(BUILD_RELEASE_PY), "--manifest-only"],
+        [_cli_python(), str(BUILD_RELEASE_PY), "--manifest-only"],
         cwd=str(ROOT), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=300,
     )
@@ -609,7 +626,7 @@ def test_cli_manifest_only_writes_real_manifest():
 
 def test_cli_check_only_help_mentions_the_gate():
     result = subprocess.run(
-        [str(VENV_PY), str(BUILD_RELEASE_PY), "--help"],
+        [_cli_python(), str(BUILD_RELEASE_PY), "--help"],
         cwd=str(ROOT), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=120,
     )
