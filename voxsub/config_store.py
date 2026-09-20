@@ -350,8 +350,15 @@ class ConfigStore:
             self._save_unlocked(data)
 
     def save(self, data: dict[str, Any]) -> None:
-        """Persist a complete configuration without exposing a partial JSON file."""
+        """Persist a complete configuration without exposing a partial JSON file.
+
+        **先读一次再写**：`save` 是公开写入口，如果直接进 `_save_unlocked`，
+        那么"磁盘上是未来版本"这件事就不知道（`_locked_reason` 还是空的），
+        于是它会把新版本的配置按旧 schema 归一化后写回 —— 正是缺陷 #12 要禁止的
+        静默降级。`set`/`update` 一直是先 load 再写，只有 save 漏了这一步。
+        """
         with _CONFIG_LOCK:
+            self._load_unlocked()  # 探测版本与未知字段，必要时进入只读保护
             self._save_unlocked(data)
 
     def _save_unlocked(self, data: dict[str, Any]) -> None:

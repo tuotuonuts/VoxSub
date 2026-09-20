@@ -181,6 +181,14 @@ jobs:
       - name: Design token contract
         run: npm run verify:palette
 
+      # 前端纯逻辑测试（组件行为 / 页面生命周期 / 会话时间轴 / 请求语义 / 清理契约）。
+      #
+      # 必须有这一步：本轮把"状态真实性"和"公共组件提取"的验收完全押在这些 node 测试上
+      # （10 套、345 条断言），而 `npm run check` 才会跑到它们 —— 之前 CI 只跑 typecheck
+      # 与设计令牌，等于前端一半的修复没有机器守卫，改坏了不会红。
+      - name: Frontend logic tests
+        run: npm run check
+
       - name: IPC version and protocol consistency
         working-directory: .
         run: python frontend/tools/build-release.py --check-only

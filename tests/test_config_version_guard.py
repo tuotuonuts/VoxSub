@@ -197,3 +197,30 @@ def test_empty_file_falls_back_to_defaults(store):
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text("", encoding="utf-8")
     assert store.load()["config_version"] == CONFIG_VERSION
+
+
+def test_direct_save_on_a_future_version_file_is_refused(store):
+    """**裸 save 也必须被拒**（回归：这条以前是个洞）。
+
+    审查发现：原来的用例写的是 `store.save(store.load())` —— `load()` 先把实例置入
+    只读态，于是用例只验证了"load 过的实例拒绝 save"。而 `save()` 是公开写入口，
+    新建实例直接 save 时 `_locked_reason` 还是空的，会把未来版本的配置按旧 schema
+    归一化后写回 —— 正是 #12 要禁止的静默降级，绿色却没覆盖到。
+    """
+    _write(store.path, {"config_version": CONFIG_VERSION + 3, "theme": "dark",
+                        "future_only_key": "keep-me"})
+    before = store.path.read_bytes()
+
+    with pytest.raises(ConfigVersionTooNew):
+        store.save({"theme": "light"})   # 注意：不先 load
+
+    assert store.path.read_bytes() == before, "裸 save 把未来版本的配置降级写坏了"
+
+
+def test_direct_save_still_works_for_a_current_version_file(store):
+    """修好以后正常路径不能坏：当前版本的配置，裸 save 照样能写。"""
+    store.save({"theme": "dark"})
+
+    on_disk = json.loads(store.path.read_text(encoding="utf-8"))
+    assert on_disk["theme"] == "dark"
+    assert on_disk["config_version"] == CONFIG_VERSION
