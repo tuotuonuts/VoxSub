@@ -161,20 +161,22 @@ def test_installer_output_base_filename_matches_app_version():
     )
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "installer.iss 的 OutputBaseFilename 仍写死版本字面量；当前由版本门禁兜住，"
+    "建议改为 OutputBaseFilename=VoxSub-Setup-{#MyAppVersion}。strict=True 是刻意的："
+    "修好之后会因为 XPASS 而红，提醒把这条标记连同本用例一起清理掉 —— "
+    "用 pytest.xfail()（命令式）拿不到这个方向性，只会静默 XPASS。"
+))
 def test_installer_output_base_filename_uses_the_macro():
-    """更强的一版：输出文件名应当引用 {#MyAppVersion} 而不是再抄一遍字面量。
+    """输出文件名应当引用 {#MyAppVersion} 而不是再抄一遍字面量。
 
-    这条是"应该做但当前没做"的改进项 —— 用 xfail 标注，不伪装成已通过。
+    这条是"应该做但当前没做"的改进项。用 strict xfail 标注而不是伪装成通过。
     """
     iss = (ROOT / "scripts" / "installer.iss").read_text(encoding="utf-8")
     output = re.search(r"^OutputBaseFilename=(.+)$", iss, re.MULTILINE)
     assert output is not None
-    if "{#MyAppVersion}" in output.group(1):
-        return
-    pytest.xfail(
-        "installer.iss 的 OutputBaseFilename 仍写死版本字面量（"
-        f"{output.group(1)!r}）；当前由版本门禁兜住，建议改为 "
-        "OutputBaseFilename=VoxSub-Setup-{#MyAppVersion}"
+    assert "{#MyAppVersion}" in output.group(1), (
+        f"OutputBaseFilename 还在抄字面量：{output.group(1)!r}"
     )
 
 

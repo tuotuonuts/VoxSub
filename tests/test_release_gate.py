@@ -130,9 +130,26 @@ def test_good_repo_passes_version_gate(br, good_repo):
 
 
 def test_real_repo_passes_version_gate(br):
-    """真实仓库必须当前就是绿的 —— 否则门禁等于没接。"""
-    version, _hits = br.check_versions(ROOT)
-    assert version == br.read_product_version(ROOT)
+    """真实仓库必须当前就是绿的 —— 否则门禁等于没接。
+
+    注意断言的是什么：`check_versions` 内部就是拿 `read_product_version` 当权威版本，
+    所以 "version == read_product_version()" 是**恒真**的（审查点名）。有意义的是
+    「它没抛 SystemExit」+「位点数与实测相符」，这里都断言上。
+    """
+    version, hits = br.check_versions(ROOT)   # 不一致会抛 SystemExit → 本用例直接失败
+    assert version, "权威版本读不出来"
+    assert len(hits) >= 6, (
+        f"版本位点只有 {len(hits)} 处 —— 位点清单可能被删瘦了，门禁会漏检"
+    )
+    # 每个**写死版本**的位点都必须真的等于权威版本（不是"恰好没抛异常"）。
+    # 派生位点（例如 electron-builder 的输出模板，值里根本不写版本）跳过 —— 它们
+    # 只要求存在，由 check_versions 自己负责判断该不该派生。
+    for hit in hits:
+        if getattr(hit, "derived", False):
+            continue
+        assert getattr(hit, "value", None) == version, (
+            f"位点没对上权威版本：{hit}"
+        )
 
 
 # ===================================== 负例 1：版本不一致必须失败（缺陷 #14）

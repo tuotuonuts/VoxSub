@@ -53,11 +53,13 @@ __all__ = [
 #: 契约文件所在目录（仓库根 / contracts）。本文件在 frontend/backend/ 下。
 DEFAULT_CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
 
-#: 单条线上消息的字节上限。与 contracts/protocol.json 的
-#: transport.maxLineBytes 保持一致；registry 加载协议文件后会以文件值为准。
-#: 8 MiB 的依据：已知最大载荷是 OCR 结果行与 release_notes 全文，实测均在
-#: 200 KiB 量级，留 40 倍余量。设它是为了让"超大消息"变成一个明确的拒绝，
-#: 而不是把后端读到 OOM。
+#: 单条线上消息的**兜底**上限（字节）。仅当协议文件读不到 `transport.maxLineBytes`
+#: 时生效 —— 正常运行时以 `contracts/protocol.json` 的 32 MiB 为准（读循环真正的
+#: 上限是 `ipc_loop.MAX_LINE_CHARS`，测试断言两者一致）。
+#:
+#: 为什么兜底值比正式值小：兜底只在"契约缺失"这种异常态生效，此时宁可更保守 ——
+#: 拒掉一条超大消息，也好过在没有任何契约约束的情况下把内存读爆。两个数字不同是
+#: **有意**的，但审查指出它会让"上限到底是多少"变得可争议，所以在这里写明关系。
 MAX_LINE_BYTES = 8 * 1024 * 1024
 
 #: 递归深度上限，防止畸形契约或自引用 $ref 打爆栈。
