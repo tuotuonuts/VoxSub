@@ -313,7 +313,7 @@ cp .backups/phase1_20260921_042735/pytest.ini pytest.ini
 | 台账文件可被本地篡改 | 威胁模型是"协议层攻击者无法指定路径"。有本机写权限的攻击者可以改台账 JSON —— 这已在文档里写明，不在本轮防御范围 | 护栏（受保护目录/卷根/正在使用的数据根）仍然拦住最危险的那些 |
 | 复杂度棘轮基线会腐化 | 基线表可能被后来者当成"允许超标清单" | `test_complexity_baseline_only_shrinks` 强制条目只能删不能改大 |
 | 打包版与源码不同步 | 当前 `dist/` 是旧构建，修复未进入打包产物 | 需要重新打包（见 §六.2） |
-| **OCR 译后成图绕过统一缓存** | `render_ocr_image` 仍直接往 OCR 缓存根写 `ocr-translated-<stamp>.png`，没有 originals/translated 分离、没有有界淘汰 —— 即工作单 §3.4 警告的"另写一套不完整缓存" | 改用 `OcrImageCache.allocate/finalize/cache_file` + 设置保存后 `invalidate_stale()`。属用户可见缓存行为变更，需甲方确认后再动 |
+| **OCR 译后成图绕过统一缓存** | 路径是**前端拼的**：`frontend/src/renderer/views/ocr.ts::temporaryPath()` 造 `${cacheRoot}/ocr-${kind}-${stamp}.png` 当 `target` 传给命令，`handlers/ocr.py::_cmd_render_ocr_image` 照写不误 —— 没有 originals/translated 分离、没有有界淘汰、也不带配置指纹，即工作单 §3.4 警告的"另写一套不完整缓存"。**审查指出我原来这条写错了位置**（写成后端写 `ocr-translated-<stamp>.png`，全树 grep 为 0，代码里并不存在那个名字），已改正 | 改用 `OcrImageCache` 的 `allocate/finalize/cache_file` + 设置保存后 `invalidate_stale()`。属用户可见缓存行为变更（还会牵动渲染层的临时路径约定），需甲方确认后再动 |
 | **OCR 逐行翻译未走带指纹的缓存** | OCR 翻译仍直调 `translator.translate(...)`，没用上"改配置即失效"的译文缓存 | 改走 `OcrTranslationService.translate_frame(...)`；同样属行为变更 |
 | **Qwen 选不出运行时时的回退策略** | `runtime is None` 时只重置 `_runtime` 不动 `_server_exe`，可能拿一个已被排除的加速器 exe 当 CPU 继续跑。本轮只把日志改成实话（打印实际 exe 与已排除清单），**未改策略** | "保守拒绝启动" vs "尽力而为"是产品行为决策，需甲方定；定了之后是一处小改动 |
 
