@@ -12,9 +12,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # ---------------------------------------------------------------------------
+  # Python 全量测试。承接原有 job 的名字与门槛，不放宽任何断言。
+  # ---------------------------------------------------------------------------
+  python-tests:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -33,3 +36,166 @@ jobs:
 
       - name: Run tests
         run: .\.venv\Scripts\python.exe -m pytest -q
+
+  # ---------------------------------------------------------------------------
+  # IPC 适配层测试。命令契约是前后端唯一的接缝，单独一个 job 让它的失败一眼可见，
+  # 不会被全量测试的输出淹没。
+  # ---------------------------------------------------------------------------
+  ipc-adapters:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.5"
+
+      - name: Create Python environment
+        run: uv venv --python 3.11
+
+      - name: Sync locked dependencies
+        run: uv pip sync --python .venv\Scripts\python.exe requirements.lock
+
+      - name: IPC command contract tests
+        run: >
+          .\.venv\Scripts\python.exe -m pytest
+          tests\test_ipc_commands.py
+          tests\test_ipc_logging.py
+          tests\test_architecture.py
+          -q --no-header -p no:cacheprovider
+
+  # ---------------------------------------------------------------------------
+  # 发布门禁：版本一致性 + 包装契约 + 负向门禁测试。
+  # 全部离线执行，不调用 electron-builder / PyInstaller，不写 Release 目录。
+  # ---------------------------------------------------------------------------
+  release-gate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.5"
+
+      - name: Create Python environment
+        run: uv venv --python 3.11
+
+      - name: Sync locked dependencies
+        run: uv pip sync --python .venv\Scripts\python.exe requirements.lock
+
+      - name: Version consistency gate (no packaging)
+        run: .\.venv\Scripts\python.exe frontend\tools\build-release.py --check-only
+
+      - name: Packaging contract and negative release-gate tests
+        run: >
+          .\.venv\Scripts\python.exe -m pytest
+          tests\test_packaging.py
+          tests\test_release_gate.py
+          -q --no-header -p no:cacheprovider
+
+      - name: Build manifest (no packaging)
+        run: .\.venv\Scripts\python.exe frontend\tools\build-release.py --manifest-only
+
+      - name: Upload build manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: build/release-manifest-*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 孤立环境集成测试。这些测试在缺少音频设备/模型时自行 skip，因此可以在
+  # 无硬件的 runner 上运行；不把 skip 当通过 —— 断言的是"失败会真的失败"。
+  # ---------------------------------------------------------------------------
+  integration:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.5"
+
+      - name: Create Python environment
+        run: uv venv --python 3.11
+
+      - name: Sync locked dependencies
+        run: uv pip sync --python .venv\Scripts\python.exe requirements.lock
+
+      - name: Create isolated scratch root
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/voxsub-isolated"
+          echo "VOXSUB_ROOT=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "LOCALAPPDATA=$RUNNER_TEMP/voxsub-isolated/AppData" >> "$GITHUB_ENV"
+
+      - name: Integration tests (isolated scratch dirs)
+        # 必须显式排除 hardware_audio：`-m integration` 会**覆盖** pytest.ini 的
+        # `addopts = -m "not hardware_audio"`，把会真的从扬声器播 2 秒正弦的
+        # test_loopback_closure_sine 一起选进来。CI runner 上虽然多半没声卡，
+        # 但这条命令是会被开发者照抄到本机的 —— 那样就是别人正在用电脑时突然响一声。
+        run: >
+          .\.venv\Scripts\python.exe -m pytest
+          -m "integration and not hardware_audio"
+          -q --no-header -p no:cacheprovider
+          --basetemp "${{ runner.temp }}/voxsub-isolated/pytest"
+
+  # ---------------------------------------------------------------------------
+  # 前端：类型检查、设计令牌契约、IPC 版本/协议一致性、以及"构建不得改写源码"。
+  #
+  # 最后一条是本文件里最容易被绕过的一条：`npm run build` 会先跑 prebuild →
+  # frontend/scripts/sanitize.mjs，它**就地清写源码**再退出 1。构建前置步骤只
+  # 允许检查、不允许偷偷改工作区，所以这里在构建后断言 git 工作区仍然干净。
+  # ---------------------------------------------------------------------------
+  frontend:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 门禁脚本只用标准库，不需要完整 venv —— 故意不装依赖，证明这一步是孤立的。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: TypeScript type check
+        run: npm run typecheck
+
+      - name: Design token contract
+        run: npm run verify:palette
+
+      - name: IPC version and protocol consistency
+        working-directory: .
+        run: python frontend/tools/build-release.py --check-only
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Build must not rewrite the working tree
+        working-directory: .
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::构建前置步骤改写了工作区源码（构建不可信）"
+            git status --porcelain
+            git --no-pager diff --stat
+            exit 1
+          fi
+          echo "工作区在构建后仍然干净：没有源码被静默改写。"
