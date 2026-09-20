@@ -266,3 +266,45 @@ def test_close_does_not_release_resources_while_settling(stalled_pipeline):
         "worker 退出后 close 应该能真正释放"
     )
     assert translator.closed is True
+
+
+# ------------------------------------------------------------- TTS 热重载门禁
+#
+# 审查指出：本文件的文档字符串把"TTS worker 的门禁"列为覆盖项，但当时**没有任何
+# TTS / _is_settling 的测试** —— 声明比实现大。这两条把它补上。
+
+def test_settling_does_not_restart_the_tts_worker(stalled_pipeline, monkeypatch):
+    """收尾窗口里不许拆建 TTS worker（它也在被 worker 持有）。
+
+    运行中热重载 TTS 是**刻意支持**的（换模型立刻生效），所以这条门禁不能用
+    `_may_replace_resources`（那会把热重载一起否掉），只能是"排除收尾中"。
+    """
+    pipe, _worker = stalled_pipeline
+    calls: list[str] = []
+    monkeypatch.setattr(pipe, "_stop_tts_worker", lambda: calls.append("stop"))
+    monkeypatch.setattr(pipe, "_start_tts_worker", lambda: calls.append("start"))
+    pipe._tts_enabled = True  # noqa: SLF001
+    pipe._tts_model_ids = {"zh": "old-zh", "en": "old-en"}  # noqa: SLF001
+
+    pipe.stop()                      # 进入收尾窗口
+    assert pipe.state is PipelineState.STOPPING
+    calls.clear()
+
+    pipe.set_tts_models({"zh": "new-zh", "en": "new-en"})
+
+    assert calls == [], f"收尾中拆建了 TTS worker：{calls}"
+
+
+def test_running_state_still_hot_reloads_the_tts_worker(fast_deadlines, monkeypatch):
+    """正常运行中仍然要热重载 —— 门禁不能把这条刻意能力一起关掉。"""
+    pipe = Pipeline()
+    pipe._set_state(PipelineState.RUNNING)  # noqa: SLF001
+    pipe._tts_enabled = True  # noqa: SLF001
+    pipe._tts_model_ids = {"zh": "old-zh", "en": "old-en"}  # noqa: SLF001
+    calls: list[str] = []
+    monkeypatch.setattr(pipe, "_stop_tts_worker", lambda: calls.append("stop"))
+    monkeypatch.setattr(pipe, "_start_tts_worker", lambda: calls.append("start"))
+
+    pipe.set_tts_models({"zh": "new-zh", "en": "new-en"})
+
+    assert calls == ["stop", "start"], f"运行中应当热重载：{calls}"

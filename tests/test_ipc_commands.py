@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -804,3 +806,66 @@ class TestOcrResourceOwnership:
         service._ocr_translator = _Hostile()  # noqa: SLF001
         service.close()  # 不该抛
         assert service._ocr_translator is None  # noqa: SLF001
+
+
+class TestPipelineCreationIsSingleInstance:
+    """`ensure_pipeline()` 的并发安全（独立审查指出本轮新暴露的竞态）。
+
+    本轮把命令从读循环搬到了 worker 线程：`state` 是控制命令（读循环线程，
+    且需要 pipeline），耗时作业在 worker 线程 —— 两个线程可能同时进
+    `ensure_pipeline()`，各建一个 Pipeline 出来。
+    """
+
+    def test_concurrent_calls_construct_exactly_one_pipeline(self, service, monkeypatch):
+        barrier = threading.Barrier(4)
+        made: list[object] = []
+
+        def slow_create(self):  # noqa: ANN001
+            # 替身要**照真实契约**缓存到 self._pipeline —— 否则测的就不是
+            # ensure_pipeline 的缓存与加锁，而是替身自己。
+            #
+            # 集合点刻意**不放在这里**：锁一旦生效，临界区里只可能有一个线程，
+            # 在里面 wait(N) 只会自堵到超时。四个线程在锁外集合、一起冲向
+            # ensure_pipeline，才是真实竞态的形状。
+            time.sleep(0.05)             # 放大构造窗口
+            instance = object()
+            self._pipeline = instance
+            made.append(instance)
+            return instance
+
+        monkeypatch.setattr(type(service), "_create_pipeline_locked", slow_create)
+
+        results: list[object] = []
+        results_lock = threading.Lock()
+
+        def worker():
+            barrier.wait(timeout=5)      # 锁外集合
+            instance = service.ensure_pipeline()
+            with results_lock:
+                results.append(instance)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert len(made) == 1, f"并发下构造了 {len(made)} 个 Pipeline"
+        assert len(results) == 4
+        assert all(item is made[0] for item in results), "并发调用拿到了不同实例"
+
+    def test_repeated_calls_reuse_the_same_instance(self, service, monkeypatch):
+        made: list[object] = []
+        def fake_create(self):  # noqa: ANN001
+            instance = object()
+            self._pipeline = instance
+            made.append(instance)
+            return instance
+
+        monkeypatch.setattr(type(service), "_create_pipeline_locked", fake_create)
+
+        first = service.ensure_pipeline()
+        second = service.ensure_pipeline()
+
+        assert first is second
+        assert len(made) == 1

@@ -1750,7 +1750,9 @@ class Pipeline:
         # 清理上次异常退出留下的线程引用与旧音频块。
         self._threads = [t for t in self._threads if t.is_alive()]
         if self._threads:
-            names = ", ".join(t.name for t in self._threads)
+            # 用 _thread_label 而不是 t.name：线程对象形态不保证（测试会塞替身），
+            # 一行日志/报错文案不该有能力把启动路径带崩 —— 与 stop() 同一处理。
+            names = ", ".join(_thread_label(t) for t in self._threads)
             raise RuntimeError(f"上一任务仍在安全收尾（{names}），请稍后再开始")
         self._drain_queue(self._queue)
         self._drain_queue(self._recognition_queue)
@@ -1872,8 +1874,10 @@ class Pipeline:
             self._watch_settlement()
         self._live_draft.reset()
         self._clear_draft()
-        self._stop_tts_worker()
         if workers_stopped:
+            # TTS worker 也是"被资源持有者"：收尾窗口里不拆它（观察者等真退出后统一收），
+            # 与 set_tts 系列的 _is_settling 门禁是同一条规则。
+            self._stop_tts_worker()
             if self._last_recording_path is not None and self._recording_enabled:
                 self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
             else:
@@ -1908,6 +1912,7 @@ class Pipeline:
                         return
                     time.sleep(_SETTLE_POLL_SECONDS)
                 self._set_state(PipelineState.IDLE)
+                self._stop_tts_worker()  # 收尾窗口里刻意没拆，这里补上
                 if self._last_recording_path is not None and self._recording_enabled:
                     self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
                 else:

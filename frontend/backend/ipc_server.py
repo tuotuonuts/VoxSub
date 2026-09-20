@@ -183,8 +183,21 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
     # ------------------------------------------------------------------ 基础设施
     def ensure_pipeline(self) -> Any:
-        if self._pipeline is not None:
-            return self._pipeline
+        """取（必要时创建）pipeline。
+
+        **必须加锁**：`state` 是控制命令，在读循环线程上执行且需要 pipeline；
+        而需要 pipeline 的耗时作业同时在 worker 线程上跑。本轮把命令从读循环
+        移到 worker 之后，两个线程可能同时进这里 —— 各建一个 Pipeline 出来，
+        其中一个会被 `_apply_saved_config` 影响后再被覆盖，表现为状态/配置偶发
+        对不上。（冷启动实测 ensure_pipeline() 约 0.23s，窗口真实存在。）
+        """
+        with self._lock:
+            if self._pipeline is not None:
+                return self._pipeline
+            return self._create_pipeline_locked()
+
+    def _create_pipeline_locked(self) -> Any:
+        """在持锁状态下构造并装配 pipeline（构造期间不能放锁，见 ensure_pipeline）。"""
         from voxsub.pipeline import Pipeline  # noqa: PLC0415
 
         pipeline = Pipeline()
