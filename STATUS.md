@@ -80,6 +80,11 @@
 - [ ] M9 发布候选：完成更多真实推理与无独显 NPU 轻薄本验收
 
 - [x] **2026-09-21 代码可维护性整顿（阶段0–4，共 10 个提交，基线 `0882505`）**：删除授权从"调用方给路径"改成"台账记录 + 护栏"（清理只认 `record_id` 并要求显式 confirm，新增 `migration_ledger.py`）；后台任务控制通道与耗时工作分离（新增 `job_runner.py` 有界单 worker + 诚实取消语义、`ipc_loop.py` 读循环与控制命令插队）；**Pipeline 停止超时不再伪装空闲**（保持"停止中"，资源门禁收敛成 `_may_replace_resources`，有界观察者等 worker 真退出）；**切语言/档位改用提交时快照**（`_LangSnapshot` + `config_generation`，在途任务不被新配置重新解释，`configGeneration` 已接入 `state` 负载）；**IPC 适配层按业务域拆分**（`ipc_server.py` 1779 → 691 行，命令实现进 `handlers/*`，协议 I/O 独立成 `ipc_protocol.py`，既有入口保留为兼容 facade）；配置版本兼容加固（未来版本只读保护、未知字段保留、损坏先备份）；架构门禁从只扫 `voxsub/` 扩到含 `frontend/backend/` 并新增原子发布零豁免、`subprocess` 编码、复杂度棘轮、测试卫生等规则；原子写入收敛成 `file_io.replace_with_retry` 唯一实现。**干净检出实测**：`build-release.py --check-only` 通过、测试套件 738 passed / 0 failed。文档新增 `docs/{ARCHITECTURE,HANDOVER,MODULE_CATALOG,DECISIONS,MAINTAINABILITY_REPORT}.md` 与 `contracts/`。详见 TODO.txt 的 2026-09-21 段与主交付报告。
+- [x] 独立审查（无上下文的只读代理）：逐条核实了声称已修的缺陷，并**实测出三个真问题** ——
+  迁移源没有授权校验（两步 IPC 可 rmtree 任意用户目录）、我修 #6 时带出的一条静默回归
+  （收尾窗口点开始不发 session 事件却清空字幕）、原子发布门禁只认 `os.replace` 而 3 处
+  `Path.replace` 全放行。均已修复并补测试；另有 CI 不跑前端测试、`ConfigStore.save()` 绕过
+  版本保护、`ensure_pipeline` 无锁等一并闭环。审查剩余的未处理项记在 TODO。
 - [ ] 待甲方确认：清理 244 个 `.pytest-*`（527MB）+ 3 个 venv（3.3GB）；是否重新打包 sidecar（当前 `dist/` 是旧构建）；模型路径统一；Electron 静默端到端冒烟（L4）；真机四模式验收（L5）
 
 ## 环境事实（接手必知）

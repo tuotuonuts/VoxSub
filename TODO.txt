@@ -32,6 +32,14 @@
 [x] 阶段4 原子发布收敛：file_io.replace_with_retry 成为唯一实现（llama_runtime 两处、bootstrap_models 一处改为复用）+ 零豁免门禁（file_io 之外任何 os.replace 都会红）—— 起因是全量跑里 llama_runtime 那步偶发 WinError 5
 [x] 阶段4 干净环境验证构建：git worktree 起干净检出 → build-release.py --check-only 通过、测试套件 738 passed / 0 failed；过程中揪出并修掉"发布门禁 CLI 测试硬编码仓库内 venv"（干净检出上必 FileNotFoundError）
 [x] 文档补齐（任务书 §七 最终文档）：docs/MODULE_CATALOG.md（公共组件/服务目录 + "想加东西先看这张表"）、docs/DECISIONS.md（12 条决策，每条写明代价）
+[x] 独立审查（D Agent，无上下文、只读、自己复现）：核实了 #1/#5/#6/#12/#13/#14 与 #7/#8 新增项；
+    架构与发布门禁用"植入违规再调门禁函数"验证过确实会红（非自证）
+[x] 按审查修掉的真问题：#1 补上"迁移源必须有授权凭据"（原来只检查是不是目录 —— 两步 IPC 就能
+    rmtree 任意用户目录，审查实测过）；#6 修复带出的回归（收尾窗口点开始会静默不发 session 事件
+    却清空字幕）；原子发布门禁只认 os.replace 导致 3 处 Path.replace 放行；CI 从不跑前端逻辑测试；
+    ConfigStore.save() 绕过版本保护；ensure_pipeline 无锁；TTS 门禁"文档声称有、实际没测"
+[x] 按审查收紧的门禁：反空转守卫（扫描集为空时四条规则会静默通过）、棘轮条目数上限、
+    xfail 加 strict、版本门禁的恒真断言、原子发布门禁覆盖 Path.replace/rename 两种形态
 [ ] 待甲方确认：清理 244 个 .pytest-*（527MB）+ 3 个 venv（3.3GB）；是否重新打包 sidecar（当前 dist/ 是旧构建）；模型路径统一（D:\VoxSub\Models vs %LOCALAPPDATA%）；CI Python 版本锁 3.12
 [ ] 待甲方确认：是否允许起一次隐藏窗口做 Electron 运行时冒烟（npm run launch:silent -- --debug + npm run test:session）
 [ ] 待接续：真机 A/B/C/D 四模式端到端 + NPU 探测结果（L5 层，需真模型与设备）
