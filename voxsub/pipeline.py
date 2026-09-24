@@ -1112,22 +1112,46 @@ class Pipeline:
             result = False
         if result is not False or self._trans_kind != "qwen-quality":
             return
-        logger.warning("质量翻译预热失败，尝试切换 OPUS 极速档")
+        logger.warning("质量翻译预热失败，尝试按语言对选择可用档位")
         self._disable_quality_translator()
 
-    def _disable_quality_translator(self) -> None:
-        """Replace a failed quality translator so later sentences do not retry it."""
+    def _disable_quality_translator(
+        self, snapshot: _LangSnapshot | None = None
+    ) -> None:
+        """Open the quality circuit; only select ready, pair-compatible fallbacks."""
         if self._trans_kind != "qwen-quality":
             return
+        from voxsub.translate.factory import kind_for_tier
+
+        pair = snapshot.pair if snapshot is not None else (self._src_lang, self._dst_lang)
         failed = self._translator
-        fallback, fallback_kind = _load_translator(
-            "opus-fast", self._translator_config)
+        fallback, fallback_kind = _NoopTranslator(), None
+        # Preserve local-fast preference, but never recreate the failed quality
+        # engine (including its tier alias) or accept an unsupported fast model.
+        seen = {"qwen-quality"}
+        for tier in _candidate_tiers("opus-fast"):
+            kind = kind_for_tier(tier, self._translator_config)
+            if kind in seen:
+                continue
+            seen.add(kind)
+            candidate, effective = _load_translator(kind, self._translator_config)
+            if effective is not None and _usable_for_pair(candidate, *pair):
+                fallback, fallback_kind = candidate, effective
+                break
+            if isinstance(candidate, _NoopTranslator):
+                fallback = candidate
+            else:
+                _close_quietly(candidate)
         self._translator, self._trans_kind = fallback, fallback_kind
-        close = getattr(failed, "close", None)
-        if callable(close):
-            close()
+        self._trans_pair = pair
+        self._trans_substituted_from = self._requested_trans_kind if fallback_kind else None
+        _close_quietly(failed)
+        logger.warning("质量翻译失败后重新选档: lang=%s→%s effective=%s",
+                       *pair, fallback_kind or "原文直通")
         if fallback_kind == "opus-fast":
             self._emit_status("质量翻译不可用，已切换极速翻译")
+        elif fallback_kind is not None:
+            self._emit_status("质量翻译不可用，已切换云端翻译")
         else:
             self._emit_status("本地翻译不可用，暂时显示原文")
 
@@ -1502,7 +1526,7 @@ class Pipeline:
             self._log_translate_failure(
                 text, queue_wait_ms, (time.perf_counter() - started) * 1000.0,
                 exc, snapshot)
-            self._disable_quality_translator()
+            self._disable_quality_translator(snapshot)
             self._emit_status("翻译失败，未显示伪译文")
             return "", False
         self._pair_fail_key = None   # 恢复成功，下次失败要重新报
@@ -1555,7 +1579,7 @@ class Pipeline:
         except Exception:
             logger.debug("实时草稿翻译失败: source=%r", request.source[:160],
                          exc_info=True)
-            self._disable_quality_translator()
+            self._disable_quality_translator(snapshot)
             return
         if snapshot.generation != self.config_generation:
             logger.debug(
