@@ -89,6 +89,92 @@ def test_quality_failure_routes_only_to_usable_candidates(
     assert broken.closed == 1
 
 
+@pytest.mark.parametrize("entry", ["sentence", "warmup", "draft"])
+@pytest.mark.parametrize("model_pair,cloud_ready,expected", [
+    (None, True, "cloud"),
+    (("zh", "en"), True, "cloud"),  # Other direction does not make en->zh ready.
+    (None, False, None),
+    (("en", "zh"), True, "opus-fast"),
+])
+def test_real_opus_availability_controls_quality_fallback(
+        monkeypatch, tmp_path, entry, model_pair, cloud_ready, expected):
+    from voxsub.translate import opus as opus_module
+
+    # Exercise the real OPUS supports/availability interface, without models,
+    # inference, network, or reliance on the user's installed model directory.
+    if model_pair:
+        directory = tmp_path / ("opus_" + "_".join(model_pair))
+        directory.mkdir()
+        for name in ("encoder_model_int8.onnx", "decoder_model_int8.onnx",
+                     "config.json", "tokenizer.json"):
+            (directory / name).touch()
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def translate_str(self, text, **kwargs):
+            return "有效译文"
+
+    monkeypatch.setattr(opus_module, "_OpusModel", Model)
+    opus = opus_module.OpusFastTranslator(model_dir=tmp_path)
+    closed = []
+    close = opus.close
+    def close_opus():
+        closed.append(True)
+        close()
+    monkeypatch.setattr(opus, "close", close_opus)
+    cloud = FakeTranslator([("en", "zh")], ready=cloud_ready)
+    broken = FakeTranslator([("en", "zh")], broken=True)
+    pipe = module.Pipeline()
+    pipe._src_lang, pipe._dst_lang = "en", "zh"
+    pipe._translator, pipe._trans_kind = broken, "qwen-quality"
+    loaded = []
+    def load(kind, config=None):
+        loaded.append(kind)
+        return {"opus-fast": opus, "cloud": cloud}[kind], kind
+    monkeypatch.setattr(module, "_load_translator", load)
+    statuses = []
+    pipe.on_status(statuses.append)
+    if entry == "warmup":
+        pipe._warmup_translator()
+    elif entry == "draft":
+        from voxsub.live_draft import DraftTranslationRequest
+        pipe._translate_draft(DraftTranslationRequest(1, "Hello"))
+    else:
+        pipe._translate_sentence("Hello")
+
+    assert pipe._trans_kind == expected
+    assert broken.closed == 1
+    assert loaded == (["opus-fast"] if expected == "opus-fast"
+                      else ["opus-fast", "cloud"])
+    assert len(closed) == (0 if expected == "opus-fast" else 1)
+    assert cloud.closed == (1 if expected is None else 0)
+    if expected is None:
+        assert isinstance(pipe._translator, module._NoopTranslator)
+        assert pipe._translator.translate("Hello", "en", "zh") == "Hello 〔翻译待装〕"
+        assert any("原文" in status for status in statuses)
+    else:
+        assert pipe._translator.translate("Hello", "en", "zh") == "有效译文"
+
+
+@pytest.mark.parametrize("pair,expected", [
+    (("auto", "zh"), False),
+    (("auto", "en"), True),
+    (("en", "zh"), False),
+    (("zh", "en"), True),
+    (("zh", "zh"), True),
+    (("ja", "en"), False),
+    (("zh", "auto"), False),
+])
+def test_real_opus_availability_is_directional(monkeypatch, tmp_path, pair, expected):
+    from voxsub.translate.opus import OpusFastTranslator
+
+    opus = OpusFastTranslator(model_dir=tmp_path)
+    monkeypatch.setattr(opus, "list_available_pairs", lambda: [("zh", "en")])
+    assert module._usable_for_pair(opus, *pair) is expected
+
+
 @pytest.mark.parametrize("entry", ["sentence", "draft"])
 def test_failure_fallback_uses_inflight_language_pair(monkeypatch, entry):
     pipe = module.Pipeline()

@@ -399,17 +399,24 @@ def _close_quietly(obj: object | None) -> None:
 
 
 def _usable_for_pair(translator: object, src_lang: str, dst_lang: str) -> bool:
-    """翻译器是否既**已就绪**、又**支持这个语言对**。
-
-    就绪这一项只对云端有意义（只有 CloudTranslator 有 ready()）：不看它的话，
-    没配 API key 的用户会被"换到云端"，然后照样失败 —— 从一个不支持的档位
-    换到另一个用不了的档位，等于没换。
-    """
+    """同时核对语言支持、云端凭据和本地模型的实际语言方向。"""
+    supports = getattr(translator, "supports", None)
+    if callable(supports) and not supports(src_lang, dst_lang):
+        return False
     ready = getattr(translator, "ready", None)
     if callable(ready) and not ready():
         return False
-    supports = getattr(translator, "supports", None)
-    return not callable(supports) or bool(supports(src_lang, dst_lang))
+    # OPUS has no ready(): supports() advertises languages, while health()
+    # reports ok even if only the *opposite* direction is installed.
+    available_pairs = getattr(translator, "list_available_pairs", None)
+    if callable(available_pairs):
+        if src_lang == dst_lang:
+            return True  # Same-language passthrough needs no model.
+        pairs = available_pairs()
+        if src_lang == "auto":
+            return any(dst == dst_lang for _, dst in pairs)
+        return (src_lang, dst_lang) in pairs
+    return True
 
 
 def _candidate_tiers(requested_kind: str) -> list[str]:
