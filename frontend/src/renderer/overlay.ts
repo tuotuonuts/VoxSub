@@ -24,6 +24,7 @@ interface HistoryItem {
 
 let locked = false;
 let opacity = 0.92;
+let opacityRevision = 0;
 let fontSize = 20;
 let contentPadding = 18;
 let lineGap = 6;
@@ -278,6 +279,22 @@ async function restoreDisplayMode(): Promise<void> {
   }
 }
 
+/** 启动/后端就绪后恢复；过期读取不得盖掉用户正在拖动的预览。 */
+async function restoreOpacity(): Promise<void> {
+  const revision = opacityRevision;
+  try {
+    const result = await window.voxsub?.backend.command("get_config", null);
+    if (!result?.ok || revision !== opacityRevision) return;
+    const saved = (result.data as Record<string, unknown> | undefined)?.["overlay_opacity"];
+    opacity = typeof saved === "number" && Number.isFinite(saved)
+      ? Math.min(1, Math.max(0.2, saved)) : 0.92;
+    applyVisuals();
+    await window.voxsub?.overlay.setOpacity(opacity);
+  } catch {
+    // 后端尚未启动时保留默认值，ready 事件会重试。
+  }
+}
+
 /** 把显示模式写回配置，下次启动沿用。 */
 async function persistDisplayMode(mode: DisplayMode): Promise<void> {
   try {
@@ -420,6 +437,7 @@ function wireMainProcess(): void {
   });
 
   window.voxsub?.overlay.onOpacityChanged((value) => {
+    opacityRevision += 1;
     opacity = value;
     applyVisuals();
   });
@@ -484,6 +502,7 @@ function handleBackendEvent(event: {
 /** 后端事件 → 字幕。 */
 function wireBackend(): void {
   window.voxsub?.backend.onEvent((raw) => {
+    if (raw.type === "ready") void restoreOpacity();
     handleBackendEvent(raw as Parameters<typeof handleBackendEvent>[0]);
   });
 }
@@ -501,6 +520,7 @@ function boot(): void {
   // 恢复上次选的显示模式。异步做：读配置要一次 IPC 往返，不该卡住浮窗首帧
   // （浮窗是要长期压在别的应用上的，晚出现几百毫秒很显眼）。
   void restoreDisplayMode();
+  void restoreOpacity();
 
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTextColors);
 

@@ -345,7 +345,8 @@ function registerIpc(): void {
   ipcMain.handle("overlay:is-click-through", () => overlayClickThrough);
 
   ipcMain.handle("overlay:set-opacity", (_e, value: number) => {
-    overlayOpacity = Math.min(1, Math.max(0.2, Number(value) || 0.92));
+    overlayOpacity = typeof value === "number" && Number.isFinite(value)
+      ? Math.min(1, Math.max(0.2, value)) : 0.92;
     overlayWindow?.webContents.send("overlay:opacity", overlayOpacity);
     return overlayOpacity;
   });

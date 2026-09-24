@@ -696,9 +696,24 @@ function buildTuningContent(
 function appearanceTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
   const theme = String(config["theme"] ?? "system");
+  const opacity = h("input", {
+    class: "input", type: "range", min: "20", max: "100", step: "1",
+    value: String(Math.round(Number(config["overlay_opacity"] ?? 0.92) * 100)),
+    "aria-label": tr("浮窗背景不透明度"),
+  });
+  const opacityValue = h("output", { text: `${opacity.value}%` });
+  on(opacity, "input", () => {
+    opacityValue.textContent = `${opacity.value}%`;
+    void window.voxsub?.overlay.setOpacity(Number(opacity.value) / 100);
+  });
+  on(opacity, "change", () => {
+    void saveConfig({ overlay_opacity: Number(opacity.value) / 100 });
+  });
 
   page.append(
     card(tr("外观"), [
+      field(tr("浮窗背景不透明度"), h("div", { class: "tuning-actions" }, [opacity, opacityValue]),
+        tr("20%–100%，默认 92%。越低越透明，字幕文字保持清晰；松开后自动保存。")),
       field(tr("主题"), radioGroup<"light" | "dark" | "system">(
         theme as "light" | "dark" | "system",
         [["light", tr("浅色")], ["dark", tr("深色")], ["system", tr("跟随系统")]],
