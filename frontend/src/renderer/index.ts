@@ -14,6 +14,7 @@ import { palette, type ThemeName } from "./palette";
 import { h, on } from "./dom";
 import { applySessionState, call, connectBackend, store } from "./store";
 import { CMD } from "./protocol";
+import { persistLanguagePair } from "./language-selection";
 import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
 import { buildModelCatalog, refreshDownloads } from "./views/catalog";
@@ -200,7 +201,9 @@ function buildModeIndex(): HTMLElement {
   // 语言对要**写进配置**：否则重启后回退到配置里存的那一对，用户改的语言
   // 白改了（配置键 lang_pair 一直存在，但此前没有任何地方写它）。
   const saveLangPair = (source: string, target: string): void => {
-    void call(CMD.setConfig, { updates: { lang_pair: `${source}-${target}` } });
+    void persistLanguagePair(source, target, (command, args) => call(command as typeof CMD.setLangs, args), (message) => {
+      console.error("语言选择更新失败", message);
+    });
   };
 
   on(srcSel, "change", () => {

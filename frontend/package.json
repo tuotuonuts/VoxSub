@@ -54,6 +54,7 @@
     "test:tuning-lock": "node tools/test-tuning-lock.mjs",
     "test:log-levels": "node tools/test-log-levels.mjs",
     "test:translate-tiers": "node tools/test-translate-tiers.mjs",
+    "test:language-selection": "node tools/test-language-selection.mjs",
     "test:overlay-sentence": "node tools/test-overlay-current-sentence.mjs",
     "test:launcher-debug-args": "node tools/test-launcher-debug-args.mjs",
     "test:ui-components": "node tools/test-ui-components.mjs",
