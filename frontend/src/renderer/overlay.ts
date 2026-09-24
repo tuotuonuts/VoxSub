@@ -281,10 +281,12 @@ async function restoreDisplayMode(): Promise<void> {
 
 /** 启动/后端就绪后恢复；过期读取不得盖掉用户正在拖动的预览。 */
 async function restoreOpacity(): Promise<void> {
-  const revision = opacityRevision;
+  // Restoration only initializes untouched state. A preview can predate this
+  // read (e.g. backend ready after a drag), so equality across await is not enough.
+  if (opacityRevision !== 0) return;
   try {
     const result = await window.voxsub?.backend.command("get_config", null);
-    if (!result?.ok || revision !== opacityRevision) return;
+    if (!result?.ok || opacityRevision !== 0) return;
     const saved = (result.data as Record<string, unknown> | undefined)?.["overlay_opacity"];
     opacity = typeof saved === "number" && Number.isFinite(saved)
       ? Math.min(1, Math.max(0.2, saved)) : 0.92;

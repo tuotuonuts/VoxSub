@@ -92,3 +92,55 @@ resolveRead({ ok: true, data: { overlay_opacity: 0.22 } });
 await pendingRestore;
 assert.equal(staleSync.length, 0, 'stale config cannot overwrite live preview');
 console.log('PASS renderer: IPC changes CSS and stale restore cannot overwrite live input');
+
+// Reproduce preview BEFORE backend-ready restoration, not only during a read.
+// Wire the real settings input/change handlers through the real opacity receiver.
+const raceDom = installMiniDom();
+for (const timing of ['before-read', 'during-read', 'after-save']) {
+  const reads = [], syncs = [], css = new Map();
+  let receiveOpacity;
+  let stored = 0.22;
+  const setOpacity = async value => { syncs.push(value); receiveOpacity(value); return value; };
+  const renderer = vm.createContext({
+    document: { documentElement: { style: { setProperty: (k, v) => css.set(k, v) } } },
+    window: { voxsub: {
+      backend: { command: () => new Promise(resolve => reads.push(resolve)) },
+      overlay: { setOpacity, onOpacityChanged: fn => { receiveOpacity = fn; } },
+    } },
+    applyTextColors() {}, fontValueEl: null, paddingValueEl: null, gapValueEl: null,
+  });
+  const evaluate = source => vm.runInContext(transformSync(source, { loader: 'ts', format: 'cjs' }).code, renderer);
+  evaluate('let opacity = 0.92, opacityRevision = 0, fontSize = 20, contentPadding = 18, lineGap = 6;\n' + visual + receiver + restore);
+  const settingsPage = run(appearance + '\nappearanceTab();', { ...context,
+    window: { voxsub: { overlay: { setOpacity } } },
+    saveConfig: async updates => { stored = updates.overlay_opacity; return updates; },
+  });
+  const input = settingsPage.querySelector('input[type="range"]');
+  let pending;
+  if (timing === 'during-read') pending = evaluate('restoreOpacity()');
+  input.value = '71';
+  input.dispatchEvent(raceDom.makeEvent('input'));
+  if (timing === 'after-save') input.dispatchEvent(raceDom.makeEvent('change'));
+  if (!pending) pending = evaluate('restoreOpacity()');
+  for (const resolve of reads) resolve({ ok: true, data: { overlay_opacity: 0.22 } });
+  await pending;
+  assert.equal(css.get('--overlay-opacity'), '0.71', `${timing}: old restore must not overwrite preview`);
+  input.dispatchEvent(raceDom.makeEvent('change'));
+  await tick();
+  assert.equal(stored, 0.71);
+  assert.equal(Number(css.get('--overlay-opacity')), stored, `${timing}: saved and visible values agree`);
+  assert.deepEqual(syncs, [0.71], `${timing}: restoration must not rebroadcast stale opacity`);
+}
+raceDom.restore();
+console.log('PASS renderer/settings: previews before/during restore and after save stay authoritative');
+
+// Exercise only the existing translation lookup; no language-selection changes.
+const i18n = read('renderer/i18n.ts').replace(/^import .*;$/m, '');
+for (const lang of ['zh', 'en']) {
+  const translate = run(i18n + '\ntr;', { module: { exports: {} }, store: { get: () => ({ theme: 'dark', lang }) } });
+  for (const text of ['浮窗背景不透明度', '20%–100%，默认 92%。越低越透明，字幕文字保持清晰；松开后自动保存。']) {
+    if (lang === 'zh') assert.equal(translate(text), text);
+    else assert.notEqual(translate(text), text, `English opacity copy is missing: ${text}`);
+  }
+}
+console.log('PASS i18n: opacity label and hint resolve in Chinese and English');

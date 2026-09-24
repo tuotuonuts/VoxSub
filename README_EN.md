@@ -23,6 +23,8 @@ Current source candidate: `0.9.0-beta`; the current public GitHub download remai
 
 ## Available Features
 
+- **Electron overlay background opacity (source candidate, not repackaged):** Settings → Appearance → Overlay background opacity supports 20%–100% (default 92%). Drag to preview; release or finish a keyboard adjustment to save `overlay_opacity`. Text stays fully opaque. Hiding/showing retains the current value; restarting/reloading restores the saved value. Startup/backend-ready restoration never overwrites a newer preview or edit. Offline checks: `cd frontend && npm run test:overlay-opacity`; config checks: `python -m pytest tests/test_overlay_opacity.py`.
+
 - **Mode A — Microphone interpreting:** choose a microphone and display segmented speech with its translation; optional simultaneous recording follows a Start → Pause/Resume → Finish and Save workflow.
 - **Mode B — Application/system audio:** choose a Windows output endpoint, or capture audio only from a selected application's process tree.
 - **Mode C — Audio/video subtitles:** import MP4, MKV, MOV, MP3, WAV, and other media; the bundled FFmpeg extracts audio automatically and VoxSub exports a matching SRT file.

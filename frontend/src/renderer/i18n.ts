@@ -270,6 +270,8 @@ const EN: Dict = {
   "系统输出": "System output",
   "应用声音隔离": "App audio isolation",
   "主题": "Theme",
+  "浮窗背景不透明度": "Overlay background opacity",
+  "20%–100%，默认 92%。越低越透明，字幕文字保持清晰；松开后自动保存。": "20%–100%, default 92%. Lower values make the background more transparent while subtitle text stays clear. Saved automatically on release.",
   "深色": "Dark",
   "浅色": "Light",
   "跟随系统": "Follow system",
