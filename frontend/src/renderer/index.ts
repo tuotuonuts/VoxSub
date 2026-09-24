@@ -209,8 +209,7 @@ function buildModeIndex(): HTMLElement {
   on(srcSel, "change", () => {
     store.patch({ sourceLang: srcSel.value });
     const target = store.get().targetLang;
-    void call(CMD.setLangs, { source: srcSel.value, target });
-    saveLangPair(srcSel.value, target);
+    void saveLangPair(srcSel.value, target);
   });
 
   const dstSel = h("select", { class: "select select--sm", "aria-label": tr("翻译为") });
@@ -222,8 +221,7 @@ function buildModeIndex(): HTMLElement {
   on(dstSel, "change", () => {
     store.patch({ targetLang: dstSel.value });
     const source = store.get().sourceLang;
-    void call(CMD.setLangs, { source, target: dstSel.value });
-    saveLangPair(source, dstSel.value);
+    void saveLangPair(source, dstSel.value);
   });
 
   langBox.append(
