@@ -1,60 +1,123 @@
 #!/usr/bin/env node
-/**
- * 三项需求的无 GUI、无真实配置验收门禁。
- *
- * 这是独立静态契约探针：只读取源码，不启动 Electron，不写用户配置，
- * 也不修改现有测试文件。实现 Agent 合入后可直接重跑。
- */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+/** Read-only structural contracts, not runtime acceptance. No Electron/config imports. */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import ts from 'typescript';
 
-const root = new URL("..", import.meta.url).pathname.replace(/^\/(\w):/, "$1:");
-const read = (p) => readFileSync(join(root, p), "utf8");
-const checks = [];
-function check(name, ok, detail = "") {
-  checks.push(ok);
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+const read = path => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
+const printer = ts.createPrinter({ removeComments: true });
+const parse = text => ts.createSourceFile('contract.ts', text, ts.ScriptTarget.Latest, true);
+const print = node => printer.printNode(ts.EmitHint.Unspecified, node, node.getSourceFile()).replace(/\s+/g, '');
+const expression = text => print(parse(`(${text})`).statements[0].expression.expression);
+function nodes(root, predicate) {
+  const found = [];
+  function visit(node) { if (predicate(node)) found.push(node); ts.forEachChild(node, visit); }
+  if (root) visit(root);
+  return found;
 }
-function must(text, pattern, name) { check(name, pattern.test(text), pattern.toString()); }
+const calls = (root, callee) => nodes(root, n => ts.isCallExpression(n) && print(n.expression) === expression(callee));
+const call = (root, callee, args) => calls(root, callee).find(n =>
+  args.every((arg, i) => arg === null || (n.arguments[i] && print(n.arguments[i]) === expression(arg))));
+const fn = (root, name) => nodes(root, n => ts.isFunctionDeclaration(n) && n.name?.text === name)[0];
+const variable = (root, name) => nodes(root, n => ts.isVariableDeclaration(n) && n.name.getText() === name)[0];
+const event = (root, control, name) => call(root, 'on', [control, JSON.stringify(name)])?.arguments[2];
 
-const main = read("src/main/main.ts");
-const preload = read("src/main/preload.ts");
-const overlay = read("src/renderer/overlay.ts");
-const renderer = read("src/renderer/index.ts");
-const session = read("../frontend/backend/handlers/session.py");
-const ipc = read("../frontend/backend/ipc_server.py");
-const factory = read("../voxsub/translate/factory.py");
-const pipeline = read("../voxsub/pipeline.py");
+export function inspectFrontend(readSource = read) {
+  const results = [];
+  const check = (name, ok) => results.push({ name, ok: Boolean(ok) });
+  const load = path => {
+    const tree = parse(readSource(path));
+    check(`${path}: parses`, tree.parseDiagnostics.length === 0);
+    return tree;
+  };
+  const main = load('src/main/main.ts');
+  const preload = load('src/main/preload.ts');
+  const overlay = load('src/renderer/overlay.ts');
+  const renderer = load('src/renderer/index.ts');
+  const language = load('src/renderer/language-selection.ts');
+  const settings = load('src/renderer/views/settings.ts');
+  const opacityHandler = call(main, 'ipcMain.handle', ['"overlay:set-opacity"'])?.arguments[1];
+  check('main: opacity handler clamps and broadcasts',
+    call(opacityHandler, 'Number.isFinite', ['value']) &&
+    call(opacityHandler, 'Math.min', ['1', 'Math.max(0.2, value)']) &&
+    call(opacityHandler, 'overlayWindow?.webContents.send', ['"overlay:opacity"', 'overlayOpacity']));
+  const property = name => nodes(preload, n => ts.isPropertyAssignment(n) && n.name.getText() === name)[0];
+  check('preload: setOpacity invokes exact channel/value',
+    call(property('setOpacity'), 'ipcRenderer.invoke', ['"overlay:set-opacity"', 'value']));
+  check('preload: onOpacityChanged subscribes exact channel',
+    call(property('onOpacityChanged'), 'subscribe', ['"overlay:opacity"', 'handler']));
+  const appearance = fn(settings, 'appearanceTab');
+  check('settings: appearance input previews opacity',
+    call(event(appearance, 'opacity', 'input'), 'window.voxsub?.overlay.setOpacity', ['Number(opacity.value) / 100']));
+  check('settings: appearance change persists overlay_opacity',
+    call(event(appearance, 'opacity', 'change'), 'saveConfig', ['{ overlay_opacity: Number(opacity.value) / 100 }']));
+  const restore = fn(overlay, 'restoreOpacity');
+  check('overlay: restore reads config key and applies/syncs value',
+    call(restore, 'window.voxsub?.backend.command', ['"get_config"', 'null']) &&
+    nodes(restore, n => ts.isElementAccessExpression(n) && n.argumentExpression && print(n.argumentExpression) === '"overlay_opacity"').length &&
+    call(restore, 'applyVisuals', []) && call(restore, 'window.voxsub?.overlay.setOpacity', ['opacity']));
+  check('overlay: boot and backend ready both restore',
+    call(fn(overlay, 'boot'), 'restoreOpacity', []) &&
+    nodes(fn(overlay, 'wireBackend'), n => ts.isIfStatement(n) && print(n.expression) === expression('raw.type === "ready"') && call(n.thenStatement, 'restoreOpacity', [])).length);
+  check('overlay: receiver updates visuals and CSS uses opacity',
+    call(call(overlay, 'window.voxsub?.overlay.onOpacityChanged', [])?.arguments[0], 'applyVisuals', []) &&
+    calls(fn(overlay, 'applyVisuals'), 'root.setProperty').some(n => print(n.arguments[0]) === '"--overlay-opacity"' && print(n.arguments[1]) === 'String(opacity)'));
+  check('index: imports persistLanguagePair from real module',
+    nodes(renderer, n => ts.isImportDeclaration(n) && n.moduleSpecifier.text === './language-selection' &&
+      nodes(n, c => ts.isImportSpecifier(c) && c.name.text === 'persistLanguagePair' && !c.propertyName).length).length);
+  check('index: shared wrapper delegates source/target to persistence',
+    call(variable(renderer, 'saveLangPair'), 'persistLanguagePair', ['source', 'target']));
+  for (const [control, other, args] of [['srcSel', 'targetLang', ['srcSel.value', 'target']], ['dstSel', 'sourceLang', ['source', 'dstSel.value']]]) {
+    const handler = event(renderer, control, 'change');
+    check(`index: ${control} change uses current store pair`, call(handler, 'saveLangPair', args) &&
+      nodes(handler, n => ts.isPropertyAccessExpression(n) && print(n) === `store.get().${other}`).length);
+  }
+  const persist = fn(language, 'persistLanguagePair');
+  check('language-selection: set_langs uses source/target object', call(persist, 'call', ['"set_langs"', '{ source, target }']));
+  check('language-selection: set_config persists lang_pair', call(persist, 'call', ['"set_config"', '{ updates: { lang_pair: `${source}-${target}` } }']));
+  return results;
+}
 
-console.log("=== opacity boundary + save/restore contract ===");
-must(main, /overlay:set-opacity/, "主进程仍提供透明度 IPC");
-must(main, /Math\.min\(1, Math\.max\(0\.2,/, "透明度下界 0.2、上界 1.0");
-must(preload, /setOpacity:.*overlay:set-opacity/s, "preload 暴露设置透明度调用");
-must(preload, /onOpacityChanged:.*overlay:opacity/s, "preload 暴露透明度恢复/同步事件");
-must(overlay, /--overlay-opacity/, "渲染层使用透明度 CSS 变量");
-check("透明度保存/恢复契约有显式实现或待合入标记",
-  /opacity|透明度/.test(renderer) && (/setOpacity/.test(renderer) || /opacity/.test(main)),
-  "若此项失败，需由实现 Agent 补齐设置字段与启动恢复");
+function inspectPython() {
+  // Parse Python AST without importing any application code or touching config/models.
+  const script = String.raw`
+import ast, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+def tree(path): return ast.parse((root / path).read_text(encoding='utf-8'))
+def function(t, name): return next(n for n in ast.walk(t) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+def calls(t, name): return [n for n in ast.walk(t) if isinstance(n, ast.Call) and ast.unparse(n.func) == name]
+def has(t, name, *args): return any([ast.unparse(a) for a in n.args] == list(args) for n in calls(t, name))
+session = tree('frontend/backend/handlers/session.py')
+ipc = tree('frontend/backend/ipc_server.py')
+factory = function(tree('voxsub/translate/factory.py'), 'resolve_tier')
+pipeline = tree('voxsub/pipeline.py')
+loader = function(pipeline, '_load_translator_for_pair')
+usable = function(pipeline, '_usable_for_pair')
+checks = [
+ ('backend: set_langs reads exact source/target payload', has(session, 'pipeline.set_langs', "str(args.get('source', 'auto'))", "str(args.get('target', 'zh'))")),
+ ('backend: config restoration applies parsed language pair', bool(calls(ipc, 'pipeline.set_langs')) and has(ipc, 'pair.partition', "'-'")),
+ ('factory: resolver checks selected and candidate language support', has(factory, 'tier_supports', 'tier', 'src_lang', 'dst_lang', 'config') and has(factory, 'tier_supports', 'candidate', 'src_lang', 'dst_lang', 'config')),
+ ('pipeline: candidate loader checks actual translator support', has(loader, '_candidate_tiers', 'kind') and bool(calls(loader, '_load_translator')) and has(loader, '_usable_for_pair', 'translator', 'src_lang', 'dst_lang')),
+ ('pipeline: availability/support and no-candidate fallback exist', bool(calls(usable, 'ready')) and has(usable, 'supports', 'src_lang', 'dst_lang') and bool(calls(loader, '_NoopTranslator')) and bool(calls(loader, '_close_quietly'))),
+]
+print(json.dumps([dict(name=name, ok=ok) for name, ok in checks]))
+`;
+  const result = spawnSync(process.env.PYTHON || 'python', ['-c', script, fileURLToPath(new URL('../../', import.meta.url))], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stderr);
+  return JSON.parse(result.stdout);
+}
 
-console.log("\n=== language IPC payload consistency ===");
-must(renderer, /CMD\.setLangs, \{ source: srcSel\.value, target \}/,
-  "源语言变更使用 source/target payload");
-must(renderer, /CMD\.setLangs, \{ source, target: dstSel\.value \}/,
-  "目标语言变更使用 source/target payload");
-must(session, /args\.get\("source".*args\.get\("target"/s,
-  "后端 set_langs 读取同名 source/target");
-must(ipc, /lang_pair.*pipeline\.set_langs/s,
-  "配置恢复链路使用同一语言对语义");
-
-console.log("\n=== translation unsupported/candidate-unavailable fallback matrix ===");
-must(factory, /resolve_tier/, "档位解析存在独立决策函数");
-must(factory, /supports|candidate|候选/, "档位解析检查实际支持/候选能力");
-must(pipeline, /_load_translator_for_pair/, "运行时按语言对加载翻译器");
-must(pipeline, /substituted|fallback/, "运行时记录或执行降级");
-check("静态矩阵：不支持档位与候选不可用均有对应验收入口",
-  /unsupported|不支持/.test(factory + pipeline) && /unavailable|不可用|fallback|候选/.test(factory + pipeline),
-  "必须同时覆盖 selected unsupported 与 no usable candidate");
-
-const passed = checks.filter(Boolean).length;
-console.log(`\n${passed}/${checks.length} acceptance contract checks passed`);
-process.exitCode = passed === checks.length ? 0 : 1;
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const results = [...inspectFrontend(), ...inspectPython()];
+    for (const { name, ok } of results) console.log(`${ok ? 'PASS' : 'FAIL'} ${name}`);
+    const passed = results.filter(r => r.ok).length;
+    console.log(`\n${passed}/${results.length} structural acceptance contracts passed (not runtime proof)`);
+    process.exitCode = passed === results.length ? 0 : 1;
+  } catch (error) {
+    console.error('FAIL acceptance contract inspection:', error.message);
+    process.exitCode = 1;
+  }
+}
