@@ -195,4 +195,3 @@ def test_failure_fallback_uses_inflight_language_pair(monkeypatch, entry):
         pipe._translate_draft(DraftTranslationRequest(1, "こんにちは"), snapshot)
     assert pipe._trans_kind == "cloud"
     assert pipe._trans_pair == ("ja", "zh")
-
