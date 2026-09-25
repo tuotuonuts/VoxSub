@@ -106,16 +106,20 @@ export function keepsQuitGuard(outcome: RequestOutcome): boolean {
  *
  * 超时那一支**不能出现"失败"二字**：它只是"还没回来"。
  */
-export function describeOutcome(outcome: RequestOutcome, command: string): string {
+export function describeOutcome(
+  outcome: RequestOutcome,
+  command: string,
+  translate: (source: string) => string = (source) => source,
+): string {
   switch (outcome) {
     case "ok":
-      return `${command} 已完成`;
+      return `${command} ${translate("已完成")}`;
     case "timeout":
-      return `${command} 尚未返回：任务可能仍在进行，完成后会有结果或进度（超时既不是失败，也不代表已取消）`;
+      return `${command} ${translate("尚未返回：任务可能仍在进行，完成后会有结果或进度（超时既不是失败，也不代表已取消）")}`;
     case "unavailable":
-      return `${command} 未执行：后端未运行`;
+      return `${command} ${translate("未执行：后端未运行")}`;
     default:
-      return `${command} 失败`;
+      return `${command} ${translate("失败")}`;
   }
 }
 

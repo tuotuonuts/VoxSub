@@ -30,6 +30,14 @@ import {
 } from "../shared/request-outcome";
 
 type Listener = () => void;
+type UiTranslator = (source: string) => string;
+
+let uiTranslator: UiTranslator = (source) => source;
+
+/** i18n registers its lookup here so store-owned system messages follow the UI language. */
+export function setUiTranslator(translate: UiTranslator): void {
+  uiTranslator = translate;
+}
 
 export interface AppState {
   /** 后端是否已连接（收到 ready） */
@@ -155,7 +163,7 @@ class Store {
           const extras: string[] = [];
           if (handshake.protocolVersion) extras.push(`协议 ${handshake.protocolVersion}`);
           if (handshake.backendGeneration) extras.push(`后端代号 ${handshake.backendGeneration}`);
-          if (handshake.activeJobs !== null) extras.push(`在途任务 ${handshake.activeJobs}`);
+          if (handshake.activeJobs !== null) extras.push(`在途任务 ${handshake.activeJobs.length}`);
           if (extras.length > 0) {
             this.pushLog({
               ts: new Date().toISOString(),
@@ -202,7 +210,7 @@ class Store {
         setBackendStatus(reason ? { type: "disconnected", reason } : { type: "disconnected" });
         this.patch({
           ...sessionViewFor(backendStatus.phase, { running: this.state.running, paused: this.state.paused }),
-          statusText: backendNotice(backendStatus),
+          statusText: backendNotice(backendStatus, uiTranslator),
         });
         break;
       }
@@ -212,7 +220,7 @@ class Store {
         this.pushLog({
           ts: new Date().toISOString(),
           level: "WARNING",
-          message: describeOutcome("timeout", event.command),
+          message: describeOutcome("timeout", event.command, uiTranslator),
         });
         break;
       case "status":
@@ -411,7 +419,7 @@ export async function callWithOutcome<T = unknown>(
   store.pushLog({
     ts: new Date().toISOString(),
     level: outcome === "timeout" ? "WARNING" : "ERROR",
-    message: `${describeOutcome(outcome, command)}${result.error ? `: ${result.error}` : ""}`,
+    message: `${describeOutcome(outcome, command, uiTranslator)}${result.error ? `: ${result.error}` : ""}`,
   });
   return { outcome, data: null };
 }

@@ -104,18 +104,23 @@ export function normalizeMode(raw: unknown): Mode | null {
 }
 
 /** 断连 / 启动失败时给用户看的一句话。 */
-export function backendNotice(status: BackendStatus): string {
+export function backendNotice(
+  status: BackendStatus,
+  translate: (source: string) => string = (source) => source,
+): string {
   switch (status.phase) {
     case "disconnected":
       return status.reason
-        ? `后端已退出：${status.reason}`
-        : "后端已退出，功能已停止";
+        ? `${translate("后端已退出")}${translate("：")}${status.reason}`
+        : translate("后端已退出，功能已停止");
     case "failed":
-      return status.reason ? `后端启动失败：${status.reason}` : "后端启动失败";
+      return status.reason
+        ? `${translate("后端启动失败")}${translate("：")}${status.reason}`
+        : translate("后端启动失败");
     case "ready":
-      return "后端已连接";
+      return translate("后端已连接");
     default:
-      return "正在连接后端…";
+      return translate("正在连接后端…");
   }
 }
 
@@ -129,8 +134,8 @@ export interface ReadyHandshake {
   protocolVersion: string | null;
   /** 后端代号（用于识别"后端重启过"）；老后端不发 → null。 */
   backendGeneration: string | null;
-  /** 就绪快照里的在途任务数；拿不到 → null。 */
-  activeJobs: number | null;
+  /** 就绪快照里的在途任务命令名列表；拿不到 → null。 */
+  activeJobs: string[] | null;
   /** ready 里携带的会话状态；没有或非法 → null。 */
   session: { running: boolean; paused: boolean; mode?: Mode } | null;
 }
@@ -155,10 +160,12 @@ export function parseReadyPayload(raw: unknown): ReadyHandshake | null {
   if (source["type"] !== undefined && source["type"] !== "ready") return null;
 
   const readiness = source["readiness"];
-  let activeJobs: number | null = null;
+  let activeJobs: string[] | null = null;
   if (readiness && typeof readiness === "object") {
-    const count = (readiness as Record<string, unknown>)["activeJobs"];
-    if (typeof count === "number" && Number.isFinite(count)) activeJobs = count;
+    const jobs = (readiness as Record<string, unknown>)["activeJobs"];
+    if (Array.isArray(jobs) && jobs.every((item) => typeof item === "string")) {
+      activeJobs = [...jobs];
+    }
   }
 
   const sessionRaw = source["session"];

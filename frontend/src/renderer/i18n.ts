@@ -318,6 +318,15 @@ const EN: Dict = {
   // 主题词
   "深色科技": "Dark tech",
   "同人展目录": "Event catalog",
+  "后端已退出": "Backend exited",
+  "后端已退出，功能已停止": "Backend exited; features have stopped",
+  "后端启动失败": "Backend failed to start",
+  "后端已连接": "Backend connected",
+  "正在连接后端…": "Connecting to backend…",
+  "已完成": "completed",
+  "尚未返回：任务可能仍在进行，完成后会有结果或进度（超时既不是失败，也不代表已取消）": "has not returned yet: the task may still be running. Its result or progress will arrive when it finishes (a timeout is neither failure nor cancellation)",
+  "未执行：后端未运行": "was not run: the backend is not running",
+  "：": ": ",
 };
 
 export function tr(zh: string): string {

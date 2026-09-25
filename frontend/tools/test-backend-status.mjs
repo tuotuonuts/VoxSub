@@ -17,7 +17,9 @@
  * 用法：node tools/test-backend-status.mjs
  */
 import { importShared, createReporter } from "./esbuild-ts.mjs";
+import { installMiniDom } from "./mini-dom.mjs";
 
+const dom = installMiniDom();
 const { check, finish } = createReporter("后端连接状态（缺陷 #11）");
 const {
   INITIAL_BACKEND_STATUS,
@@ -28,6 +30,8 @@ const {
   backendNotice,
   parseReadyPayload,
 } = await importShared("src/shared/backend-status.ts");
+const { describeOutcome } = await importShared("src/shared/request-outcome.ts");
+const { tr, setLanguage } = await importShared("src/renderer/i18n.ts", { bundle: true });
 
 console.log("=== 状态迁移 ===\n");
 {
@@ -116,7 +120,7 @@ console.log("\n=== ready 握手：新增字段不得导致解析失败 ===\n");
     version: "0.9.0-beta",
     protocolVersion: 2,
     backendGeneration: "gen-7",
-    readiness: { ready: true, activeJobs: 2 },
+    readiness: { ready: true, activeJobs: ["start_migration", "install_model"] },
     session: { running: true, paused: false, mode: "b" },
     // 后端以后还会加字段：必须被忽略而不是报错
     somethingBrandNew: { nested: true },
@@ -124,7 +128,7 @@ console.log("\n=== ready 握手：新增字段不得导致解析失败 ===\n");
   check("新式 ready 解析成功（多出来的字段被忽略）", modern !== null);
   check("protocolVersion 被读到", modern.protocolVersion === "2", String(modern.protocolVersion));
   check("backendGeneration 被读到", modern.backendGeneration === "gen-7");
-  check("readiness.activeJobs 被读到", modern.activeJobs === 2, String(modern.activeJobs));
+  check("readiness.activeJobs 被读到", modern.activeJobs?.join(",") === "start_migration,install_model", String(modern.activeJobs));
   check(
     "session 被读到（重载后不必再等一次 state 命令）",
     modern.session !== null && modern.session.running === true && modern.session.mode === "b",
@@ -139,8 +143,29 @@ console.log("\n=== ready 握手：新增字段不得导致解析失败 ===\n");
   });
   check("非法的新字段退化为 null 而不是抛错", weird !== null && weird.protocolVersion === null && weird.activeJobs === null);
   check("载荷形状不对时 session 为 null", weird.session === null);
+  const mixedJobs = parseReadyPayload({
+    type: "ready", version: "x", readiness: { activeJobs: ["start_migration", 3] },
+  });
+  check("activeJobs 含非字符串时整体退化为 null", mixedJobs?.activeJobs === null);
   check("非对象载荷返回 null", parseReadyPayload(null) === null && parseReadyPayload("ready") === null);
   check("type 不是 ready 时返回 null", parseReadyPayload({ type: "status", text: "x" }) === null);
+}
+
+console.log("\n=== 系统状态与结果文案遵循界面语言 ===\n");
+{
+  setLanguage("en");
+  const reason = "Connection reset by peer";
+  check(
+    "断连状态文案有英文翻译且保留后端原始原因",
+    backendNotice({ phase: "disconnected", reason }, tr) === `Backend exited: ${reason}`,
+    backendNotice({ phase: "disconnected", reason }, tr),
+  );
+  check("启动失败状态文案有英文翻译", backendNotice({ phase: "failed", reason: null }, tr) === "Backend failed to start");
+  check("连接中状态文案有英文翻译", backendNotice({ phase: "connecting", reason: null }, tr) === "Connecting to backend…");
+  check("请求超时说明有英文翻译且不把超时说成失败", describeOutcome("timeout", "Migration", tr).startsWith("Migration has not returned yet:"));
+  check("已完成结果有英文翻译", describeOutcome("ok", "Migration", tr) === "Migration completed");
+  setLanguage("zh");
+  check("中文状态文案保持兼容", backendNotice({ phase: "ready", reason: null }, tr) === "后端已连接");
 }
 
 finish();

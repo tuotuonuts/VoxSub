@@ -12,7 +12,7 @@
  */
 import { palette, type ThemeName } from "./palette";
 import { h, on } from "./dom";
-import { applySessionState, call, connectBackend, store } from "./store";
+import { applySessionState, call, connectBackend, setUiTranslator, store } from "./store";
 import { CMD } from "./protocol";
 import { persistLanguagePair } from "./language-selection";
 import { tr } from "./i18n";
@@ -23,6 +23,8 @@ import { buildDiagnostics, refreshLogView } from "./views/diagnostics";
 import { buildOcrWorkspace } from "./views/ocr";
 import { buildMigrationWizard, shouldOfferMigration } from "./views/migration";
 import { type Disposer, type PageHandle } from "../shared/page-lifecycle";
+
+setUiTranslator(tr);
 
 type Mode = "a" | "b" | "c" | "d";
 
