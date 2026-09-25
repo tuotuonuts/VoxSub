@@ -204,14 +204,26 @@ class JobRunner:
 
     # -------------------------------------------------------------- 提交/查询
 
-    def submit(self, command: str, args: Any) -> Job:
-        """提交一个任务，立即返回 ``Job``（此时状态为 queued 或 running）。"""
+    def submit(
+        self,
+        command: str,
+        args: Any,
+        *,
+        on_queued: Callable[[Job], None] | None = None,
+    ) -> Job:
+        """提交一个任务，立即返回 ``Job``（此时状态为 queued 或 running）。
+
+        ``on_queued`` 在任务对 worker 可见之前调用，供协议层先登记请求关联；
+        回调应保持轻量且不得重入此 runner。
+        """
         job = Job(id=uuid.uuid4().hex, command=str(command))
         with self._lock:
             if len(self._pending) >= self._max_pending:
                 raise QueueFull(
                     f"后台任务队列已满（{self._max_pending} 个待执行），请稍后再试"
                 )
+            if on_queued is not None:
+                on_queued(job)
             self._jobs[job.id] = job
             self._trim_history_locked()
             self._pending.append(job.id)
@@ -245,10 +257,10 @@ class JobRunner:
         ``cancelling`` 只是"收到取消请求"，不等于已取消：真正的
         ``cancelled`` 由 worker 在安全边界落定。已经结束的任务不能被改写。
         """
-        job = self.get(job_id)
-        if job is None:
-            raise UnknownJob(f"没有这个任务：{job_id}")
         with self._lock:
+            job = self._jobs.get(str(job_id or ""))
+            if job is None:
+                raise UnknownJob(f"没有这个任务：{job_id}")
             if job.status in TERMINAL:
                 return {"ok": False, "status": job.status,
                         "code": "already_finished",
@@ -309,14 +321,17 @@ class JobRunner:
                 self._wake.clear()
                 continue
 
-            # 排队期间就被取消的：根本不执行，直接落终态。
-            if job.cancel_event.is_set():
+            # 取消与"正式开始"必须在同一把锁下仲裁：
+            # 若取消先取得锁，任务直接取消、不调用 executor；若 worker 先取得锁，
+            # 状态先成为 running，之后的取消就是普通的协作式运行中取消，不能回退状态。
+            with self._lock:
+                cancelled_before_start = job.cancel_event.is_set()
+                if not cancelled_before_start:
+                    job.status = RUNNING
+                    job.started_at = time.monotonic()
+            if cancelled_before_start:
                 self._finish(job, CANCELLED, error="已取消", error_code="cancelled")
                 continue
-
-            with self._lock:
-                job.status = RUNNING
-                job.started_at = time.monotonic()
             self._emit("job", job)
 
             _local.job = job
@@ -332,21 +347,27 @@ class JobRunner:
                     self._finish(job, FAILED, error=f"{type(error).__name__}: {error}",
                                  error_code=type(error).__name__)
             else:
-                if job.cancel_event.is_set():
-                    # 原生推理无法立即打断：这里按"已到安全边界"处理，
-                    # **丢弃结果**，且不谎报成功。
-                    self._finish(job, CANCELLED, error="已取消", error_code="cancelled")
-                else:
-                    job.result = result
-                    self._finish(job, SUCCEEDED)
+                # 终态与 cancel() 必须由 _finish 在同一把锁下仲裁；否则取消可以
+                # 落在“最后一次检查后、成功提交前”并被成功状态覆盖。
+                self._finish(job, SUCCEEDED, result=result)
             finally:
                 _local.job = None
 
-    def _finish(self, job: Job, status: str, *, error: str = "",
+    def _finish(self, job: Job, status: str, *, result: Any = None, error: str = "",
                 error_code: str = "") -> None:
         with self._lock:
+            if job.status in TERMINAL:
+                return
+            # cancel() and the terminal commit share this lock. If cancellation
+            # was accepted first, neither success nor failure may overwrite it.
+            if status != CANCELLED and job.cancel_event.is_set():
+                status = CANCELLED
+                result = None
+                error = "已取消"
+                error_code = "cancelled"
             job.status = status
             job.finished_at = time.monotonic()
+            job.result = result if status == SUCCEEDED else None
             if error:
                 job.error = error
             if error_code:

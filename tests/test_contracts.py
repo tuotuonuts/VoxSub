@@ -985,6 +985,8 @@ def test_接受合法事件(registry):
     registry.validate_event({"event": "session", "action": "stop"})
     registry.validate_event({"event": "first_run", "modelsRoot": "D:\\VoxSub\\Models"})
     registry.validate_event({"event": "job", "jobId": "a", "command": "start_migration", "sequence": 3, "status": "cancelled", "error": "已取消", "code": "cancelled"})
+    registry.validate_event({"event": "job", "jobId": "b", "command": "start_migration", "clientMigrationId": "mig-1", "sequence": 3, "status": "succeeded", "result": {"done": [], "failed": [], "elapsedMs": 0, "ok": True}})
+    registry.validate_event({"event": "job", "jobId": "c", "command": "start_migration", "clientMigrationId": "mig-2", "sequence": 1, "status": "queued"})
     # 握手：完整目标形状
     registry.validate_event({
         "event": "ready", "version": "0.9.0-beta", "frozen": False,
@@ -1002,6 +1004,20 @@ def test_接受合法事件(registry):
     })
 
 
+def test_job_result_event_contract_restricts_payload_to_async_migration(registry):
+    valid = {"event": "job", "jobId": "b", "command": "start_migration",
+             "clientMigrationId": "mig-1", "sequence": 3, "status": "succeeded",
+             "result": {"done": [], "failed": [], "elapsedMs": 0, "ok": True}}
+    registry.validate_event(valid)
+
+    with pytest.raises(ContractViolation):
+        registry.validate_event({**valid, "command": "echo"})
+    with pytest.raises(ContractViolation):
+        registry.validate_event({k: v for k, v in valid.items() if k != "result"})
+    with pytest.raises(ContractViolation):
+        registry.validate_event({**valid, "status": "failed"})
+
+
 def test_拒绝事件里的额外字段(registry):
     with pytest.raises(ContractViolation) as info:
         registry.validate_event({"event": "partial", "text": "hi", "surprise": 1})
@@ -1012,6 +1028,18 @@ def test_拒绝命令参数里的额外字段(registry):
     with pytest.raises(ContractViolation) as info:
         registry.validate_args("set_mode", {"mode": "a", "unexpected": True})
     assert "不允许的额外字段" in str(info.value)
+
+
+def test_start_migration_args_accept_client_migration_id(registry):
+    args = {
+        "steps": [{"source": "C:/old/models", "target": "C:/new/models"}],
+        "async": True,
+        "clientMigrationId": "migration-test-123",
+    }
+    registry.validate_args("start_migration", args)
+
+    with pytest.raises(ContractViolation):
+        registry.validate_args("start_migration", {**args, "clientMigrationId": "x" * 129})
 
 
 def test_拒绝作业命令的_async_之外的多余键(registry):

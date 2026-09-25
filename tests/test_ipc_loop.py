@@ -35,7 +35,7 @@ class FakeService:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._commands = {"ping", "state", "echo", "slow", "job_list",
+        self._commands = {"ping", "state", "echo", "slow", "start_migration", "job_list",
                           "job_status", "cancel_job", "shutdown", "explode"}
         self.release = threading.Event()
         self.started = threading.Event()
@@ -127,6 +127,35 @@ def test_queued_command_replies_with_same_id(loop):
     assert reply["jobId"]
 
 
+def test_request_is_registered_before_worker_can_complete(loop, monkeypatch):
+    """极快 worker 不能在 IPC 登记 request 前吞掉参数或终态回复。"""
+    handled = threading.Event()
+    original_handle = loop.service.handle
+    original_submit = loop.runner.submit
+
+    def observed_handle(command, args):
+        result = original_handle(command, args)
+        handled.set()
+        return result
+
+    def submit_then_wait(command, args, **kwargs):
+        job = original_submit(command, args, **kwargs)
+        assert handled.wait(timeout=2.0), "worker 未在 submit 返回前执行"
+        return job
+
+    monkeypatch.setattr(loop.service, "handle", observed_handle)
+    monkeypatch.setattr(loop.runner, "submit", submit_then_wait)
+    expected = {"nonce": "request-registered-first"}
+    loop.handle_line(json.dumps({"id": 71, "command": "echo", "args": expected}))
+
+    replies = [reply for reply in _replies(loop.emitted) if reply["id"] == 71]
+    assert len(replies) == 1, "终态应答不能在 request 登记竞态中丢失"
+    assert replies[0]["ok"] is True
+    assert replies[0]["data"]["args"] == expected
+    assert loop.runner.has_active_jobs() is False
+    assert loop._requests == {}
+
+
 def test_async_request_gets_immediate_receipt(loop):
     """``args.async`` 时立刻回 jobId，结果靠事件送（不改变默认同步语义）。"""
     loop.handle_line(json.dumps({"id": 3, "command": "echo", "args": {"async": True}}))
@@ -135,6 +164,81 @@ def test_async_request_gets_immediate_receipt(loop):
     assert immediate[0]["ok"] is True
     assert immediate[0]["data"]["accepted"] is True
     assert immediate[0]["data"]["jobId"]
+
+
+def test_async_migration_terminal_event_carries_safe_result(loop):
+    """异步迁移使用 jobId 跟踪；成功终态必须携带迁移报告以免 30 分钟硬超时丢结果。"""
+    loop.handle_line(json.dumps({
+        "id": 4, "command": "start_migration", "args": {
+            "async": True, "steps": [], "clientMigrationId": "mig-test-4",
+        },
+    }))
+    assert _wait_until(lambda: any(item.get("id") == 4 for item in _replies(loop.emitted)))
+    receipt = next(item for item in _replies(loop.emitted) if item["id"] == 4)
+    assert receipt["data"]["accepted"] is True
+    job_id = receipt["data"]["jobId"]
+    assert _wait_until(lambda: any(
+        event.get("jobId") == job_id and event.get("status") == "succeeded"
+        for event in _events(loop.emitted, "job")
+    ))
+    succeeded = next(event for event in _events(loop.emitted, "job")
+                     if event.get("jobId") == job_id and event.get("status") == "succeeded")
+    assert succeeded["result"]["echo"] == "start_migration"
+    assert succeeded["clientMigrationId"] == "mig-test-4"
+
+
+def test_async_non_migration_job_does_not_expose_result(loop):
+    """通用 job 事件不泄漏任意命令结果；仅迁移报告走异步终态。"""
+    loop.handle_line(json.dumps({"id": 5, "command": "echo", "args": {"async": True, "clientMigrationId": "do-not-leak"}}))
+    assert _wait_until(lambda: any(item.get("id") == 5 for item in _replies(loop.emitted)))
+    receipt = next(item for item in _replies(loop.emitted) if item["id"] == 5)
+    job_id = receipt["data"]["jobId"]
+    assert _wait_until(lambda: any(
+        event.get("jobId") == job_id and event.get("status") == "succeeded"
+        for event in _events(loop.emitted, "job")
+    ))
+    succeeded = next(event for event in _events(loop.emitted, "job")
+                     if event.get("jobId") == job_id and event.get("status") == "succeeded")
+    assert "result" not in succeeded
+    assert "clientMigrationId" not in succeeded
+
+
+def test_async_migration_without_client_id_does_not_publish_result(loop):
+    """没有客户端关联 ID 的旧式异步调用不广播不可关联的迁移报告。"""
+    loop.handle_line(json.dumps({"id": 6, "command": "start_migration", "args": {"async": True, "steps": []}}))
+    assert _wait_until(lambda: any(item.get("id") == 6 for item in _replies(loop.emitted)))
+    receipt = next(item for item in _replies(loop.emitted) if item["id"] == 6)
+    job_id = receipt["data"]["jobId"]
+    assert _wait_until(lambda: any(
+        event.get("jobId") == job_id and event.get("status") == "succeeded"
+        for event in _events(loop.emitted, "job")
+    ))
+    succeeded = next(event for event in _events(loop.emitted, "job")
+                     if event.get("jobId") == job_id and event.get("status") == "succeeded")
+    assert "result" not in succeeded
+    assert "clientMigrationId" not in succeeded
+
+
+def test_async_migration_success_without_snapshot_emits_safe_failure_report(loop, monkeypatch):
+    """任务快照异常缺失时仍结束保护并明确返回失败报告，而不是发出无效事件。"""
+    monkeypatch.setattr(loop.runner, "get", lambda _job_id: None)
+    loop.handle_line(json.dumps({
+        "id": 7, "command": "start_migration", "args": {
+            "async": True, "steps": [], "clientMigrationId": "mig-no-snapshot",
+        },
+    }))
+    assert _wait_until(lambda: any(item.get("id") == 7 for item in _replies(loop.emitted)))
+    receipt = next(item for item in _replies(loop.emitted) if item["id"] == 7)
+    job_id = receipt["data"]["jobId"]
+    assert _wait_until(lambda: any(
+        event.get("jobId") == job_id and event.get("status") == "succeeded"
+        for event in _events(loop.emitted, "job")
+    ))
+    succeeded = next(event for event in _events(loop.emitted, "job")
+                     if event.get("jobId") == job_id and event.get("status") == "succeeded")
+    assert succeeded["clientMigrationId"] == "mig-no-snapshot"
+    assert succeeded["result"]["ok"] is False
+    assert "有效迁移报告" in succeeded["result"]["failed"][0]["error"]
 
 
 def test_job_failure_is_reported_as_not_ok(loop):

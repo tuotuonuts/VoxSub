@@ -154,6 +154,94 @@ def test_cancel_queued_job_never_runs(runner):
     assert ran == ["first"], "被取消的排队任务不能真的执行"
 
 
+def test_cancel_after_worker_check_never_moves_status_back_to_running(runner):
+    """取消与 worker 取出任务并发时，状态不能从 cancelling 回退到 running。"""
+    check_started = threading.Event()
+    allow_work = threading.Event()
+    cancel_finished = threading.Event()
+    executor_started = threading.Event()
+    seen: list[str] = []
+    runner._on_event = lambda kind, payload: seen.append(payload["status"])
+
+    class GatedCancelEvent:
+        def __init__(self):
+            self._event = threading.Event()
+            self._first_check = True
+
+        def is_set(self):
+            result = self._event.is_set()
+            if self._first_check:
+                self._first_check = False
+                check_started.set()
+                # Buggy code checks outside the runner lock, so cancel completes
+                # here and the worker subsequently overwrites CANCELLING.
+                cancel_finished.wait(timeout=0.2)
+            return result
+
+        def set(self):
+            self._event.set()
+
+    def execute(command, args, job):
+        executor_started.set()
+        allow_work.wait(timeout=2.0)
+        return "done"
+
+    runner.set_executor(execute)
+    job = runner.submit("gated", {})
+    job.cancel_event = GatedCancelEvent()
+    original_cancel = runner.cancel
+
+    def observed_cancel(job_id):
+        result = original_cancel(job_id)
+        cancel_finished.set()
+        return result
+
+    runner.cancel = observed_cancel
+    runner.start()
+    assert check_started.wait(timeout=2.0)
+
+    cancel_thread = threading.Thread(target=lambda: runner.cancel(job.id), daemon=True)
+    cancel_thread.start()
+    cancel_thread.join(timeout=2.0)
+    assert not cancel_thread.is_alive(), "取消请求未完成"
+    assert executor_started.wait(timeout=2.0)
+    allow_work.set()
+    assert runner.wait_for_idle(2.0)
+
+    first_cancelling = seen.index(job_runner.CANCELLING)
+    assert job_runner.RUNNING not in seen[first_cancelling + 1:], (
+        f"任务状态发生回退：{seen}"
+    )
+    assert job.status == job_runner.CANCELLED
+
+
+def test_cancel_wins_if_accepted_before_terminal_commit(runner):
+    """取消与成功终态提交并发时，先被接受的取消必须赢。"""
+    at_terminal_commit = threading.Event()
+    allow_terminal_commit = threading.Event()
+    runner.set_executor(lambda command, args, job: "completed")
+    original_finish = runner._finish
+
+    def pause_before_finish(job, status, *, result=None, error="", error_code=""):
+        if status == job_runner.SUCCEEDED:
+            at_terminal_commit.set()
+            assert allow_terminal_commit.wait(timeout=2.0)
+        original_finish(job, status, result=result, error=error, error_code=error_code)
+
+    runner._finish = pause_before_finish
+    runner.start()
+    job = runner.submit("finish_race", {})
+    assert at_terminal_commit.wait(timeout=2.0)
+
+    result = runner.cancel(job.id)
+    assert result == {"ok": True, "status": job_runner.CANCELLING}
+    allow_terminal_commit.set()
+    assert runner.wait_for_idle(2.0)
+
+    assert job.status == job_runner.CANCELLED
+    assert job.result is None, "取消获胜时不得保留/暴露成功结果"
+
+
 def test_cancelling_is_not_cancelled_while_still_running(runner):
     """核心不变式：收到取消请求 ≠ 已取消。还在跑就只能是 cancelling。"""
     release = threading.Event()

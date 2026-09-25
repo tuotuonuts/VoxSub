@@ -2689,6 +2689,12 @@
             "type": "boolean",
             "default": false,
             "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          },
+          "clientMigrationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "异步 start_migration 的客户端关联 ID；随该迁移的 job 状态事件回传，供回执超时后的终态重关联。"
           }
         }
       },

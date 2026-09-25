@@ -285,14 +285,21 @@ class IpcLoop:
 
     def _submit(self, req_id: Any, command: str, args: dict[str, Any]) -> None:
         wants_async = bool(args.get("async"))
+
+        def register_request(job: Job) -> None:
+            # 先建立 jobId → 请求映射，再让 worker 看见队列项。
+            # 否则极快任务会用空 args 执行，并在 _complete() 时丢掉终态回复。
+            self._requests[job.id] = _Request(
+                req_id=req_id, args=args, wants_async=wants_async,
+            )
         try:
-            job = self._runner.submit(command, args)
+            job = self._runner.submit(command, args, on_queued=register_request)
         except QueueFull as error:
             self._reject(req_id, str(error), code="queue_full")
             return
 
-        self._requests[job.id] = _Request(req_id=req_id, args=args,
-                                          wants_async=wants_async)
+
+
         if wants_async:
             # 显式要求异步：立刻回执 jobId，结果靠事件送。
             # 不改变默认（同步）语义，前端可以按自己的节奏迁移过来。
@@ -302,10 +309,32 @@ class IpcLoop:
 
     def _on_job_event(self, kind: str, payload: dict[str, Any]) -> None:
         """worker 线程回调：转发事件；终态时补上对应请求的应答。"""
+        job_id = str(payload.get("jobId", ""))
+        request = self._requests.get(job_id)
+        if (
+            request is not None
+            and request.wants_async
+            and payload.get("command") == "start_migration"
+        ):
+            client_migration_id = request.args.get("clientMigrationId")
+            if isinstance(client_migration_id, str) and 0 < len(client_migration_id) <= 128:
+                payload = {**payload, "clientMigrationId": client_migration_id}
+                if payload.get("status") == SUCCEEDED:
+                    # 迁移报告此前只随同步响应返回。显式异步后必须在终态事件携带报告，
+                    # 否则 Renderer 的请求硬上限会丢掉最终结果，退出保护无法收尾。
+                    # 不把其他命令的 result 暴露到事件总线上，避免泄出未知敏感结果。
+                    job = self._runner.get(job_id)
+                    result = job.result if job is not None and isinstance(job.result, dict) else {
+                        "done": [],
+                        "failed": [{"key": "?", "error": "后端未返回有效迁移报告"}],
+                        "elapsedMs": 0,
+                        "ok": False,
+                    }
+                    payload = {**payload, "result": result}
         self._event(kind, **payload)
         # 用 status（状态机的权威字段），不是 action —— 同名两字段是静默漂移的温床。
         if payload.get("status") in TERMINAL:
-            self._complete(str(payload.get("jobId", "")))
+            self._complete(job_id)
 
     def _complete(self, job_id: str) -> None:
         request = self._requests.pop(job_id, None)

@@ -18,16 +18,6 @@
   },
   "uiFieldDrift": [
     {
-      "event": "ready",
-      "missingInTs": [
-        "frozen"
-      ],
-      "extraInTs": [],
-      "reason": "protocol.ts 的 ready 声明了 version / protocolVersion? / backendGeneration? / readiness? / session?，但漏了 frozen。后四项都写成可选（老后端不发这些字段时 渲染层不能报错），这一点是对的；frozen 一直在发、只是没声明。",
-      "note": "另有类型级不一致，字段级检查看不出来：TS 的 readiness.activeJobs 声明为 number，后端实际发的是**命令名字符串数组**（job_runner.active_job_names()）。前端若按 number 用会得到 NaN。",
-      "fix": "给 ready 补上 frozen?: boolean，并把 activeJobs 改成 string[]；改完从本清单删掉。"
-    },
-    {
       "event": "migration",
       "missingInTs": [
         "completed",
@@ -346,7 +336,7 @@
       }
     },
     "job": {
-      "summary": "后台作业的生命周期事件（工作单 §3.3）。每一条都带 jobId 与 sequence，前端据此丢弃迟到/乱序事件。",
+      "summary": "后台作业的生命周期事件（工作单 §3.3）。每一条都带 jobId 与 sequence，前端据此丢弃迟到/乱序事件；仅 start_migration 的异步成功终态带 result 报告。",
       "emittedBy": "job_runner.JobRunner._emit → ipc_loop.IpcLoop._on_job_event → _event(\"job\", ...)",
       "payload": {
         "type": "object",
@@ -370,6 +360,12 @@
             "type": "string",
             "description": "被提交的命令名，取值见 commands.json"
           },
+          "clientMigrationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "仅异步 start_migration 事件携带，用于受理回执丢失后的终态重关联。"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 1,
@@ -383,6 +379,10 @@
             "type": "string",
             "description": "仅终态事件带；失败时是异常类名，取消时是 \"cancelled\"，成功时为空串"
           },
+          "result": {
+            "type": "object",
+            "description": "仅 start_migration 的异步成功终态携带最终迁移报告；其他任务结果不出现在事件总线上。"
+          },
           "status": {
             "enum": [
               "queued",
@@ -394,7 +394,35 @@
             ],
             "description": "**cancelling 不等于 cancelled**：前者只表示已受理取消请求，后者才是终态。界面不得把 cancelling 显示成已取消。"
           }
-        }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "command": { "const": "start_migration" },
+              "clientMigrationId": { "type": "string", "minLength": 1 },
+              "status": { "const": "succeeded" },
+              "result": { "type": "object" }
+            },
+            "required": ["clientMigrationId", "result"]
+          },
+          {
+            "properties": {
+              "command": { "const": "start_migration" },
+              "clientMigrationId": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["queued", "running", "cancelling", "failed", "cancelled"] }
+            },
+            "required": ["clientMigrationId"],
+            "not": { "required": ["result"] }
+          },
+          {
+            "not": {
+              "anyOf": [
+                { "required": ["clientMigrationId"] },
+                { "required": ["result"] }
+              ]
+            }
+          }
+        ]
       }
     },
     "download": {

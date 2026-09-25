@@ -157,6 +157,10 @@ def _cmd_foo_bar(self, args: dict[str, Any]) -> dict[str, Any]:
 
 不登记就会红。两个清单的区别是"设计如此"和"欠债"，别混用。
 
+### job 事件的结果字段
+
+`start_migration.args` 可选 `clientMigrationId`（1–128 字符），由异步 Renderer 请求生成并与 `async: true` 配合使用。`job` 事件仅在携带该 ID 的异步 `start_migration` 成功终态带 `result`（迁移报告）；关联 ID 随该迁移 job 状态事件回传，用于受理回执超时后的终态重关联。其它 job 的任意结果不放到事件总线上，避免扩大数据暴露面。前端须先订阅 job 事件，再提交请求并以关联 ID 等真实终态；若成功终态先于 failed/unavailable 回执到达，缓存结果优先于随后断连。
+
 ### 4. 前端自产事件
 
 主进程自己合成的（`disconnected`、`request-timeout` 这类）登记在
@@ -292,7 +296,7 @@ except ContractViolation as bad:
 
 | 事件 | TS 缺 | TS 多 |
 |---|---|---|
-| `ready` | `frozen` | — |
+| `ready` | — | — |
 | `migration` | `source` / `completed` / `keys` / `recordId` / `path` | — |
 | `job` | `code` | `status` / `detail` |
 
@@ -301,8 +305,7 @@ except ContractViolation as bad:
 `detail`。结果是 UI 读 `event.status` / `event.detail` 永远 `undefined`，
 而真正区分「取消中 vs 已取消」的 `action` 枚举没人消费。
 
-另有一处**类型级**不一致（字段级检查看不出来）：TS 的 `readiness.activeJobs`
-声明为 `number`，后端实际发的是**命令名字符串数组**。
+`readiness.activeJobs` 现在在 `protocol.ts` 中声明为 `string[]`，与后端发出的命令名数组一致。
 
 **后端缺口 —— `events.json#/knownGaps`**
 
