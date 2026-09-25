@@ -1,7 +1,7 @@
 # VoxSub 可维护性基线
 
-更新日期：2026-08-30
-最新再审查：[`CODE_REVIEW_2026-09.md`](CODE_REVIEW_2026-09.md)，记录当前热点、风险分级与分阶段拆分路线。
+更新日期：2026-09-25
+最新再审查：[`CODE_REVIEW_2026-09.md`](CODE_REVIEW_2026-09.md)；公共模块后续修复与验证见 [`docs/MAINTAINABILITY_REPORT.md`](docs/MAINTAINABILITY_REPORT.md) 的 2026-09-25 补记。
 
 这份文档记录本轮代码审查后的结构边界和持续约束。目标不是机械追求小文件，
 而是让每项可变状态只有一个负责人、外部 I/O 有明确失败语义，并让新功能通过
@@ -102,3 +102,11 @@
 ### 2026-09-05：退出资源编排
 
 `ApplicationShutdownCoordinator` 统一管理 `aboutToQuit` 的资源释放顺序。新增退出顺序契约测试后，后续新增线程、进程或外部 client 时，必须明确挂载到 coordinator 或其下属 owner，不得继续向 `app_runtime.py` 添加临时退出闭包。
+
+### 2026-09-25：公共组件与资源生命周期复核
+
+- 已有 `PageLifecycle`、`SettingsField`、`PathPicker`、`JobProgress`、`ConfirmAction`、`StatusRow` 和 `RequestOutcome` 等机制经实际调用点核实，未为增加抽象而重复实现。
+- 新增竞态防护：IPC 在任务发布给 worker 前登记请求；任务取消与进入 running、success/failure 终态提交统一仲裁；页面旧句柄不能释放新 migration 页面；旧 catalog 响应不能写回新页面。
+- 共享提示文案通过 translator 映射，英文固定文案可测试，后端动态 reason 保留原文。
+- TTS stop 返回线程是否真实退出，超时仍存活时不启动替代 worker；实时组件构造中途失败时逆序释放已创建且提供 `close()` 的资源。
+- 最新验证：后端 `852 passed / 6 skipped / 7 deselected / 1 xfailed`；前端 `npm run check`、页面释放与迟到/异步迁移回执超时/事件乱序测试 62/62、25 项静态接受契约通过。真实模型/硬件、Electron E2E、安装包未验证，详见主报告补记。

@@ -325,3 +325,43 @@ cp .backups/phase1_20260921_042735/pytest.ini pytest.ini
 2. 读 `docs/HANDOVER.md` 知道"加一个新功能要碰哪些文件、测试怎么写、怎么发版本"。
 3. 跑 `./.venv/Scripts/python.exe scripts/run_tests.py -q`，确认基线全绿。
 4. 想继续做资源生命周期（缺陷 #6~#9），从 `docs/ARCHITECTURE.md` 的"资源所有权"一节开始 —— 那里的规则已经写好，缺的是实现。
+
+---
+
+## 2026-09-25 公共模块后续复核与修复
+
+本补记不覆盖上文 2026-09-21 历史结论。依据当前工作树的真实调用路径，保留已有公共组件，不为组件数量而拆分；对确认存在的竞态及资源生命周期缺口增补小范围行为修复。
+
+### 修复与测试
+
+- `frontend/backend/ipc_loop.py` / `job_runner.py`：任务发布给 worker 前先登记 IPC 请求；取消与开始执行、成功/失败终态提交统一在状态锁内仲裁；迁移改用异步 job 跟踪，唯一 `clientMigrationId` 随状态事件回传以恢复回执超时关联，只有异步 `start_migration` 成功终态携带迁移报告（其它任务结果不广播）；新增“worker 立即完成”“取消/开始交错”“取消/终态提交交错”“回执丢失后按关联 ID 收到终态”“报告隔离”测试。
+- Renderer：`migration.ts` 每个 dispose 只释放它创建时捕获的 lifecycle/host；迁移先订阅后提交 `async: true` 与唯一 `clientMigrationId`，回执超时后仍按关联 ID 等终态；若精确关联的成功终态早于 failed/unavailable 回执，先用缓存报告完成而不把它降级为失败。报告随迁移成功终态事件回传；终态 continuation 核对请求身份与向导生命周期。`catalog.ts` 的异步响应写入前核对页面与请求代次，旧页面清理不影响新页；系统固定提示通过 translator 使用双语文案，保留后端动态 reason。
+- IPC readiness：`activeJobs` 更正为命令名 `string[]`，更新协议类型、schema 文档和混合类型负例。
+- `tts_worker.py` / `pipeline.py`：stop 返回线程是否真实退出；线程仍活时保留 worker 引用、拒绝新入队，热切换不创建第二个 worker；旧线程退出后下一条翻译可触发重建。
+- `realtime_builder.py`：VAD、云客户端、ASR、草稿 ASR、分段器按实际创建顺序登记；构建异常时逆序调用可用的 `close()`，回收异常只记日志并保留原始错误；不提供 close 的组件随失败栈释放引用。
+
+### 验证（2026-09-25，Windows 11；Python 3.12.4 / Node 22.23.2）
+
+| 命令 | 结果 |
+|---|---|
+| `unset PYTHONPATH PYTHONHOME && ./.venv/Scripts/python.exe scripts/run_tests.py -q -rs` | **852 passed / 6 skipped / 7 deselected / 1 xfailed**；1 个 `DeprecationWarning` 来自 `voxsub/model_catalog.py` tar extract；退出码 0 |
+| `tests/test_contracts.py tests/test_ipc_loop.py` | **107 passed**；包含迁移关联 ID 入站参数与事件结果范围契约测试 |
+| `cd frontend && npm run check` | **PASS**：TypeScript、色板校验、全部纯逻辑子套件；退出码 0 |
+| `node frontend/tools/test-acceptance-contracts.mjs` | **25/25 PASS**；结构契约检查，不等于运行时链路证明 |
+| `cd frontend && node tools/test-page-dispose.mjs` | **62/62 PASS**（含回执硬超时后按 `clientMigrationId` 恢复、终态先于 failed/unavailable 回执且断连仍保留报告、旧页迟到结果隔离、成功/失败终态处理）|
+| `cd frontend && node tools/test-backend-status.mjs` | **53/53 PASS** |
+| `git diff --check` | **PASS** |
+
+6 个跳过项因本机无真实 ASR/OPUS 模型或音频样本、无真实诊断模型目录、Windows 未授权符号链接；7 项为项目默认策略 deselected（其中真实音频用例由 `hardware_audio` 排除）。这些不是硬件/模型通过证据。
+
+### 未验证 / 风险边界
+
+- **NOT_RUN**：Electron 静默 E2E、真实模型/硬件四模式、安装包和发布构建；本轮未启动 GUI/音频、未修改真实配置/模型/Release。
+- 独立审查发现“取消被接受后仍可能成功结束”：已修为取消与 success/failure 终态提交共用状态锁；新增确定性交错测试在旧实现失败、修复后通过。全量测试最终 `852 passed`。
+- **已知局限（未修）**：TTS 热切换时旧 worker 仍被阻塞，`TTSWorker.submit()` 会因 stop 标记返回 `False`，`_present_translation()` 忽略该返回值；独立阻塞播放器探针复现切换窗口内该条译文可能不朗读，字幕仍正常。当前选择是不并行启动第二 worker；未增加延迟播报队列，避免扩大资源生命周期改动范围。
+- **未验证风险 / NOT_RUN**：IpcLoop 真实实现 + 假 service/job runner 测试覆盖终态报告传递、clientMigrationId 隔离与缺失快照降级；Renderer 真实页面事件处理测试覆盖回执硬超时后迟到终态，以及终态早于回执且随后断连。未运行 Electron 与真实 Python sidecar/文件系统集成链路。Electron 静默 E2E、真实模型/硬件和安装包仍为 NOT_RUN。
+- Review 子代理的 TTS 探针输出显示初始化日志路径为 `%LOCALAPPDATA%\VoxSub\logs\voxsub.log`；未读取或清理该用户日志文件。
+- CI 首跑需远端运行；按任务约束本轮不自动推送。
+- 确认的剩余缓存与 Qwen 策略事项继续按本报告前文保留，不在本次顺手改变用户可见行为。
+- 本轮源文件回滚副本：`.backups/public-modules-20260925-035129/`；复审修复快照：`.backups/public-module-review-20260925-064123/`、`.backups/migration-async-timeout-20260925-084500/`；回执重关联后续快照：`.backups/migration-ack-recovery-20260925-094500/`、`.backups/migration-outcome-contract-20260925-110451/`、`.backups/migration-failed-receipt-test-20260925-114347/`；新增测试 `tests/test_realtime_builder.py` 与 `frontend/tools/test-migration-entry.ts` 回滚时删除；具体操作见各备份目录内 `RESTORE.md`。
+- Git 最终阶段提交状态见本轮任务的最新 `STATUS.md`/`TODO.txt`；**未推送**。

@@ -6,6 +6,21 @@
 
 [x] 2026-08-21 v0.4.1-beta 返修：调优按钮、异步目录选择、后台模型迁移、诊断模块打包、升级翻译模型兼容发现、Teams 宿主进程捕获；全量 193 passed / 7 skipped；安装包 204.80 MiB（开发者自签名），SHA256 4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8
 
+=== 2026-09-25 (公共组件与资源生命周期后续整顿) ===
+[x] 测试先行新增竞态回归：IPC 请求先登记后发布给 worker；取消与进入 running、success/failure 终态提交同锁仲裁；真实 TTS worker 播放阻塞时 stop 超时保持唯一 owner；实时组件构建失败按逆序释放资源。
+[x] 修复 migration 向导旧句柄误释放新页面、catalog 旧异步响应覆盖新页面；共享后端状态/请求结果固定提示接入 i18n，动态后端原因保留。
+[x] ready.readiness.activeJobs 类型与后端命令名字符串数组对齐，并更新契约说明。
+[x] `start_migration` 使用异步 job 与唯一 `clientMigrationId` 跟踪；回执硬超时后仍按关联 ID 等真实终态，成功报告只随迁移终态事件返回，终态先于回执时缓存结果优先于断连；其他任务结果不广播。
+[x] 后端全量：`scripts/run_tests.py -q -rs` → 852 passed / 6 skipped / 7 deselected / 1 xfailed / 1 warning（Python 3.12.4）；6 个 skip 涵盖本机缺模型/样本与 Windows 符号链接权限，不等于真实链路通过。
+[x] 独立复审的取消/成功终态竞态已按 TDD 修复：终态提交与 cancel 共用状态锁；新增测试先红（旧实现最终 `succeeded`），修复后定向 4 项及全后端通过。
+[x] `start_migration` 的入站契约允许 1–128 字符 `clientMigrationId`，定向测试验证接受且长度限制生效；事件契约将 `result` 限于关联迁移成功终态。
+[x] 后端定向契约/IPC：`tests/test_contracts.py tests/test_ipc_loop.py` → 107 passed；测试覆盖终态先于 failed/unavailable 回执、以及断连时仍保留成功报告。
+[x] 前端：`npm run check`（TypeScript、色板、全逻辑套件）通过；`node tools/test-acceptance-contracts.mjs` 25/25；`node tools/test-page-dispose.mjs` 62/62（含回执硬超时重关联、先终态后断连、成功/失败与迟到请求）；`node tools/test-backend-status.mjs` 53/53。
+[x] `git diff --check` 通过；真实配置/模型/Release 未触及。
+[ ] 已知局限：TTS 热切换期间旧 worker 仍活时，当前译文提交可能返回 false 被忽略，导致该条不朗读（字幕仍在）；见维护报告。
+[x] 最终独立审查后补齐 failed 回执先于错误回退的页面回归用例，`node tools/test-page-dispose.mjs` 62/62；分阶段本地提交完成，未推送远端。
+[ ] NOT_RUN：真实模型/硬件、Electron L4 静默 E2E、安装包/发布验证。
+
 === 2026-09-21 (代码可维护性整顿 · 阶段0-4 连续执行) ===
 [x] 基线复核：HEAD 0882505 / main / 工作区干净 / .venv Python 3.12.4；全量 438 passed 5 skipped 7 deselected
 [x] 阶段0 只读基线与设计：14 项缺陷逐条核验（含打包版 sidecar 实测），产出 docs/MAINTAINABILITY_REPORT.md 的核验表

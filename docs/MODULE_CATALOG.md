@@ -15,8 +15,8 @@
 | 组件 | 文件 | 职责 | 状态归属 | 门禁/测试 |
 |---|---|---|---|---|
 | **协议 I/O** | `ipc_protocol.py` | stdout 的**唯一**写入点、事件发射、进程退出 | 无状态 | 必须在 `sys.stdout` 换成 stderr **之前**导入（否则捕获到 stderr） |
-| **命令分派（读循环）** | `ipc_loop.py` | 读、协议防御、分派；控制命令**就地执行** | 在途请求表 | `tests/test_ipc_loop.py`（27 条）|
-| **作业执行器** | `job_runner.py` | 任务状态机、有界队列、取消、退出保护判定 | **任务状态的唯一权威** | `tests/test_job_runner.py` |
+| **命令分派（读循环）** | `ipc_loop.py` | 读、协议防御、分派；控制命令**就地执行**；提交后台作业前先登记请求；异步 `start_migration` 使用 clientMigrationId 关联状态与安全报告事件 | 在途请求表 | `tests/test_ipc_loop.py`（覆盖队列立即完成竞态、迁移回执重关联、报告隔离）|
+| **作业执行器** | `job_runner.py` | 任务状态机、有界队列、取消；取消与开始/终态提交在同一锁内仲裁 | **任务状态的唯一权威** | `tests/test_job_runner.py` |
 | **契约校验** | `contract_validation.py` | 用 `contracts/` 的 JSON Schema 做边界校验（标准库子集） | 无状态 | `tests/test_contracts.py` |
 | **迁移台账与删除授权** | `migration_ledger.py` | 台账持久化 + "能不能删"的全部规则 | **清理授权的唯一权威** | `tests/test_migration_ledger.py`（27 条）|
 | **旧版探测与迁移规划** | `legacy_migration.py` | 探测旧安装、算迁移计划、校验搬迁结果 | 迁移 state 文件 | `tests/test_legacy_migration.py` |
@@ -36,7 +36,7 @@
 **加一条新命令**：写进对应域的 handler（不要在 `ipc_server.py` 里加）→ 在
 `contracts/commands.json` 登记 → 补一条测试。**长任务不用自己起线程**：只要命令名不
 在 `job_runner.CONTROL_COMMANDS` 里，`ipc_loop` 会自动把它排进单 worker，并自动获得
-`job_status`/`cancel_job` 支持。
+`job_status`/`cancel_job` 支持。迁移这类可能超过请求硬时限的任务，前端传 `async: true` 与唯一 `clientMigrationId`，先订阅后提交；关联 ID 可在受理回执超时后重新关联真实终态。仅异步 `start_migration` 成功终态携带迁移报告，其他任务结果不广播；若终态先于回执到达，缓存结果优先于随后断连。
 
 ### 1.2 核心与基础设施（`voxsub/`）
 
@@ -48,7 +48,8 @@
 | **日志** | `logging_setup.py` | 文件 + 控制台 + 环形缓冲；日志桥到 UI | 日志事件必带 `ts`（由 `IpcLoop._event` 统一注入）|
 | **ASR / 云 STT** | `asr.py` · `cloud_stt.py` | 语音识别 | — |
 | **翻译** | `translate/`（`factory`/`opus`/`qwen`/`cloud`/`llama_launch`/`cache`/`prefetch`） | 档位路由与各实现 | Qwen 子进程生命周期见 `docs/DECISIONS.md`；close 幂等、只杀本实例的进程 |
-| **TTS** | `tts.py` · `tts_worker.py` | 语音合成 | 运行中可热重载，但"收尾中"不许拆建（`_is_settling`）|
+| **TTS** | `tts.py` · `tts_worker.py` | 语音合成 | stop 返回是否真正退出；超时仍存活时保留旧 worker，禁止并行热替换；译文交付时可在旧 worker 结束后恢复 |
+| **实时组件构建** | `realtime_builder.py` | 事务化组装 ASR/VAD/STT/segmenter | 构建中失败按反向创建顺序调用可用的 `close()`，再原样抛出 |
 | **OCR** | `ocr.py` · `ocr_cache.py` | 屏幕 OCR、版面合并、缓存 | 缓存键必须含影响结果的配置维度 |
 | **音频** | `audio.py` · `process_audio.py` · `recording.py` | 设备枚举、进程级 loopback、录制 | 相关测试必须挂 `hardware_audio` 标记 |
 | **模型** | `model_catalog.py` · `model_storage.py` · `downloader.py` · `bootstrap_models.py` | 目录、存储布局、下载、首启动引导 | `migrate_models` 在 `model_storage`，**不在** `model_catalog` |
@@ -65,8 +66,8 @@
 |---|---|---|---|
 | **PageLifecycle** | `shared/page-lifecycle.ts` | 订阅/监听/定时器/异步回调的统一清理；`dispose` 幂等 | `tools/test-page-lifecycle.mjs` |
 | **会话时间轴** | `shared/session-timeline.ts` | 会话事件归约（`start` 才重置字幕；`stop` 保留字幕）| `tools/test-session-timeline.mjs` |
-| **后端连接状态** | `shared/backend-status.ts` | 连接 phase、会话视图归零、`needsResync`、ready 握手解析 | `tools/test-backend-status.mjs` |
-| **请求结果语义** | `shared/request-outcome.ts` | 超时≠失败≠取消；任务阶段与终态判定 | `tools/test-request-outcome.mjs` |
+| **后端连接状态** | `shared/backend-status.ts` | 连接 phase、会话视图归零、`needsResync`、ready 握手解析；固定提示文案由调用方注入翻译器 | `tools/test-backend-status.mjs` |
+| **请求结果语义** | `shared/request-outcome.ts` | 超时≠失败≠取消；任务阶段与终态判定；固定结果文案由调用方注入翻译器 | `tools/test-request-outcome.mjs` |
 | **清理请求构造** | `shared/migration-cleanup.ts` | 只发 `record_ids`+`confirm`，绝不发 `path` | `tools/test-migration-cleanup.mjs` |
 | **日志级别** | `shared/log-levels.ts` | 级别映射与过滤 | `tools/test-log-levels.mjs` |
 | **危险操作确认** | `shared/confirm-action.ts` | 统一的内联二次确认 | `tools/test-confirm-action.mjs` |
@@ -81,6 +82,8 @@
 - 组件**不得导入具体业务页面**，只能通过参数与回调协作；不为一次性代码做抽象。
 - 沿用现有 CSS 类与 `i18n.ts` 的 `tr()`，不重新设计 UI。
 - 测试要断言**实际展示与交互结果**，不是内部变量。
+- 向导的 `dispose` 只释放其创建时捕获的 lifecycle/host；migration 迟到请求还须校验最新请求身份和当前 lifecycle，不能改写/导航新向导；模型目录请求在回写共享 DOM 前核验页面与请求代次，迟到响应不能覆盖新页。
+- `store.ts` 中系统状态/请求结果的固定文案通过 `setUiTranslator(tr)` 交由渲染入口注册；后端 reason、命令名等动态数据保持原文。
 
 ---
 

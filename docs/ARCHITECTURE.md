@@ -102,7 +102,7 @@
 
 | 状态 | 权威来源 | 谁可以写 | 界面能做什么 |
 |---|---|---|---|
-| 后台任务状态 | `job_runner.JobRunner` | 只有执行器的状态机 | 读 `job_status`/事件；**不能**因为"我等超时了"就当成失败 |
+| 后台任务状态 | `job_runner.JobRunner` | 只有执行器的状态机；入队登记与 worker 可见由 `on_queued` 顺序保证，取消、进入 `running` 与终态提交在同一锁内仲裁 | 读 `job_status`/事件；**不能**因为"我等超时了"就当成失败 |
 | 会话状态（运行/暂停/空闲） | `pipeline` | pipeline 内部 | 显示；发意图命令后以返回值为准、事件为最终 |
 | 已保存配置 | `config_store.ConfigStore`（Python schema 权威） | 只有 `ConfigStore` | 发 `set_config`，回读确认 |
 | 实际生效配置 | 任务提交时抓的**不可变快照** | pipeline 建立会话时 | 不能悄悄用新配置解释旧任务 |
@@ -130,6 +130,7 @@ queued ──► running ──► succeeded / failed
 6. **完成记录有界。** 只有**终态**记录可以被裁剪，活着的任务永远不能被裁掉。
 7. **失败要带可识别错误码。** `error_code` 用异常类名或明确的业务码，别只丢一句人话。
 8. **任务事件带 `jobId` 与 `sequence`。** 前端靠顺序号丢弃迟到/乱序事件。
+9. **长迁移使用异步 job 协议。** 前端先订阅再提交 `async: true` 与唯一 `clientMigrationId`；关联 ID 随迁移状态事件回传，受理回执超时后仍可重连终态。报告只随迁移成功终态事件返回；终态先于回执时，缓存报告优先于随后断连。只有真实终态或后端断连才解除退出保护。
 
 **怎么加一条新的长任务命令**：什么都不用做 —— 只要它不是控制命令，`ipc_loop` 会自动把它排进 worker。如果你希望它支持协作式取消，在安全边界插一句 `_cancel_requested()`。
 
@@ -143,7 +144,7 @@ queued ──► running ──► succeeded / failed
 
 | # | 规则 | 实现现状 |
 |---|---|---|
-| 1 | 工作线程还在用资源时，不许关闭或替换它 | **已实现**。`Pipeline._may_replace_resources()`（状态 + worker 存活两个条件都要满足）是所有替换资源入口的唯一判断；`set_models_dir`/`set_translator`/`set_asr_model`/`set_tts_models` 全走它。Qwen 侧：检查+摘除+重建在 `_lifecycle_lock` 内一次决策，`close(generation=)` 不会误关别的线程重建的实例 |
+| 1 | 工作线程还在用资源时，不许关闭或替换它 | **已实现**。`Pipeline._may_replace_resources()` 统一拦截 pipeline 核心资源更换；TTS 的 `stop(timeout)` 返回是否真实退出，超时仍存活时旧 worker 保持唯一 owner，后续翻译只在旧 worker 退出后重建。实时组件构建失败时按创建逆序调用可用的 `close()`。Qwen 侧仍由 `_lifecycle_lock` 与 generation 守卫保证只关闭自有实例 |
 | 2 | `stop` 超时不能进入"安全空闲"状态 | **已实现**。超时保持 `STOPPING`（`is_running()` 仍为真 → 门禁保持关闭），`_watch_settlement()` 有界单例地等 worker 真退出才落 IDLE |
 | 3 | 配置变更与资源重建走同一个门禁 | **已实现**（同上一条的 `_may_replace_resources` / `_is_settling`），见 `docs/DECISIONS.md` 第 5 条 |
 | 4 | `close` 幂等，重复调用不引入错误 | **已实现**。Pipeline、Qwen、OCR 引擎/服务、`BackendService.close()` 均有幂等性测试 |
@@ -171,7 +172,7 @@ queued ──► running ──► succeeded / failed
 - `ipc_server.handle()` 动态分派 `_cmd_<command>`；`BackendService.has_command()`
   是"这个命令存在吗"的唯一判断入口（读循环用它做未知命令的前置拒绝）。
 - 握手事件 `ready` 必须带：`version`、`protocolVersion`、`backendGeneration`、
-  `readiness{ready, activeJobs}`、`session`（当前会话与活动任务快照）。
+  `readiness{ready, activeJobs}`、`session`（当前会话与活动任务快照）；`activeJobs` 是命令名字符串数组，前端据数组长度显示活动任务数。
   这几项是为了让**渲染层重载后能重新同步**。
 - 协议解析的防御清单（逐条有测试）：无效 JSON、`null`、非对象、缺 `id`、缺
   `command`、未知命令、`args` 类型错、超大消息、子进程异常退出。
@@ -198,5 +199,4 @@ queued ──► running ──► succeeded / failed
 - 共享的是**展示与交互**，不是业务逻辑；一次性代码不做抽象。
 - 组件测试要验证"用户实际看得到、点得到的结果"，不是内部变量。
 
-> 现状：渲染层此前有 12 处 window/document 监听、**0 处移除**（缺陷 #10）。
-> 前端专项代理正在按上面的方式接入。
+> 现状：`PageLifecycle` 已被设置、诊断、目录、字幕、OCR、迁移等页面实际使用，并由 `tools/test-page-dispose.mjs` 验证 dispose 幂等、异步失效与重复开关页面。目录请求使用页面/请求代次；迁移向导句柄只释放捕获的 lifecycle 与 host，迁移 await 返回还核验向导生命周期和最新请求 token，避免迟到结果改写新向导。固定系统提示经 `tr()`；页面差异明显或仅有单一稳定使用场景时不强行抽组件。

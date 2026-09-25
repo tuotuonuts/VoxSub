@@ -56,6 +56,8 @@ python frontend/tools/build-release.py --check-only
 
 - 默认保持**同步应答**语义（前端不改也能用）；
 - 调用方带 `args.async = true` 时，立刻收到 `{jobId, accepted, status}`，结果走 `event:"job"`；
+- 异步 `start_migration` 由 Renderer 传唯一 `clientMigrationId`；该 ID 随迁移状态事件回传，成功终态同时带迁移报告，供受理回执硬超时后的终态重关联；其他 job 的任意结果不广播。
+- 前端须先订阅事件、再提交异步请求；关联 ID 让其在缺少 `jobId` 回执时继续等同一任务；若终态先于回执到达，缓存结果优先于后续 failed/unavailable 回执或断连。退出保护只在真实终态或后端断连时解除。
 - 自动获得 `job_status` / `job_list` / `cancel_job` 的支持。
 
 如果你希望它支持**协作式取消**，在它的安全边界（例如每一步之间）插一句：
@@ -100,6 +102,14 @@ if _cancel_requested():
    不要手工往仓库根传 `--basetemp` —— 那正是 244 个 `.pytest-*` 的来源。
 6. **每个"已修复"都要有真实运行输出**，没跑的写 NOT_RUN 加原因。
    严禁编造运行结果 —— 这比不做更糟。
+
+### 竞态与资源释放回归
+
+- IPC：请求记录必须在任务交给 worker 前可见；测试用 worker 可立即完成的真实顺序，断言请求仍能拿到终态回复。
+- 任务取消：取消请求、worker 开始和成功/失败终态提交必须通过同一状态锁仲裁；排队任务一旦取消不得执行，运行任务不得从 cancelling/cancelled 倒退回 running/succeeded。
+- TTS：`stop(timeout)` 必须报告是否真实退出；超时仍存活的 worker 继续持有旧资源，不创建并行替代实例。验证真实阻塞播放的 worker，释放事件后确认退出和后续重建。
+- 组装多项实时组件时，逐个记录成功创建的对象；后续失败按逆序调用资源提供的 `close()`，清理异常写日志且不覆盖原始构建异常。
+- UI 异步/页面句柄：用 A/B 两页逆序 dispose 与迟到响应的确定性测试，确认 A 不会释放或写入 B；migration 旧请求迟到时不得清除新任务保护、写入共享报告或导航新向导；不以源码字符串断言替代运行时测试。
 
 ### 前端纯逻辑测试的写法（不启动 Electron）
 
