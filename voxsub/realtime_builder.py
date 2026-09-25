@@ -34,6 +34,23 @@ class RealtimeComponents:
     cloud: bool
 
 
+def _close_partial_resources(resources: list[Any]) -> None:
+    """Close already-created components in reverse acquisition order."""
+    seen: set[int] = set()
+    for resource in reversed(resources):
+        if resource is None or id(resource) in seen:
+            continue
+        seen.add(id(resource))
+        close = getattr(resource, "close", None)
+        if not callable(close):
+            continue
+        try:
+            close()
+        except Exception:
+            logger.warning("释放未完成的实时组件失败: %s",
+                           type(resource).__name__, exc_info=True)
+
+
 def _vad_model_path(models_dir: Path,
                     ensure_vad: Callable[[Path], Path | None]) -> Path:
     model = ensure_vad(models_dir)
@@ -93,6 +110,7 @@ def _build_draft_asr(
     if getattr(draft_asr, "runtime", "") != "sherpa-streaming-transducer":
         logger.warning("实时草稿旁路不是流式识别器，已禁用: %s",
                        getattr(draft_asr, "runtime", type(draft_asr).__name__))
+        _close_partial_resources([draft_asr])
         return None
     logger.info("实时草稿旁路已启用: runtime=%s provider=%s paths=%d",
                 draft_asr.runtime, getattr(draft_asr, "provider", provider),
@@ -116,70 +134,81 @@ def build_realtime_components(
     semantic_boundary: Callable[[str], bool] | None,
 ) -> RealtimeComponents:
     """Build every dependency locally and return it only when all are ready."""
-    cloud = spec.stt_provider == "cloud"
-    generative = spec.generative
-    vad = vad_factory(
-        str(_vad_model_path(spec.models_dir, ensure_vad)),
-        threshold=spec.tuning["vad_threshold"],
-    )
-    if cloud:
-        cloud_client = cloud_factory(spec.stt_config)
-        if not cloud_client.ready():
-            raise RuntimeError(
-                "云 STT 尚未就绪，请填写独立的 STT API Key、BaseURL 和模型名")
-        draft_provider = _asr_runtime_provider(spec.asr_provider, select_device)
-        threads = min(2, max(1, os.cpu_count() or 1))
-        draft_asr = _build_draft_asr(
-            spec, provider=draft_provider, threads=threads,
-            asr_factory=asr_factory,
-        )
-        segmenter = audio_segmenter_factory(
-            vad, queue_audio,
-            min_silence_ms=spec.tuning["silence_ms"],
-            max_utterance_ms=spec.tuning["max_utterance_ms"],
-            draft_asr=draft_asr,
-            on_partial=on_partial if draft_asr is not None else None,
-            partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
-        )
-        return RealtimeComponents(None, cloud_client, vad, segmenter, True, True)
+    created: list[Any] = []
 
-    provider = _asr_runtime_provider(spec.asr_provider, select_device)
-    threads = min(4, max(1, os.cpu_count() or 1))
-    asr = asr_factory(
-        spec.asr_model_id, spec.models_dir, provider=provider,
-        num_threads=threads, source_lang=spec.source_lang, tuning=spec.tuning,
-    )
-    logger.info(
-        "本地 STT 执行器: runtime=%s provider=%s threads=%d",
-        getattr(asr, "runtime", type(asr).__name__),
-        getattr(asr, "provider", provider), threads,
-    )
-    if generative:
-        draft_asr = _build_draft_asr(
-            spec, provider=provider, threads=min(2, threads),
-            asr_factory=asr_factory,
+    def track(resource: Any) -> Any:
+        if resource is not None:
+            created.append(resource)
+        return resource
+
+    try:
+        cloud = spec.stt_provider == "cloud"
+        generative = spec.generative
+        vad = track(vad_factory(
+            str(_vad_model_path(spec.models_dir, ensure_vad)),
+            threshold=spec.tuning["vad_threshold"],
+        ))
+        if cloud:
+            cloud_client = track(cloud_factory(spec.stt_config))
+            if not cloud_client.ready():
+                raise RuntimeError(
+                    "云 STT 尚未就绪，请填写独立的 STT API Key、BaseURL 和模型名")
+            draft_provider = _asr_runtime_provider(spec.asr_provider, select_device)
+            threads = min(2, max(1, os.cpu_count() or 1))
+            draft_asr = track(_build_draft_asr(
+                spec, provider=draft_provider, threads=threads,
+                asr_factory=asr_factory,
+            ))
+            segmenter = track(audio_segmenter_factory(
+                vad, queue_audio,
+                min_silence_ms=spec.tuning["silence_ms"],
+                max_utterance_ms=spec.tuning["max_utterance_ms"],
+                draft_asr=draft_asr,
+                on_partial=on_partial if draft_asr is not None else None,
+                partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
+            ))
+            return RealtimeComponents(None, cloud_client, vad, segmenter, True, True)
+
+        provider = _asr_runtime_provider(spec.asr_provider, select_device)
+        threads = min(4, max(1, os.cpu_count() or 1))
+        asr = track(asr_factory(
+            spec.asr_model_id, spec.models_dir, provider=provider,
+            num_threads=threads, source_lang=spec.source_lang, tuning=spec.tuning,
+        ))
+        logger.info(
+            "本地 STT 执行器: runtime=%s provider=%s threads=%d",
+            getattr(asr, "runtime", type(asr).__name__),
+            getattr(asr, "provider", provider), threads,
         )
-        segmenter = audio_segmenter_factory(
-            vad, queue_audio,
-            min_silence_ms=spec.tuning["silence_ms"],
-            max_utterance_ms=spec.tuning["max_utterance_ms"],
-            draft_asr=draft_asr,
-            on_partial=on_partial if draft_asr is not None else None,
-            partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
-        )
-    else:
-        expose_partial = (
-            not spec.tuning.get("context_enabled", False)
-            or spec.tuning.get("live_draft_enabled", True)
-        )
-        segmenter = streaming_segmenter_factory(
-            asr, vad, on_sentence,
-            min_silence_ms=spec.tuning["silence_ms"],
-            max_utterance_ms=spec.tuning["max_utterance_ms"],
-            on_partial=on_partial if expose_partial else None,
-            partial_interval_ms=spec.tuning.get("partial_interval_ms", 360),
-            boundary_decider=semantic_boundary,
-            semantic_hold_ms=(
-                spec.tuning["context_hold_ms"] if semantic_boundary else 0),
-        )
-    return RealtimeComponents(asr, None, vad, segmenter, generative, False)
+        if generative:
+            draft_asr = track(_build_draft_asr(
+                spec, provider=provider, threads=min(2, threads),
+                asr_factory=asr_factory,
+            ))
+            segmenter = track(audio_segmenter_factory(
+                vad, queue_audio,
+                min_silence_ms=spec.tuning["silence_ms"],
+                max_utterance_ms=spec.tuning["max_utterance_ms"],
+                draft_asr=draft_asr,
+                on_partial=on_partial if draft_asr is not None else None,
+                partial_interval_ms=spec.tuning.get("partial_interval_ms", 140),
+            ))
+        else:
+            expose_partial = (
+                not spec.tuning.get("context_enabled", False)
+                or spec.tuning.get("live_draft_enabled", True)
+            )
+            segmenter = track(streaming_segmenter_factory(
+                asr, vad, on_sentence,
+                min_silence_ms=spec.tuning["silence_ms"],
+                max_utterance_ms=spec.tuning["max_utterance_ms"],
+                on_partial=on_partial if expose_partial else None,
+                partial_interval_ms=spec.tuning.get("partial_interval_ms", 360),
+                boundary_decider=semantic_boundary,
+                semantic_hold_ms=(
+                    spec.tuning["context_hold_ms"] if semantic_boundary else 0),
+            ))
+        return RealtimeComponents(asr, None, vad, segmenter, generative, False)
+    except BaseException:
+        _close_partial_resources(created)
+        raise

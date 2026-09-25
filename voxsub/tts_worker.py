@@ -47,46 +47,57 @@ class TTSWorker:
         self._queue: queue.Queue[SpeechRequest] = queue.Queue(
             maxsize=max(1, int(max_pending)))
         self._stop = threading.Event()
+        self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
 
+    @property
+    def is_alive(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="pipeline-tts",
-            daemon=True,
-        )
-        self._thread.start()
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="pipeline-tts",
+                daemon=True,
+            )
+            self._thread.start()
 
     def submit(self, text: str, lang: str) -> bool:
         request = SpeechRequest(str(text or "").strip(), str(lang or "").strip())
         if not request.text:
             return False
-        try:
-            self._queue.put_nowait(request)
-            return True
-        except queue.Full:
-            try:
-                dropped = self._queue.get_nowait()
-            except queue.Empty:  # pragma: no cover - another consumer won the race
-                dropped = None
-            logger.warning("TTS 播放积压，替换最旧句子: dropped_chars=%s new_chars=%d",
-                           len(dropped.text) if dropped else 0, len(request.text))
+        with self._state_lock:
+            if self._should_stop():
+                return False
             try:
                 self._queue.put_nowait(request)
                 return True
-            except queue.Full:  # pragma: no cover - consumer/producer race
-                return False
+            except queue.Full:
+                try:
+                    dropped = self._queue.get_nowait()
+                except queue.Empty:  # pragma: no cover - another consumer won the race
+                    dropped = None
+                logger.warning("TTS 播放积压，替换最旧句子: dropped_chars=%s new_chars=%d",
+                               len(dropped.text) if dropped else 0, len(request.text))
+                try:
+                    self._queue.put_nowait(request)
+                    return True
+                except queue.Full:  # pragma: no cover - consumer/producer race
+                    return False
 
-    def stop(self, *, timeout: float = 3.0) -> None:
-        self._discard_pending()
-        self._stop.set()
-        thread = self._thread
+    def stop(self, *, timeout: float = 3.0) -> bool:
+        with self._state_lock:
+            self._stop.set()
+            self._discard_pending()
+            thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(0.0, timeout))
-        self._thread = None if thread is None or not thread.is_alive() else thread
+        return thread is None or not thread.is_alive()
 
     def _should_stop(self) -> bool:
         return self._stop.is_set() or bool(

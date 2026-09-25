@@ -737,7 +737,7 @@ class Pipeline:
         if normalized == self._tts_model_ids:
             return
         self._tts_model_ids = normalized
-        # 运行中热重载 TTS 是**刻意支持**的（换模型立刻生效），所以这里不能用
+        # 运行中热重载 TTS 是**刻意支持**的（旧 worker 退出后才切换），所以这里不能用
         # _may_replace_resources（那会把热重载一起否掉）。但只要处在"收尾中"，
         # 就不能拆了重建 —— 那样会踩在正在退出的 worker 上。
         if (self._running and not self._is_settling()
@@ -1165,18 +1165,22 @@ class Pipeline:
     def _start_tts_worker(self) -> None:
         if not self._tts_enabled or self._mode == "c":
             return
-        if self._tts_worker is None:
-            self._tts_worker = TTSWorker(
-                self._models_dir,
-                external_stop=self._stop_evt,
-                model_ids=self._tts_model_ids,
-            )
+        worker = self._tts_worker
+        if worker is not None and bool(getattr(worker, "is_alive", True)):
+            return
+        if worker is not None:
+            self._tts_worker = None
+        self._tts_worker = TTSWorker(
+            self._models_dir,
+            external_stop=self._stop_evt,
+            model_ids=self._tts_model_ids,
+        )
         self._tts_worker.start()
 
     def _stop_tts_worker(self) -> None:
-        worker, self._tts_worker = self._tts_worker, None
-        if worker is not None:
-            worker.stop()
+        worker = self._tts_worker
+        if worker is not None and worker.stop() is not False:
+            self._tts_worker = None
 
     def _put_or_stop(self, target: queue.Queue, item: object, message: str) -> None:
         """Bound queue growth and make overload visible instead of losing data."""
@@ -1555,9 +1559,12 @@ class Pipeline:
         view = self._live_draft.finish_final()
         if view is not None:
             self._emit_draft(view)
-        worker = self._tts_worker
-        if speak and worker is not None and translation:
-            worker.submit(translation, snapshot.dst)
+        if speak and translation:
+            if self._tts_enabled and self._mode != "c":
+                self._start_tts_worker()
+            worker = self._tts_worker
+            if worker is not None:
+                worker.submit(translation, snapshot.dst)
         if self._running:
             self._emit_status(
                 "已暂停 · 点击继续恢复录音与翻译"

@@ -69,6 +69,75 @@ def test_worker_synthesizes_and_plays_in_background(tmp_path: Path) -> None:
     assert played == [(5, SAMPLE_RATE)]
 
 
+def test_tts_worker_stop_timeout_preserves_live_thread_and_rejects_new_speech(
+    tmp_path: Path,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    worker = TTSWorker(
+        tmp_path,
+        engine_factory=_FakeEngine,
+        player=lambda _pcm, _rate: (entered.set(), release.wait()),
+    )
+    worker.start()
+    assert worker.submit("blocking", "en")
+    assert entered.wait(2.0)
+
+    try:
+        assert worker.stop(timeout=0.01) is False
+        assert worker.is_alive is True
+        assert worker.submit("must not queue while stopping", "en") is False
+    finally:
+        release.set()
+    assert worker.stop(timeout=1.0) is True
+    assert worker.is_alive is False
+
+
+def test_pipeline_does_not_replace_tts_worker_until_old_playback_exits(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    old = TTSWorker(
+        tmp_path,
+        engine_factory=_FakeEngine,
+        player=lambda _pcm, _rate: (entered.set(), release.wait()),
+    )
+    old.start()
+    assert old.submit("blocking", "en")
+    assert entered.wait(2.0)
+
+    created: list[dict[str, object]] = []
+
+    class _FreshWorker:
+        is_alive = False
+
+        def __init__(self, _models_root, *, model_ids, **_kwargs):
+            created.append(dict(model_ids))
+
+        def start(self):
+            self.is_alive = True
+
+    monkeypatch.setattr("voxsub.pipeline.TTSWorker", _FreshWorker)
+    pipeline = Pipeline()
+    pipeline._running = True  # noqa: SLF001
+    pipeline._mode = "a"  # noqa: SLF001
+    pipeline._tts_enabled = True  # noqa: SLF001
+    pipeline._tts_worker = old  # noqa: SLF001
+    try:
+        pipeline.set_tts_models({"en": "new-english-model"})
+        assert created == []
+        assert pipeline._tts_worker is old  # noqa: SLF001
+        assert old.is_alive is True
+    finally:
+        release.set()
+    assert old.stop(timeout=1.0) is True
+
+    pipeline._start_tts_worker()  # noqa: SLF001
+    assert created == [{"zh": pipeline._tts_model_ids["zh"], "en": "new-english-model"}]
+    assert pipeline._tts_worker is not old  # noqa: SLF001
+
+
 def test_worker_replaces_oldest_pending_speech_when_full(tmp_path: Path) -> None:
     worker = TTSWorker(tmp_path, max_pending=2, engine_factory=_FakeEngine,
                        player=lambda _pcm, _rate: None)
