@@ -56,13 +56,13 @@ const VIEWS = [
   ["模型目录", "src/renderer/views/catalog.ts", (m) => m.buildModelCatalog()],
   ["字幕工作区", "src/renderer/views/workspace.ts", (m) => m.buildWorkspace()],
   ["OCR 工作区", "src/renderer/views/ocr.ts", (m) => m.buildOcrWorkspace()],
-  ["迁移向导", "src/renderer/views/migration.ts", (m) => m.buildMigrationWizard(DETECT_FIXTURE)],
+  ["迁移向导", "tools/test-migration-entry.ts", (m) => m.buildMigrationWizard(DETECT_FIXTURE)],
 ];
 
 const loaded = [];
 for (const [name, path, build] of VIEWS) {
   const mod = await importShared(path, { bundle: true });
-  loaded.push({ name, build: () => build(mod) });
+  loaded.push({ name, module: mod, build: () => build(mod) });
 }
 
 /** 把在途 promise 放完：未启动后端时命令会立刻以 unavailable 返回。 */
@@ -99,6 +99,259 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
     handle.element.remove();
   }
   await settle();
+
+  const migrationSrc = readFileSync(join(ROOT, "src/renderer/views/migration.ts"), "utf-8");
+  check(
+    "迁移向导句柄 dispose 捕获自己的 lifecycle/host（旧句柄不得释放新向导）",
+    /releaseWizard\(lifecycle, host\)/.test(migrationSrc) &&
+      /expectedLifecycle && wizardLifecycle !== expectedLifecycle[\s\S]{0,160}expectedLifecycle\.dispose\(\)/.test(migrationSrc),
+  );
+
+  const migrationView = loaded[5];
+  const migration = migrationView.module;
+  const oldWizardHandle = migrationView.build();
+  const currentWizardHandle = migrationView.build();
+  const currentWizardBody = currentWizardHandle.element.querySelector(".wiz__body");
+  let currentWizardLeaving = 0;
+  currentWizardBody.addEventListener("voxsub:leaving", () => { currentWizardLeaving += 1; });
+  oldWizardHandle.dispose();
+  check("旧迁移句柄迟到 dispose 不会向新向导广播 leaving", currentWizardLeaving === 0, `${currentWizardLeaving} 次`);
+  currentWizardHandle.dispose();
+  check("当前迁移句柄 dispose 才广播一次 leaving", currentWizardLeaving === 1, `${currentWizardLeaving} 次`);
+
+  // 迁移请求在途时替换向导；旧请求迟到不得导航或改写新向导。
+  const busyChanges = [];
+  const backendListeners = new Set();
+  const commandLog = [];
+  const migrationJobId = "migration-job-old-page";
+  let migrationArgs = null;
+  let completeBeforeUnavailableReceipt = false;
+  let completeBeforeFailedReceipt = false;
+  let timeoutReceipt = false;
+  const planFixture = {
+    targetRoot: "C:/NewVoxSub",
+    steps: [{ key: "models", source: "C:/Old/models", target: "C:/New/models", bytes: 1, file_count: 1, purpose: "", mode: "copy", note: "", rebuildable: false }],
+    totalBytes: 1,
+    freeBytes: 1024,
+  };
+  const completedReport = {
+    done: [{ key: "models", mode: "copy", target: "C:/New/models", verify: { ok: true } }],
+    failed: [],
+    elapsedMs: 1,
+    ok: true,
+  };
+  window.voxsub = {
+    app: { setBusy: (busy) => busyChanges.push(busy) },
+    backend: {
+      onEvent: (handler) => { backendListeners.add(handler); return () => backendListeners.delete(handler); },
+      start: async () => ({ ok: true }),
+      command: async (command, args) => {
+        commandLog.push(command);
+        if (command === migration.CMD.state) return { ok: true, data: { running: false, paused: false, mode: "a" } };
+        if (command === migration.CMD.planMigration) return { ok: true, data: planFixture };
+        if (command === migration.CMD.startMigration) {
+          migrationArgs = args;
+          if (timeoutReceipt) {
+            timeoutReceipt = false;
+            for (const [status, sequence] of [["queued", 1], ["running", 2]]) {
+              for (const listener of [...backendListeners]) listener({
+                type: "job", jobId: "migration-job-timeout", command: migration.CMD.startMigration,
+                clientMigrationId: args?.clientMigrationId, status, sequence,
+              });
+            }
+            return { ok: false, timedOut: true, error: "simulated hard timeout" };
+          }
+          if (completeBeforeFailedReceipt) {
+            completeBeforeFailedReceipt = false;
+            for (const listener of [...backendListeners]) listener({
+              type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+              clientMigrationId: args?.clientMigrationId, status: "succeeded", sequence: 3,
+              result: completedReport,
+            });
+            return { ok: false, error: "simulated failed receipt after terminal" };
+          }
+          if (completeBeforeUnavailableReceipt) {
+            completeBeforeUnavailableReceipt = false;
+            const terminal = {
+              type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+              clientMigrationId: args?.clientMigrationId, status: "succeeded", sequence: 3,
+              result: completedReport,
+            };
+            for (const listener of [...backendListeners]) listener(terminal);
+            for (const listener of [...backendListeners]) listener({ type: "disconnected" });
+            return { ok: false, unavailable: true, error: "simulated disconnect before receipt" };
+          }
+          return { ok: true, data: { accepted: true, jobId: migrationJobId, async: args?.async } };
+        }
+        return { ok: false, error: `unexpected test command: ${command}` };
+      },
+    },
+  };
+  const disconnectBackend = migration.connectBackend();
+  check("store 已订阅测试后端事件", backendListeners.size > 0, `${backendListeners.size} 个`);
+  for (const listener of backendListeners) listener({ type: "ready" });
+  await settle();
+
+  const oldLayer = newLayer();
+  const oldHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  oldLayer.append(oldHandle.element);
+  oldHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  oldHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  check("迁移清单页已加载", Boolean(oldHandle.element.querySelector("#wiz-proceed")), oldHandle.element.textContent);
+  check("规划命令已到达测试后端", commandLog.includes(migration.CMD.planMigration), JSON.stringify(commandLog));
+  oldHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("迁移命令已到达测试后端", commandLog.includes(migration.CMD.startMigration), JSON.stringify(commandLog));
+  check("迁移期间退出保护仍有效", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  check("迁移提交显式走可跟踪的异步 job 模式", migrationArgs?.async === true && typeof migrationArgs?.clientMigrationId === "string" && migrationArgs.clientMigrationId.length > 0, JSON.stringify(migrationArgs));
+  check("收到 job 终态前不会误进报告页", oldHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移");
+
+  oldHandle.dispose();
+  oldLayer.remove();
+  const newPageLayer = newLayer();
+  const newHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  newPageLayer.append(newHandle.element);
+  const titleBeforeLateResult = newHandle.element.querySelector(".wiz__title")?.textContent;
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: migrationArgs?.clientMigrationId,
+      status: "succeeded", sequence: 3, result: completedReport,
+    });
+  }
+  await settle();
+  check(
+    "旧向导迁移迟到成功不导航/写入新向导",
+    newHandle.element.querySelector(".wiz__title")?.textContent === titleBeforeLateResult &&
+      titleBeforeLateResult === "检测到旧版 VoxSub",
+    `${titleBeforeLateResult} → ${newHandle.element.querySelector(".wiz__title")?.textContent}`,
+  );
+  check("旧迁移终态后退出保护解除", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+
+  // 当前向导收到异步终态后，应读取事件中的报告并正常进入结果页。
+  newHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  newHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  newHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  newHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("当前迁移任务仍由退出保护持有", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: migrationArgs?.clientMigrationId,
+      status: "succeeded", sequence: 3, result: completedReport,
+    });
+  }
+  await settle();
+  check("当前向导收到成功终态后展示迁移结果", newHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"));
+  check("当前迁移真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+
+  newHandle.dispose();
+  newPageLayer.remove();
+  const failedLayer = newLayer();
+  const failedHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  failedLayer.append(failedHandle.element);
+  failedHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  failedHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  failedHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  failedHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: migrationArgs?.clientMigrationId,
+      status: "failed", sequence: 3, error: "disk full",
+    });
+  }
+  await settle();
+  check("失败终态报告保留后端原因", failedHandle.element.querySelector(".wiz__body")?.textContent?.includes("disk full"));
+  check("失败也只有到真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  failedHandle.dispose();
+  failedLayer.remove();
+
+  const timeoutLayer = newLayer();
+  const timeoutHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  timeoutLayer.append(timeoutHandle.element);
+  timeoutHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  timeoutHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  await settle();
+  timeoutReceipt = true;
+  timeoutHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("回执硬超时不释放仍在运行任务的退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  for (const listener of [...backendListeners]) listener({
+    type: "job", jobId: "migration-job-timeout", command: migration.CMD.startMigration,
+    clientMigrationId: migrationArgs?.clientMigrationId, status: "succeeded", sequence: 3,
+    result: completedReport,
+  });
+  await settle();
+  check("回执超时后仍能按 clientMigrationId 接收报告", timeoutHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), timeoutHandle.element.querySelector(".wiz__body")?.textContent);
+  check("回执超时任务真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  timeoutHandle.dispose();
+  timeoutLayer.remove();
+
+  const failedReceiptLayer = newLayer();
+  const failedReceiptHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  failedReceiptLayer.append(failedReceiptHandle.element);
+  failedReceiptHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  failedReceiptHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  await settle();
+  completeBeforeFailedReceipt = true;
+  failedReceiptHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("failed 回执前已缓存的成功终态仍展示迁移报告", failedReceiptHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), failedReceiptHandle.element.querySelector(".wiz__body")?.textContent);
+  check("failed 回执前已到达终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  failedReceiptHandle.dispose();
+  failedReceiptLayer.remove();
+
+  const fastLayer = newLayer();
+  const fastHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  fastLayer.append(fastHandle.element);
+  fastHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  fastHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  await settle();
+  completeBeforeUnavailableReceipt = true;
+  fastHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("回执前已缓存的成功报告优先于随后断连", fastHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), fastHandle.element.querySelector(".wiz__body")?.textContent);
+  check("回执前终态+断连组合仍能安全解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  fastHandle.dispose();
+  fastLayer.remove();
+  disconnectBackend();
+  newHandle.dispose();
+  newPageLayer.remove();
+  delete window.voxsub;
+
+  const catalogSrc = readFileSync(join(ROOT, "src/renderer/views/catalog.ts"), "utf-8");
+  check(
+    "模型目录迟到响应写入前校验请求代次，旧页面 dispose 不会覆盖新页",
+    /const requestId = \+\+loadRequestId;/.test(catalogSrc) &&
+      (catalogSrc.match(/if \(!isCurrent\(\)\) return;/g) ?? []).length >= 2 &&
+      /if \(activePageId !== pageId\) return;[\s\S]{0,100}activePageId = \+\+nextPageId;/.test(catalogSrc),
+  );
+
+  const catalog = loaded[2];
+  const oldCatalogHandle = catalog.build();
+  const currentCatalogHandle = catalog.build();
+  oldCatalogHandle.dispose();
+  const asrChip = [...currentCatalogHandle.element.querySelectorAll(".filter-chip")]
+    .find((chip) => chip.textContent === "识别");
+  asrChip?.click();
+  const activeAsrChip = [...currentCatalogHandle.element.querySelectorAll(".filter-chip")]
+    .find((chip) => chip.textContent === "识别");
+  check(
+    "旧目录句柄迟到 dispose 后，新目录仍可更新筛选 DOM",
+    activeAsrChip?.classList.contains("is-active") === true && activeAsrChip.getAttribute("aria-pressed") === "true",
+  );
+  currentCatalogHandle.dispose();
 
   const indexSrc = readFileSync(join(ROOT, "src/renderer/index.ts"), "utf-8");
   check("路由不再用 staticPage 兜底（目录页也有了真正的释放动作）", !indexSrc.includes("staticPage("));

@@ -27,17 +27,25 @@ let gridEl: HTMLElement | null = null;
 let countEl: HTMLElement | null = null;
 let filterBarEl: HTMLElement | null = null;
 let diskEl: HTMLElement | null = null;
+let nextPageId = 0;
+let activePageId = 0;
+let loadRequestId = 0;
 
-export async function loadModels(): Promise<void> {
+export async function loadModels(pageId = activePageId): Promise<void> {
+  const requestId = ++loadRequestId;
+  const isCurrent = (): boolean => pageId === activePageId && requestId === loadRequestId;
   const modelsRoot = document.documentElement.dataset["modelsRoot"] ?? "";
   const result = await call<ModelCatalogResult>(CMD.listModels, {
     models_root: modelsRoot || null,
   });
+  if (!isCurrent()) return;
+
   models = result?.models ?? [];
   if (result?.modelsRoot) store.patch({ modelsRoot: result.modelsRoot });
 
   // OCR 临时目录：译后图片要落盘，界面需要知道往哪写
   const cache = await call<{ path: string }>(CMD.ocrCacheDir);
+  if (!isCurrent()) return;
   if (cache?.path) store.patch({ cacheRoot: cache.path });
   renderGrid();
 }
@@ -235,7 +243,7 @@ async function installModel(model: ModelEntry): Promise<void> {
     store.pushLog({
       ts: new Date().toISOString(),
       level: "WARNING",
-      message: describeOutcome(outcome, `${tr("下载")} ${model.id}`),
+      message: describeOutcome(outcome, `${tr("下载")} ${model.id}`, tr),
     });
     return;
   }
@@ -267,6 +275,8 @@ export function refreshDownloads(): void {
  * 页面里提供：标题 + 计数 + 空间提示 + 刷新，按任务筛选，密铺网格。
  */
 export function buildModelCatalog(): PageHandle {
+  const pageId = ++nextPageId;
+  activePageId = pageId;
   const page = h("div", { class: "catalog-page" });
 
   // 标题由二级页面外壳统一渲染（返回栏里已有「模型」），
@@ -285,7 +295,7 @@ export function buildModelCatalog(): PageHandle {
   countEl = h("span", { class: "catalog__count", text: "" });
   diskEl = h("span", { class: "catalog__disk", text: "" });
   const refresh = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新") });
-  on(refresh, "click", () => void loadModels());
+  on(refresh, "click", () => void loadModels(pageId).then(() => updateDiskUsage(pageId)));
   bar.append(countEl, diskEl, h("span", { class: "catalog__spacer" }));
   page.append(bar);
 
@@ -296,18 +306,17 @@ export function buildModelCatalog(): PageHandle {
   gridEl = sheet;
   page.append(sheet);
 
-  void loadModels().then(updateDiskUsage);
+  void loadModels(pageId).then(() => updateDiskUsage(pageId));
 
-  // 页面句柄（缺陷 #10 的统一收口）。
-  //
-  // 目录页原先返回裸 HTMLElement、由路由用 staticPage 包起来 —— 也就是说
-  // **没有任何释放动作**。而它有三个模块级的节点引用（网格/计数/占用），
-  // 关页后 `loadModels()`、`updateDiskUsage()` 与下载事件驱动的 `refreshDownloads()`
-  // 都还会往这些已脱离文档的节点上写。这里统一置空，异步回调的 null 检查
-  // （renderGrid / updateDiskUsage）就真的生效了。
+  // 每个页面都有独立代次；异步模型/缓存请求在每个 await 后检查页面与请求代次，
+  // 迟到响应不能覆盖新页共享状态或 DOM。只有仍为当前页的句柄 dispose 才会
+  // 使代次失效并清空模块级 DOM 引用，旧句柄迟到时不影响新页。
   return {
     element: page,
     dispose: () => {
+      if (activePageId !== pageId) return;
+      activePageId = ++nextPageId;
+      loadRequestId += 1;
       gridEl = null;
       countEl = null;
       diskEl = null;
@@ -317,8 +326,8 @@ export function buildModelCatalog(): PageHandle {
 }
 
 /** 显示模型目录占用，以及已装模型的合计体积。 */
-async function updateDiskUsage(): Promise<void> {
-  if (!diskEl) return;
+async function updateDiskUsage(pageId = activePageId): Promise<void> {
+  if (pageId !== activePageId || !diskEl) return;
   const installedBytes = models
     .filter((m) => m.installed)
     .reduce((sum, m) => sum + (m.installedBytes || 0), 0);

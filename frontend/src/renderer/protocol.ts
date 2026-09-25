@@ -265,6 +265,10 @@ export interface JobEvent {
   error?: string;
   /** 可识别错误码（后端 `code` 字段），例如 `cancelled`。 */
   code?: string;
+  /** 仅异步 start_migration 事件携带，用于受理回执丢失后的终态重关联。 */
+  clientMigrationId?: string;
+  /** 仅 start_migration 的异步成功终态携带。 */
+  result?: unknown;
 }
 
 /** `cleanup_migrated_source` 的返回值（新增字段见后端契约）。 */
@@ -288,7 +292,8 @@ export type BackendEvent =
        */
       protocolVersion?: number | string;
       backendGeneration?: number | string;
-      readiness?: { ready?: boolean; activeJobs?: number };
+      frozen?: boolean;
+      readiness?: { ready?: boolean; activeJobs?: string[] };
       session?: { running?: boolean; paused?: boolean; mode?: string };
     }
   | { type: "status"; text: string }
