@@ -2140,11 +2140,13 @@ class Pipeline:
 
         普通 stop 的观察有界，避免长期占用后台线程；close 已请求时则持续等到
         自身 worker 退出，避免 watcher 首次超时后没有 owner 再次释放组件。
-        watcher 是 daemon，不会阻止进程退出；同一时间只允许一个。
+        watcher 是 daemon，不会阻止进程退出；同一代次只允许一个，旧代次仅退出。
         """
         with self._state_lock:
+            generation = self._lifecycle_generation
             existing = getattr(self, "_settle_watcher", None)
-            if existing is not None and existing.is_alive():
+            if (existing is not None and existing.is_alive()
+                    and getattr(self, "_settle_generation", None) == generation):
                 return
 
             def wait_for_workers() -> None:
@@ -2154,10 +2156,12 @@ class Pipeline:
                     deadline = time.monotonic() + _SETTLE_WATCH_SECONDS
                     timeout_reported = False
                     while True:
+                        if generation != self._lifecycle_generation:
+                            return
                         alive = self._workers_alive()
                         tts_alive = self._tts_worker_is_alive()
                         if not alive and not tts_alive:
-                            if self._stop_tts_worker():
+                            if self._finalize_stopped_workers(generation):
                                 break
                             tts_alive = True
                         if time.monotonic() >= deadline:
@@ -2169,11 +2173,7 @@ class Pipeline:
                                     return
                                 continue
                         time.sleep(_SETTLE_POLL_SECONDS)
-                    self._set_state(PipelineState.IDLE)
-                    if self._last_recording_path is not None and self._recording_enabled:
-                        self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
-                    else:
-                        self._emit_status("已停止")
+                    self._emit_stopped_status()
                     with self._state_lock:
                         finalize_close = self._close_requested
                         self._close_requested = False
@@ -2185,6 +2185,7 @@ class Pipeline:
             watcher = threading.Thread(target=wait_for_workers,
                                        name="pipeline-settle-watch", daemon=True)
             self._settle_watcher = watcher
+            self._settle_generation = generation
             watcher.start()
 
     def close(self) -> bool:

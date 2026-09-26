@@ -237,6 +237,91 @@ def test_idle_tts_finalization_excludes_start_without_holding_state_lock(runtime
         stopper.join(timeout=2)
 
 
+def _timed_out_tts(pipe, monkeypatch):
+    pipe._start_tts_worker()
+    old_tts = pipe._tts_worker
+    original_stop = old_tts.stop
+    monkeypatch.setattr(old_tts, "stop", lambda: False if old_tts.is_alive else original_stop())
+    return old_tts
+
+
+def test_stale_watcher_cannot_stop_or_finalize_a_new_start(runtime, monkeypatch):
+    pipe, source, _seg, _asr, translator = runtime
+    old_tts = _timed_out_tts(pipe, monkeypatch)
+    paused, resume = threading.Event(), threading.Event()
+    original_alive = pipe._tts_worker_is_alive
+
+    def paused_observation():
+        alive = original_alive()
+        if threading.current_thread().name == "pipeline-settle-watch" and not alive:
+            paused.set()
+            assert resume.wait(timeout=5)
+        return alive
+
+    monkeypatch.setattr(pipe, "_tts_worker_is_alive", paused_observation)
+    assert pipe.stop() is False
+    watcher = pipe._settle_watcher
+    try:
+        old_tts.release.set()
+        old_tts.thread.join(timeout=2)
+        assert paused.wait(timeout=2)
+        assert pipe.stop() is True
+        pipe.start()
+        assert source.reading.wait(timeout=2)
+        new_tts = pipe._tts_worker
+        workers = tuple(pipe._threads)
+        resume.set()
+        watcher.join(timeout=2)
+        assert not watcher.is_alive()
+        assert pipe.state is PipelineState.RUNNING
+        assert pipe.is_running() and not pipe._stop_evt.is_set()
+        assert tuple(pipe._threads) == workers and all(t.is_alive() for t in workers)
+        assert pipe._tts_worker is new_tts and new_tts.is_alive
+        assert new_tts.stop_calls == 0
+        assert not translator.closed
+    finally:
+        resume.set()
+        watcher.join(timeout=2)
+
+
+def test_watcher_tts_shutdown_holds_admission_not_state_lock(runtime, monkeypatch):
+    pipe, source, *_ = runtime
+    old_tts = _timed_out_tts(pipe, monkeypatch)
+    paused, resume = threading.Event(), threading.Event()
+    original_shutdown = pipe._stop_tts_worker
+
+    def paused_shutdown():
+        result = original_shutdown()
+        if threading.current_thread().name == "pipeline-settle-watch" and result:
+            paused.set()
+            assert resume.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(pipe, "_stop_tts_worker", paused_shutdown)
+    assert pipe.stop() is False
+    watcher = pipe._settle_watcher
+    try:
+        old_tts.release.set()
+        old_tts.thread.join(timeout=2)
+        assert paused.wait(timeout=2)
+        assert pipe._state_lock.acquire(timeout=1)
+        pipe._state_lock.release()
+        assert pipe.stop() is True
+        with pytest.raises(RuntimeError, match="上一任务仍在安全收尾"):
+            pipe.start()
+        assert not pipe._may_replace_resources()
+        resume.set()
+        watcher.join(timeout=2)
+        assert not watcher.is_alive()
+        pipe.start()
+        assert source.reading.wait(timeout=2)
+        assert pipe.state is PipelineState.RUNNING
+        assert pipe._tts_worker.is_alive
+    finally:
+        resume.set()
+        watcher.join(timeout=2)
+
+
 @pytest.mark.parametrize("action", ["stop", "close"])
 def test_shutdown_during_real_start_construction(runtime, monkeypatch, action):
     pipe, source, _seg, _asr, translator = runtime
