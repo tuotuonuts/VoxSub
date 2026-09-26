@@ -84,7 +84,7 @@ const api = {
     /** 请求退出（有后台长任务时会被拒绝并跳回设置页） */
     requestQuit: () => ipcRenderer.invoke("app:request-quit"),
     /** 标记后台长任务：non-null 会阻止退出 */
-    setBusy: (busy: boolean, reason?: string) => ipcRenderer.invoke("app:set-busy", busy, reason),
+    setBusy: (busy: boolean, reason: string | undefined, owner: string) => ipcRenderer.invoke("app:set-busy", busy, reason, owner),
     onBlockingTask: (handler: (payload: { reason: string }) => void) => subscribe("app:blocking-task", handler),
   },
 } as const;

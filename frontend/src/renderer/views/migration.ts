@@ -20,7 +20,7 @@ import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 import { runAfterConfirm } from "../../shared/confirm-action";
 import { buildProgressBar, type ProgressBar } from "../ui/progress";
 import { buildStatusRow } from "../ui/status-row";
-import { describeOutcome, isTaskRunning, isTerminalJobStatus, parseJobEvent } from "../../shared/request-outcome";
+import { describeOutcome, isTerminalJobStatus, parseJobEvent } from "../../shared/request-outcome";
 import {
   buildCleanupRequest,
   cleanupNotice,
@@ -110,6 +110,8 @@ type Step = "detect" | "overview" | "plan" | "running" | "report";
 /* ---------------------------------------------------------------- 状态 */
 
 let containerEl: HTMLElement | null = null;
+let wizardRenderGeneration = 0;
+let planRequestGeneration = 0;
 /**
  * 向导级生命周期（缺陷 #10）：逐步切换时各步自己退订，但整个向导被
  * 关闭/替换时也要能一次收掉（原先只靠 `voxsub:leaving` 事件，页面被顶掉时
@@ -120,14 +122,16 @@ let current: Step = "detect";
 let detection: DetectResult | null = null;
 let plan: PlanResult | null = null;
 let report: MigrationReport | null = null;
-/** 最新迁移请求的身份：迟到的旧请求不得解除新请求的退出保护。 */
-let activeMigrationRequest: symbol | null = null;
-/** 最近一次清理原目录的结果（供报告页展示；null 表示还没清理过）。 */
-let cleanupState: { skipped: boolean; detail: string; ok?: boolean } | null = null;
+/** 清理操作结果归对应迁移运行持有，页面重建时可恢复而不依赖旧 DOM。 */
+type CleanupState = { skipped: boolean; detail: string; ok?: boolean; pending?: boolean; uncertain?: boolean };
+/** 最新迁移任务由应用级运行记录持有，不能随某一页的 dispose 一起释放。 */
+let migrationRun: MigrationRun | null = null;
+let cleanupState: CleanupState | null = null;
 /** 用户在清单里勾选的项（key 集合）。 */
 const selected = new Set<string>();
 /** 迁移期间后端推来的每项进度：key -> 百分比 */
 const progress = new Map<string, number>();
+const progressPhase = new Map<string, "start" | "progress" | "done" | "failed">();
 let overallProgress = 0;
 
 type MigrationJobCompletion = {
@@ -137,57 +141,121 @@ type MigrationJobCompletion = {
   result: unknown;
 };
 
-/** 按本次迁移的客户端 ID 关联事件，并缓存回执前到达的快速终态。 */
-function createMigrationJobTracker(clientMigrationId: string): {
+type MigrationRunPhase = "submitting" | "running" | "unknown" | "terminal";
+
+interface MigrationJobTracker {
   waitFor(): Promise<MigrationJobCompletion | null>;
-  takeCompleted(): MigrationJobCompletion | null;
+  setJobId(jobId: string): void;
+  jobId(): string | null;
+  peek(): { settled: boolean; completion: MigrationJobCompletion | null };
+  confirmedExit(): boolean;
   dispose(): void;
-} {
-  let completed: MigrationJobCompletion | null = null;
-  let resolveWaiter: ((completion: MigrationJobCompletion | null) => void) | null = null;
+}
+
+interface MigrationRun {
+  token: symbol;
+  clientMigrationId: string;
+  jobId: string | null;
+  phase: MigrationRunPhase;
+  awaitingReport: boolean;
+  report: MigrationReport | null;
+  cleanupState: CleanupState | null;
+  cleanupOperationId: number;
+  statusQueryGeneration: number;
+  tracker: MigrationJobTracker;
+}
+
+function isTerminalMigrationRun(run: MigrationRun): boolean {
+  return run.phase === "terminal" && !run.awaitingReport;
+}
+
+interface CleanupOperationOwner {
+  requestId: number;
+  busyOwner: string;
+  run: MigrationRun;
+  report: MigrationReport;
+  lifecycle: PageLifecycle;
+  host: HTMLElement;
+  renderGeneration: number;
+}
+
+/** 按本次迁移 ID 跟踪终态；它独立于任何页面生命周期。 */
+function createMigrationJobTracker(clientMigrationId: string): MigrationJobTracker {
+  let expectedJobId: string | null = null;
+  const completions = new Map<string, MigrationJobCompletion>();
   let disconnected = false;
+  let waiter: ((value: MigrationJobCompletion | null) => void) | null = null;
+  let waitPromise: Promise<MigrationJobCompletion | null> | null = null;
+  const matchingCompletion = (): MigrationJobCompletion | null => {
+    if (expectedJobId) return completions.get(expectedJobId) ?? null;
+    return completions.values().next().value ?? null;
+  };
+  const notify = (): void => {
+    if (!waiter) return;
+    const completion = matchingCompletion();
+    if (!completion && !disconnected) return;
+    const resolve = waiter;
+    waiter = null;
+    waitPromise = null;
+    resolve(completion);
+  };
   const off = window.voxsub?.backend.onEvent((raw) => {
     if (!raw || typeof raw !== "object") return;
     const event = raw as Record<string, unknown>;
-    if (event["type"] === "disconnected") {
-      disconnected = true;
-      resolveWaiter?.(null);
-      resolveWaiter = null;
+    if (event["type"] === "migration") {
+      recordMigrationProgress(event);
       return;
     }
-    if (event["type"] !== "job" || event["clientMigrationId"] !== clientMigrationId) return;
-    const job = parseJobEvent(event);
-    if (!job || job.command !== CMD.startMigration || !isTerminalJobStatus(job.status)) return;
-    const completion: MigrationJobCompletion = {
-      jobId: job.jobId,
-      status: job.status,
-      error: job.error,
-      result: event["result"],
-    };
-    if (resolveWaiter) {
-      const resolve = resolveWaiter;
-      resolveWaiter = null;
-      resolve(completion);
-    } else {
-      completed = completion;
+    if (event["type"] === "disconnected") {
+      disconnected = true;
+      notify();
+      return;
     }
+    if (event["type"] !== "job") return;
+    const matchesClientRequest = event["clientMigrationId"] === clientMigrationId;
+    const matchesTrackedJob = Boolean(expectedJobId) && event["jobId"] === expectedJobId;
+    if (!matchesClientRequest && !matchesTrackedJob) return;
+    const job = parseJobEvent(event);
+    if (!job || job.command !== CMD.startMigration) return;
+    if (expectedJobId && expectedJobId !== job.jobId) return;
+    expectedJobId = job.jobId;
+    if (!isTerminalJobStatus(job.status)) return;
+    if (!completions.has(job.jobId)) {
+      completions.set(job.jobId, {
+        jobId: job.jobId,
+        status: job.status,
+        error: job.error,
+        result: event["result"],
+      });
+    }
+    notify();
   });
   return {
-    waitFor() {
-      if (completed) return Promise.resolve(completed);
+    waitFor: () => {
+      const completion = matchingCompletion();
+      if (completion) return Promise.resolve(completion);
       if (disconnected) return Promise.resolve(null);
-      return new Promise((resolve) => { resolveWaiter = resolve; });
+      if (!waitPromise) {
+        waitPromise = new Promise((resolve) => { waiter = resolve; });
+      }
+      return waitPromise;
     },
-    takeCompleted() {
-      const current = completed;
-      completed = null;
-      return current;
+    setJobId: (jobId) => {
+      if (expectedJobId && expectedJobId !== jobId) return;
+      expectedJobId = jobId;
+      notify();
     },
-    dispose() {
+    jobId: () => expectedJobId,
+    peek: () => ({ settled: Boolean(matchingCompletion()) || disconnected, completion: matchingCompletion() }),
+    confirmedExit: () => disconnected,
+    dispose: () => {
       off?.();
-      resolveWaiter?.(null);
-      resolveWaiter = null;
-      completed = null;
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        waitPromise = null;
+        resolve(null);
+      }
     },
   };
 }
@@ -201,6 +269,26 @@ function isMigrationReport(value: unknown): value is MigrationReport {
 
 function failedMigrationReport(error: string): MigrationReport {
   return { done: [], failed: [{ key: "?", error }], elapsedMs: 0, ok: false };
+}
+
+function recordMigrationProgress(event: Record<string, unknown>): void {
+  const key = event["key"];
+  const phase = event["phase"];
+  if (typeof key !== "string" || (phase !== "start" && phase !== "progress" && phase !== "done" && phase !== "failed")) return;
+
+  progressPhase.set(key, phase);
+  if (phase === "done" || phase === "failed") {
+    progress.set(key, 100);
+  } else if (phase === "progress") {
+    const completed = typeof event["completed"] === "number" ? event["completed"] : 0;
+    const total = typeof event["total"] === "number" ? event["total"] : 0;
+    const raw = total ? Math.round((completed / total) * 100) : 100;
+    progress.set(key, Math.max(0, Math.min(100, raw)));
+  }
+
+  const chosen = plan?.steps.filter((step) => selected.has(step.key)) ?? [];
+  const finished = chosen.filter((step) => progress.get(step.key) === 100).length;
+  overallProgress = chosen.length ? Math.round((finished / chosen.length) * 100) : 0;
 }
 
 
@@ -236,6 +324,7 @@ const RISK_LEVEL: Record<string, "ok" | "warn" | "fail"> = {
 
 function render(): void {
   if (!containerEl) return;
+  wizardRenderGeneration += 1;
 
   const views: Record<Step, () => HTMLElement> = {
     detect: viewDetect,
@@ -245,6 +334,19 @@ function render(): void {
     report: viewReport,
   };
   containerEl.replaceChildren(views[current]());
+}
+
+function isCurrentWizardView(
+  lifecycle: PageLifecycle,
+  host: HTMLElement,
+  renderGeneration: number,
+  expectedStep?: Step,
+): boolean {
+  return wizardLifecycle === lifecycle &&
+    containerEl === host &&
+    !lifecycle.disposed &&
+    wizardRenderGeneration === renderGeneration &&
+    (expectedStep === undefined || current === expectedStep);
 }
 
 /** 步骤指示器：让用户知道走到哪一步了。 */
@@ -391,9 +493,15 @@ function viewOverview(): HTMLElement {
   }
   body.append(list);
 
+  const lifecycle = wizardLifecycle;
+  const host = containerEl;
+  const viewGeneration = wizardRenderGeneration;
   const buttons: HTMLElement[] = [button(tr("返回"), "ghost", () => go("detect"))];
   if (risk !== "safe" || checks.some((c) => c.key === "models")) {
-    buttons.push(button(tr("规划迁移"), "primary", () => void loadPlan()));
+    buttons.push(button(tr("规划迁移"), "primary", () => {
+      if (!lifecycle || !host || !isCurrentWizardView(lifecycle, host, viewGeneration, "overview")) return;
+      void loadPlan(lifecycle, host, viewGeneration);
+    }));
   }
   buttons.push(button(tr("暂时跳过"), "ghost", () => closeWizard()));
 
@@ -402,8 +510,15 @@ function viewOverview(): HTMLElement {
 
 /* ------------------------------------------------------------ 步骤 3 */
 
-async function loadPlan(): Promise<void> {
+async function loadPlan(
+  lifecycle: PageLifecycle,
+  host: HTMLElement,
+  viewGeneration: number,
+): Promise<void> {
+  const requestGeneration = ++planRequestGeneration;
   const result = await call<PlanResult>(CMD.planMigration, {});
+  if (requestGeneration !== planRequestGeneration ||
+      !isCurrentWizardView(lifecycle, host, viewGeneration, "overview")) return;
   if (!result) return;
   plan = result;
 
@@ -417,11 +532,19 @@ async function loadPlan(): Promise<void> {
 
 function viewPlan(): HTMLElement {
   const body = h("div", { class: "wiz__body" });
+  const lifecycle = wizardLifecycle;
+  const host = containerEl;
+  const viewGeneration = wizardRenderGeneration;
+  const isCurrentPlan = (): boolean => Boolean(
+    lifecycle && host && isCurrentWizardView(lifecycle, host, viewGeneration, "plan"),
+  );
 
   if (!plan || plan.steps.length === 0) {
     body.append(h("p", { class: "hint", text: tr("没有需要迁移的项目") }));
     return frame(tr("确认迁移清单"), "", body,
-      actionsRow([button(tr("返回"), "ghost", () => go("overview"))]));
+      actionsRow([button(tr("返回"), "ghost", () => {
+        if (isCurrentPlan()) go("overview");
+      })]));
   }
 
   // 空间检查：不够就直接拦住，别等复制到一半才失败
@@ -448,6 +571,7 @@ function viewPlan(): HTMLElement {
     const checkbox = h("input", { type: "checkbox" }) as HTMLInputElement;
     checkbox.checked = selected.has(step.key);
     on(checkbox, "change", () => {
+      if (!isCurrentPlan()) return;
       if (checkbox.checked) selected.add(step.key);
       else selected.delete(step.key);
       updateSummary();
@@ -479,10 +603,14 @@ function viewPlan(): HTMLElement {
   const summary = h("p", { class: "wiz__summary" });
   body.append(summary);
 
-  const proceed = button(tr("开始迁移"), "primary", () => void startMigration());
+  const proceed = button(tr("开始迁移"), "primary", () => {
+    if (!lifecycle || !host || !isCurrentPlan()) return;
+    void startMigration(lifecycle, host, viewGeneration, "plan");
+  });
   proceed.id = "wiz-proceed";
 
   function updateSummary(): void {
+    if (!isCurrentPlan()) return;
     const chosen = plan!.steps.filter((s) => selected.has(s.key));
     const total = chosen.reduce((sum, s) => sum + s.bytes, 0);
     summary.textContent = `${tr("已选")} ${chosen.length} ${tr("项")} · ${human(total)}`;
@@ -496,9 +624,13 @@ function viewPlan(): HTMLElement {
     tr("请核对每一项的来源、去向与用途。迁移过程中不会删除原始数据"),
     body,
     actionsRow([
-      button(tr("返回"), "ghost", () => go("overview")),
+      button(tr("返回"), "ghost", () => {
+        if (isCurrentPlan()) go("overview");
+      }),
       proceed,
-      button(tr("取消"), "ghost", () => closeWizard()),
+      button(tr("取消"), "ghost", () => {
+        if (isCurrentPlan()) closeWizard();
+      }),
     ]),
   );
 }
@@ -506,97 +638,285 @@ function viewPlan(): HTMLElement {
 /* ------------------------------------------------------------ 步骤 4 */
 
 let nextMigrationClientRequestId = 0;
+let nextCleanupOperationId = 0;
 
-async function startMigration(): Promise<void> {
+function showMigrationRunStatus(run: MigrationRun, statusText: string): void {
+  if (migrationRun !== run || current !== "running" || !containerEl || !wizardLifecycle || wizardLifecycle.disposed) return;
+  store.patch({ statusText });
+}
+
+async function queryMigrationRunStatus(run: MigrationRun): Promise<void> {
+  if (migrationRun !== run || run.phase === "terminal") return;
+  const generation = ++run.statusQueryGeneration;
+  const isCurrent = (): boolean =>
+    migrationRun === run && run.phase !== "terminal" && run.statusQueryGeneration === generation;
+
+  try {
+    let jobId = run.jobId ?? run.tracker.jobId();
+    if (!jobId) {
+      const list = await call<{ jobs?: unknown }>(CMD.jobList);
+      if (!isCurrent()) return;
+      const jobs = Array.isArray(list) ? list : (Array.isArray(list?.jobs) ? list.jobs : []);
+      const active = jobs.filter((candidate) => {
+        if (!candidate || typeof candidate !== "object") return false;
+        const job = candidate as Record<string, unknown>;
+        const status = job["status"];
+        return job["command"] === CMD.startMigration &&
+          (status === "queued" || status === "running" || status === "cancelling") &&
+          typeof job["jobId"] === "string" && job["jobId"] !== "";
+      });
+      if (active.length !== 1) {
+        showMigrationRunStatus(run, tr("无法唯一确认迁移任务状态；退出保护仍保持开启。"));
+        return;
+      }
+      jobId = (active[0] as Record<string, unknown>)["jobId"] as string;
+    }
+
+    const result = await call<{ ok?: unknown; job?: unknown }>(CMD.jobStatus, { job_id: jobId });
+    if (!isCurrent()) return;
+    if (result?.ok !== true || !result.job || typeof result.job !== "object") {
+      showMigrationRunStatus(run, tr("暂时无法查询迁移任务状态；退出保护仍保持开启。"));
+      return;
+    }
+
+    const job = result.job as Record<string, unknown>;
+    const status = job["status"];
+    if (job["jobId"] !== jobId || job["command"] !== CMD.startMigration || typeof status !== "string") {
+      showMigrationRunStatus(run, tr("迁移状态查询与当前任务不匹配；退出保护仍保持开启。"));
+      return;
+    }
+
+    const trackedJobId = run.tracker.jobId();
+    if (trackedJobId && trackedJobId !== jobId) {
+      showMigrationRunStatus(run, tr("迁移状态查询与已跟踪任务不匹配；退出保护仍保持开启。"));
+      return;
+    }
+    run.jobId = jobId;
+    run.tracker.setJobId(jobId);
+    if (isTerminalJobStatus(status)) {
+      finishMigrationRun(run, {
+        jobId,
+        status,
+        error: typeof job["error"] === "string" ? job["error"] : null,
+        result: job["result"],
+      }, undefined, true);
+      return;
+    }
+    if (status === "queued" || status === "running" || status === "cancelling") {
+      run.phase = "running";
+      const message = status === "queued"
+        ? tr("迁移任务仍在队列中，退出保护保持开启。")
+        : status === "cancelling"
+          ? tr("迁移任务正在取消；等待后台确认终态后再退出。")
+          : tr("后台确认迁移仍在运行，退出保护保持开启。");
+      showMigrationRunStatus(run, message);
+      return;
+    }
+
+    run.phase = "unknown";
+    showMigrationRunStatus(run, tr("迁移状态仍未知；退出保护保持开启，可再次查询。"));
+  } catch {
+    if (isCurrent()) {
+      showMigrationRunStatus(run, tr("暂时无法查询迁移任务状态；退出保护仍保持开启。"));
+    }
+  }
+}
+
+function finishMigrationRun(
+  run: MigrationRun,
+  completion: MigrationJobCompletion | null,
+  rejectedMessage?: string,
+  awaitReport = false,
+): void {
+  if (migrationRun !== run || isTerminalMigrationRun(run)) return;
+  const ownsVisibleReport = current === "report" && report === run.report;
+
+  let nextReport: MigrationReport;
+  if (completion && run.jobId && completion.jobId !== run.jobId) {
+    nextReport = failedMigrationReport(tr("迁移回执与终态任务编号不匹配；请重新检测，不要清理原目录。"));
+  } else if (completion?.status === "succeeded" && isMigrationReport(completion.result)) {
+    nextReport = completion.result;
+  } else if (completion?.status === "succeeded") {
+    nextReport = failedMigrationReport(tr("迁移任务已结束，但未收到有效报告；请重新检测，不要清理原目录。"));
+  } else if (completion) {
+    const detail = completion.error || (completion.status === "cancelled"
+      ? tr("迁移任务已取消")
+      : tr("迁移任务失败"));
+    nextReport = failedMigrationReport(detail);
+  } else {
+    nextReport = failedMigrationReport(rejectedMessage ??
+      tr("后端已断开，迁移结果未知；请重新检测目标目录，不要清理原目录。"));
+  }
+
+  if (completion && !run.jobId) run.jobId = completion.jobId;
+  run.phase = "terminal";
+  // job_status can confirm completion before the event carrying the full report arrives.
+  run.awaitingReport = awaitReport && completion?.status === "succeeded" && !isMigrationReport(completion.result);
+  run.report = nextReport;
+  report = nextReport;
+  if (!run.awaitingReport) run.tracker.dispose();
+  try {
+    void Promise.resolve(window.voxsub?.app.setBusy(false, undefined, run.clientMigrationId)).catch(() => undefined);
+  } catch {
+    // 退出路径尽力撤销保护；窗口可能已在关闭。
+  }
+  if ((current === "running" || ownsVisibleReport) && containerEl && wizardLifecycle && !wizardLifecycle.disposed) go("report");
+}
+
+async function monitorMigrationRun(run: MigrationRun, steps: PlanResult["steps"]): Promise<void> {
+  const terminal = run.tracker.waitFor();
+  const submission = callWithOutcome<{ jobId?: unknown; accepted?: unknown }>(
+    CMD.startMigration,
+    { steps, async: true, clientMigrationId: run.clientMigrationId },
+  ).then(
+    (result) => ({ kind: "receipt" as const, result }),
+    (error: unknown) => ({ kind: "exception" as const, error }),
+  );
+  const first = await Promise.race([
+    submission,
+    terminal.then((completion) => ({ kind: "terminal" as const, completion })),
+  ]);
+  if (migrationRun !== run) return;
+  if (run.phase === "terminal") {
+    if (run.awaitingReport) finishMigrationRun(run, await terminal);
+    return;
+  }
+  const observedJobId = run.tracker.jobId();
+  if (observedJobId) run.jobId = observedJobId;
+
+  if (first.kind === "terminal") {
+    finishMigrationRun(run, first.completion);
+    return;
+  }
+
+  if (first.kind === "exception") {
+    run.phase = "unknown";
+    store.pushLog({
+      ts: new Date().toISOString(),
+      level: "WARNING",
+      message: "迁移提交回执异常，任务可能仍在运行；继续等待匹配的后台终态。",
+    });
+    showMigrationRunStatus(run, tr("迁移提交回执状态未知，任务可能仍在运行；正在等待后台终态。"));
+  } else {
+    const { outcome, data, delivery } = first.result;
+    const jobId = data?.accepted === true && typeof data.jobId === "string" && data.jobId.length > 0
+      ? data.jobId
+      : null;
+    if (jobId && (!observedJobId || observedJobId === jobId)) {
+      run.jobId = jobId;
+      run.tracker.setJobId(jobId);
+    }
+
+    const cached = run.tracker.peek();
+    if (cached.completion) {
+      finishMigrationRun(run, cached.completion);
+      return;
+    }
+    if (run.tracker.confirmedExit()) {
+      finishMigrationRun(run, null);
+      return;
+    }
+
+    if (delivery === "response" && outcome === "failed" && first.result.code === "active_job_exists") {
+      const conflictingJobId = typeof first.result.jobId === "string" && first.result.jobId.length > 0
+        ? first.result.jobId
+        : null;
+      if (conflictingJobId && (!observedJobId || observedJobId === conflictingJobId)) {
+        run.jobId = conflictingJobId;
+        run.tracker.setJobId(conflictingJobId);
+        run.phase = "unknown";
+        showMigrationRunStatus(run, tr("已有迁移任务正在运行；正在重新关联其状态，退出保护保持开启。"));
+        void queryMigrationRunStatus(run);
+      } else {
+        run.phase = "unknown";
+        showMigrationRunStatus(run, tr("已有迁移任务正在运行，但任务编号无法安全匹配；退出保护保持开启，可重新查询。"));
+        if (!observedJobId) void queryMigrationRunStatus(run);
+      }
+    } else if (delivery === "not_sent" || (delivery === "response" && outcome !== "ok" && outcome !== "timeout")) {
+      finishMigrationRun(run, null, describeOutcome(outcome, tr("数据迁移"), tr));
+      return;
+    }
+
+    if (first.result.code !== "active_job_exists") {
+      run.phase = delivery === "response" && outcome === "ok" && jobId ? "running" : "unknown";
+      showMigrationRunStatus(run, run.phase === "running"
+        ? tr("迁移任务已受理，正在等待后台完成。")
+        : (outcome === "timeout"
+          ? describeOutcome(outcome, tr("数据迁移"), tr)
+          : tr("迁移受理回执不完整或状态未知，任务仍可能正在运行；正在等待后台终态。")));
+    }
+  }
+
+  const completion = await terminal;
+  if (migrationRun !== run || isTerminalMigrationRun(run)) return;
+  if (completion) {
+    finishMigrationRun(run, completion);
+  } else if (run.tracker.confirmedExit()) {
+    finishMigrationRun(run, null);
+  } else {
+    // 理论上只有终态或断连会兑现 tracker；若其生命周期意外结束，保留退出保护。
+    run.phase = "unknown";
+    showMigrationRunStatus(run, tr("迁移终态尚未确认，仍保留退出保护。"));
+  }
+}
+
+async function startMigration(
+  lifecycle: PageLifecycle,
+  host: HTMLElement,
+  viewGeneration: number,
+  expectedStep: "plan" | "report",
+): Promise<void> {
+  if (!isCurrentWizardView(lifecycle, host, viewGeneration, expectedStep)) return;
+  if (migrationRun && migrationRun.phase !== "terminal") {
+    const message = tr("已有迁移任务仍在运行，不能重复提交。");
+    if (current === "running") showMigrationRunStatus(migrationRun, message);
+    else store.patch({ statusText: message });
+    return;
+  }
+  if (migrationRun?.cleanupState?.pending || migrationRun?.cleanupState?.uncertain) {
+    store.patch({ statusText: tr("上一次原目录清理仍在确认，不能开始新的迁移。") });
+    return;
+  }
   if (!plan) return;
   const steps = plan.steps.filter((s) => selected.has(s.key));
   if (steps.length === 0) return;
 
-  const lifecycle = wizardLifecycle;
-  const host = containerEl;
-  const requestToken = Symbol("migration-request");
-  activeMigrationRequest = requestToken;
-  const isCurrentWizard = (): boolean =>
-    lifecycle !== null &&
-    !lifecycle.disposed &&
-    wizardLifecycle === lifecycle &&
-    containerEl === host;
-
+  const clientMigrationId = `migration-${Date.now().toString(36)}-${++nextMigrationClientRequestId}`;
+  const run: MigrationRun = {
+    token: Symbol("migration-run"),
+    clientMigrationId,
+    jobId: null,
+    phase: "submitting",
+    awaitingReport: false,
+    report: null,
+    cleanupState: null,
+    cleanupOperationId: 0,
+    statusQueryGeneration: 0,
+    tracker: createMigrationJobTracker(clientMigrationId),
+  };
+  migrationRun?.tracker.dispose();
+  migrationRun = run;
+  report = null;
   progress.clear();
+  progressPhase.clear();
   overallProgress = 0;
   cleanupState = null;
-  go("running");
 
-  // 迁移是长任务，期间必须阻止退出（与设置页的 busy 语义一致）
-  void window.voxsub?.app.setBusy(true, tr("数据正在迁移，请等待完成后再退出应用。"));
-
-  // 迁移走异步 jobId 协议：请求只等待快速受理回执，长耗时不占用 IPC pending。
-  // 在提交前订阅终态事件，避免短任务先于 jobId 回执完成；退出保护只在真实终态解除。
-  const clientMigrationId = `migration-${Date.now().toString(36)}-${++nextMigrationClientRequestId}`;
-  const tracker = createMigrationJobTracker(clientMigrationId);
+  // 退出保护必须先由主进程确认，再向后端提交可能持续很久的迁移任务。
   try {
-    const { outcome, data } = await callWithOutcome<{ jobId?: unknown; accepted?: unknown }>(
-      CMD.startMigration,
-      { steps, async: true, clientMigrationId },
-    );
-
-    // 期间可能已经关闭/替换向导，或发起了更新的迁移请求。旧 continuation 不得
-    // 写共享报告、导航新页面，也不得清掉更新请求拥有的退出保护。
-    if (activeMigrationRequest !== requestToken) return;
-
-    if (isTaskRunning(outcome)) {
-      // 回执超时不代表任务失败；按唯一 clientMigrationId 继续等真实 job 终态。
-      if (isCurrentWizard()) {
-        store.patch({ statusText: describeOutcome(outcome, tr("数据迁移"), tr) });
-      }
-    }
-
-    const jobId = data && data.accepted === true && typeof data.jobId === "string" ? data.jobId : null;
-    let completion: MigrationJobCompletion | null;
-    if (!isTaskRunning(outcome) && outcome !== "ok") {
-      // 同一轮迁移的终态可能已先于 unavailable/failed 回执抵达；精确 client ID 的
-      // 终态比随后断连更权威，不能把已完成迁移降级成“未执行”。
-      completion = tracker.takeCompleted();
-      if (!completion) {
-        activeMigrationRequest = null;
-        void window.voxsub?.app.setBusy(false);
-        if (!isCurrentWizard()) return;
-        report = failedMigrationReport(describeOutcome(outcome, tr("数据迁移"), tr));
-        go("report");
-        return;
-      }
-    } else {
-      if (!jobId && outcome === "ok" && isCurrentWizard()) {
-        // 回执形状异常但请求未明确失败：保持保护，由关联 ID 等终态而不猜测。
-        store.patch({ statusText: tr("迁移回执不完整，仍在等待后台任务终态。") });
-      }
-      completion = await tracker.waitFor();
-    }
-    if (activeMigrationRequest !== requestToken) return;
-
-    // job 进入真实终态，或后端进程已退出；此前不得解除退出保护。
-    activeMigrationRequest = null;
-    void window.voxsub?.app.setBusy(false);
-    if (!isCurrentWizard()) return;
-
-    if (!completion) {
-      report = failedMigrationReport(tr("后端已断开，迁移结果未知；请重新检测目标目录，不要清理原目录。"));
-    } else if (jobId && completion.jobId !== jobId) {
-      report = failedMigrationReport(tr("迁移回执与终态任务编号不匹配；请重新检测，不要清理原目录。"));
-    } else if (completion.status === "succeeded" && isMigrationReport(completion.result)) {
-      report = completion.result;
-    } else if (completion.status === "succeeded") {
-      report = failedMigrationReport(tr("迁移任务已结束，但未收到有效报告；请重新检测，不要清理原目录。"));
-    } else {
-      const detail = completion.error || (completion.status === "cancelled"
-        ? tr("迁移任务已取消")
-        : tr("迁移任务失败"));
-      report = failedMigrationReport(detail);
-    }
-    go("report");
-  } finally {
-    tracker.dispose();
+    const busyReason = tr("数据正在迁移，请等待完成后再退出应用。");
+    const acknowledgedBusyReason = await window.voxsub?.app.setBusy(true, busyReason, run.clientMigrationId);
+    if (acknowledgedBusyReason !== busyReason) throw new Error("主进程未确认退出保护状态");
+  } catch {
+    finishMigrationRun(run, null, tr("无法启用退出保护，迁移未启动。"));
+    if (isCurrentWizardView(lifecycle, host, viewGeneration, expectedStep)) go("report");
+    return;
   }
+
+  if (migrationRun !== run || run.phase === "terminal") return;
+  if (isCurrentWizardView(lifecycle, host, viewGeneration, expectedStep)) go("running");
+  // 即使原页面已关闭，提交仍归已受理的任务 owner；不能因页面销毁而丢弃。
+  void monitorMigrationRun(run, steps);
 }
 
 function viewRunning(): HTMLElement {
@@ -609,8 +929,9 @@ function viewRunning(): HTMLElement {
   body.append(warn);
 
   // 总进度 + 每项独立进度条（内芯用 JobProgress 组件：轨道 + 填充 + 标签）
-  const overall = buildProgressBar({ labelText: "0%" });
+  const overall = buildProgressBar({ labelText: `${overallProgress}%` });
   overall.setState("running");
+  overall.setPercent(overallProgress);
   body.append(h("div", { class: "progress" }, [overall.track, overall.label]));
 
   // 每项独立进度条
@@ -619,7 +940,23 @@ function viewRunning(): HTMLElement {
   /** 每项一条：按 key 取回，避免再从 DOM 上查 fill/label（查一次就多一处耦合）。 */
   const bars = new Map<string, ProgressBar>();
   for (const step of chosen) {
-    const bar = buildProgressBar({ labelText: "0%" });
+    const bar = buildProgressBar({ labelText: `${progress.get(step.key) ?? 0}%` });
+    const savedProgress = progress.get(step.key);
+    const savedPhase = progressPhase.get(step.key);
+    if (savedProgress !== undefined) bar.setPercent(savedProgress);
+    if (savedPhase === "start") {
+      bar.setLabel(tr("进行中…"));
+      bar.setState("running");
+    } else if (savedPhase === "done") {
+      bar.setLabel(tr("完成"));
+      bar.setState("done");
+    } else if (savedPhase === "failed") {
+      bar.setLabel(tr("失败"));
+      bar.setState("failed");
+    } else if (savedProgress !== undefined) {
+      bar.setLabel(`${savedProgress}%`);
+      bar.setState("running");
+    }
     const row = h("div", { class: "mig-progress__row" }, [
       h("span", { class: "mig-progress__name", text: step.key }),
       bar.track,
@@ -633,35 +970,31 @@ function viewRunning(): HTMLElement {
 
   // 订阅后端进度事件，实时更新
   const off = window.voxsub?.backend.onEvent((raw) => {
-    const event = raw as { type?: string; phase?: string; key?: string; completed?: number; total?: number };
-    if (event.type !== "migration" || !event.key) return;
+    const event = raw as Record<string, unknown>;
+    const key = event["key"];
+    if (event["type"] !== "migration" || typeof key !== "string") return;
 
-    const bar = bars.get(event.key);
-    if (event.phase === "start") {
+    recordMigrationProgress(event);
+    const bar = bars.get(key);
+    const phase = event["phase"];
+    if (phase === "start") {
       bar?.setLabel(tr("进行中…"));
       return;
     }
-    if (event.phase === "done" || event.phase === "failed") {
-      progress.set(event.key, 100);
+    if (phase === "done" || phase === "failed") {
       if (bar) {
         bar.setPercent(100);
-        bar.setLabel(event.phase === "done" ? tr("完成") : tr("失败"));
-        bar.setState(event.phase === "done" ? "done" : "failed");
+        bar.setLabel(phase === "done" ? tr("完成") : tr("失败"));
+        bar.setState(phase === "done" ? "done" : "failed");
       }
-    } else if (event.phase === "progress") {
-      // percent() 返回的是带 % 的字符串，这里要的是数值宽度
-      const raw = event.total ? Math.round(((event.completed ?? 0) / event.total) * 100) : 100;
-      const pct = Math.max(0, Math.min(100, raw));
-      progress.set(event.key, pct);
-      if (bar) {
+    } else if (phase === "progress") {
+      const pct = progress.get(key);
+      if (bar && pct !== undefined) {
         bar.setPercent(pct);
         bar.setLabel(`${pct}%`);
       }
     }
 
-    // 总进度 = 已完成项数占比
-    const finished = chosen.filter((s) => progress.get(s.key) === 100).length;
-    overallProgress = chosen.length ? Math.round((finished / chosen.length) * 100) : 0;
     overall.setPercent(overallProgress);
     overall.setLabel(`${overallProgress}%`);
   });
@@ -671,8 +1004,14 @@ function viewRunning(): HTMLElement {
   // 向导被整体替换/关闭时也要退订（缺陷 #10：订阅只增不减）
   wizardLifecycle?.add(() => off?.());
 
+  const queryStatus = button(tr("查询迁移任务状态"), "ghost", () => {
+    const run = migrationRun;
+    if (run) void queryMigrationRunStatus(run);
+  });
+  queryStatus.id = "wiz-query-status";
+
   return frame(tr("正在迁移"), tr("每项数据有独立进度，完成后会自动校验"), body,
-    actionsRow([h("span", { class: "tuning-actions__state", text: tr("请勿关闭应用") })]));
+    actionsRow([queryStatus, h("span", { class: "tuning-actions__state", text: tr("请勿关闭应用") })]));
 }
 
 /* ------------------------------------------------------------ 步骤 5 */
@@ -683,58 +1022,154 @@ function viewRunning(): HTMLElement {
  * 确认闸门（ConfirmAction）在这里负责三件事，缺一不可：
  *   · 不确认 → **绝不发清理命令**，只在报告页留下"已取消"的说明；
  *   · 确认 → 才进入 `cleanupMigratedSources`（那里构造带 `confirm: true` 的请求）；
- *   · 两者都留在报告页，用户能看清发生了什么。
+ *   · 操作结果保存在所属迁移运行上；旧页回执不得导航或改写新页。
  */
-function requestCleanup(): void {
-  const records = (report?.done ?? []).filter((item) => item.recordId);
+function requestCleanup(
+  lifecycle: PageLifecycle,
+  host: HTMLElement,
+  renderGeneration: number,
+): void {
+  if (!isCurrentWizardView(lifecycle, host, renderGeneration, "report")) return;
+  const ownerRun = migrationRun;
+  const ownerReport = report;
+  if (!ownerRun || !ownerReport || ownerRun.report !== ownerReport || (ownerRun.cleanupState?.pending || ownerRun.cleanupState?.uncertain)) return;
+  const records = ownerReport.done.filter((item) => item.recordId);
+
   runAfterConfirm(
     () => window.confirm(
       `${tr("删除是不可逆的")}：${tr("确认清理已迁移的原目录？")}\n${records.map((r) => r.key).join("、")}`,
     ),
-    () => void cleanupMigratedSources(records),
     () => {
-      cleanupState = { skipped: true, detail: tr("已取消：没有确认就不会删除任何原目录") };
+      if (!isCurrentWizardView(lifecycle, host, renderGeneration, "report") ||
+          migrationRun !== ownerRun || ownerRun.report !== ownerReport) return;
+      const requestId = ++nextCleanupOperationId;
+      const owner: CleanupOperationOwner = {
+        requestId,
+        busyOwner: `${ownerRun.clientMigrationId}-cleanup-${requestId}`,
+        run: ownerRun,
+        report: ownerReport,
+        lifecycle,
+        host,
+        renderGeneration,
+      };
+      ownerRun.cleanupOperationId = requestId;
+      const pending: CleanupState = {
+        skipped: false,
+        detail: tr("清理请求已提交，正在等待后端确认；请勿重复执行。"),
+        pending: true,
+      };
+      ownerRun.cleanupState = pending;
+      cleanupState = pending;
+      go("report");
+      owner.renderGeneration = wizardRenderGeneration;
+      void cleanupMigratedSources(records, owner);
+    },
+    () => {
+      if (!isCurrentWizardView(lifecycle, host, renderGeneration, "report") ||
+          migrationRun !== ownerRun || ownerRun.report !== ownerReport) return;
+      const cancelled: CleanupState = {
+        skipped: true,
+        detail: tr("已取消：没有确认就不会删除任何原目录"),
+      };
+      ownerRun.cleanupState = cancelled;
+      cleanupState = cancelled;
       go("report");
     },
   );
 }
 
 /**
- * 清理已迁移的原目录。
- *
- * 后端契约（**已变更**）：`cleanup_migrated_source` 不再接受 `path`，
- * 只接受 `record_id` / `record_ids`，并且**必须显式带 `confirm: true`**。
- * 标识只从 `start_migration` 回传的 `done[].recordId` 取 —— 路径不是标识。
- * 失败（含 `path_not_accepted` / `missing_record_id` / 缺确认）时把后端给的
- * `detail` **原样展示**，绝不吞掉：否则用户只看到"清理失败"却不知道为什么。
- *
- * 进到这里就意味着用户已经确认过（见 requestCleanup），所以确认参数恒为 true。
+ * 清理已迁移的原目录。完成结果归属迁移运行，而不是启动请求的页面。
+ * 页面已释放时仍保存真实副作用结果；但只在原页面实例仍有效时更新 DOM、状态文案或导航。
  */
-async function cleanupMigratedSources(records: Array<{ key: string; recordId?: string }>): Promise<void> {
+async function cleanupMigratedSources(
+  records: Array<{ key: string; recordId?: string }>,
+  owner: CleanupOperationOwner,
+): Promise<void> {
   const decision = buildCleanupRequest(records, true);
   if (!isCleanupRequest(decision)) {
-    cleanupState = {
+    const skipped: CleanupState = {
       skipped: true,
       detail: tr("没有可清理的记录（后端只接受记录 ID）"),
     };
-    go("report");
+    if (owner.run.cleanupOperationId !== owner.requestId || owner.run.report !== owner.report) return;
+    owner.run.cleanupState = skipped;
+    if (migrationRun === owner.run && isCurrentWizardView(owner.lifecycle, owner.host, owner.renderGeneration, "report")) {
+      cleanupState = skipped;
+      go("report");
+    }
     return;
   }
 
-  const result = await call<CleanupResult>(CMD.cleanupMigratedSource, decision);
-  cleanupState = { skipped: false, detail: cleanupNotice(result), ok: cleanupSucceeded(result) };
-  store.patch({ statusText: cleanupNotice(result) });
+  let result: CleanupResult | null = null;
+  let delivery: "not_sent" | "unknown" | "response" = "not_sent";
+  let outcome: "ok" | "timeout" | "failed" | "unavailable" = "unavailable";
+  let guardConfirmed = false;
+  try {
+    const reason = tr("原目录正在清理，请等待确认结果后再退出应用。");
+    const acknowledged = await window.voxsub?.app.setBusy(true, reason, owner.busyOwner);
+    if (acknowledged !== reason) throw new Error("Quit protection was not acknowledged");
+    guardConfirmed = true;
+    delivery = "unknown";
+    const response = await callWithOutcome<CleanupResult>(CMD.cleanupMigratedSource, decision);
+    result = response.data;
+    delivery = response.delivery;
+    outcome = response.outcome;
+  } catch {
+    // 命令可能已送达后断连；保留“不确定，可能已执行”的口径，禁止伪装成未执行。
+  }
+
+  if (owner.run.cleanupOperationId !== owner.requestId || owner.run.report !== owner.report) return;
+  const uncertain = delivery === "unknown" || outcome === "timeout";
+  if (!uncertain) {
+    try {
+      await window.voxsub?.app.setBusy(false, undefined, owner.busyOwner);
+    } catch {
+      // Fail closed if main cannot acknowledge release.
+    }
+  }
+  const detail = !guardConfirmed
+    ? tr("无法启用退出保护，清理未启动。")
+    : result
+      ? cleanupNotice(result)
+      : uncertain
+        ? `${tr("清理结果未知，操作可能已执行；请先核对原目录，不要重复清理。")} ${tr("清理回执无法自动恢复；请保持应用开启并人工核对结果。")}`
+        : describeOutcome(outcome, tr("清理已迁移的原目录"), tr);
+  const succeeded = cleanupSucceeded(result);
+  const completed: CleanupState = {
+    skipped: false,
+    detail,
+    ok: succeeded,
+    pending: false,
+    uncertain,
+  };
+  owner.run.cleanupState = completed;
+
+  const ownsVisibleReport = migrationRun === owner.run && report === owner.report &&
+    isCurrentWizardView(owner.lifecycle, owner.host, owner.renderGeneration, "report");
   store.pushLog({
     ts: new Date().toISOString(),
-    level: cleanupSucceeded(result) ? "INFO" : "WARNING",
-    message: `清理已迁移原目录：${cleanupNotice(result)}`,
+    level: succeeded ? "INFO" : (uncertain ? "WARNING" : "ERROR"),
+    message: `${tr("清理已迁移的原目录")}: ${detail}`,
   });
+  if (!ownsVisibleReport) return;
+
+  cleanupState = completed;
+  store.patch({ statusText: detail });
   go("report");
 }
 
 function viewReport(): HTMLElement {
   const body = h("div", { class: "wiz__body" });
+  const reportRun = migrationRun?.report === report ? migrationRun : null;
+  cleanupState = reportRun?.cleanupState ?? null;
   if (!report) return frame(tr("迁移结果"), "", body, actionsRow([]));
+  const lifecycle = wizardLifecycle;
+  const host = containerEl;
+  const viewGeneration = wizardRenderGeneration;
+  const isCurrentReport = (): boolean => Boolean(
+    lifecycle && host && isCurrentWizardView(lifecycle, host, viewGeneration, "report"),
+  );
 
   const ok = report.ok;
   const verdict = h("div", { class: `wiz__verdict ${ok ? "is-ok" : "is-fail"}` });
@@ -773,9 +1208,12 @@ function viewReport(): HTMLElement {
       class: `field__hint ${cleanupState?.ok === false ? "is-fail" : ""}`,
       text: cleanupState ? cleanupState.detail : `${cleanable.length} ${tr("项可清理")}`,
     }));
-    card.append(h("div", { class: "tuning-actions" }, [
-      button(tr("清理已迁移的原目录"), "ghost", () => requestCleanup()),
-    ]));
+    const cleanupButton = button(tr("清理已迁移的原目录"), "ghost", () => {
+      if (!lifecycle || !host) return;
+      requestCleanup(lifecycle, host, viewGeneration);
+    });
+    (cleanupButton as HTMLButtonElement).disabled = Boolean(cleanupState?.pending || cleanupState?.uncertain);
+    card.append(h("div", { class: "tuning-actions" }, [cleanupButton]));
     body.append(card);
   }
 
@@ -801,15 +1239,18 @@ function viewReport(): HTMLElement {
     box.append(h("pre", { class: "wiz__log", text }));
 
     const copyBtn = button(tr("复制诊断摘要"), "ghost", async () => {
+      if (!isCurrentReport()) return;
       try {
         await navigator.clipboard.writeText(text);
-        copyBtn.textContent = tr("已复制");
+        if (isCurrentReport()) copyBtn.textContent = tr("已复制");
       } catch {
-        copyBtn.textContent = tr("复制失败");
+        if (isCurrentReport()) copyBtn.textContent = tr("复制失败");
       }
     });
     const openLogBtn = button(tr("打开日志文件夹"), "ghost", async () => {
+      if (!isCurrentReport()) return;
       const result = await call<{ path: string }>(CMD.logPath);
+      if (!isCurrentReport()) return;
       if (result?.path) {
         // 同诊断页：目标是一个日志**文件**，用 revealInFolder 定位它
         await window.voxsub?.dialog.revealInFolder(result.path);
@@ -827,10 +1268,18 @@ function viewReport(): HTMLElement {
 
   const buttons: HTMLElement[] = [];
   if (ok) {
-    buttons.push(button(tr("完成并返回"), "primary", () => closeWizard(true)));
+    buttons.push(button(tr("完成并返回"), "primary", () => {
+      if (isCurrentReport()) closeWizard(true);
+    }));
   } else {
-    buttons.push(button(tr("返回主界面"), "primary", () => closeWizard()));
-    buttons.push(button(tr("重试迁移"), "ghost", () => void startMigration()));
+    buttons.push(button(tr("返回主界面"), "primary", () => {
+      if (isCurrentReport()) closeWizard();
+    }));
+    buttons.push(button(tr("重试迁移"), "ghost", () => {
+      if (isCurrentReport() && lifecycle && host) {
+        void startMigration(lifecycle, host, viewGeneration, "report");
+      }
+    }));
   }
 
   return frame(
@@ -857,14 +1306,15 @@ function go(step: Step): void {
  * 两种情况都记为已决定 —— 否则每次启动都弹同一个向导，比不提示更糟。
  */
 export function closeWizard(completed = false): void {
-  void call(CMD.migrationDecision, { decision: completed ? "complete" : "dismiss" });
+  if (!migrationRun || migrationRun.phase === "terminal") {
+    void call(CMD.migrationDecision, { decision: completed ? "complete" : "dismiss" });
+  }
   const layer = containerEl?.closest<HTMLElement>(".page-layer");
   releaseWizard();
   layer?.setAttribute("hidden", "");
   // 与 closePage 一致地清空内容：留着隐藏的向导会继续持有 DOM 与订阅
   layer?.replaceChildren();
   containerEl = null;
-  void window.voxsub?.app.setBusy(false);
 }
 
 /**
@@ -908,14 +1358,19 @@ export async function shouldOfferMigration(): Promise<DetectResult | null> {
   return result;
 }
 
-export function buildMigrationWizard(initial: DetectResult): PageHandle {
+export function buildMigrationWizard(initial: DetectResult, restoreTerminal = false): PageHandle {
   // 上一个向导若还在（重开向导、或检测被触发两次），先释放它的订阅
   releaseWizard();
   const lifecycle = new PageLifecycle();
   wizardLifecycle = lifecycle;
 
   detection = initial;
-  current = "detect";
+  const activeRun = migrationRun && migrationRun.phase !== "terminal" ? migrationRun : null;
+  const terminalRun = restoreTerminal && migrationRun?.phase === "terminal" ? migrationRun : null;
+  cleanupState = activeRun?.cleanupState ?? terminalRun?.cleanupState ?? null;
+
+  report = activeRun?.report ?? terminalRun?.report ?? null;
+  current = activeRun ? "running" : (terminalRun?.report ? "report" : "detect");
   containerEl = h("div", { class: "wiz-host" });
   render();
   const host = containerEl;
@@ -930,13 +1385,35 @@ export function buildMigrationWizard(initial: DetectResult): PageHandle {
 }
 
 /** 从设置页重新打开向导（用户跳过之后反悔的入口）。 */
-export async function reopenWizard(host: HTMLElement): Promise<PageHandle> {
-  const result = await call<DetectResult>(CMD.detectLegacy);
-  if (!result) {
-    // 检测结果拿不到就不开向导（与原先一致）。返回一个空句柄，调用点不必分支。
-    return { element: host, dispose: () => undefined };
+export async function reopenWizard(
+  host: HTMLElement,
+  isCurrent: () => boolean = () => true,
+): Promise<PageHandle> {
+  const emptyHandle = (): PageHandle => ({ element: host, dispose: () => undefined });
+  if (!isCurrent()) return emptyHandle();
+  if (migrationRun && detection && (migrationRun.phase !== "terminal" || migrationRun.report)) {
+    const handle = buildMigrationWizard(detection, true);
+    if (!isCurrent()) {
+      handle.dispose();
+      return emptyHandle();
+    }
+    host.replaceChildren(handle.element);
+    return handle;
   }
+
+  let result: DetectResult | null;
+  try {
+    result = await call<DetectResult>(CMD.detectLegacy);
+  } catch {
+    return emptyHandle();
+  }
+  if (!isCurrent() || !result) return emptyHandle();
+
   const handle = buildMigrationWizard(result);
+  if (!isCurrent()) {
+    handle.dispose();
+    return emptyHandle();
+  }
   host.replaceChildren(handle.element);
   return handle;
 }

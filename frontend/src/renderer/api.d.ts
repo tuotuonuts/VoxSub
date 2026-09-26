@@ -27,11 +27,15 @@ export interface BackendEventShape {
 export interface CommandResult<T = unknown> {
   ok: boolean;
   error?: string;
+  code?: string;
+  jobId?: string;
   data?: T;
   /** 请求未在时限内返回：**不是失败**，后端任务可能仍在进行。 */
   timedOut?: boolean;
   /** 请求没能发出（后端未运行 / 未初始化）。 */
   unavailable?: boolean;
+  /** 命令是否确定未发送、收到回复或仍处于不确定状态。 */
+  delivery?: "not_sent" | "unknown" | "response";
 }
 
 export interface SelectionAreaShape {
@@ -96,7 +100,7 @@ export interface VoxSubApi {
     onOpenPage(handler: (page: string) => void): () => void;
     onTrayMode(handler: (mode: string) => void): () => void;
     requestQuit(): Promise<boolean>;
-    setBusy(busy: boolean, reason?: string): Promise<string>;
+    setBusy(busy: boolean, reason: string | undefined, owner: string): Promise<string>;
     onBlockingTask(handler: (payload: { reason: string }) => void): () => void;
   };
 }

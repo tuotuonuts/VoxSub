@@ -31,6 +31,9 @@ import { join } from "node:path";
 import { installMiniDom } from "./mini-dom.mjs";
 import { importShared, createReporter, ROOT } from "./esbuild-ts.mjs";
 
+const nodeWarnings = [];
+process.on("warning", (warning) => nodeWarnings.push(warning));
+
 const dom = installMiniDom();
 const { document, window } = dom;
 const { check, finish } = createReporter("页面销毁统一与残留量（§3.7 / 缺陷 #10）");
@@ -56,7 +59,7 @@ const VIEWS = [
   ["模型目录", "src/renderer/views/catalog.ts", (m) => m.buildModelCatalog()],
   ["字幕工作区", "src/renderer/views/workspace.ts", (m) => m.buildWorkspace()],
   ["OCR 工作区", "src/renderer/views/ocr.ts", (m) => m.buildOcrWorkspace()],
-  ["迁移向导", "tools/test-migration-entry.ts", (m) => m.buildMigrationWizard(DETECT_FIXTURE)],
+  ["迁移向导", "tools/test-migration-safety-entry.ts", (m) => m.buildMigrationWizard(DETECT_FIXTURE)],
 ];
 
 const loaded = [];
@@ -121,13 +124,36 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
 
   // 迁移请求在途时替换向导；旧请求迟到不得导航或改写新向导。
   const busyChanges = [];
+  const busyCalls = [];
   const backendListeners = new Set();
   const commandLog = [];
-  const migrationJobId = "migration-job-old-page";
+  const migrationStatusQueries = [];
+  const pendingDetectReplies = [];
+  const pendingPlanReplies = [];
+  const pendingLogPathReplies = [];
+  const cleanupRequests = [];
+  const revealedLogPaths = [];
+  let holdDetectReplies = false;
+  let holdPlanReplies = false;
+  let holdLogPathReplies = false;
+  let holdCleanupReply = false;
+  let unknownCleanupReply = false;
+  let releaseCleanupReply = null;
+  let migrationStatusResponse = "running";
+  let exposeExistingMigrationJob = false;
+  let rejectAsActiveJob = false;
+  const existingMigrationJob = { jobId: "migration-job-preexisting", command: "start_migration", status: "running" };
+  let migrationJobId = "migration-job-unsubmitted";
+  let migrationSubmissionCount = 0;
   let migrationArgs = null;
+  let holdBusyEnable = false;
+  let releaseBusyEnable = null;
+  let busyEnableResponse = null;
   let completeBeforeUnavailableReceipt = false;
   let completeBeforeFailedReceipt = false;
   let timeoutReceipt = false;
+  let holdMigrationReceipt = false;
+  let releaseHeldReceipt = null;
   const planFixture = {
     targetRoot: "C:/NewVoxSub",
     steps: [{ key: "models", source: "C:/Old/models", target: "C:/New/models", bytes: 1, file_count: 1, purpose: "", mode: "copy", note: "", rebuildable: false }],
@@ -135,27 +161,91 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
     freeBytes: 1024,
   };
   const completedReport = {
-    done: [{ key: "models", mode: "copy", target: "C:/New/models", verify: { ok: true } }],
+    done: [{ key: "models", mode: "copy", target: "C:/New/models", verify: { ok: true }, recordId: "record-test-model" }],
     failed: [],
     elapsedMs: 1,
     ok: true,
   };
+  let confirmResult = true;
+  window.confirm = () => confirmResult;
   window.voxsub = {
-    app: { setBusy: (busy) => busyChanges.push(busy) },
+    app: { setBusy: (busy, reason, owner) => {
+      busyChanges.push(busy);
+      busyCalls.push({ busy, reason, owner });
+      const response = busy ? (busyEnableResponse ?? reason ?? "正在执行后台任务") : "";
+      if (busy && holdBusyEnable) {
+        holdBusyEnable = false;
+        return new Promise((resolve) => { releaseBusyEnable = () => resolve(response); });
+      }
+      return Promise.resolve(response);
+    } },
+    dialog: { revealInFolder: async (path) => { revealedLogPaths.push(path); } },
     backend: {
       onEvent: (handler) => { backendListeners.add(handler); return () => backendListeners.delete(handler); },
       start: async () => ({ ok: true }),
       command: async (command, args) => {
         commandLog.push(command);
+        if (command === migration.CMD.detectLegacy) {
+          if (holdDetectReplies) return new Promise((resolve) => pendingDetectReplies.push((data) => resolve({ ok: true, data })));
+          return { ok: true, data: DETECT_FIXTURE };
+        }
+        if (command === migration.CMD.logPath) {
+          if (holdLogPathReplies) return new Promise((resolve) => pendingLogPathReplies.push((path) => resolve({ ok: true, data: { path } })));
+          return { ok: true, data: { path: "C:/test-logs" } };
+        }
+        if (command === migration.CMD.jobList) return { ok: true, data: {
+          jobs: exposeExistingMigrationJob ? [existingMigrationJob] : [],
+        } };
+        if (command === migration.CMD.jobStatus) {
+          migrationStatusQueries.push(args);
+          return { ok: true, data: { ok: true, job: {
+            jobId: args?.job_id, command: migration.CMD.startMigration, status: migrationStatusResponse, sequence: 2,
+          } } };
+        }
+        if (command === migration.CMD.cleanupMigratedSource) {
+          cleanupRequests.push(args);
+          if (unknownCleanupReply) return { ok: false, timedOut: true, delivery: "unknown", error: "simulated hard timeout" };
+          if (holdCleanupReply) {
+            holdCleanupReply = false;
+            return new Promise((resolve) => {
+              releaseCleanupReply = () => resolve({ ok: true, data: {
+                ok: true, deleted: true, cleaned: ["record-test-model"], detail: "test cleanup completed",
+              } });
+            });
+          }
+          return { ok: true, data: { ok: true, deleted: true, cleaned: ["record-test-model"], detail: "test cleanup completed" } };
+        }
+        if (command === migration.CMD.migrationDecision) return { ok: true, data: { saved: true } };
         if (command === migration.CMD.state) return { ok: true, data: { running: false, paused: false, mode: "a" } };
-        if (command === migration.CMD.planMigration) return { ok: true, data: planFixture };
+        if (command === migration.CMD.planMigration) {
+          if (holdPlanReplies) {
+            return new Promise((resolve) => pendingPlanReplies.push((data) => resolve({ ok: true, data })));
+          }
+          return { ok: true, data: planFixture };
+        }
         if (command === migration.CMD.startMigration) {
           migrationArgs = args;
+          if (rejectAsActiveJob) {
+            rejectAsActiveJob = false;
+            return { ok: false, code: "active_job_exists", error: "已有迁移任务仍在运行", jobId: existingMigrationJob.jobId };
+          }
+          migrationSubmissionCount += 1;
+          migrationJobId = `migration-job-${migrationSubmissionCount}`;
+          const submittedJobId = migrationJobId;
+          if (holdMigrationReceipt) {
+            holdMigrationReceipt = false;
+            return new Promise((resolve) => {
+              releaseHeldReceipt = (receipt = {
+                ok: true,
+                data: { accepted: true, jobId: submittedJobId, async: args?.async },
+              }) => resolve(receipt);
+            });
+          }
           if (timeoutReceipt) {
             timeoutReceipt = false;
             for (const [status, sequence] of [["queued", 1], ["running", 2]]) {
               for (const listener of [...backendListeners]) listener({
-                type: "job", jobId: "migration-job-timeout", command: migration.CMD.startMigration,
+                type: "job", jobId: submittedJobId, command: migration.CMD.startMigration,
                 clientMigrationId: args?.clientMigrationId, status, sequence,
               });
             }
@@ -181,7 +271,7 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
             for (const listener of [...backendListeners]) listener({ type: "disconnected" });
             return { ok: false, unavailable: true, error: "simulated disconnect before receipt" };
           }
-          return { ok: true, data: { accepted: true, jobId: migrationJobId, async: args?.async } };
+          return { ok: true, data: { accepted: true, jobId: submittedJobId, async: args?.async } };
         }
         return { ok: false, error: `unexpected test command: ${command}` };
       },
@@ -192,6 +282,105 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   for (const listener of backendListeners) listener({ type: "ready" });
   await settle();
 
+  holdDetectReplies = true;
+  const staleReopenHost = newLayer();
+  staleReopenHost.textContent = "old settings page";
+  let settingsPageCurrent = true;
+  const staleReopen = migration.reopenWizard(staleReopenHost, () => settingsPageCurrent);
+  await settle();
+  check("设置页迁移检测请求已在途", pendingDetectReplies.length === 1, `${pendingDetectReplies.length} 个`);
+  settingsPageCurrent = false;
+  const replacementPage = document.createElement("div");
+  replacementPage.className = "replacement-page-sentinel";
+  replacementPage.textContent = "replacement settings page";
+  staleReopenHost.replaceChildren(replacementPage);
+  pendingDetectReplies[0](DETECT_FIXTURE);
+  await settle();
+  const staleReopenHandle = await staleReopen;
+  check("设置页失效后迟到的迁移检测不得替换新页面", staleReopenHost.querySelector(".replacement-page-sentinel") !== null && staleReopenHost.querySelector(".wiz-host") === null, staleReopenHost.textContent);
+  staleReopenHandle.dispose();
+  staleReopenHost.remove();
+  holdDetectReplies = false;
+
+  const planFor = (name) => ({
+    ...planFixture,
+    targetRoot: `C:/plan-${name}`,
+    steps: planFixture.steps.map((step) => ({ ...step, key: `models-${name}`, target: `C:/target-${name}` })),
+  });
+  const submitPlanFromOverview = (handle) => {
+    handle.element.querySelector(".wiz__actions .btn--primary")?.click();
+    handle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  };
+  holdPlanReplies = true;
+  const planALayer = newLayer();
+  const planAHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  planALayer.append(planAHandle.element);
+  submitPlanFromOverview(planAHandle);
+  await settle();
+  const planARequest = pendingPlanReplies.length - 1;
+  planAHandle.dispose();
+  planALayer.remove();
+
+  const planBLayer = newLayer();
+  const planBHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  planBLayer.append(planBHandle.element);
+  submitPlanFromOverview(planBHandle);
+  await settle();
+  const planBRequest = pendingPlanReplies.length - 1;
+  pendingPlanReplies[planBRequest](planFor("B"));
+  await settle();
+  check("B 的规划响应先完成时显示 B 的清单", planBHandle.element.querySelector(".wiz__target code")?.textContent === "C:/plan-B");
+  pendingPlanReplies[planARequest](planFor("A"));
+  await settle();
+  check("A 页面迟到的规划响应不能改写 B 的 DOM 或清单状态", planBHandle.element.querySelector(".wiz__target code")?.textContent === "C:/plan-B" && planBHandle.element.querySelector(".mig-item__head strong")?.textContent === "models-B", planBHandle.element.textContent);
+
+  planBHandle.element.querySelector(".wiz__actions .btn--ghost")?.click();
+  await settle();
+  const samePageRequestStart = pendingPlanReplies.length;
+  const planButton = [...planBHandle.element.querySelectorAll(".wiz__actions button")]
+    .find((candidate) => candidate.textContent === "规划迁移");
+  planButton?.click();
+  planButton?.click();
+  await settle();
+  const olderSamePageRequest = samePageRequestStart;
+  const latestSamePageRequest = samePageRequestStart + 1;
+  pendingPlanReplies[latestSamePageRequest](planFor("same-page-latest"));
+  await settle();
+  pendingPlanReplies[olderSamePageRequest](planFor("same-page-older"));
+  await settle();
+  check("同一页面多次规划仅最新响应生效", planBHandle.element.querySelector(".wiz__target code")?.textContent === "C:/plan-same-page-latest" && planBHandle.element.querySelector(".mig-item__head strong")?.textContent === "models-same-page-latest", planBHandle.element.textContent);
+  holdPlanReplies = false;
+  planBHandle.dispose();
+  planBLayer.remove();
+
+  const busyAckLayer = newLayer();
+  const busyAckHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  busyAckLayer.append(busyAckHandle.element);
+  busyAckHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  busyAckHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  const startsBeforeBusyAck = commandLog.filter((item) => item === migration.CMD.startMigration).length;
+  busyEnableResponse = "";
+  busyAckHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  const busyAckReport = busyAckHandle.element.querySelector(".wiz__body")?.textContent ?? "";
+  check("退出保护 IPC 未返回有效确认时不提交迁移", commandLog.filter((item) => item === migration.CMD.startMigration).length === startsBeforeBusyAck && busyAckReport.includes("无法启用退出保护，迁移未启动"), JSON.stringify({ commandLog, busyAckReport }));
+  busyEnableResponse = null;
+  if (commandLog.filter((item) => item === migration.CMD.startMigration).length > startsBeforeBusyAck) {
+    for (const listener of [...backendListeners]) listener({
+      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: migrationArgs?.clientMigrationId, status: "failed", sequence: 3,
+      error: "cleanup after simulated invalid busy acknowledgement",
+    });
+    await settle();
+  }
+  busyAckHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  busyAckHandle.dispose();
+  busyAckLayer.remove();
+
+  const migrationCountBeforeMainRun = commandLog.filter((item) => item === migration.CMD.startMigration).length;
+  const baselineEventListeners = backendListeners.size;
   const oldLayer = newLayer();
   const oldHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
   oldLayer.append(oldHandle.element);
@@ -200,57 +389,196 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   await settle();
   check("迁移清单页已加载", Boolean(oldHandle.element.querySelector("#wiz-proceed")), oldHandle.element.textContent);
   check("规划命令已到达测试后端", commandLog.includes(migration.CMD.planMigration), JSON.stringify(commandLog));
-  oldHandle.element.querySelector("#wiz-proceed")?.click();
+  holdMigrationReceipt = true;
+  const oldProceed = oldHandle.element.querySelector("#wiz-proceed");
+  holdBusyEnable = true;
+  oldProceed?.click();
+  oldProceed?.click();
   await settle();
-  check("迁移命令已到达测试后端", commandLog.includes(migration.CMD.startMigration), JSON.stringify(commandLog));
-  check("迁移期间退出保护仍有效", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
-  check("迁移提交显式走可跟踪的异步 job 模式", migrationArgs?.async === true && typeof migrationArgs?.clientMigrationId === "string" && migrationArgs.clientMigrationId.length > 0, JSON.stringify(migrationArgs));
-  check("收到 job 终态前不会误进报告页", oldHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移");
+  check("退出保护确认未返回前迁移命令不得提交", commandLog.filter((item) => item === migration.CMD.startMigration).length === migrationCountBeforeMainRun, JSON.stringify(commandLog));
+  check("等待退出保护确认期间仍保持退出保护请求", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
 
+  // 切页发生在主进程确认退出保护之前；旧 continuation 不能重绘替换后的向导。
+  migration.closeWizard();
+  check("确认待决时关闭页面不释放任务退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  check("关闭活动向导保留任务终态监听", backendListeners.size === baselineEventListeners + 1, `${baselineEventListeners} → ${backendListeners.size}`);
   oldHandle.dispose();
   oldLayer.remove();
-  const newPageLayer = newLayer();
-  const newHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
-  newPageLayer.append(newHandle.element);
-  const titleBeforeLateResult = newHandle.element.querySelector(".wiz__title")?.textContent;
-  for (const listener of [...backendListeners]) {
-    listener({
-      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
-      clientMigrationId: migrationArgs?.clientMigrationId,
-      status: "succeeded", sequence: 3, result: completedReport,
-    });
-  }
-  await settle();
-  check(
-    "旧向导迁移迟到成功不导航/写入新向导",
-    newHandle.element.querySelector(".wiz__title")?.textContent === titleBeforeLateResult &&
-      titleBeforeLateResult === "检测到旧版 VoxSub",
-    `${titleBeforeLateResult} → ${newHandle.element.querySelector(".wiz__title")?.textContent}`,
-  );
-  check("旧迁移终态后退出保护解除", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  let newPageLayer = newLayer();
+  let newHandle = await migration.reopenWizard(newPageLayer);
+  const newRunningBody = newHandle.element.querySelector(".wiz__body");
+  check("确认待决期间重新打开仍展示活动迁移", newHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移");
+  check("重新打开时继续保留退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
 
-  // 当前向导收到异步终态后，应读取事件中的报告并正常进入结果页。
-  newHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
-  newHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  releaseBusyEnable?.();
   await settle();
-  newHandle.element.querySelector("#wiz-proceed")?.click();
+  const firstClientMigrationId = migrationArgs?.clientMigrationId;
+  const firstMigrationJobId = migrationJobId;
+  check("退出保护确认后迁移命令恰好提交一次", commandLog.filter((item) => item === migration.CMD.startMigration).length === migrationCountBeforeMainRun + 1, JSON.stringify(commandLog));
+  check("迁移提交显式走可跟踪的异步 job 模式", migrationArgs?.async === true && typeof firstClientMigrationId === "string" && firstClientMigrationId.length > 0, JSON.stringify(migrationArgs));
+  check("旧页面退出保护 continuation 不重绘新向导", newHandle.element.querySelector(".wiz__body") === newRunningBody, newHandle.element.querySelector(".wiz__title")?.textContent);
+  check("收到 job 终态前不会误进报告页", newHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移", newHandle.element.querySelector(".wiz__title")?.textContent);
+  oldProceed?.click();
   await settle();
-  newHandle.element.querySelector("#wiz-proceed")?.click();
-  await settle();
-  check("当前迁移任务仍由退出保护持有", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
-  for (const listener of [...backendListeners]) {
-    listener({
-      type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
-      clientMigrationId: migrationArgs?.clientMigrationId,
-      status: "succeeded", sequence: 3, result: completedReport,
-    });
-  }
-  await settle();
-  check("当前向导收到成功终态后展示迁移结果", newHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"));
-  check("当前迁移真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  check("旧页面遗留的提交入口不会创建第二条迁移", commandLog.filter((item) => item === migration.CMD.startMigration).length === migrationCountBeforeMainRun + 1, JSON.stringify(commandLog));
 
+  for (const listener of [...backendListeners]) listener({
+    type: "migration", phase: "progress", key: "models", completed: 1, total: 4,
+  });
+  check("任务仍在运行时显示已收到的真实进度", newHandle.element.querySelector(".mig-progress__row .progress__label")?.textContent === "25%");
+
+  // 关闭页面只释放视图订阅；迁移本身及其终态跟踪仍归应用级任务所有。
+  migration.closeWizard();
+  check("关闭活动向导不释放迁移退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  check("关闭活动向导保留任务终态监听", backendListeners.size === baselineEventListeners + 1, `${baselineEventListeners} → ${backendListeners.size}`);
   newHandle.dispose();
   newPageLayer.remove();
+  for (const listener of [...backendListeners]) listener({
+    type: "migration", phase: "progress", key: "models", completed: 3, total: 4,
+  });
+
+  newPageLayer = newLayer();
+  newHandle = await migration.reopenWizard(newPageLayer);
+  check("重新打开向导展示仍在运行的迁移", newHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移", newHandle.element.querySelector(".wiz__title")?.textContent);
+  check("页面关闭期间的最新进度在重开后恢复", newHandle.element.querySelector(".mig-progress__row .progress__label")?.textContent === "75%", newHandle.element.querySelector(".mig-progress__row .progress__label")?.textContent);
+  check("重开页面不会释放原任务退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+
+  // 终态可早于快速受理回执。精确 clientMigrationId 的终态必须立即收尾。
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: firstMigrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: firstClientMigrationId,
+      status: "succeeded", sequence: 3, result: completedReport,
+    });
+  }
+  await settle();
+  check("回执尚未返回时，匹配的成功终态仍展示报告", newHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), newHandle.element.querySelector(".wiz__body")?.textContent);
+  check("回执尚未返回时，真实终态解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+
+  newHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  newHandle.dispose();
+  newPageLayer.remove();
+
+  // A 已结束后，开始 B；A 的迟到回执和重复终态不得影响 B。
+  const secondLayer = newLayer();
+  const secondHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  secondLayer.append(secondHandle.element);
+  secondHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  secondHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  secondHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  const secondClientMigrationId = migrationArgs?.clientMigrationId;
+  const secondMigrationJobId = migrationJobId;
+  check("第二条迁移 B 启动并持有保护", busyChanges.at(-1) === true && secondClientMigrationId !== firstClientMigrationId, JSON.stringify({ busyChanges, secondClientMigrationId }));
+  releaseHeldReceipt?.();
+  await settle();
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: firstMigrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: firstClientMigrationId, status: "failed", sequence: 4, error: "late A failure",
+    });
+    listener({
+      type: "job", jobId: "unrelated-job-id", command: migration.CMD.startMigration,
+      clientMigrationId: secondClientMigrationId, status: "succeeded", sequence: 3, result: completedReport,
+    });
+  }
+  await settle();
+  check("A 的迟到回执/重复终态与 B 的错配 jobId 不解除 B 保护", secondHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移" && busyChanges.at(-1) === true, JSON.stringify({ title: secondHandle.element.querySelector(".wiz__title")?.textContent, busyChanges }));
+  for (const listener of [...backendListeners]) {
+    listener({
+      type: "job", jobId: secondMigrationJobId, command: migration.CMD.startMigration,
+      clientMigrationId: secondClientMigrationId, status: "failed", sequence: 4, error: "second migration failed",
+    });
+  }
+  await settle();
+  check("B 的精确终态展示 B 自己的结果", secondHandle.element.querySelector(".wiz__body")?.textContent?.includes("second migration failed"));
+  check("B 的真实终态解除自己的退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  secondHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  secondHandle.dispose();
+  secondLayer.remove();
+  const hiddenRunLayer = newLayer();
+  const hiddenRunHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  hiddenRunLayer.append(hiddenRunHandle.element);
+  hiddenRunHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  hiddenRunHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  hiddenRunHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  const hiddenRunJobId = migrationJobId;
+  const hiddenRunClientId = migrationArgs?.clientMigrationId;
+  check("关闭前迁移 C 已受理", typeof hiddenRunClientId === "string" && busyChanges.at(-1) === true);
+  migration.closeWizard();
+  hiddenRunHandle.dispose();
+  hiddenRunLayer.remove();
+  for (const listener of [...backendListeners]) listener({
+    type: "job", jobId: hiddenRunJobId, command: migration.CMD.startMigration,
+    clientMigrationId: hiddenRunClientId, status: "succeeded", sequence: 3,
+    result: completedReport,
+  });
+  await settle();
+  check("向导关闭期间收到终态仍由任务 owner 保存报告并解除保护", busyChanges.at(-1) === false);
+  const reportLayer = newLayer();
+  const detectCountBeforeResume = commandLog.filter((item) => item === migration.CMD.detectLegacy).length;
+  const resumedHandle = await migration.reopenWizard(reportLayer);
+  check("关闭期间已完成的迁移重开后恢复报告，不重新提交", resumedHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models") && commandLog.filter((item) => item === migration.CMD.startMigration).length === migrationCountBeforeMainRun + 3);
+  check("恢复已缓存报告不重复执行检测", commandLog.filter((item) => item === migration.CMD.detectLegacy).length === detectCountBeforeResume);
+
+  const cleanupButton = [...resumedHandle.element.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === "清理已迁移的原目录");
+  const cleanupCountBeforeCancel = cleanupRequests.length;
+  confirmResult = false;
+  cleanupButton?.click();
+  await settle();
+  check("用户取消清理时不发送删除请求", cleanupRequests.length === cleanupCountBeforeCancel, JSON.stringify(cleanupRequests));
+  check("取消清理后报告页明确显示已取消", resumedHandle.element.querySelector(".wiz__body")?.textContent?.includes("已取消"), resumedHandle.element.textContent);
+  confirmResult = true;
+  busyEnableResponse = "";
+  [...resumedHandle.element.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === "清理已迁移的原目录")?.click();
+  await settle();
+  check("清理退出保护确认无效时绝不提交删除", cleanupRequests.length === cleanupCountBeforeCancel && resumedHandle.element.textContent.includes("无法启用退出保护，清理未启动"));
+  busyEnableResponse = null;
+  holdCleanupReply = true;
+  const confirmedCleanupButton = [...resumedHandle.element.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === "清理已迁移的原目录");
+  holdBusyEnable = true;
+  const beforeCleanupGuard = cleanupRequests.length;
+  confirmedCleanupButton?.click();
+  await settle();
+  check("清理退出保护确认之前不得发送删除命令", cleanupRequests.length === beforeCleanupGuard && busyChanges.at(-1) === true);
+  holdBusyEnable = false;
+  releaseBusyEnable?.();
+  await settle();
+  const cleanupBusyOwner = busyCalls.at(-1)?.owner;
+  check("清理持有独立操作 owner", typeof cleanupBusyOwner === "string" && cleanupBusyOwner !== hiddenRunClientId && busyChanges.at(-1) === true);
+  check("用户确认后清理副作用已提交且使用记录 ID", cleanupRequests.at(-1)?.confirm === true && cleanupRequests.at(-1)?.record_ids?.[0] === "record-test-model", JSON.stringify(cleanupRequests));
+  migration.closeWizard(true);
+  resumedHandle.dispose();
+  reportLayer.remove();
+
+  const unrelatedLayer = newLayer();
+  const unrelatedHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  unrelatedLayer.append(unrelatedHandle.element);
+  const statusBeforeCleanupReply = migration.store.get().statusText;
+  releaseCleanupReply?.();
+  await settle();
+  check("旧报告的清理回执不导航或改写新向导", unrelatedHandle.element.querySelector(".wiz__title")?.textContent === "检测到旧版 VoxSub", unrelatedHandle.element.textContent);
+  check("旧报告清理回执不覆盖新页面共享状态文案", migration.store.get().statusText === statusBeforeCleanupReply, migration.store.get().statusText);
+  check("已提交清理回执仍被记录，关闭页面不伪装成未执行", migration.store.get().logs.some((entry) => entry.message.includes("test cleanup completed")));
+  check("清理真实完成只释放本次清理 owner", busyCalls.at(-1)?.busy === false && busyCalls.at(-1)?.owner === cleanupBusyOwner);
+  unrelatedHandle.dispose();
+  unrelatedLayer.remove();
+
+  const recoveredCleanupLayer = newLayer();
+  const recoveredCleanupHandle = await migration.reopenWizard(recoveredCleanupLayer);
+  check("重开原报告可读取旧清理副作用的真实结果", recoveredCleanupHandle.element.querySelector(".wiz__body")?.textContent?.includes("test cleanup completed"), recoveredCleanupHandle.element.querySelector(".wiz__body")?.textContent);
+  migration.closeWizard(true);
+  recoveredCleanupHandle.dispose();
+  recoveredCleanupLayer.remove();
+
   const failedLayer = newLayer();
   const failedHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
   failedLayer.append(failedHandle.element);
@@ -271,8 +599,51 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   await settle();
   check("失败终态报告保留后端原因", failedHandle.element.querySelector(".wiz__body")?.textContent?.includes("disk full"));
   check("失败也只有到真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  const copyButton = [...failedHandle.element.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === "复制诊断摘要");
+  copyButton?.click();
+  await settle();
+  check("当前报告复制完成后显示成功反馈", copyButton?.textContent === "已复制" && dom.clipboardWrites.at(-1)?.includes("disk full"));
+  if (copyButton) copyButton.textContent = "复制诊断摘要";
+  const originalClipboardWrite = navigator.clipboard.writeText;
+  let releaseClipboardWrite = null;
+  navigator.clipboard.writeText = (text) => new Promise((resolve) => {
+    releaseClipboardWrite = () => {
+      dom.clipboardWrites.push(text);
+      resolve();
+    };
+  });
+  copyButton?.click();
+  await settle();
+  check("报告复制请求已进入可控异步等待", typeof releaseClipboardWrite === "function");
+  const openLogButton = [...failedHandle.element.querySelectorAll("button")]
+    .find((candidate) => candidate.textContent === "打开日志文件夹");
+  openLogButton?.click();
+  await settle();
+  check("当前报告的日志路径响应仍可正常打开", revealedLogPaths.at(-1) === "C:/test-logs", JSON.stringify(revealedLogPaths));
+
+  holdLogPathReplies = true;
+  openLogButton?.click();
+  await settle();
+  const pendingLogPathIndex = pendingLogPathReplies.length - 1;
+  const revealedBeforeStaleLogPath = revealedLogPaths.length;
+  failedHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
   failedHandle.dispose();
   failedLayer.remove();
+
+  const afterLogCloseLayer = newLayer();
+  const afterLogCloseHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  afterLogCloseLayer.append(afterLogCloseHandle.element);
+  releaseClipboardWrite?.();
+  pendingLogPathReplies[pendingLogPathIndex]("C:/stale-test-logs");
+  await settle();
+  check("旧报告迟到的复制反馈不写入已释放页面", copyButton?.textContent === "复制诊断摘要", copyButton?.textContent);
+  navigator.clipboard.writeText = originalClipboardWrite;
+  check("旧报告迟到的日志路径不再触发打开操作或改写新向导", revealedLogPaths.length === revealedBeforeStaleLogPath && afterLogCloseHandle.element.querySelector(".wiz__title")?.textContent === "检测到旧版 VoxSub", JSON.stringify({ revealedLogPaths, title: afterLogCloseHandle.element.querySelector(".wiz__title")?.textContent }));
+  afterLogCloseHandle.dispose();
+  afterLogCloseLayer.remove();
+  holdLogPathReplies = false;
 
   const timeoutLayer = newLayer();
   const timeoutHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
@@ -285,14 +656,22 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   timeoutHandle.element.querySelector("#wiz-proceed")?.click();
   await settle();
   check("回执硬超时不释放仍在运行任务的退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  const recoveryButton = timeoutHandle.element.querySelector("#wiz-query-status");
+  check("结果未知时提供任务状态查询入口", Boolean(recoveryButton));
+  recoveryButton?.click();
+  await settle();
+  check("状态查询使用后端 job_status 与已关联 jobId", commandLog.includes(migration.CMD.jobStatus) && migrationStatusQueries.at(-1)?.job_id === migrationJobId, JSON.stringify({ commandLog, migrationStatusQueries, migrationJobId }));
+  check("查询确认任务仍运行时继续保留退出保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
   for (const listener of [...backendListeners]) listener({
-    type: "job", jobId: "migration-job-timeout", command: migration.CMD.startMigration,
+    type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
     clientMigrationId: migrationArgs?.clientMigrationId, status: "succeeded", sequence: 3,
     result: completedReport,
   });
   await settle();
   check("回执超时后仍能按 clientMigrationId 接收报告", timeoutHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), timeoutHandle.element.querySelector(".wiz__body")?.textContent);
   check("回执超时任务真实终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  timeoutHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
   timeoutHandle.dispose();
   timeoutLayer.remove();
 
@@ -308,6 +687,8 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   await settle();
   check("failed 回执前已缓存的成功终态仍展示迁移报告", failedReceiptHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), failedReceiptHandle.element.querySelector(".wiz__body")?.textContent);
   check("failed 回执前已到达终态后解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  failedReceiptHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
   failedReceiptHandle.dispose();
   failedReceiptLayer.remove();
 
@@ -323,8 +704,193 @@ console.log("=== 每个视图都返回 { element, dispose } ===\n");
   await settle();
   check("回执前已缓存的成功报告优先于随后断连", fastHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), fastHandle.element.querySelector(".wiz__body")?.textContent);
   check("回执前终态+断连组合仍能安全解除退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  fastHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
   fastHandle.dispose();
   fastLayer.remove();
+
+  migration.setLanguage("en");
+  const migrationSafetyCopy = [
+    "上一次原目录清理仍在确认，不能开始新的迁移。",
+    "后台确认迁移仍在运行，退出保护保持开启。",
+    "后端已断开，迁移结果未知；请重新检测目标目录，不要清理原目录。",
+    "已有迁移任务仍在运行，不能重复提交。",
+    "已有迁移任务正在运行，但任务编号无法安全匹配；退出保护保持开启，可重新查询。",
+    "已有迁移任务正在运行；正在重新关联其状态，退出保护保持开启。",
+    "数据迁移",
+    "无法启用退出保护，迁移未启动。",
+    "无法唯一确认迁移任务状态；退出保护仍保持开启。",
+    "暂时无法查询迁移任务状态；退出保护仍保持开启。",
+    "查询迁移任务状态",
+    "检测到旧版 VoxSub",
+    "正在检测旧版安装…",
+    "清理结果未知，操作可能已执行；请先核对原目录，不要重复清理。",
+    "清理请求已提交，正在等待后端确认；请勿重复执行。",
+    "迁移任务仍在队列中，退出保护保持开启。",
+    "迁移任务失败",
+    "迁移任务已取消",
+    "迁移任务已受理，正在等待后台完成。",
+    "迁移任务已结束，但未收到有效报告；请重新检测，不要清理原目录。",
+    "迁移任务正在取消；等待后台确认终态后再退出。",
+    "迁移受理回执不完整或状态未知，任务仍可能正在运行；正在等待后台终态。",
+    "迁移回执与终态任务编号不匹配；请重新检测，不要清理原目录。",
+    "迁移提交回执状态未知，任务可能仍在运行；正在等待后台终态。",
+    "迁移状态仍未知；退出保护保持开启，可再次查询。",
+    "迁移状态查询与已跟踪任务不匹配；退出保护仍保持开启。",
+    "迁移状态查询与当前任务不匹配；退出保护仍保持开启。",
+    "迁移终态尚未确认，仍保留退出保护。",
+  ];
+  const englishFallbacks = migrationSafetyCopy
+    .map((source) => [source, migration.tr(source)])
+    .filter(([source, translated]) => translated === source || [...translated].some((char) => {
+      const codePoint = char.codePointAt(0) ?? 0;
+      return codePoint >= 0x3400 && codePoint <= 0x9fff;
+    }));
+  check("英文模式下新增迁移安全文案均有实际翻译且不回退中文", englishFallbacks.length === 0, JSON.stringify(englishFallbacks));
+
+  const backendExitLayer = newLayer();
+  const backendExitHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  backendExitLayer.append(backendExitHandle.element);
+  backendExitHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  backendExitHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  await settle();
+  holdMigrationReceipt = true;
+  backendExitHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("后端退出前尚未收到迁移终态时仍持有保护", busyChanges.at(-1) === true, JSON.stringify(busyChanges));
+  for (const listener of [...backendListeners]) listener({ type: "disconnected", reason: "code=1" });
+  releaseHeldReceipt?.({ ok: false, unavailable: true, error: "后端已退出", delivery: "unknown" });
+  await settle();
+  const backendExitBody = backendExitHandle.element.querySelector(".wiz__body")?.textContent ?? "";
+  const backendExitMessage = migration.tr("后端已断开，迁移结果未知；请重新检测目标目录，不要清理原目录。");
+  check(
+    "英文模式下真实后端退出路径保留结果未知、复检目标且禁止清理原目录",
+    backendExitBody.includes(backendExitMessage) &&
+      !backendExitBody.includes("后端已断开，迁移结果未知") &&
+      /unknown/i.test(backendExitMessage) && /do not|don't|never/i.test(backendExitMessage) &&
+      !backendExitBody.includes("迁移完成"),
+    `${backendExitMessage}: ${backendExitBody}`,
+  );
+  check("已确认后端进程退出后解除任务保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  backendExitHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  backendExitHandle.dispose();
+  backendExitLayer.remove();
+  migration.setLanguage("zh");
+  for (const listener of [...backendListeners]) listener({ type: "ready", version: "test" });
+  await settle();
+
+  const queriedTerminalLayer = newLayer();
+  const queriedTerminalHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  queriedTerminalLayer.append(queriedTerminalHandle.element);
+  queriedTerminalHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  queriedTerminalHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  await settle();
+  queriedTerminalHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  migrationStatusResponse = "succeeded";
+  queriedTerminalHandle.element.querySelector("#wiz-query-status")?.click();
+  await settle();
+  await settle();
+  const queriedTerminalBody = queriedTerminalHandle.element.querySelector(".wiz__body")?.textContent ?? "";
+  check("终态状态查询缺少报告时明确不宣称迁移成功", queriedTerminalBody.includes("迁移任务已结束，但未收到有效报告") && !queriedTerminalBody.includes("迁移完成"), queriedTerminalBody);
+  check("任务状态查询确认真实终态后释放退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  queriedTerminalHandle.dispose();
+  queriedTerminalLayer.remove();
+  const recoveredTerminalLayer = newLayer();
+  const recoveredTerminalHandle = await migration.reopenWizard(recoveredTerminalLayer);
+  const recoveredTerminalTitle = recoveredTerminalHandle.element.querySelector(".wiz__title")?.textContent ?? "";
+  const recoveredTerminalBody = recoveredTerminalHandle.element.querySelector(".wiz__body")?.textContent ?? "";
+  check("查询收尾后的终态重开仍恢复报告，而非伪装仍运行", recoveredTerminalTitle === "迁移遇到问题" && recoveredTerminalBody.includes("迁移任务已结束，但未收到有效报告"), `${recoveredTerminalTitle}: ${recoveredTerminalBody}`);
+  for (const listener of [...backendListeners]) listener({
+    type: "job", jobId: "unrelated-terminal", command: migration.CMD.startMigration,
+    status: "succeeded", sequence: 3, result: completedReport,
+  });
+  await settle();
+  check("无报告终态后的错配事件不能覆盖原报告", !recoveredTerminalHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"));
+  for (const listener of [...backendListeners]) listener({
+    type: "job", jobId: migrationJobId, command: migration.CMD.startMigration,
+    clientMigrationId: migrationArgs?.clientMigrationId,
+    status: "succeeded", sequence: 3, result: completedReport,
+  });
+  await settle();
+  check("job_status 先到且无报告时，迟到终态恢复真实报告", recoveredTerminalHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), recoveredTerminalHandle.element.textContent);
+  check("迟到的有效报告恢复清理记录入口", [...recoveredTerminalHandle.element.querySelectorAll("button")].some((button) => button.textContent === "清理已迁移的原目录"));
+  recoveredTerminalHandle.dispose();
+  recoveredTerminalLayer.remove();
+
+  migrationStatusResponse = "running";
+  exposeExistingMigrationJob = true;
+  const acceptedBeforeConflict = migrationSubmissionCount;
+  const conflictLayer = newLayer();
+  const conflictHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  conflictLayer.append(conflictHandle.element);
+  conflictHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  conflictHandle.element.querySelector(".wiz__actions .btn--primary")?.click();
+  await settle();
+  rejectAsActiveJob = true;
+  conflictHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  await settle();
+  check("服务端拒绝重复迁移后仍保留旧任务退出保护并按真实 jobId 对账", busyChanges.at(-1) === true && migrationSubmissionCount === acceptedBeforeConflict && migrationStatusQueries.at(-1)?.job_id === existingMigrationJob.jobId, JSON.stringify({ busyChanges, acceptedBeforeConflict, migrationSubmissionCount, migrationStatusQueries }));
+  check("接管旧任务期间仍显示运行态而非迁移失败", conflictHandle.element.querySelector(".wiz__title")?.textContent === "正在迁移", conflictHandle.element.querySelector(".wiz__title")?.textContent);
+  for (const listener of [...backendListeners]) listener({
+    type: "job", jobId: existingMigrationJob.jobId, command: migration.CMD.startMigration,
+    clientMigrationId: "migration-owner-from-before-renderer-reload", status: "succeeded", sequence: 3,
+    result: completedReport,
+  });
+  await settle();
+  check("按已对账 jobId 接收旧 renderer owner 的权威终态", conflictHandle.element.querySelector(".wiz__body")?.textContent?.includes("C:/New/models"), conflictHandle.element.querySelector(".wiz__body")?.textContent);
+  check("被接管的旧迁移只在其终态到达后释放退出保护", busyChanges.at(-1) === false, JSON.stringify(busyChanges));
+  migration.closeWizard();
+  conflictHandle.dispose();
+  conflictLayer.remove();
+  exposeExistingMigrationJob = false;
+
+  migration.setLanguage("en");
+  const unknownLayer = newLayer();
+  const unknownHandle = await migration.reopenWizard(unknownLayer);
+  const cleanupLabel = migration.tr("清理已迁移的原目录");
+  const findCleanup = (handle) => [...handle.element.querySelectorAll("button")].find((b) => b.textContent === cleanupLabel);
+  const logsBeforeUnknown = migration.store.get().logs.length;
+  unknownCleanupReply = true;
+  findCleanup(unknownHandle)?.click();
+  await settle();
+  const countAfterUnknown = cleanupRequests.length;
+  const unknownButton = findCleanup(unknownHandle);
+  check("清理超时保留退出保护并禁用重试", busyChanges.at(-1) === true && unknownButton?.disabled === true);
+  const unknownCopy = migration.tr("清理结果未知，操作可能已执行；请先核对原目录，不要重复清理。");
+  check("英文清理未知明确禁止重复，而非建议重试", /do not (repeat|retry)|don't (repeat|retry)|never (repeat|retry)/i.test(unknownCopy) && !/before retrying/.test(unknownCopy), unknownCopy);
+  const unknownLogs = migration.store.get().logs.slice(logsBeforeUnknown).map((entry) => entry.message);
+  check("英文未知回执与清理静态日志不混入中文", unknownLogs.length > 0 && unknownLogs.every((line) => !/[\u3400-\u9fff]/u.test(line)), JSON.stringify(unknownLogs));
+  // Force a click past disabled UI: the operation owner itself must reject retries.
+  if (unknownButton) unknownButton.disabled = false;
+  unknownButton?.click();
+  await settle();
+  check("未知清理的操作闸门拒绝重复请求", cleanupRequests.length === countAfterUnknown);
+  migration.closeWizard();
+  unknownHandle.dispose();
+  unknownLayer.remove();
+  const unknownReopenLayer = newLayer();
+  const unknownReopenHandle = await migration.reopenWizard(unknownReopenLayer);
+  check("关闭重开后未知清理仍禁止重复且持有退出保护", findCleanup(unknownReopenHandle)?.disabled === true && busyChanges.at(-1) === true);
+  unknownReopenHandle.dispose();
+  unknownReopenLayer.remove();
+  migration.setLanguage("zh");
+  const blockedNewLayer = newLayer();
+  const blockedNewHandle = migration.buildMigrationWizard(DETECT_FIXTURE);
+  blockedNewLayer.append(blockedNewHandle.element);
+  submitPlanFromOverview(blockedNewHandle);
+  await settle();
+  const submissionsBeforeBlocked = migrationSubmissionCount;
+  blockedNewHandle.element.querySelector("#wiz-proceed")?.click();
+  await settle();
+  check("未知清理不得被新迁移 owner 覆盖", migrationSubmissionCount === submissionsBeforeBlocked && migration.store.get().statusText.includes("上一次原目录清理仍在确认"));
+  blockedNewHandle.dispose();
+  blockedNewLayer.remove();
+
   disconnectBackend();
   newHandle.dispose();
   newPageLayer.remove();
@@ -611,5 +1177,11 @@ async function switchAll(rounds, disposeEach) {
   );
 }
 
+await new Promise((resolve) => setImmediate(resolve));
+check(
+  "测试辅助编译不触发 Node 的 shell-argument 安全弃用警告",
+  !nodeWarnings.some((warning) => warning.code === "DEP0190"),
+  nodeWarnings.map((warning) => `${warning.code}: ${warning.message}`).join(" | "),
+);
 dom.restore();
 finish();

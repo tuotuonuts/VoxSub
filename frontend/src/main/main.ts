@@ -36,8 +36,11 @@ let overlayClickThrough = false;
 let overlayOpacity = 0.92;
 let overlayFontSize = 20;
 let overlayDisplayMode = "bilingual";
-/** 后台长任务的原因（非空时阻止退出）。模型迁移/下载期间设置。 */
-let busyReason = "";
+/** 每个操作只释放自己的退出保护，迟到/无 owner 的释放不能影响其他任务。 */
+const busyOwners = new Map<string, string>();
+function busyReason(): string {
+  return [...busyOwners.values()].join("\n");
+}
 /** 实时 OCR 定时器：仅在用户开启后运行 */
 let liveOcrTimer: NodeJS.Timeout | null = null;
 let liveOcrArea: SelectionArea | null = null;
@@ -50,10 +53,11 @@ let liveOcrBusy = false;
  * 模型库留在半路。改成把用户带回设置页并说明原因，与 Qt 版一致。
  */
 function requestQuit(): boolean {
-  if (busyReason) {
+  const reason = busyReason();
+  if (reason) {
     mainWindow?.show();
     mainWindow?.webContents.send("app:open-page", "settings");
-    mainWindow?.webContents.send("app:blocking-task", { reason: busyReason });
+    mainWindow?.webContents.send("app:blocking-task", { reason });
     return false;
   }
   stopLiveOcr();
@@ -151,7 +155,7 @@ function createMainWindow(): BrowserWindow {
 
   // 有后台长任务时拦一次关闭，避免把模型库留在半路
   win.on("close", (event) => {
-    if (busyReason) {
+    if (busyReason()) {
       event.preventDefault();
       requestQuit();
     }
@@ -532,12 +536,14 @@ function registerIpc(): void {
   // Qt 版的做法：拦截退出、跳到设置页提示。这里保持同样语义。
   ipcMain.handle("app:request-quit", async () => requestQuit());
 
-  ipcMain.handle("app:set-busy", (_e, busy: boolean, reason?: string) => {
-    busyReason = busy ? (reason ?? "正在执行后台任务") : "";
-    return busyReason;
+  ipcMain.handle("app:set-busy", (_e, busy: boolean, reason?: string, owner?: string) => {
+    if (typeof owner !== "string" || !owner) return "";
+    if (busy) busyOwners.set(owner, reason || "正在执行后台任务");
+    else busyOwners.delete(owner);
+    return busyOwners.get(owner) ?? "";
   });
 
-  ipcMain.handle("app:busy-reason", () => busyReason);
+  ipcMain.handle("app:busy-reason", () => busyReason());
 }
 
 function stamp(): string {
@@ -632,7 +638,12 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") void requestQuit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (busyReason()) {
+    event.preventDefault();
+    requestQuit();
+    return;
+  }
   stopLiveOcr();
   bridge?.dispose();
   tray?.destroy();

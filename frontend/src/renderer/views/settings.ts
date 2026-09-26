@@ -876,11 +876,12 @@ function storageTab(): HTMLElement {
     if (!picked) return;
     importState.textContent = tr("正在扫描…");
     // 迁移是多 GB 的文件搬动，期间必须阻止退出（否则留下半个模型库）
-    void window.voxsub?.app.setBusy(true, tr("模型仍在后台迁移，请等待完成后再退出应用。"));
+    const busyOwner = `import-models-${crypto.randomUUID()}`;
+    void window.voxsub?.app.setBusy(true, tr("模型仍在后台迁移，请等待完成后再退出应用。"), busyOwner);
     const result = await call<{ moved: number; skipped: number }>(CMD.importModels, {
       source: picked,
     });
-    void window.voxsub?.app.setBusy(false);
+    void window.voxsub?.app.setBusy(false, undefined, busyOwner);
     importState.textContent = result
       ? tr("已并入 {n} 项，跳过 {m} 项").replace("{n}", String(result.moved)).replace("{m}", String(result.skipped))
       : tr("迁移失败，详见日志");
@@ -932,10 +933,15 @@ function storageTab(): HTMLElement {
   });
   on(legacyOpen, "click", () => {
     const host = document.querySelector<HTMLElement>(".page-layer");
-    if (!host) return;
+    const lifecycle = settingsLifecycle;
+    if (!host || !lifecycle || lifecycle.disposed) return;
+    const isCurrent = (): boolean => settingsLifecycle === lifecycle && !lifecycle.disposed;
     // 向导顶掉的是整个页面层，因此它的释放动作也挂到设置页的 lifecycle 上：
     // 设置页被关闭/替换时，向导的订阅一并收掉（缺口 #10 的同一类泄漏）。
-    void reopenWizard(host).then((wizard) => settingsLifecycle?.add(wizard.dispose));
+    void reopenWizard(host, isCurrent).then((wizard) => {
+      if (isCurrent()) lifecycle.add(wizard.dispose);
+      else wizard.dispose();
+    });
   });
 
   page.append(

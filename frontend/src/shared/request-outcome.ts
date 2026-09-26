@@ -49,6 +49,9 @@ export const SLOW_REQUEST_NOTICE_MS = 30_000;
  */
 export const REQUEST_HARD_DEADLINE_MS = 30 * 60_000;
 
+/** 该请求在后端边界上的投递确定性。 */
+export type CommandDelivery = "not_sent" | "unknown" | "response";
+
 export interface CommandResultLike {
   ok: boolean;
   error?: string;
@@ -56,6 +59,8 @@ export interface CommandResultLike {
   timedOut?: boolean;
   /** 请求没能发出（后端未运行 / 未初始化 / 未就绪）。 */
   unavailable?: boolean;
+  /** 是否能确定命令未发送、已收到回复或投递状态不明。 */
+  delivery?: CommandDelivery;
 }
 
 export function classifyCommandResult(result: CommandResultLike | null | undefined): RequestOutcome {

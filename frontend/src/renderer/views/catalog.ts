@@ -35,16 +35,36 @@ export async function loadModels(pageId = activePageId): Promise<void> {
   const requestId = ++loadRequestId;
   const isCurrent = (): boolean => pageId === activePageId && requestId === loadRequestId;
   const modelsRoot = document.documentElement.dataset["modelsRoot"] ?? "";
-  const result = await call<ModelCatalogResult>(CMD.listModels, {
-    models_root: modelsRoot || null,
-  });
-  if (!isCurrent()) return;
+  let result: ModelCatalogResult | null = null;
+  try {
+    result = await call<ModelCatalogResult>(CMD.listModels, {
+      models_root: modelsRoot || null,
+    });
+  } catch (error) {
+    if (!isCurrent()) return;
+    store.pushLog({
+      ts: new Date().toISOString(),
+      level: "ERROR",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!isCurrent() || !result) return;
 
-  models = result?.models ?? [];
+  models = result.models;
   if (result?.modelsRoot) store.patch({ modelsRoot: result.modelsRoot });
 
   // OCR 临时目录：译后图片要落盘，界面需要知道往哪写
-  const cache = await call<{ path: string }>(CMD.ocrCacheDir);
+  let cache: { path: string } | null = null;
+  try {
+    cache = await call<{ path: string }>(CMD.ocrCacheDir);
+  } catch (error) {
+    if (!isCurrent()) return;
+    store.pushLog({
+      ts: new Date().toISOString(),
+      level: "ERROR",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
   if (!isCurrent()) return;
   if (cache?.path) store.patch({ cacheRoot: cache.path });
   renderGrid();

@@ -32,11 +32,15 @@ export type BackendEvent =
 export interface CommandResult {
   ok: boolean;
   error?: string;
+  code?: string;
+  jobId?: string;
   data?: unknown;
   /** 请求未在时限内返回：**不是失败**，后端可能仍在处理（见下方 command()）。 */
   timedOut?: boolean;
   /** 请求没能发出（后端未运行 / 未初始化）。 */
   unavailable?: boolean;
+  /** 命令是否确定未发送、收到回复或仍处于不确定状态。 */
+  delivery?: "not_sent" | "unknown" | "response";
 }
 
 type Listener = (event: BackendEvent) => void;
@@ -203,7 +207,12 @@ export class BackendBridge {
       this.emit({ type: "disconnected", reason: `code=${code ?? "null"}` });
       this.emit({ type: "log", ts: localIsoNow(), level: "WARNING", message: `后端已退出（code=${code ?? "null"}）` });
       for (const [id, request] of this.pending) {
-        this.settle(id, request, { ok: false, unavailable: true, error: "后端已退出" });
+        this.settle(id, request, {
+          ok: false,
+          unavailable: true,
+          error: "后端已退出",
+          delivery: "unknown",
+        });
       }
       this.pending.clear();
     });
@@ -230,6 +239,9 @@ export class BackendBridge {
         const ok = payload["ok"] !== false;
         this.settle(id, request, {
           ok,
+          delivery: "response",
+          ...(typeof payload["code"] === "string" ? { code: payload["code"] } : {}),
+          ...(typeof payload["jobId"] === "string" ? { jobId: payload["jobId"] } : {}),
           ...(typeof payload["error"] === "string" ? { error: payload["error"] } : {}),
           data: payload["data"],
         });
@@ -246,7 +258,7 @@ export class BackendBridge {
   command(name: string, args: unknown): Promise<CommandResult> {
     if (!this.child) {
       // 请求根本没发出去 —— 与"后端报错"分开，界面能据此说清是哪种情况。
-      return Promise.resolve({ ok: false, unavailable: true, error: "后端未运行" });
+      return Promise.resolve({ ok: false, unavailable: true, error: "后端未运行", delivery: "not_sent" });
     }
     const id = this.nextId++;
     const payload = JSON.stringify({ id, command: name, args }) + "\n";
@@ -284,6 +296,7 @@ export class BackendBridge {
           ok: false,
           timedOut: true,
           error: `请求未在 ${Math.round(REQUEST_HARD_DEADLINE_MS / 60_000)} 分钟内返回（不代表任务失败，也不代表已取消）`,
+          delivery: "unknown",
         });
       }, REQUEST_HARD_DEADLINE_MS);
 
@@ -292,7 +305,7 @@ export class BackendBridge {
         if (error) {
           const request = this.pending.get(id);
           if (request) {
-            this.settle(id, request, { ok: false, error: error.message });
+            this.settle(id, request, { ok: false, error: error.message, delivery: "unknown" });
           }
         }
       });
@@ -323,7 +336,7 @@ export class BackendBridge {
     const child = this.child;
     this.child = null;
     for (const [id, request] of this.pending) {
-      this.settle(id, request, { ok: false, unavailable: true, error: "正在退出" });
+      this.settle(id, request, { ok: false, unavailable: true, error: "正在退出", delivery: "unknown" });
     }
     this.pending.clear();
     if (!child) return;

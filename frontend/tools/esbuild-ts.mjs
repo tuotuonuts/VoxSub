@@ -42,12 +42,7 @@ export async function importShared(relativePaths, options = {}) {
   const files = single ? [relativePaths] : relativePaths;
   const bundle = options.bundle === true;
 
-  const esbuild = join(
-    ROOT,
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "esbuild.cmd" : "esbuild",
-  );
+  const esbuild = join(ROOT, "node_modules", "esbuild", "bin", "esbuild");
   if (!existsSync(esbuild)) {
     throw new Error("找不到 esbuild，请先在 frontend/ 下 npm install");
   }
@@ -65,13 +60,11 @@ export async function importShared(relativePaths, options = {}) {
       "--log-level=warning",
       ...(bundle ? ["--bundle", "--platform=node", "--target=node20"] : []),
     ];
-    const built = spawnSync(esbuild, args, {
-        cwd: ROOT,
-        stdio: "pipe",
-        encoding: "utf-8",
-        shell: process.platform === "win32",
-      },
-    );
+    const built = spawnSync(process.execPath, [esbuild, ...args], {
+      cwd: ROOT,
+      stdio: "pipe",
+      encoding: "utf-8",
+    });
     if (built.status !== 0) {
       throw new Error(`esbuild 编译失败 ${relative}：${(built.stderr ?? "").slice(0, 400)}`);
     }

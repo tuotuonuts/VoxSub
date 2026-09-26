@@ -22,6 +22,35 @@
  * 用法：node tools/test-confirm-action.mjs
  */
 import { importShared, createReporter } from "./esbuild-ts.mjs";
+import { createRequire } from "node:module";
+
+const ts = createRequire(import.meta.url)("typescript");
+
+function findNode(root, predicate) {
+  let match = null;
+  const visit = (node) => {
+    if (match) return;
+    if (predicate(node)) {
+      match = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return match;
+}
+
+function findCall(root, name) {
+  return findNode(root, (node) => ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) && node.expression.text === name);
+}
+
+function hasWindowConfirm(root) {
+  return Boolean(findNode(root, (node) => ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    ts.isIdentifier(node.expression.expression) && node.expression.expression.text === "window" &&
+    node.expression.name.text === "confirm"));
+}
 
 const { check, finish } = createReporter("危险操作确认闸门（§3.7 ConfirmAction）");
 const [confirmMod, cleanupMod] = await importShared(
@@ -134,8 +163,18 @@ console.log("\n=== 组件边界 ===\n");
   const mig = readFileSync(join(ROOT, "src/renderer/views/migration.ts"), "utf-8");
   check("诊断页：清除日志走闸门", diag.includes("runAfterConfirm("));
   check("诊断页：确认之后才调用清除函数", /runAfterConfirm\([\s\S]{0,200}clearLocalLogs\(\)/.test(diag));
-  check("迁移页：清理原目录走闸门", mig.includes("runAfterConfirm("));
-  check("迁移页：确认之后才进入 cleanupMigratedSources", /runAfterConfirm\([\s\S]{0,300}cleanupMigratedSources\(records\)/.test(mig));
+  const migAst = ts.createSourceFile("migration.ts", mig, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const requestCleanup = findNode(migAst, (node) => ts.isFunctionDeclaration(node) &&
+    node.name?.text === "requestCleanup");
+  const confirmGate = requestCleanup ? findCall(requestCleanup, "runAfterConfirm") : null;
+  const cleanupAction = confirmGate?.arguments[1];
+  const cleanupCall = cleanupAction ? findCall(cleanupAction, "cleanupMigratedSources") : null;
+  check("迁移页：清理原目录走闸门", confirmGate !== null);
+  check("迁移页：确认回调才进入 cleanupMigratedSources", Boolean(cleanupAction && cleanupCall &&
+    ts.isArrowFunction(cleanupAction) && cleanupCall.arguments[0]?.kind === ts.SyntaxKind.Identifier &&
+    cleanupCall.arguments[0].text === "records"));
+  check("迁移页：弹出的确认位于闸门 ask 回调", Boolean(confirmGate?.arguments[0] &&
+    ts.isArrowFunction(confirmGate.arguments[0]) && hasWindowConfirm(confirmGate.arguments[0])));
   // window.confirm 只应出现在这两个闸门的 ask 里
   const confirms = [...diag.matchAll(/window\.confirm\(/g)].length + [...mig.matchAll(/window\.confirm\(/g)].length;
   check("两处确认弹窗都只剩闸门里的一次调用", confirms === 2, `共 ${confirms} 处 window.confirm`);

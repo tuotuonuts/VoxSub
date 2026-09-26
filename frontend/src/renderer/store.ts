@@ -26,6 +26,7 @@ import {
   isTerminalJobStatus,
   parseJobEvent,
   type CommandResultLike,
+  type CommandDelivery,
   type RequestOutcome,
 } from "../shared/request-outcome";
 
@@ -299,11 +300,15 @@ export const store = new Store();
 export interface CommandResult<T = unknown> {
   ok: boolean;
   error?: string;
+  code?: string;
+  jobId?: string;
   data?: T;
   /** 请求在时限内没返回（后端仍在处理）；超时**不是**失败，也不是取消。 */
   timedOut?: boolean;
   /** 请求没能发出（后端未运行 / 未初始化）。 */
   unavailable?: boolean;
+  /** 命令是否确定未发送、收到回复或仍处于不确定状态。 */
+  delivery?: CommandDelivery;
 }
 
 /* ------------------------------------------------------------ 后端状态机 */
@@ -374,6 +379,12 @@ function whenBackendReady(): Promise<void> {
 export interface CallOutcome<T> {
   outcome: RequestOutcome;
   data: T | null;
+  /** 实际投递状态；unknown 必须继续持有长任务退出保护。 */
+  delivery: CommandDelivery;
+  /** 远端拒绝码：供需要恢复已有 owner 的长任务命令辨别冲突。 */
+  code?: string;
+  /** 远端冲突时关联到已有任务的编号。 */
+  jobId?: string;
 }
 
 /**
@@ -394,7 +405,7 @@ export async function callWithOutcome<T = unknown>(
       level: "ERROR",
       message: `IPC 不可用，无法执行 ${command}`,
     });
-    return { outcome: "unavailable", data: null };
+    return { outcome: "unavailable", data: null, delivery: "not_sent" };
   }
 
   await whenBackendReady();
@@ -405,23 +416,35 @@ export async function callWithOutcome<T = unknown>(
       level: "ERROR",
       message: `${command} 未执行：后端启动失败（${backendFailed}）`,
     });
-    return { outcome: "unavailable", data: null };
+    return { outcome: "unavailable", data: null, delivery: "not_sent" };
   }
 
   const result = (await api.backend.command(command, args)) as CommandResult<T>;
   const outcome = classifyCommandResult(result as CommandResultLike);
+  const delivery: CommandDelivery = result.delivery === "not_sent" ||
+    result.delivery === "unknown" || result.delivery === "response"
+    ? result.delivery
+    : (result.ok || (!result.timedOut && !result.unavailable) ? "response" : "unknown");
   if (outcome === "ok") {
-    return { outcome, data: (result.data ?? null) as T | null };
+    return { outcome, data: (result.data ?? null) as T | null, delivery };
   }
 
   // 失败与超时分开记：把"还没回来"写成 ERROR「失败」会让用户以为任务挂了，
   // 而实际上后端仍在搬数据/下模型（缺陷 #4）。
   store.pushLog({
     ts: new Date().toISOString(),
-    level: outcome === "timeout" ? "WARNING" : "ERROR",
-    message: `${describeOutcome(outcome, command, uiTranslator)}${result.error ? `: ${result.error}` : ""}`,
+    level: outcome === "timeout" || delivery === "unknown" ? "WARNING" : "ERROR",
+    message: delivery === "unknown"
+      ? `${command}: ${uiTranslator("回执状态未知，任务可能仍在运行")}${result.error ? `: ${result.error}` : ""}`
+      : `${describeOutcome(outcome, command, uiTranslator)}${result.error ? `: ${result.error}` : ""}`,
   });
-  return { outcome, data: null };
+  return {
+    outcome,
+    data: null,
+    delivery,
+    ...(typeof result.code === "string" ? { code: result.code } : {}),
+    ...(typeof result.jobId === "string" ? { jobId: result.jobId } : {}),
+  };
 }
 
 /** 只要数据的调用点用这个（超时同样是 null，语义与原先一致）。 */
