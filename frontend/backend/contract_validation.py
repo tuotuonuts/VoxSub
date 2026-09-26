@@ -1,11 +1,12 @@
 """VoxSub IPC 契约的轻量运行时校验器 —— 纯标准库实现。
 
 职责：在协议边界上把"契约漂移"变成一条可读的错误，而不是让它下游炸成
-AttributeError / KeyError。三处边界都用它：
+AttributeError / KeyError。生产边界负责校验：
 
-  · 入站命令  —— ``validate_request(message)``：信封 + 命令名已知 + args 合法
-  · 出站结果  —— ``validate_result(name, data)``
-  · 出站事件  —— ``validate_event(event)``
+  · 入站命令  —— ``IpcLoop._parse_line`` 做结构闸门，``_admissible`` 调用 ``validate_args``；``validate_request`` 是独立完整入口
+  · 出站应答  —— ``IpcLoop._send`` 校验信封、命令结果与异步受理回执
+  · 出站事件  —— ``IpcLoop._event`` 校验事件载荷；迁移终态报告再复用命令结果契约
+  · 契约位置  —— source mode 用仓库 ``contracts/``；PyInstaller sidecar 用 ``sys._MEIPASS/contracts``
 
 实现的是 **JSON Schema draft 2020-12 的子集**，不是完整实现。已支持：
 
@@ -26,12 +27,13 @@ if/then/else、format 语义校验（只当成注释）、contentEncoding/conten
 边界校验引入新依赖会同时影响 .venv 与 PyInstaller 打包体积。这里的子集只用了
 re/json 两个标准库模块。
 
-依赖：仅 json / re / pathlib / typing。
+依赖：仅 json / re / sys / pathlib / typing。
 """
 from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -50,12 +52,20 @@ __all__ = [
 
 # --------------------------------------------------------------------- 常量
 
-#: 契约文件所在目录（仓库根 / contracts）。本文件在 frontend/backend/ 下。
-DEFAULT_CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
+def default_contracts_dir() -> Path:
+    """Source mode uses the repository tree; PyInstaller uses its collected data root."""
+    if bool(getattr(sys, "frozen", False)):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+        return bundle_root / "contracts"
+    return Path(__file__).resolve().parents[2] / "contracts"
+
+
+#: Default directory remains exported for older callers; each registry resolves dynamically.
+DEFAULT_CONTRACTS_DIR = default_contracts_dir()
 
 #: 单条线上消息的**兜底**上限（字节）。仅当协议文件读不到 `transport.maxLineBytes`
 #: 时生效 —— 正常运行时以 `contracts/protocol.json` 的 32 MiB 为准（读循环真正的
-#: 上限是 `ipc_loop.MAX_LINE_CHARS`，测试断言两者一致）。
+#: 上限是 `ipc_loop.MAX_LINE_BYTES`，测试断言两者一致）。
 #:
 #: 为什么兜底值比正式值小：兜底只在"契约缺失"这种异常态生效，此时宁可更保守 ——
 #: 拒掉一条超大消息，也好过在没有任何契约约束的情况下把内存读爆。两个数字不同是
@@ -453,7 +463,7 @@ class ContractRegistry:
     ERROR_CODES = "error-codes.json"
 
     def __init__(self, contracts_dir: str | Path | None = None) -> None:
-        self.dir = Path(contracts_dir) if contracts_dir else DEFAULT_CONTRACTS_DIR
+        self.dir = Path(contracts_dir) if contracts_dir else default_contracts_dir()
         self.protocol = self._load(self.PROTOCOL)
         self.commands = self._load(self.COMMANDS)
         self.events = self._load(self.EVENTS)
@@ -550,6 +560,15 @@ class ContractRegistry:
         if errors:
             raise ContractViolation(errors, f"命令 {name!r} 的返回值不合法")
 
+    def validate_async_accepted(self, data: Any) -> None:
+        """Validate the transport acknowledgement returned for ``args.async=true``."""
+        schema = (self.protocol.get("$defs") or {}).get("AsyncAccepted")
+        if not isinstance(schema, dict):
+            raise ContractNotFound(["protocol.json 缺少 $defs.AsyncAccepted"], "契约不可用")
+        errors = iter_errors(data, schema, root=self.protocol, path="$.protocol.AsyncAccepted")
+        if errors:
+            raise ContractViolation(errors, "异步受理回执不合法")
+
     def validate_event(self, event: Any) -> None:
         """校验一条出站事件：必须是对象、带已知 event 名、载荷形状正确。"""
         if not isinstance(event, dict):
@@ -566,8 +585,22 @@ class ContractRegistry:
         errors = iter_errors(event, schema, root=self.events, path=f"$.events.{name}")
         if errors:
             raise ContractViolation(errors, f"事件 {name!r} 的载荷不合法")
+        if name == "job" and "result" in event:
+            if event.get("command") != "start_migration" or event.get("status") != "succeeded":
+                raise ContractViolation(
+                    ["$.events.job.result: 只有 start_migration 成功终态可以携带任务结果"],
+                    "任务事件结果不合法",
+                )
+            self.validate_result("start_migration", event["result"])
 
     # ---- 信封校验
+
+    def validate_request_envelope(self, message: Any) -> None:
+        """校验入站命令的通用信封形状，不检查命令存在性或具体 args。"""
+        envelope = ((self.protocol.get("envelope") or {}).get("request")) or {}
+        errors = iter_errors(message, envelope, root=self.protocol, path="$")
+        if errors:
+            raise ContractViolation(errors, "入站命令信封不合法")
 
     def validate_request(self, message: Any) -> str:
         """入站命令的完整边界校验，返回命令名。
@@ -575,32 +608,51 @@ class ContractRegistry:
         三层全查：信封形状 → 命令名在契约内 → args 合法。任何一层失败都抛
         :class:`ContractViolation`（不是逐个返回值），接线处只要 try/except 一次。
         """
-        envelope = ((self.protocol.get("envelope") or {}).get("request")) or {}
-        errors = iter_errors(message, envelope, root=self.protocol, path="$")
-        if errors:
-            raise ContractViolation(errors, "入站命令信封不合法")
+        self.validate_request_envelope(message)
         name = str(message["command"])
         self.command(name)
         self.validate_args(name, message.get("args"))
         return name
 
-    def validate_response(self, message: Any) -> None:
-        """出站应答的信封校验。ok:true 必须带 data，ok:false 必须带 error。"""
+    def validate_response(
+        self,
+        message: Any,
+        *,
+        command: str | None = None,
+        async_accepted: bool = False,
+    ) -> None:
+        """Validate a response envelope and, when supplied, its actual command result."""
         envelope = ((self.protocol.get("envelope") or {}).get("response")) or {}
         errors = iter_errors(message, envelope, root=self.protocol, path="$")
         if errors:
             raise ContractViolation(errors, "出站应答信封不合法")
+        if not isinstance(message, dict) or message.get("ok") is not True:
+            return
+        data = message.get("data")
+        if async_accepted:
+            self.validate_async_accepted(data)
+        elif command is not None:
+            self.validate_result(command, data)
 
-    def validate_outbound(self, message: Any) -> str:
-        """出站消息：应答或事件，返回 ``"response"`` / ``"event"``。
+    def validate_outbound(
+        self,
+        message: Any,
+        *,
+        command: str | None = None,
+        async_accepted: bool = False,
+    ) -> str:
+        """Validate an outbound response/event, optionally including command result data.
 
         判定顺序与 BackendBridge._route 一致：先看 id 是不是数字 → 应答，
         否则看 event 是不是字符串 → 事件。
         """
         if not isinstance(message, dict):
             raise ContractViolation([f"$: 出站消息必须是对象，实际 {_type_of(message)}"], "出站消息不合法")
-        if isinstance(message.get("id"), int) and not isinstance(message.get("id"), bool):
-            self.validate_response(message)
+        if "id" in message and (
+            message.get("id") is None
+            or (isinstance(message.get("id"), int) and not isinstance(message.get("id"), bool))
+        ):
+            self.validate_response(message, command=command, async_accepted=async_accepted)
             return "response"
         if isinstance(message.get("event"), str):
             self.validate_event(message)

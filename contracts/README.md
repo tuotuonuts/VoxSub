@@ -26,9 +26,7 @@ tests/test_contracts.py                   覆盖测试 + 棘轮测试 + 校验�
 这三处谁对不上，表现都是"点了没反应"或"弹一个看不懂的错"，而不是启动失败。
 契约 + 覆盖测试把这类错误变成**一次 pytest 失败**。
 
-另一个动机是**诚实地记录缺口**。这个仓库里"声明的形状"和"实际发的东西"本来就不完全一致
-（TS 声明落后、读循环发的 log 事件缺 `ts`）。与其假装一致，不如逐条登记，
-再用棘轮测试保证缺口只能缩小、不能悄悄扩大。
+另一个动机是**诚实地记录缺口**。契约、跨语言声明与实际 UI 消费仍可能漂移；当前的 UI 字段差异和 ready 握手兼容缺口分别登记在 `events.json` 与 `protocol.json`。生产 `IpcLoop` 的运行时校验只能检查已接入边界上的载荷，不能代替 renderer 类型/消费路径的核对。缺口必须显式登记并由棘轮测试防止悄悄扩大，修复后再同步删除登记。
 
 ## 三个层次的关系
 
@@ -36,7 +34,16 @@ tests/test_contracts.py                   覆盖测试 + 棘轮测试 + 校验�
 |---|---|---|
 | **契约（本目录）** | JSON Schema draft 2020-12 子集 | 单一来源。测试断言代码与它一致 |
 | **校验器** | `contract_validation.py` | 运行时执行契约。只用了 `json` / `re`，无新依赖 |
-| **测试** | `tests/test_contracts.py` | 离线静态解析源码 + 运行时负向测试 |
+| **测试** | `tests/test_contracts.py` 与 `tests/test_ipc_contract_runtime.py` | 离线静态/Schema 测试 + 接入生产 `IpcLoop` 的行为测试 |
+
+### 生产运行时校验范围
+
+- **源码运行**：`IpcLoop` 通过 `ContractRegistry` 从仓库根 `contracts/` 读取 `protocol.json`、`commands.json`、`events.json`、`error-codes.json`。
+- **冻结 sidecar**：`ipc_server.spec` 将这四个 JSON 放入 bundle 的 `contracts/`；冻结态解析器从 `sys._MEIPASS/contracts` 读取。冻结资源的 spec 配置有静态测试断言，但本轮未生成或运行真实 PyInstaller 产物（`NOT_RUN`）。
+- **`CONTRACT_ENFORCE = False`（当前默认且源码硬编码）是兼容/告警模式，不是关闭校验**：生产入口创建 `IpcLoop` 后，入站请求先经 `_split_request()` 中的 `validate_request_envelope()` 检查通用信封，再在已知命令通过后由 `_check_inbound()` 校验该命令的 args；出站 response 由 `_check_outbound()` 校验通用信封及 `ok: true` 的命令结果，async 受理回执和事件也分别校验。默认发现 schema 违规会记录告警并继续传递；解析器仍会拒绝非法 JSON、非对象请求、缺失 id/command、非对象 args，未知命令也始终拒绝。
+- **`CONTRACT_ENFORCE = True` 是硬拒模式**：无效 request envelope/args 在 handler 前拒绝；无效应答替换为 `contract_violation`，无效事件丢弃；合同注册器不可用时 fail closed。当前只有隔离的 IpcLoop/schema 行为覆盖；全部 renderer 调用点的严格模式兼容性、真实 sidecar 运行仍未验证，因此发布默认继续为 `False`。
+- 运行时结果校验只对成功 response 的 `data` 运行命令专属 result schema；错误 response 没有成功结果可校验。迁移成功终态携带的 `result` 另有命令/状态约束。错误诊断事件由防递归路径发出，不能把它当作任意业务事件都经过完整应用级端到端校验的证明。
+- 如果缺失契约，兼容模式会输出一次 ERROR 并继续；这保证开发/启动不静默，但不代表运行时 schema 检查仍然有效。
 
 契约是**从代码实测推导**的（`ast` 解析 `_cmd_*` / `_event(...)`，文本解析 TS），
 不是手写愿望清单。改动顺序永远是：先改代码，再跑测试看它指出哪些契约条目要同步。

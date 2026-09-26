@@ -2769,7 +2769,8 @@
       },
       "errors": [
         "ValueError",
-        "OSError"
+        "OSError",
+        "active_job_exists"
       ],
       "sideEffects": [
         "event:migration"

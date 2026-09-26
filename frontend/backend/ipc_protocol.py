@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 #: 真正的 stdout。**必须在 ipc_server 把 sys.stdout 换成 stderr 之前**捕获，
 #: 否则协议输出会混进诊断流。
@@ -20,6 +20,20 @@ _PROTOCOL_OUT = sys.stdout
 
 #: 保护 stdout 写入。多线程写非串行化会把两行 JSON 交错在一起。
 _PROTOCOL_LOCK = threading.Lock()
+
+#: Optional router installed by the IPC composition root so producer events share
+#: the same runtime schema boundary as requests, replies, and JobRunner events.
+_EVENT_DISPATCHER_LOCK = threading.Lock()
+_EVENT_DISPATCHER: Callable[[dict[str, Any]], None] | None = None
+
+
+def set_event_dispatcher(
+    dispatcher: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    """Install or clear the single-process producer-event boundary."""
+    global _EVENT_DISPATCHER
+    with _EVENT_DISPATCHER_LOCK:
+        _EVENT_DISPATCHER = dispatcher
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -34,7 +48,13 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 def _event(kind: str, **fields: Any) -> None:
-    _emit({"event": kind, **fields})
+    payload = {"event": kind, **fields}
+    with _EVENT_DISPATCHER_LOCK:
+        dispatcher = _EVENT_DISPATCHER
+    if dispatcher is None:
+        _emit(payload)
+    else:
+        dispatcher(payload)
 
 
 def _cancel_requested() -> bool:

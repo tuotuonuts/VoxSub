@@ -77,6 +77,14 @@ class QueueFull(RuntimeError):
     """待执行队列已满，拒绝接收新任务。"""
 
 
+class ActiveJobExists(RuntimeError):
+    """同类任务仍处于活动状态，拒绝重复提交，并提供可安全关联的 jobId。"""
+
+    def __init__(self, job_id: str, command: str) -> None:
+        super().__init__(f"同类任务已在运行：{command}")
+        self.job_id = job_id
+
+
 class UnknownJob(KeyError):
     """引用了不存在的 jobId。"""
 
@@ -210,14 +218,23 @@ class JobRunner:
         args: Any,
         *,
         on_queued: Callable[[Job], None] | None = None,
+        reject_if_active: bool = False,
     ) -> Job:
         """提交一个任务，立即返回 ``Job``（此时状态为 queued 或 running）。
 
         ``on_queued`` 在任务对 worker 可见之前调用，供协议层先登记请求关联；
-        回调应保持轻量且不得重入此 runner。
+        回调应保持轻量且不得重入此 runner。需要互斥的命令可设置
+        ``reject_if_active``，并在同一锁内检查和入队，避免竞态重复提交。
         """
-        job = Job(id=uuid.uuid4().hex, command=str(command))
+        normalized_command = str(command)
+        job = Job(id=uuid.uuid4().hex, command=normalized_command)
         with self._lock:
+            active = next((
+                existing for existing in self._jobs.values()
+                if existing.command == normalized_command and existing.status in ACTIVE
+            ), None)
+            if reject_if_active and active is not None:
+                raise ActiveJobExists(active.id, normalized_command)
             if len(self._pending) >= self._max_pending:
                 raise QueueFull(
                     f"后台任务队列已满（{self._max_pending} 个待执行），请稍后再试"

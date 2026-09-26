@@ -78,6 +78,7 @@ from contract_validation import (  # noqa: E402
     resolve_ref,
     validate,
 )
+from ipc_loop import MAX_LINE_BYTES as IPC_LOOP_MAX_LINE_BYTES  # noqa: E402
 
 
 # =============================================================== 静态取证工具
@@ -887,10 +888,10 @@ def test_拒绝超大消息(registry):
         registry.parse_line(too_big)
     assert "消息过大" in str(info.value)
     assert str(limit) in str(info.value)
-    assert limit == 32 * 1024 * 1024, (
-        f"契约里的 maxLineBytes={limit} 与 ipc_loop.MAX_LINE_CHARS 不一致"
+    assert limit == IPC_LOOP_MAX_LINE_BYTES == 32 * 1024 * 1024, (
+        f"契约里的 maxLineBytes={limit} 与 ipc_loop.MAX_LINE_BYTES 不一致"
     )
-    assert limit == MAX_LINE_BYTES or True  # MAX_LINE_BYTES 是模块级兜底，仅作参考
+    assert MAX_LINE_BYTES < limit  # Contract-file fallback stays intentionally conservative.
 
 
 def test_超大消息在解析前就被拒(registry):
@@ -985,7 +986,7 @@ def test_接受合法事件(registry):
     registry.validate_event({"event": "session", "action": "stop"})
     registry.validate_event({"event": "first_run", "modelsRoot": "D:\\VoxSub\\Models"})
     registry.validate_event({"event": "job", "jobId": "a", "command": "start_migration", "sequence": 3, "status": "cancelled", "error": "已取消", "code": "cancelled"})
-    registry.validate_event({"event": "job", "jobId": "b", "command": "start_migration", "clientMigrationId": "mig-1", "sequence": 3, "status": "succeeded", "result": {"done": [], "failed": [], "elapsedMs": 0, "ok": True}})
+    registry.validate_event({"event": "job", "jobId": "b", "command": "start_migration", "clientMigrationId": "mig-1", "sequence": 3, "status": "succeeded", "result": {"done": [], "failed": [], "elapsedMs": 0, "configUpdates": {}, "ok": True}})
     registry.validate_event({"event": "job", "jobId": "c", "command": "start_migration", "clientMigrationId": "mig-2", "sequence": 1, "status": "queued"})
     # 握手：完整目标形状
     registry.validate_event({
@@ -1007,7 +1008,7 @@ def test_接受合法事件(registry):
 def test_job_result_event_contract_restricts_payload_to_async_migration(registry):
     valid = {"event": "job", "jobId": "b", "command": "start_migration",
              "clientMigrationId": "mig-1", "sequence": 3, "status": "succeeded",
-             "result": {"done": [], "failed": [], "elapsedMs": 0, "ok": True}}
+             "result": {"done": [], "failed": [], "elapsedMs": 0, "configUpdates": {}, "ok": True}}
     registry.validate_event(valid)
 
     with pytest.raises(ContractViolation):

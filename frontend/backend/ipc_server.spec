@@ -25,6 +25,14 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
+# The sidecar's runtime validator reads these JSON files from sys._MEIPASS/contracts.
+CONTRACTS_DIR = Path(SPECPATH).resolve().parents[1] / "contracts"
+datas += [
+    (str(CONTRACTS_DIR / "protocol.json"), "contracts"),
+    (str(CONTRACTS_DIR / "commands.json"), "contracts"),
+    (str(CONTRACTS_DIR / "events.json"), "contracts"),
+    (str(CONTRACTS_DIR / "error-codes.json"), "contracts"),
+]
 hiddenimports = [
     "voxsub.pipeline",
     "voxsub.translate.factory",

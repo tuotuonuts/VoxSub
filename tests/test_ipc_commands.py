@@ -807,6 +807,32 @@ class TestOcrResourceOwnership:
         service.close()  # 不该抛
         assert service._ocr_translator is None  # noqa: SLF001
 
+    def test_pipeline_remains_owned_until_close_succeeds(self, service):
+        """退出清理未完成时，BackendService 不得先丢弃 Pipeline owner。"""
+        outcomes = iter([False, True])
+        calls: list[str] = []
+
+        class _PendingPipeline:
+            def stop(self) -> None:
+                calls.append("stop")
+
+            def close(self) -> bool:
+                calls.append("close")
+                return next(outcomes)
+
+        pipeline = _PendingPipeline()
+        service._pipeline = pipeline  # noqa: SLF001
+
+        service.close()
+
+        assert service._pipeline is pipeline  # noqa: SLF001
+        assert calls == ["stop", "close"]
+
+        service.close()
+
+        assert service._pipeline is None  # noqa: SLF001
+        assert calls == ["stop", "close", "stop", "close"]
+
 
 class TestPipelineCreationIsSingleInstance:
     """`ensure_pipeline()` 的并发安全（独立审查指出本轮新暴露的竞态）。

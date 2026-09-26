@@ -9,11 +9,11 @@
     "field": "ready.protocolVersion",
     "sourceConstant": "ipc_loop.PROTOCOL_VERSION",
     "value": 1,
-    "relation": "契约文档版本（semver 2.0.0）与线上整数（1）**不是**同一个序列，也没有机械映射 —— 线上整数只做粗粒度兼容判断，契约文档版本记录契约本身的演进。测试断言这里的 value 与 ipc_loop.PROTOCOL_VERSION 相等（改一处必须改另一处），但不试图把两者换算。",
-    "recommendation": "主代理接线时二选一：① 握手同时发整数 protocolVersion 与 semver protocolRevision；② 统一为 semver 字符串。保持现状也可以，只要前端只做\"主版本不等即拒绝\"这一种判断。"
+    "relation": "契约文档版本（semver 2.0.0）与线上整数（1）**不是**同一个序列，也没有机械映射 —— 线上整数原用于粗粒度兼容判断，但当前 renderer 尚未实施主版本拒绝；契约文档版本记录契约本身的演进。测试断言这里的 value 与 ipc_loop.PROTOCOL_VERSION 相等（改一处必须改另一处），但不试图把两者换算。",
+    "recommendation": "当前主进程会注入 backendGeneration；renderer 尚未实现如下兼容性检查：\"主版本不等即拒绝\"这一种判断。"
   },
   "appVersionAtAuthoring": "0.9.0-beta",
-  "status": "phase-1：契约与校验器已产出；把 ContractRegistry 接进 ipc_loop.py / ipc_server.py 的边界留给主代理",
+  "status": "phase-2：生产 IpcLoop 已接入可选运行时契约校验（请求信封/args、应答结果、async ack 与业务事件）；默认兼容告警，严格拒绝模式尚未完成全 UI/frozen 兼容验证，冻结资源规则也尚未做真实成品冒烟。",
   "generatedFrom": {
     "python": [
       "frontend/backend/ipc_server.py",
@@ -48,7 +48,7 @@
     "stdoutIsProtocolOnly": true,
     "diagnostics": "stderr（Electron 侧按级别解析后转发到界面日志区）",
     "maxLineBytes": 33554432,
-    "maxLineBytesSource": "ipc_loop.MAX_LINE_CHARS = 32 * 1024 * 1024 —— 给得宽是因为 OCR 会传 base64 图片；但仍有界，防止畸形输入把内存吃光",
+    "maxLineBytesSource": "ipc_loop.MAX_LINE_BYTES = 32 * 1024 * 1024 (UTF-8 bytes) —— 给得宽是因为 OCR 会传 base64 图片；但仍有界，防止畸形输入把内存吃光",
     "stdoutWriter": "frontend/backend/ipc_server.py::_emit",
     "readLoop": "frontend/backend/ipc_loop.py::IpcLoop.handle_line / serve",
     "dispatch": "frontend/backend/ipc_server.py::BackendService.handle（命令层）"
@@ -63,6 +63,19 @@
     "currentRevision": "2.0.0 —— 相对最初的 1.0.0：应答新增可选的 jobId / code 字段；握手改为 protocolVersion + backendGeneration + readiness + session；新增 job 事件；命令层新增 job_list / job_status / cancel_job；cleanup_migrated_source 的参数从 path 改为 record_id/record_ids + confirm。这些都是破坏性变更（旧的 path 参数已被显式拒绝），故 major +1。"
   },
   "$defs": {
+    "AsyncAccepted": {
+      "type": "object",
+      "description": "Transport acknowledgement for an async=true request; not the command's final result.",
+      "required": ["jobId", "accepted", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "jobId": { "type": "string", "minLength": 1 },
+        "accepted": { "const": true },
+        "status": {
+          "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]
+        }
+      }
+    },
     "StatePayload": {
       "type": "object",
       "description": "会话状态快照。命令返回值与 state 事件共用同一份（ipc_server.py::BackendService._state_payload）。",
@@ -108,11 +121,8 @@
       "additionalProperties": false,
       "properties": {
         "id": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "description": "请求序号，由 BackendBridge.nextId++ 生成，应答原样回带。协议允许 null（读循环会对缺失 id 直接拒绝，见 code=missing_id）。"
+          "type": "integer",
+          "description": "请求序号，由 BackendBridge.nextId++ 生成，应答原样回带。缺失或为 null 均以 code=missing_id 拒绝；错误应答仍允许 id:null 表示无法关联请求。"
         },
         "command": {
           "type": "string",
@@ -197,7 +207,7 @@
         },
         "jobId": {
           "type": "string",
-          "description": "失败的后台任务 id"
+          "description": "失败的后台任务 id；active_job_exists 拒绝重复 start_migration 时，表示仍处于活动状态的原任务 id"
         }
       }
     },
@@ -310,14 +320,17 @@
       "note": "读循环在任何命令分派**之前**做的校验。这些拒绝不经过命令层，错误码见 error-codes.json#/wireCodes。",
       "order": [
         "raw 为 None → empty_message",
-        "长度 > maxLineChars → message_too_large",
+        "行包含无法编码为 UTF-8 的字符 → bad_encoding",
+        "UTF-8 字节数 > maxLineBytes → message_too_large",
         "空行 → 静默忽略（不回执）",
         "非 JSON → 只发 log 事件，不回执",
         "非对象 → not_an_object",
-        "缺 id → missing_id",
+        "缺 id 或 id 为 null → missing_id",
         "缺 command → missing_command",
         "args 非对象 → bad_args",
-        "命令不存在 → unknown_command"
+        "通用 request envelope 不符合 protocol.json → 默认告警继续；严格模式以 contract_violation 拒绝",
+        "命令不存在 → unknown_command",
+        "已知命令 args 不符合 commands.json → 默认告警继续；严格模式在 handler 前以 contract_violation 拒绝"
       ]
     }
   },
@@ -358,7 +371,7 @@
         },
         "backendGeneration": {
           "type": "string",
-          "description": "后端代次标识。区分\"同一次运行\"与\"重启过\"，用于丢弃上一代仍在途的应答。当前缺省空串（主进程尚未注入）。"
+          "description": "后端代次标识；当前由主进程以 sidecar PID 字符串注入。renderer 会接收该字段，但目前不按代次拒绝旧响应或旧事件。"
         },
         "readiness": {
           "type": "object",
@@ -394,7 +407,7 @@
         }
       }
     },
-    "gap": "已接线部分：协议版本 / backend generation / 就绪状态与活动任务快照 / 会话状态全部在 ready 里。仍未做的三点（留给主代理）：① 主进程尚未注入 backendGeneration（当前恒为空串），因此\"区分代次\"暂时没有实际判别力；② ready 的 protocolVersion 是整数 1，而契约文件用 semver 2.0.0，两处需归一；③ 前端尚未在 ready 分支校验 protocolVersion 主版本 —— 不匹配时应拒绝启动并给出可读提示，现在会静默继续。"
+    "gap": "已接线：ready 包含实际协议版本、PID 代次、活动任务快照与 session。仍有两个未完成的保护：① renderer 未按 backendGeneration 淘汰上一代响应或事件；② renderer 未按线上 protocolVersion 拒绝不兼容主版本。协议文档 semver 2.0.0 与线上整数 1 是不同序列，不应机械归一。"
   },
   "responseCorrelation": {
     "rule": "应答按 id 配对，事件不参与配对",
@@ -402,7 +415,7 @@
     "timeoutMs": 30000,
     "timeoutError": "命令超时",
     "timeoutIsNotFailure": "前端超时只表示\"这次没等到回话\"，**不能**据此改写任务状态。任务状态只由后端说了算（job_runner 是权威定义）。",
-    "staleResponse": "id 未命中 pending 时静默丢弃；主代理接线后应改为\"按 backendGeneration 丢弃上一代应答\"。"
+    "staleResponse": "id 未命中当前 pending 时静默丢弃；BackendBridge 在子进程退出时清空 pending，但目前不按 backendGeneration 校验迟到应答或事件。"
   },
   "outboundFieldOwnership": {
     "description": "一条应答里字段由谁写，接线时必须清楚 —— 混用会导致\"命令返回值和信封字段打架\"。",

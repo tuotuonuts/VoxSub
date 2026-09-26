@@ -27,12 +27,15 @@
       "source": "ipc_loop.IpcLoop._reject / handle_line / _submit",
       "codes": [
         { "code": "empty_message", "when": "整行为 None（不是空串 —— 空串走\"静默忽略\"）" },
-        { "code": "message_too_large", "when": "行长超过 MAX_LINE_CHARS（32 MiB）；在 json.loads **之前**判定" },
+        { "code": "bad_encoding", "when": "消息行不能编码成合法 UTF-8，无法安全测量契约字节长度" },
+        { "code": "message_too_large", "when": "行的 UTF-8 字节数超过 MAX_LINE_BYTES（32 MiB）；在 json.loads **之前**判定" },
         { "code": "not_an_object", "when": "JSON 合法但顶层不是对象（如 [1,2] 或 \"x\"）" },
         { "code": "missing_id", "when": "顶层没有 id（或为 null）。协议要求每条请求带 id 才能配对" },
         { "code": "missing_command", "when": "command 缺失或为空白串" },
         { "code": "bad_args", "when": "args 存在但不是对象（数组/字符串/数字）" },
         { "code": "unknown_command", "when": "has_command() 判定命令不存在 —— **在排队之前**就拒，不会变成一条注定失败的作业" },
+        { "code": "active_job_exists", "when": "start_migration 检到同类迁移仍活动并拒绝重复提交；jobId 指向原活动任务" },
+        { "code": "contract_violation", "when": "CONTRACT_ENFORCE=True 时入站 args、应答、command result、异步受理回执或事件不符合 JSON Schema；contracts 缺失时 fail closed" },
         { "code": "queue_full", "when": "待执行队列已满（job_runner.MAX_PENDING = 16）" }
       ]
     },
@@ -100,6 +103,10 @@
   },
 
   "commandSpecific": {
+    "active_migration_already_running": {
+      "code": "active_job_exists",
+      "detail": "IpcLoop._submit rejects a duplicate start_migration and returns the existing active jobId for safe renderer reattachment"
+    },
     "unknown_model_id": {
       "code": "KeyError",
       "detail": "_spec() 里 get_model() 返回 None 时抛 KeyError(f\"未知模型 id：{model_id}\")",

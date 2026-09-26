@@ -166,6 +166,48 @@ def test_async_request_gets_immediate_receipt(loop):
     assert immediate[0]["data"]["jobId"]
 
 
+def test_second_async_migration_is_rejected_while_first_is_active(loop, monkeypatch):
+    """真实 IPC 分派不把第二条迁移排队到第一条后面。"""
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+    original_handle = loop.service.handle
+
+    def blocked_migration(command, args):
+        if command != "start_migration":
+            return original_handle(command, args)
+        calls.append(command)
+        started.set()
+        release.wait(timeout=5.0)
+        return {"done": [], "failed": [], "elapsedMs": 1, "ok": True}
+
+    monkeypatch.setattr(loop.service, "handle", blocked_migration)
+    try:
+        loop.handle_line(json.dumps({
+            "id": 31, "command": "start_migration",
+            "args": {"async": True, "clientMigrationId": "mig-first"},
+        }))
+        assert started.wait(timeout=5.0), "第一条迁移应已进入真实 JobRunner worker"
+        first = next(item for item in _replies(loop.emitted) if item["id"] == 31)
+        assert first["ok"] is True
+        first_job_id = first["data"]["jobId"]
+
+        loop.handle_line(json.dumps({
+            "id": 32, "command": "start_migration",
+            "args": {"async": True, "clientMigrationId": "mig-second"},
+        }))
+        second = next(item for item in _replies(loop.emitted) if item["id"] == 32)
+        assert second["ok"] is False
+        assert second["code"] == "active_job_exists"
+        assert second["jobId"] == first_job_id
+        assert [job.id for job in loop.runner.list_jobs(active_only=True)] == [first_job_id]
+    finally:
+        release.set()
+
+    assert loop.runner.wait_for_idle(5.0) is True
+    assert calls == ["start_migration"]
+
+
 def test_async_migration_terminal_event_carries_safe_result(loop):
     """异步迁移使用 jobId 跟踪；成功终态必须携带迁移报告以免 30 分钟硬超时丢结果。"""
     loop.handle_line(json.dumps({
@@ -373,11 +415,39 @@ def test_null_args_is_treated_as_empty(loop):
 
 def test_oversized_message_is_rejected(loop):
     """超大消息要有界拒绝，不能把内存吃光。"""
-    loop._max_line_chars = 200
+    loop._max_line_bytes = 200
     loop.handle_line(json.dumps({"id": 1, "command": "echo",
                                  "args": {"blob": "x" * 500}}))
     replies = _replies(loop.emitted)
     assert replies and replies[0]["code"] == "message_too_large"
+
+
+def test_message_limit_counts_utf8_bytes_not_unicode_characters(loop):
+    """The wire contract is a byte limit, so multibyte JSON must obey it."""
+    raw = json.dumps(
+        {"id": 1, "command": "echo", "args": {"blob": "你" * 40}},
+        ensure_ascii=False,
+    )
+    loop._max_line_bytes = len(raw)
+
+    loop.handle_line(raw)
+
+    replies = _replies(loop.emitted)
+    assert replies and replies[0]["code"] == "message_too_large"
+    assert "字节" in replies[0]["error"]
+
+
+def test_unencodable_utf8_line_is_rejected(loop):
+    """An invalid Unicode scalar must be rejected, not crash the reader."""
+    raw = json.dumps(
+        {"id": 1, "command": "echo", "args": {"blob": chr(0xD800)}},
+        ensure_ascii=False,
+    )
+
+    loop.handle_line(raw)
+
+    replies = _replies(loop.emitted)
+    assert replies and replies[0]["code"] == "bad_encoding"
 
 
 def test_blank_lines_are_ignored(loop):
@@ -410,7 +480,34 @@ def test_serve_processes_a_whole_batch(loop):
     assert [item["id"] for item in _replies(loop.emitted)] == [0, 1, 2]
 
 
-# --------------------------------------------------------------- 作业查询
+def test_serve_bounds_raw_byte_reads_and_discards_oversized_line(loop):
+    """The production stream boundary must cap reads before an attacker-sized line is allocated."""
+    import io
+
+    class ReadBoundedStream(io.BytesIO):
+        def __init__(self, payload: bytes) -> None:
+            super().__init__(payload)
+            self.read_sizes: list[int] = []
+
+        def readline(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            assert size >= 0, "serve() must never request an unbounded line read"
+            return super().readline(size)
+
+    loop._max_line_bytes = 64
+    oversized = b'{"id":1,"command":"ping","args":{"blob":"' + b"x" * 200 + b'"}}\n'
+    following = b'{"id":2,"command":"ping"}\n'
+    stream = ReadBoundedStream(oversized + following)
+
+    loop.serve(stream)
+
+    replies = _replies(loop.emitted)
+    assert replies[0]["code"] == "message_too_large"
+    assert replies[1]["id"] == 2 and replies[1]["ok"] is True
+    assert stream.read_sizes[0] == loop._max_line_bytes + 1
+    assert all(0 < size <= 8192 for size in stream.read_sizes)
+
+
 
 def test_job_status_and_list(loop):
     loop.handle_line(json.dumps({"id": 1, "command": "echo", "args": {"async": True}}))

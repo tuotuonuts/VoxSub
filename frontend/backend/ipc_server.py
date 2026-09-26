@@ -90,7 +90,7 @@ except (AttributeError, OSError):
 # ---- 协议层（必须早于下面的 stdout 交换）-------------------------------
 from ipc_protocol import (  # noqa: E402,F401
     _PROTOCOL_LOCK, _PROTOCOL_OUT, _cancel_requested, _emit, _event,
-    _exit_process, _now_iso,
+    _exit_process, _now_iso, set_event_dispatcher,
 )
 sys.stdout = sys.stderr
 
@@ -570,7 +570,9 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
     # ================================================================== 关闭
     def close(self) -> None:
         with self._lock:
-            pipeline, self._pipeline = self._pipeline, None
+            # Keep the Pipeline owned until its close() confirms completion.
+            # A false result means active workers still own runtime resources.
+            pipeline = self._pipeline
             ocr_translator, self._ocr_translator = getattr(self, "_ocr_translator", None), None
 
         # OCR 自建的翻译器**必须自己收**（工作单 §3.4：一个资源只有一个负责人）。
@@ -581,15 +583,28 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
         if pipeline is None:
             return
+        close_attempted = False
+        close_succeeded = False
         for action in ("stop", "close"):
             method = getattr(pipeline, action, None)
             if not callable(method):
                 continue
             try:
-                method()
+                result = method()
+                if action == "close":
+                    close_attempted = True
+                    close_succeeded = result is not False
             except Exception:  # noqa: BLE001 - 退出路径尽力而为
+                if action == "close":
+                    close_attempted = True
+                    close_succeeded = False
                 _event("log", level="error", ts=_now_iso(),
                        message=traceback.format_exc())
+
+        if close_attempted and close_succeeded:
+            with self._lock:
+                if self._pipeline is pipeline:
+                    self._pipeline = None
 
     @staticmethod
     def _close_quietly(component: Any, *, label: str) -> None:
@@ -691,7 +706,6 @@ def _ensure_first_run_defaults() -> dict[str, Any]:
 
 def main() -> int:
     service = BackendService()
-    service._install_log_sink()  # noqa: SLF001
 
     # 后台作业执行器：耗时命令交给它，读循环因此保持可响应。
     # 单 worker 是刻意的 —— OCR 引擎不能被并发调用，迁移也不能并行。
@@ -702,6 +716,11 @@ def main() -> int:
     runner = JobRunner()
     service.bind_job_runner(runner)
     loop = IpcLoop(service, runner, _emit)
+    # Pipeline callbacks and handler modules call ipc_protocol._event directly;
+    # route those producer events through the same schema boundary as loop events.
+    set_event_dispatcher(loop.emit_producer_event)
+    # Log-sink installation can emit a failure event, so install the validator first.
+    service._install_log_sink()  # noqa: SLF001
 
     try:
         from voxsub import __version__  # noqa: PLC0415
@@ -721,7 +740,7 @@ def main() -> int:
 
     runner.start()
     try:
-        loop.serve(sys.stdin)
+        loop.serve(getattr(sys.stdin, "buffer", sys.stdin))
     finally:
         # 退出前不打断在途任务，但要给出共享截止时间，而不是逐个叠加长超时。
         runner.stop(timeout=5.0)
