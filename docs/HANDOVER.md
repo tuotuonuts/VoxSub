@@ -8,30 +8,52 @@
 
 ---
 
-## 一、最短上手路径
+## 一、日常安全验收（Windows Git Bash）
+
+以下是源码安全验收，不等同 GUI、真实模型/音频或成品验收。工作目录、解释器、环境隔离和 marker 必须一起保留；不可直接复制旧版默认 pytest 命令。此机器 Hermes scratch 的实际绝对路径为 `E:/Hermes_data/cache/scratch`，换机器先核实，禁止回落到系统临时目录或 D:/tmp。
 
 ```bash
+(
+set -e
 cd D:/OneDrive/app_dve/VoxSub
-
-# 1. 后端全量测试（唯一入口，固定隔离临时目录）
-./.venv/Scripts/python.exe scripts/run_tests.py -q
-
-# 2. 跨进程集成（真起 sidecar 走真管道；不参与默认选择，要显式点名）
-#    必须带上 "and not hardware_audio"：显式 -m 会覆盖 pytest.ini 里的默认排除，
-#    否则会选中会真从扬声器播声音的 loopback 用例。
-./.venv/Scripts/python.exe scripts/run_tests.py tests/test_ipc_integration.py -m "integration and not hardware_audio"
-
-# 3. 前端类型检查 + 纯逻辑测试
-cd frontend && npm run check
-
-# 4. 一条命令跑完前端全部校验
-npm run verify
-
-# 5. 发布门禁（只检查，不产出任何东西）
-python frontend/tools/build-release.py --check-only
+unset PYTHONPATH PYTHONHOME
+run="E:/Hermes_data/cache/scratch/voxsub-safe-$(./.venv/Scripts/python.exe -c 'import uuid; print(uuid.uuid4().hex)')"
+mkdir -p "$run/APPDATA" "$run/LOCALAPPDATA" "$run/TEMP" "$run/TMP"
+export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP"
+./.venv/Scripts/python.exe -c 'import os,pathlib; root=pathlib.Path("E:/Hermes_data/cache/scratch").resolve(); paths={k:pathlib.Path(os.environ[k]).resolve() for k in ("APPDATA","LOCALAPPDATA","TEMP","TMP","TMPDIR")}; assert all(p.is_relative_to(root) for p in paths.values()); print(paths)'
+./.venv/Scripts/python.exe -m pytest -q -rs -m "not integration and not hardware_audio" --basetemp "$run/pytest"
+cd D:/OneDrive/app_dve/VoxSub/frontend
+npm run check
+npm run test:acceptance-contracts
+)
 ```
 
-前四条都绿了，再动手。
+marker 明确排除 integration 和 hardware_audio；skip/xfail/排除项不是通过。前端默认只执行 Node/TypeScript 门禁，不运行 Electron。括号隔离环境变量，结束后不把测试环境留给日常终端。
+
+### 单独运行真实 sidecar 通信测试（L3）
+
+仅在允许真实子进程只读通信检查时使用以下独立命令，不与上方单元/行为数量相加。测试启动自己的 Python sidecar，发握手/ping/state/get_config/只读诊断等命令，finally 仅回收该测试创建的子进程；可能枚举系统能力/窗口，但不启动音频捕获、播放、模型推理或用户目录迁移。
+
+```bash
+(
+set -e
+cd D:/OneDrive/app_dve/VoxSub
+unset PYTHONPATH PYTHONHOME
+run="E:/Hermes_data/cache/scratch/voxsub-ipc-$(./.venv/Scripts/python.exe -c 'import uuid; print(uuid.uuid4().hex)')"
+mkdir -p "$run/APPDATA" "$run/LOCALAPPDATA" "$run/TEMP" "$run/TMP"
+export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP"
+./.venv/Scripts/python.exe -c 'import os,pathlib; root=pathlib.Path("E:/Hermes_data/cache/scratch").resolve(); paths={k:pathlib.Path(os.environ[k]).resolve() for k in ("APPDATA","LOCALAPPDATA","TEMP","TMP","TMPDIR")}; assert all(p.is_relative_to(root) for p in paths.values()); print(paths)'
+./.venv/Scripts/python.exe -m pytest tests/test_ipc_integration.py -q -rs -m "integration and not hardware_audio" --basetemp "$run/pytest"
+)
+```
+
+### 旧工具警告（未删除，也未改造）
+
+- `scripts/run_tests.py` 会修剪历史 `.pytest-run` 子目录，且仅设置 basetemp；不完整隔离用户配置。它不是本轮的日常安全入口。默认 pytest 只排除 hardware_audio，并不排除全部 integration。
+- `npm run verify` 会继续调用 backend probe/OCR/迁移检查。`tools/probe-backend.py` 继承用户环境并包含 set_config、set_mode、set_langs、set_asr_tuning、导出等写操作；禁止把它当成无副作用校验直接执行。
+- 发布脚本、GUI、模型/音频和成品验证须另行确认环境与副作用。本轮未运行发布脚本，不把 `--check-only` 称为完全无副作用。
+
+最新返修证据与三个 Git 回退目标见 [LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md)。
 
 ---
 
@@ -57,7 +79,7 @@ python frontend/tools/build-release.py --check-only
 - 默认保持**同步应答**语义（前端不改也能用）；
 - 调用方带 `args.async = true` 时，立刻收到 `{jobId, accepted, status}`，结果走 `event:"job"`；
 - 异步 `start_migration` 由 Renderer 传唯一 `clientMigrationId`；该 ID 随迁移状态事件回传，成功终态同时带迁移报告，供受理回执硬超时后的终态重关联；其他 job 的任意结果不广播。
-- 前端须先订阅事件、再提交异步请求；关联 ID 让其在缺少 `jobId` 回执时继续等同一任务；若终态先于回执到达，缓存结果优先于后续 failed/unavailable 回执或断连。退出保护只在真实终态或后端断连时解除。
+- 前端须先订阅事件、再提交异步请求；关联 ID 让其在缺少 `jobId` 回执时继续等同一任务；若终态先于回执到达，缓存结果优先于后续 failed/unavailable 回执或断连。退出保护只在权威终态或确定未发送时解除；仅断连不足以认定任务结束。
 - 自动获得 `job_status` / `job_list` / `cancel_job` 的支持。
 
 如果你希望它支持**协作式取消**，在它的安全边界（例如每一步之间）插一句：
@@ -98,8 +120,7 @@ if _cancel_requested():
 2. **不许 mock 掉你正在验证的生命周期方法本身。** 那等于测了个寂寞。
 3. **不许删测试或放宽断言来变绿。** 测试红了先看是代码错还是断言错。
 4. **测试不得弹窗、抢焦点、播放音频。** 前端测试漏掉 `--silent` 会弹到用户桌面上。
-5. **测试临时目录只有一个位置**：`scripts/run_tests.py` 管理的 `.pytest-run/`。
-   不要手工往仓库根传 `--basetemp` —— 那正是 244 个 `.pytest-*` 的来源。
+5. **日常安全测试使用每次独占的 Hermes scratch 绝对目录**：按 §一隔离四个环境目录并显式传入 basetemp。不要使用未核实的 TMPDIR，不往仓库根或系统临时目录写测试产物；旧 wrapper 有清理副作用，不是安全默认入口。
 6. **每个"已修复"都要有真实运行输出**，没跑的写 NOT_RUN 加原因。
    严禁编造运行结果 —— 这比不做更糟。
 
@@ -159,8 +180,8 @@ python ../frontend/tools/build-release.py --check-only
 
 ### 发布前置条件（缺一不可）
 
-- [ ] Python 全量测试绿：`./.venv/Scripts/python.exe scripts/run_tests.py -q`
-- [ ] 前端校验绿：`cd frontend && npm run verify`
+- [ ] §一 Python 隔离安全套件通过；实际发布所需的集成/硬件测试另行授权、隔离、记录，不把排除项算通过。
+- [ ] 前端默认门禁：在 frontend 下执行 `npm run check` 与 `npm run test:acceptance-contracts`；旧 verify/probe 不得继承用户环境直接运行。
 - [ ] **所有版本位点一致**（package.json / electron-builder 配置 / Inno Setup 脚本 /
       Python 包版本 / 协议版本 / 文档文案）—— 有不一致直接失败
 - [ ] sidecar 重建成功（否则修好的 bug 不会进打包产物）
@@ -181,7 +202,11 @@ python ../frontend/tools/build-release.py --check-only
 
 ## 六、出问题怎么回滚
 
-### 当前维护跟进（2026-09-25/26）
+### 当前可靠恢复入口
+
+以 [LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md) 的三个 Git revert 目标为准；从最终含文档 HEAD 的完整演练证据保存在仓库外。禁止把以下历史局部快照视为整版本恢复。`.backups/phase1_20260921_042735/` 在本轮复核为空，历史恢复命令不得执行。
+
+### 历史维护跟进（2026-09-25/26，非当前执行入口）
 
 本轮返修从基线 `main@1c0781e3d647846844040c21ed38f4882c5db93c` 开始；不要把下方“前一轮已提交批次”的回退命令套到本轮工作树上。本轮文件快照及逐项恢复指引位于：
 
@@ -200,8 +225,7 @@ python ../frontend/tools/build-release.py --check-only
 
 每个目录的 `RESTORE.md` 记录快照文件、基线与恢复方法。先核对 `git status` 和目标路径，再依照单个阶段说明恢复；不要使用 `git reset --hard`、宽泛 `git clean` 或覆盖真实配置/用户数据。
 
-- 本轮分阶段提交与提交后回退命令：最终审查后补入本节交接记录；当前返修尚未提交。
-- 本轮完整阶段回退演练：**NOT_RUN**，除非下方后续记录明确更新为已演练；不得用前一轮的演练结果替代。
+- 上两行所对应批次的提交与旧演练已记录在 FINISH_2026-09-26.md；其仅代码回退不覆盖最终文档。当前完整恢复说明以 LAST_REPAIR_2026-09-27.md 为准。
 
 ### 前一轮已提交批次（与本轮返修分开）
 

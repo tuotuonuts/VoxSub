@@ -1,5 +1,7 @@
 # 语幕 VoxSub —— 可维护性整顿报告（本轮）
 
+> 当前安全验收、失效备份撤销与最终含文档版本的 Git 回退入口：[LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md)。下方保留历史整顿记录，不替代最新验收。
+
 > 本文件是本轮"代码可维护性整顿"的**主交付物**：改了什么、为什么改、怎么验证、
 > 哪些没做、怎么回滚、还剩什么风险。
 >
@@ -279,13 +281,17 @@ cd frontend && npm run check
 
 ## 七、备份与回滚
 
-**备份位置**：`.backups/phase1_20260921_042735/`（沿用仓库既有的 `.backups/` 约定）
+**历史备份不可用，以下命令不得执行。** 本轮重新核实 `.backups/phase1_20260921_042735/` 存在但不含文件。没有从 Git 重建并冒充原始备份。请使用 [LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md) 中明确起点/目标的 Git revert 路径。
+
+以下仅保留历史记录（不是当前恢复入口）：
+
+**当时记录的备份位置**：`.backups/phase1_20260921_042735/`
 
 内容：`ipc_server.py`、`tests/test_ipc_commands.py`、`frontend/src/renderer/store.ts`、`pytest.ini`
 
-**回滚**（只回滚被改的既有文件；本轮新增的模块可以留着不影响）：
+**历史失效恢复示例（禁止执行；也不能靠保留新增模块声称整版本回退）**：
 
-```bash
+```text
 cd D:/OneDrive/app_dve/VoxSub
 cp .backups/phase1_20260921_042735/ipc_server.py frontend/backend/ipc_server.py
 cp .backups/phase1_20260921_042735/test_ipc_commands.py tests/test_ipc_commands.py
@@ -293,8 +299,7 @@ cp .backups/phase1_20260921_042735/store.ts frontend/src/renderer/store.ts
 cp .backups/phase1_20260921_042735/pytest.ini pytest.ini
 ```
 
-注意回滚后 `tests/test_migration_ledger.py` / `test_job_runner.py` / `test_ipc_loop.py`
-会失败（它们测的是新契约），需要一并删掉或回退到对应 commit。
+旧说明曾建议局部恢复后删除不匹配的测试；该建议现已撤销。不能删测试制造通过，应按明确提交范围完整 revert（包含相应新增文件），并比较目标 Git tree。
 
 **回滚粒度**：每一块改动都单独可回退 ——
 - 删除授权：回滚 `ipc_server.py` 的 `_cmd_cleanup_migrated_source` + `_cmd_start_migration` 两个函数；
