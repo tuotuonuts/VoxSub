@@ -13,7 +13,8 @@ let quitCalls = 0;
 let disposals = 0;
 const messages = [];
 class FakeWindow {
-  constructor() { this.events = new Map(); this.webContents = { send: (...args) => messages.push(args) }; windows.push(this); }
+  constructor() { this.events = new Map(); this.webContents = { isDestroyed: () => false, send: (...args) => messages.push(args) }; windows.push(this); }
+  isDestroyed() { return false; }
   loadFile() { return Promise.resolve(); }
   on(name, fn) { this.events.set(name, fn); }
   once(name, fn) { this.events.set(name, fn); }

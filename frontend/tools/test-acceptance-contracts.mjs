@@ -42,7 +42,7 @@ export function inspectFrontend(readSource = read) {
   check('main: opacity handler clamps and broadcasts',
     call(opacityHandler, 'Number.isFinite', ['value']) &&
     call(opacityHandler, 'Math.min', ['1', 'Math.max(0.2, value)']) &&
-    call(opacityHandler, 'overlayWindow?.webContents.send', ['"overlay:opacity"', 'overlayOpacity']));
+    call(opacityHandler, 'sendToWindow', ['overlayWindow', '"overlay:opacity"', 'overlayOpacity']));
   const property = name => nodes(preload, n => ts.isPropertyAssignment(n) && n.name.getText() === name)[0];
   check('preload: setOpacity invokes exact channel/value',
     call(property('setOpacity'), 'ipcRenderer.invoke', ['"overlay:set-opacity"', 'value']));

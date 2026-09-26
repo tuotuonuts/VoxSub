@@ -44,6 +44,7 @@ let handler;
 const sent = [];
 run('let overlayOpacity = 0.92;\n' + ipcSource, {
   ipcMain: { handle: (_name, fn) => { handler = fn; } },
+  sendToWindow: (win, channel, ...args) => win?.webContents.send(channel, ...args),
   overlayWindow: { webContents: { send: (_channel, value) => sent.push(value) } },
 });
 for (const [value, expected] of [[0, 0.2], [-1, 0.2], [2, 1], [0.2, 0.2], [1, 1], [0.92, 0.92], [NaN, 0.92], [Infinity, 0.92], [true, 0.92], ['0.5', 0.92], [null, 0.92]]) {

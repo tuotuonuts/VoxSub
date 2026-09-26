@@ -33,11 +33,12 @@ function harness() {
   const handlers = new Map(), appEvents = new Map(), children = [], renderers = [];
   let currentRenderer, quitCalls = 0;
   const checkpoints = [];
-  const sender = { send: (channel, payload) => currentRenderer?.emit(channel, payload) };
+  const sender = { isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) };
   const electron = {
     app: { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}),
       on: (n, f) => appEvents.set(n, f), quit: () => quitCalls++, getAppPath: () => ROOT },
     BrowserWindow: class { constructor() { this.webContents = sender; this.events = new Map(); }
+      isDestroyed() { return false; }
       loadFile() { return Promise.resolve(); } on(n, f) { this.events.set(n, f); } once(n, f) { this.events.set(n, f); } show() {} },
     nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
     ipcMain: { handle: (n, f) => handlers.set(n, f), on() {} },

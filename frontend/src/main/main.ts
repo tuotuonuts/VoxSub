@@ -31,6 +31,44 @@ let overlayWindow: BrowserWindow | null = null;
 let ocrOverlayWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let bridge: BackendBridge | null = null;
+let quitting = false;
+
+/** Only native destruction races are recoverable here; programming errors propagate. */
+function ignoreDestroyed(operation: string, action: () => void): boolean {
+  try {
+    action();
+    return true;
+  } catch (error) {
+    if (!/^((TypeError|Error): )?Object has been destroyed$/.test(String(error))) throw error;
+    console.warn(`[window-lifecycle] dropped ${operation}: Object has been destroyed`);
+    return false;
+  }
+}
+
+function sendToContents(contents: Electron.WebContents, channel: string, ...args: unknown[]): boolean {
+  if (quitting) return false;
+  let sent = false;
+  ignoreDestroyed(channel, () => {
+    if (!contents.isDestroyed()) { contents.send(channel, ...args); sent = true; }
+  });
+  return sent;
+}
+
+function sendToWindow(win: BrowserWindow | null, channel: string, ...args: unknown[]): boolean {
+  if (quitting || !win) return false;
+  let sent = false;
+  ignoreDestroyed(channel, () => {
+    if (!win.isDestroyed()) sent = sendToContents(win.webContents, channel, ...args);
+  });
+  return sent;
+}
+
+function showWindow(win: BrowserWindow | null): void {
+  if (!HEADLESS && !quitting && win) ignoreDestroyed("show", () => {
+    if (!win.isDestroyed()) win.show();
+  });
+}
+
 
 let overlayClickThrough = false;
 let overlayOpacity = 0.92;
@@ -104,11 +142,12 @@ let liveOcrBusy = false;
 function requestQuit(): boolean {
   const reason = busyReason();
   if (reason) {
-    mainWindow?.show();
-    mainWindow?.webContents.send("app:open-page", "settings");
-    mainWindow?.webContents.send("app:blocking-task", { reason });
+    showWindow(mainWindow);
+    sendToWindow(mainWindow, "app:open-page", "settings");
+    sendToWindow(mainWindow, "app:blocking-task", { reason });
     return false;
   }
+  quitting = true;
   stopLiveOcr();
   bridge?.dispose();
   app.quit();
@@ -193,7 +232,7 @@ function createMainWindow(): BrowserWindow {
 
   // 无头模式绝不 show()：窗口始终不可见，但渲染与 CDP 都正常
   if (!HEADLESS) {
-    win.once("ready-to-show", () => win.show());
+    win.once("ready-to-show", () => { if (mainWindow === win) showWindow(win); });
   }
 
   // 开发模式：由启动器通过环境变量开启 DevTools。
@@ -201,6 +240,8 @@ function createMainWindow(): BrowserWindow {
   if (process.env["VOXSUB_DEVTOOLS"] === "1" && !HEADLESS) {
     win.webContents.openDevTools({ mode: "detach" });
   }
+
+  win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
 
   // 有后台长任务时拦一次关闭，避免把模型库留在半路
   win.on("close", (event) => {
@@ -254,11 +295,15 @@ function createOverlayWindow(): BrowserWindow {
   // 无头模式例外：窗口不显示，也就没有"暴露面"可言，跳过整个流程 ——
   // 桌面上不该出现浮窗（它 alwaysOnTop，一旦显示就会压在用户所有窗口之上）。
   win.once("ready-to-show", () => {
-    if (HEADLESS) return;
-    win.showInactive();
-    win.setContentProtection(true);
+    if (HEADLESS || quitting || overlayWindow !== win) return;
+    ignoreDestroyed("overlay:ready", () => {
+      if (win.isDestroyed()) return;
+      win.showInactive();
+      win.setContentProtection(true);
+    });
   });
 
+  win.on("closed", () => { if (overlayWindow === win) overlayWindow = null; });
   void win.loadFile(path.join(RENDERER_DIR, "overlay.html"));
   return win;
 }
@@ -267,7 +312,7 @@ function applyOverlayClickThrough(enabled: boolean): void {
   overlayClickThrough = enabled;
   if (!overlayWindow) return;
   overlayWindow.setIgnoreMouseEvents(enabled, { forward: enabled });
-  overlayWindow.webContents.send("overlay:click-through", enabled);
+  sendToWindow(overlayWindow, "overlay:click-through", enabled);
 }
 
 /* ------------------------------------------------------------------ 托盘 */
@@ -280,11 +325,11 @@ function createTray(): Tray | null {
   try {
     const created = new Tray(image);
     const send = (mode: string) => {
-      mainWindow?.webContents.send("app:tray-mode", mode);
-      mainWindow?.show();
+      sendToWindow(mainWindow, "app:tray-mode", mode);
+      showWindow(mainWindow);
     };
     const menu = Menu.buildFromTemplate([
-      { label: "显示主窗", click: () => mainWindow?.show() },
+      { label: "显示主窗", click: () => showWindow(mainWindow) },
       { type: "separator" },
       { label: "A 麦克风同传", click: () => send("a") },
       { label: "B 系统声音", click: () => send("b") },
@@ -299,7 +344,7 @@ function createTray(): Tray | null {
     ]);
     created.setToolTip("语幕 VoxSub");
     created.setContextMenu(menu);
-    created.on("double-click", () => mainWindow?.show());
+    created.on("double-click", () => showWindow(mainWindow));
     return created;
   } catch {
     return null; // 无托盘环境不应阻断启动
@@ -307,8 +352,8 @@ function createTray(): Tray | null {
 }
 
 function openPage(page: string): void {
-  mainWindow?.show();
-  mainWindow?.webContents.send("app:open-page", page);
+  showWindow(mainWindow);
+  sendToWindow(mainWindow, "app:open-page", page);
 }
 
 function toggleOverlay(): void {
@@ -339,7 +384,7 @@ async function runLiveOcrTick(): Promise<void> {
   try {
     const shot = await captureRegion(liveOcrArea);
     if (!shot) return;
-    mainWindow.webContents.send("ocr:live-frame", { path: shot.path });
+    sendToWindow(mainWindow, "ocr:live-frame", { path: shot.path });
   } catch {
     // 单帧失败不中断循环；下一帧继续
   } finally {
@@ -359,7 +404,7 @@ function registerIpc(): void {
     const alreadyRunning = bridge.isRunning();
     const result = bridge.start();
     if (result.ok && alreadyRunning && lastReadyEvent) {
-      event.sender.send("backend:event", lastReadyEvent);
+      sendToContents(event.sender, "backend:event", lastReadyEvent);
     }
     return result;
   });
@@ -400,13 +445,13 @@ function registerIpc(): void {
   ipcMain.handle("overlay:set-opacity", (_e, value: number) => {
     overlayOpacity = typeof value === "number" && Number.isFinite(value)
       ? Math.min(1, Math.max(0.2, value)) : 0.92;
-    overlayWindow?.webContents.send("overlay:opacity", overlayOpacity);
+    sendToWindow(overlayWindow, "overlay:opacity", overlayOpacity);
     return overlayOpacity;
   });
 
   ipcMain.handle("overlay:set-font-size", (_e, value: number) => {
     overlayFontSize = Math.min(48, Math.max(12, Math.round(Number(value) || 20)));
-    overlayWindow?.webContents.send("overlay:font-size", overlayFontSize);
+    sendToWindow(overlayWindow, "overlay:font-size", overlayFontSize);
     return overlayFontSize;
   });
 
@@ -421,7 +466,7 @@ function registerIpc(): void {
   ipcMain.handle("overlay:set-display-mode", (_e, mode: string) => {
     const allowed = ["source", "translation", "bilingual"];
     overlayDisplayMode = allowed.includes(mode) ? mode : "bilingual";
-    overlayWindow?.webContents.send("overlay:display-mode", overlayDisplayMode);
+    sendToWindow(overlayWindow, "overlay:display-mode", overlayDisplayMode);
     return overlayDisplayMode;
   });
 
@@ -552,12 +597,13 @@ function registerIpc(): void {
     if (!area) return null;
     stopLiveOcr();
     liveOcrArea = area;
-    ocrOverlayWindow = createOverlayForArea(area);
-    ocrOverlayWindow.once("ready-to-show", () => {
-      ocrOverlayWindow?.webContents.send("ocr:region-ready", area);
+    const win = createOverlayForArea(area);
+    ocrOverlayWindow = win;
+    win.once("ready-to-show", () => {
+      if (ocrOverlayWindow === win) sendToWindow(win, "ocr:region-ready", area);
     });
-    ocrOverlayWindow.on("closed", () => {
-      ocrOverlayWindow = null;
+    win.on("closed", () => {
+      if (ocrOverlayWindow === win) ocrOverlayWindow = null;
     });
     // 轮询间隔与原 Qt 版一致（700ms），先比画面指纹再决定是否识别
     liveOcrTimer = setInterval(() => void runLiveOcrTick(), 700);
@@ -613,10 +659,10 @@ function wireBackendEvents(source: BackendBridge): void {
     // 事件早已错过，必须能补发 —— 否则界面的就绪门一直等不到事件，
     // 所有命令都要先干等 30 秒超时（表现为"刚重载完什么都点不动"）。
     if (event.type === "ready") lastReadyEvent = event;
-    mainWindow?.webContents.send("backend:event", event);
-    overlayWindow?.webContents.send("backend:event", event);
+    sendToWindow(mainWindow, "backend:event", event);
+    sendToWindow(overlayWindow, "backend:event", event);
     // 实时 OCR 期间，把识别结果转发给覆盖窗
-    ocrOverlayWindow?.webContents.send("backend:event", event);
+    sendToWindow(ocrOverlayWindow, "backend:event", event);
   });
 }
 
@@ -697,6 +743,7 @@ app.on("before-quit", (event) => {
     requestQuit();
     return;
   }
+  quitting = true;
   stopLiveOcr();
   bridge?.dispose();
   tray?.destroy();
