@@ -17,8 +17,9 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Concatenate, Mapping, Optional, ParamSpec, TypeVar
 
 import numpy as np
 
@@ -479,11 +480,33 @@ def _load_translator_for_pair(kind: str, src_lang: str, dst_lang: str,
 
 # ---------- Pipeline ----------
 
+_PipelineArgs = ParamSpec("_PipelineArgs")
+_Result = TypeVar("_Result")
+
+
+def _state_locked(
+    method: Callable[Concatenate[Any, _PipelineArgs], _Result],
+) -> Callable[Concatenate[Any, _PipelineArgs], _Result]:
+    @wraps(method)
+    def wrapped(
+        self: Any,
+        *args: _PipelineArgs.args,
+        **kwargs: _PipelineArgs.kwargs,
+    ) -> _Result:
+        with self._state_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class Pipeline:
     """三模式实时/离线翻译管线 (契约见 DESIGN.md「Pipeline 契约」)。"""
 
     def __init__(self, provider: str = "auto", models: Optional[Path] = None) -> None:
         self._state_lock = threading.RLock()
+        self._closed = False
+        self._start_in_progress = False
+        self._close_requested = False
         self._state = PipelineState.IDLE
         self._provider = provider
         self._models_dir = Path(models) if models else models_dir()
@@ -614,15 +637,23 @@ class Pipeline:
     def _running(self, value: bool) -> None:
         self._set_state(PipelineState.RUNNING if value else PipelineState.IDLE)
 
-    def _is_settling(self) -> bool:
-        """是否处在"停止超时、还在收尾"的窗口里。
+    def _tts_worker_is_alive(self) -> bool:
+        worker = self._tts_worker
+        alive = getattr(worker, "is_alive", False) if worker is not None else False
+        return bool(alive() if callable(alive) else alive)
 
-        这个窗口里**任何**资源的销毁/替换都要停手：worker 可能仍在用它们。
-        与 :meth:`_may_replace_resources` 的区别：那个回答"能不能换"（用于本来
-        就只允许停机操作的入口），这个只回答"现在是不是收尾中"（用于运行中
-        本来就可以热重载的入口，比如 TTS）。
+    def _is_settling(self) -> bool:
+        """是否处在停止超时、仍有资源 owner 收尾的窗口里。
+
+        活跃运行中的 TTS worker 是正常状态，不能阻止有意支持的热重载。
+        只有停止中或 Pipeline 已闲置/失败但 TTS owner 仍活着时才算收尾。
         """
-        return self.state is PipelineState.STOPPING
+        state = self.state
+        if state is PipelineState.STOPPING:
+            return True
+        if state not in {PipelineState.IDLE, PipelineState.FAILED}:
+            return False
+        return self._tts_worker_is_alive()
 
     def _workers_alive(self) -> list[threading.Thread]:
         """还活着的 worker，顺手清掉已退出的引用。
@@ -639,7 +670,7 @@ class Pipeline:
 
         两个条件**都要满足**：
           · 状态不在运行中（STARTING/RUNNING/STOPPING 都算运行中）；
-          · 没有 worker 还活着。
+          · Pipeline worker 与 TTS worker 都没有存活。
 
         为什么不能只看状态：``stop()`` 的 8 秒 join 超时之后，原生推理可能仍在
         收尾。以前这一步会直接把状态落成 IDLE，于是 ``set_translator`` /
@@ -648,7 +679,12 @@ class Pipeline:
 
         这条规则**只在这里实现一次**，所有替换资源的入口都必须走它。
         """
-        return not self.is_running() and not self._workers_alive()
+        with self._state_lock:
+            if self._start_in_progress or self._closed or self._state not in {
+                PipelineState.IDLE, PipelineState.FAILED
+            }:
+                return False
+        return not self._workers_alive() and not self._tts_worker_is_alive()
 
     @property
     def config_generation(self) -> int:
@@ -689,7 +725,10 @@ class Pipeline:
         if mode in ("a", "b", "c") and not self._running:
             self._mode = mode
 
+    @_state_locked
     def set_langs(self, src: str, dst: str) -> None:
+        if self._closed or self._start_in_progress:
+            return
         normalized = (normalize_language(src, strict=True),
                       normalize_language(dst, strict=True))
         # 语言对的写入与代次递增必须与 :meth:`_lang_snapshot` 互斥，否则取快照
@@ -700,7 +739,7 @@ class Pipeline:
             self._src_lang, self._dst_lang = normalized
             if changed:
                 self._bump_config_generation("set_langs")
-        if changed and not self._running:
+        if changed and self._may_replace_resources():
             self._asr = None
             self._seg = None
             self._context_processor = None
@@ -709,7 +748,10 @@ class Pipeline:
     def set_input_file(self, path: str | Path) -> None:
         self._in_path = Path(path)
 
+    @_state_locked
     def set_tts(self, enabled: bool) -> None:
+        if self._closed or self._start_in_progress:
+            return
         enabled = bool(enabled)
         # 收尾中一律不动 TTS worker：它可能正在被退出中的线程使用。
         hot_reload = self._running and not self._is_settling()
@@ -727,8 +769,11 @@ class Pipeline:
             else:
                 self._stop_tts_worker()
 
+    @_state_locked
     def set_tts_models(self, model_ids: dict[str, str] | None = None) -> None:
         """Select per-language TTS models and hot-reload the speech worker."""
+        if self._closed or self._start_in_progress:
+            return
         requested = dict(model_ids or {})
         normalized = {
             "zh": str(requested.get("zh", self._tts_model_ids.get("zh", ""))),
@@ -746,6 +791,7 @@ class Pipeline:
             self._start_tts_worker()
         logger.info("TTS 模型选择已更新: %s", self._tts_model_ids)
 
+    @_state_locked
     def set_models_dir(self, path: str | Path) -> None:
         """Switch model storage between runs and discard path-bound caches."""
         if not self._may_replace_resources():
@@ -793,9 +839,10 @@ class Pipeline:
         self._capture_process_id = max(0, int(process_id or 0))
         self._capture_window_title = str(window_title or "")
 
+    @_state_locked
     def set_stt(self, provider: str = "local", config=None) -> None:
         """Select the speech-to-text side independently from translation."""
-        if self._running:
+        if not self._may_replace_resources():
             return
         normalized = "cloud" if str(provider or "").lower() == "cloud" else "local"
         snapshot = dict(config) if isinstance(config, dict) else config
@@ -819,6 +866,11 @@ class Pipeline:
 
     def set_translator(self, kind: str, config=None) -> None:
         """选择翻译档位；下一次 start 前立即替换旧实例。"""
+        with self._state_lock:
+            self._set_translator_locked(kind, config)
+
+    def _set_translator_locked(self, kind: str, config=None) -> None:
+        """Atomically gate and update the translator owner."""
         if not self._may_replace_resources():
             # 运行中或还在收尾：不替换。原来的行为是静默 return（改动留到下次
             # start 生效），这里保持同一语义 —— 只是把"还在收尾"也纳入判断。
@@ -839,6 +891,7 @@ class Pipeline:
             self._translator = None
             self._trans_kind = None
 
+    @_state_locked
     def set_asr_model(self, model_id: str) -> None:
         """Select a catalog ASR model for the next run."""
         if not self._may_replace_resources():
@@ -857,6 +910,7 @@ class Pipeline:
         self._seg = None
         self._context_processor = None
 
+    @_state_locked
     def set_asr_tuning(self, tuning: dict | None = None) -> None:
         """Apply inference/segmentation tuning on the next run.
 
@@ -869,7 +923,7 @@ class Pipeline:
         （实测 vad=0.5/silence=350/max=4500，而用户存的是 context 的
         0.32/500/18000）。用户看到的是"保存了但没用"。
         """
-        if self._running:
+        if not self._may_replace_resources():
             return
         raw = dict(tuning or {})
         normalized = {TUNING_KEY_MAP.get(key, key): value for key, value in raw.items()}
@@ -1177,10 +1231,18 @@ class Pipeline:
         )
         self._tts_worker.start()
 
-    def _stop_tts_worker(self) -> None:
+    def _stop_tts_worker(self) -> bool:
         worker = self._tts_worker
-        if worker is not None and worker.stop() is not False:
+        if worker is None:
+            return True
+        try:
+            stopped = worker.stop()
+        except Exception:
+            logger.warning("停止 TTS worker 失败", exc_info=True)
+            return False
+        if stopped is not False:
             self._tts_worker = None
+        return self._tts_worker is None
 
     def _put_or_stop(self, target: queue.Queue, item: object, message: str) -> None:
         """Bound queue growth and make overload visible instead of losing data."""
@@ -1770,28 +1832,47 @@ class Pipeline:
         )
 
     # ---- 启停 ----
+    def _claim_start(self) -> bool:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("Pipeline 已关闭，不能再次启动")
+            if self._start_in_progress:
+                return False
+            if self._is_settling():
+                names = [_thread_label(t) for t in self._workers_alive()]
+                if self._tts_worker_is_alive():
+                    names.append("pipeline-tts")
+                raise RuntimeError(
+                    f"上一任务仍在安全收尾（{', '.join(names) or '停止中'}），请稍后再开始")
+            if self.is_running():
+                return False
+            self._threads = self._workers_alive()
+            if self._threads:
+                names = ", ".join(_thread_label(t) for t in self._threads)
+                raise RuntimeError(f"上一任务仍在安全收尾（{names}），请稍后再开始")
+            self._start_in_progress = True
+            self._stop_evt.clear()
+        return True
+
     def start(self) -> None:
-        if self._is_settling():
-            # 收尾窗口里**必须报错，不能静默 return**（缺陷 #6 的修复带出来的回归）。
-            #
-            # 状态是 STOPPING 时 is_running() 也为真，所以原来的 `if self.is_running(): return`
-            # 会把它当成"已经在跑、无需重复启动"而静默返回；上层的 _cmd_start 随后
-            # **无条件**发 session=start，渲染层据此清空整场字幕并重置时间基准 ——
-            # 用户看到的是"好像开始了，但字幕全没了"，导出也随之变空。
-            # 而且这个窗口比修复前更宽（8 秒 join + 30 秒观察者）。
-            #
-            # 旧语义（状态落 IDLE + 活线程）在这里是抛错的，这里恢复那个诚实的报错。
-            names = ", ".join(_thread_label(t) for t in self._workers_alive())
-            raise RuntimeError(f"上一任务仍在安全收尾（{names or '停止中'}），请稍后再开始")
-        if self.is_running():
+        if not self._claim_start():
             return
-        # 清理上次异常退出留下的线程引用与旧音频块。
-        self._threads = [t for t in self._threads if t.is_alive()]
-        if self._threads:
-            # 用 _thread_label 而不是 t.name：线程对象形态不保证（测试会塞替身），
-            # 一行日志/报错文案不该有能力把启动路径带崩 —— 与 stop() 同一处理。
-            names = ", ".join(_thread_label(t) for t in self._threads)
-            raise RuntimeError(f"上一任务仍在安全收尾（{names}），请稍后再开始")
+        try:
+            if not self._prepare_start():
+                self._cancel_start()
+                return
+            new_threads = (self._new_file_threads() if self._mode == "c"
+                           else self._new_realtime_threads())
+            if not self._publish_started_threads(new_threads):
+                self._cancel_start()
+        except Exception as exc:
+            self._handle_start_failure(exc)
+            raise
+        finally:
+            self._finish_start()
+
+    def _prepare_start(self) -> bool:
+        # 清理上次异常退出留下的旧音频块。
         self._drain_queue(self._queue)
         self._drain_queue(self._recognition_queue)
         self._drain_queue(self._context_queue)
@@ -1800,31 +1881,71 @@ class Pipeline:
         self._clear_draft()
         with self._metrics_lock:
             self._translation_times.clear()
-        self._stop_evt.clear()
         self._pause_evt.clear()
         self._recognition_input_done.clear()
         self._context_input_done.clear()
         self._translation_input_done.clear()
         self._set_state(PipelineState.STARTING)
         self._emit_status("启动中…")
-        try:
-            new_threads = (self._new_file_threads() if self._mode == "c"
-                           else self._new_realtime_threads())
-            self._set_state(PipelineState.RUNNING)
+        with self._state_lock:
+            return not self._closed and not self._stop_evt.is_set()
+
+    def _publish_started_threads(self, new_threads: list[threading.Thread]) -> bool:
+        with self._state_lock:
+            if self._closed or self._stop_evt.is_set():
+                return False
             self._threads.extend(new_threads)
+            previous, self._state = self._state, PipelineState.RUNNING
             for thread in new_threads:
                 thread.start()
-            self._emit_status("处理中…" if self._mode == "c" else "正在连接音频设备…")
-        except Exception as exc:
-            self._set_state(PipelineState.FAILED)
-            self._stop_evt.set()
-            self._stop_tts_worker()
-            recorder, self._recorder = self._recorder, None
-            if recorder is not None:
+        if previous is not PipelineState.RUNNING:
+            logger.info("Pipeline 生命周期: %s -> %s",
+                        previous.value, PipelineState.RUNNING.value)
+            self._emit_state()
+        self._emit_status("处理中…" if self._mode == "c" else "正在连接音频设备…")
+        return True
+
+    def _cancel_start(self) -> None:
+        self._stop_evt.set()
+        recorder, self._recorder = self._recorder, None
+        if recorder is not None:
+            try:
                 recorder.close()
-            logger.exception("Pipeline 启动失败: mode=%s", self._mode)
-            self._emit_status(f"启动失败: {exc}")
-            raise
+            except Exception:
+                logger.warning("启动取消后关闭录音器失败", exc_info=True)
+        settled = self._finalize_stopped_workers()
+        status = "启动已取消" if settled else "启动已取消，等待语音 worker 退出"
+        self._emit_status(status)
+
+    def _handle_start_failure(self, exc: Exception) -> None:
+        self._stop_evt.set()
+        self._stop_tts_worker()
+        recorder, self._recorder = self._recorder, None
+        if recorder is not None:
+            try:
+                recorder.close()
+            except Exception:
+                logger.warning("启动失败后关闭录音器失败", exc_info=True)
+        self._set_state(PipelineState.FAILED)
+        logger.exception("Pipeline 启动失败: mode=%s", self._mode)
+        self._emit_status(f"启动失败: {exc}")
+
+    def _finish_start(self) -> None:
+        with self._state_lock:
+            self._start_in_progress = False
+            finalize_close = self._close_requested
+            self._close_requested = False
+            # stop() may have deferred after workers were already published.
+            # The builder owns that request until publication/startup is over.
+            finalize_stop = (self._stop_evt.is_set()
+                             and self._state is PipelineState.RUNNING)
+        if finalize_close:
+            try:
+                self.close()
+            except Exception:
+                logger.warning("启动结束后完成延迟关闭失败", exc_info=True)
+        elif finalize_stop:
+            self.stop()
 
     def _new_file_threads(self) -> list[threading.Thread]:
         if self._in_path is None or not self._in_path.exists():
@@ -1862,6 +1983,58 @@ class Pipeline:
         ))
         return threads
 
+    def _finalize_stopped_workers(self) -> bool:
+        """Only report IDLE once both Pipeline and TTS workers have exited."""
+        if not self._stop_tts_worker():
+            if self.state is not PipelineState.STOPPING:
+                self._set_state(PipelineState.STOPPING)
+            self._emit_status("停止中（等待语音 worker 退出）")
+            self._watch_settlement()
+            return False
+        if self.state is not PipelineState.IDLE:
+            self._set_state(PipelineState.IDLE)
+        return True
+
+    def _begin_stop(self) -> tuple[bool, bool, PipelineState | None, AudioSource | None]:
+        with self._state_lock:
+            if self._start_in_progress:
+                self._stop_evt.set()
+                return True, False, None, None
+            idle = not self.is_running() and not any(
+                thread.is_alive() for thread in self._threads)
+            if idle:
+                return False, True, None, None
+            previous, self._state = self._state, PipelineState.STOPPING
+            self._stop_evt.set()
+            return False, False, previous, self._source
+
+    def _join_pipeline_workers(self) -> bool:
+        deadline = time.monotonic() + _STOP_JOIN_SECONDS
+        for thread in self._threads:
+            if thread is threading.current_thread():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+        self._threads = [thread for thread in self._threads if thread.is_alive()]
+        return not self._threads
+
+    def _report_stop_timeout(self) -> None:
+        names = [_thread_label(thread) for thread in self._threads]
+        if self._tts_worker_is_alive():
+            names.append("pipeline-tts")
+        logger.warning("Pipeline 停止超时，保持“停止中”等待收尾: workers=%s",
+                       ", ".join(names))
+        self._emit_status("停止中（等待后台任务收尾）")
+        self._watch_settlement()
+
+    def _emit_stopped_status(self) -> None:
+        if self._last_recording_path is not None and self._recording_enabled:
+            self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
+        else:
+            self._emit_status("已停止")
+
     def stop(self) -> bool:
         """Request shutdown and return whether every worker has exited.
 
@@ -1870,119 +2043,154 @@ class Pipeline:
         translators must not be destroyed while a timed-out worker can still
         call them.
         """
-        if not self.is_running() and not any(t.is_alive() for t in self._threads):
-            return True
-        self._set_state(PipelineState.STOPPING)
-        self._stop_evt.set()
-        source = self._source
+        startup, idle, previous_state, source = self._begin_stop()
+        if startup:
+            self._emit_status("停止中（等待启动构建取消）")
+            return False
+        if idle:
+            return self._finalize_stopped_workers()
+        if previous_state is not PipelineState.STOPPING:
+            logger.info("Pipeline 生命周期: %s -> %s",
+                        previous_state.value, PipelineState.STOPPING.value)
+            self._emit_state()
         if source is not None:
             try:
                 source.stop()
             except Exception:
                 logger.debug("主动停止音频源失败", exc_info=True)
-        # capture → process(flush) → translate 的拥有关系必须保持；处理线程是
-        # segmenter 唯一拥有者，UI 线程绝不能再次 flush/reset 原生 sherpa 流。
-        # Use one shared deadline.  A per-thread 8 second timeout used to stack
-        # across capture/process/translation workers and could make application
-        # shutdown appear hung for over half a minute during an update.
-        join_deadline = time.monotonic() + _STOP_JOIN_SECONDS
-        for t in self._threads:
-            if t is not threading.current_thread():
-                remaining = join_deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                t.join(timeout=remaining)
-        self._threads = [t for t in self._threads if t.is_alive()]
-        workers_stopped = not self._threads
-        if workers_stopped:
-            self._set_state(PipelineState.IDLE)
-        else:
-            # 超时：**不落 IDLE**（缺陷 #6 的修复点）。
-            #
-            # 原生推理与云端请求不能立即打断，线程可能仍在用翻译器/识别器。
-            # 以前这里无条件进 IDLE，后果有两个：
-            #   1. 界面显示"已停止"，而任务其实还在收尾 —— 状态在撒谎；
-            #   2. set_translator / set_asr_model / set_models_dir 只判断
-            #      self._running，于是把还在被使用的实例换掉或关掉。
-            # 保持 STOPPING 同时解决这两点：is_running() 仍为真（门禁保持关闭），
-            # 界面看到的是诚实的"停止中"。
-            names = ", ".join(_thread_label(t) for t in self._threads)
-            logger.warning("Pipeline 停止超时，保持“停止中”等待收尾: threads=%s", names)
-            self._emit_status("停止中（等待后台任务收尾）")
-            self._watch_settlement()
+        # Capture → process (flush) → translate ownership remains ordered.
+        workers_stopped = self._join_pipeline_workers()
         self._live_draft.reset()
         self._clear_draft()
-        if workers_stopped:
-            # TTS worker 也是"被资源持有者"：收尾窗口里不拆它（观察者等真退出后统一收），
-            # 与 set_tts 系列的 _is_settling 门禁是同一条规则。
-            self._stop_tts_worker()
-            if self._last_recording_path is not None and self._recording_enabled:
-                self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
-            else:
-                self._emit_status("已停止")
-        return workers_stopped
+        if not workers_stopped:
+            self._report_stop_timeout()
+            return False
+        if not self._finalize_stopped_workers():
+            return False
+        self._emit_stopped_status()
+        return True
+
+    def _handle_settlement_timeout(
+        self,
+        alive: list[threading.Thread],
+        tts_alive: bool,
+        timeout_reported: bool,
+    ) -> tuple[float | None, bool]:
+        """Bound ordinary stop observation; keep close-owned cleanup pending."""
+        names = [_thread_label(thread) for thread in alive]
+        if tts_alive:
+            names.append("pipeline-tts")
+        with self._state_lock:
+            close_pending = self._close_requested or self._closed
+        if not timeout_reported:
+            logger.error(
+                "Pipeline 工作线程在停止后 %ss 仍未退出，保持停止中: %s",
+                _SETTLE_WATCH_SECONDS,
+                ", ".join(names))
+            timeout_reported = True
+        if not close_pending:
+            return None, timeout_reported
+        deadline = time.monotonic() + max(
+            _SETTLE_WATCH_SECONDS, _SETTLE_POLL_SECONDS
+        )
+        return deadline, timeout_reported
+
+    def _retire_or_extend_settlement(self) -> float | None:
+        """Atomically hand off a timed-out observer to a concurrent close."""
+        with self._state_lock:
+            close_pending = self._close_requested or self._closed
+            if self._settle_watcher is threading.current_thread():
+                if not close_pending:
+                    self._settle_watcher = None
+            if close_pending:
+                return time.monotonic() + max(
+                    _SETTLE_WATCH_SECONDS, _SETTLE_POLL_SECONDS)
+        return None
 
     def _watch_settlement(self) -> None:
-        """超时之后继续等：worker 真的退出了才落 IDLE。
+        """超时后继续观察：worker 退出后落 IDLE，关闭请求须完成资源清理。
 
-        没有这个观察者，超时的 pipeline 会永远停在"停止中"，用户只能重启应用 ——
-        那就把"诚实的状态"变成了"卡死"。观察者只等**本实例自己的**线程，
-        有界（``_SETTLE_WATCH_SECONDS``），且同一时间只允许存在一个。
+        普通 stop 的观察有界，避免长期占用后台线程；close 已请求时则持续等到
+        自身 worker 退出，避免 watcher 首次超时后没有 owner 再次释放组件。
+        watcher 是 daemon，不会阻止进程退出；同一时间只允许一个。
         """
-        existing = getattr(self, "_settle_watcher", None)
-        if existing is not None and existing.is_alive():
-            return
+        with self._state_lock:
+            existing = getattr(self, "_settle_watcher", None)
+            if existing is not None and existing.is_alive():
+                return
 
-        def wait_for_workers() -> None:
-            # 观察者是 daemon 线程，异常没人接 —— 必须自己兜住，否则会在测试
-            # 与控制台里留下"threading 未处理异常"的噪音，反而掩盖真问题。
-            try:
-                deadline = time.monotonic() + _SETTLE_WATCH_SECONDS
-                while True:
-                    alive = self._workers_alive()
-                    if not alive:
-                        break
-                    if time.monotonic() >= deadline:
-                        logger.error(
-                            "Pipeline 工作线程在停止后 %ss 仍未退出，保持停止中: %s",
-                            _SETTLE_WATCH_SECONDS,
-                            ", ".join(_thread_label(t) for t in alive))
-                        return
-                    time.sleep(_SETTLE_POLL_SECONDS)
-                self._set_state(PipelineState.IDLE)
-                self._stop_tts_worker()  # 收尾窗口里刻意没拆，这里补上
-                if self._last_recording_path is not None and self._recording_enabled:
-                    self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
-                else:
-                    self._emit_status("已停止")
-            except Exception:  # noqa: BLE001 - daemon 线程最后一道保险
-                logger.warning("收尾观察者异常退出", exc_info=True)
+            def wait_for_workers() -> None:
+                # 观察者是 daemon 线程，异常没人接 —— 必须自己兜住，否则会在测试
+                # 与控制台里留下"threading 未处理异常"的噪音，反而掩盖真问题。
+                try:
+                    deadline = time.monotonic() + _SETTLE_WATCH_SECONDS
+                    timeout_reported = False
+                    while True:
+                        alive = self._workers_alive()
+                        tts_alive = self._tts_worker_is_alive()
+                        if not alive and not tts_alive:
+                            if self._stop_tts_worker():
+                                break
+                            tts_alive = True
+                        if time.monotonic() >= deadline:
+                            deadline, timeout_reported = self._handle_settlement_timeout(
+                                alive, tts_alive, timeout_reported)
+                            if deadline is None:
+                                deadline = self._retire_or_extend_settlement()
+                                if deadline is None:
+                                    return
+                                continue
+                        time.sleep(_SETTLE_POLL_SECONDS)
+                    self._set_state(PipelineState.IDLE)
+                    if self._last_recording_path is not None and self._recording_enabled:
+                        self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
+                    else:
+                        self._emit_status("已停止")
+                    with self._state_lock:
+                        finalize_close = self._close_requested
+                        self._close_requested = False
+                    if finalize_close:
+                        self.close()
+                except Exception:  # noqa: BLE001 - daemon 线程最后一道保险
+                    logger.warning("收尾观察者异常退出", exc_info=True)
 
-        watcher = threading.Thread(target=wait_for_workers,
-                                   name="pipeline-settle-watch", daemon=True)
-        self._settle_watcher = watcher
-        watcher.start()
+            watcher = threading.Thread(target=wait_for_workers,
+                                       name="pipeline-settle-watch", daemon=True)
+            self._settle_watcher = watcher
+            watcher.start()
 
     def close(self) -> bool:
         """Stop workers and release process-backed runtime components.
 
         ``stop()`` intentionally keeps lazily-created recognizers and
         translators reusable for the next run.  Application shutdown needs a
-        stronger lifecycle boundary: the local llama-server must be closed
-        before an installer replaces its DLLs, even when the pipeline is idle.
+        stronger lifecycle boundary: after every worker exits, release local
+        ASR/VAD/segmenter references and close owned cloud/translation clients.
+        If a worker remains, retain all runtime components for a later close.
         Keep this method idempotent because Qt's ``aboutToQuit`` path owns
         application shutdown, while tests and embedding hosts may call it
         directly.
         """
+        with self._state_lock:
+            self._closed = True
+            self._close_requested = True
         if not self.stop():
+            with self._state_lock:
+                startup_in_progress = self._start_in_progress
+            if startup_in_progress:
+                logger.warning("Pipeline 启动仍在构建，暂不释放运行时组件")
+                return False
             # A worker can still be inside a cloud request or llama-server
             # completion after the shared shutdown deadline.  Releasing its
             # client here races the worker and can turn orderly cancellation
             # into a native-process crash.  A later idempotent close may clean
             # up once the worker has actually exited.
+            pending_workers = [thread.name for thread in self._threads]
+            if self._tts_worker is not None:
+                pending_workers.append("pipeline-tts")
             logger.warning(
-                "Pipeline 工作线程仍在收尾，暂不释放运行时组件: threads=%s",
-                ", ".join(thread.name for thread in self._threads),
+                "Pipeline 工作线程仍在收尾，暂不释放运行时组件: workers=%s",
+                ", ".join(pending_workers),
             )
             return False
         cloud_stt, self._cloud_stt = self._cloud_stt, None
@@ -1995,6 +2203,12 @@ class Pipeline:
                 component.close()
             except Exception:
                 logger.debug("关闭%s失败", label, exc_info=True)
+        # The segmenter may hold additional references to the recognizer and VAD.
+        # Drop it first, then release every Pipeline-owned local runtime reference.
+        self._seg = None
+        self._context_processor = None
+        self._asr = None
+        self._vad = None
         return True
 
     # ---- A/B 模式线程 ----

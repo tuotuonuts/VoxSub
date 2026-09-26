@@ -1,12 +1,16 @@
 """Pipeline (M6) 测试: 状态机 / 导出格式 / 真机 C 模式与 A 模式启停。"""
 from __future__ import annotations
 
+import gc
 import os
 import queue
 import shutil
 import subprocess
+import threading
 import time
+import weakref
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -438,7 +442,243 @@ def test_models_dir_switch_is_rejected_while_running(tmp_path: Path) -> None:
         p.set_models_dir(tmp_path / "new-models")
 
 
-def test_close_releases_idle_process_backed_components() -> None:
+
+def test_close_releases_local_asr_vad_and_segmenter_references(tmp_path) -> None:
+    class _RuntimeHandle:
+        pass
+
+    class _Segmenter:
+        def __init__(self, asr, vad) -> None:
+            self.asr = asr
+            self.vad = vad
+
+    pipeline = Pipeline(models=tmp_path / "models")
+    pipeline.stop = lambda: True
+    pipeline._cloud_stt = None
+    pipeline._translator = None
+    pipeline._trans_kind = None
+
+    asr = _RuntimeHandle()
+    vad = _RuntimeHandle()
+    segmenter = _Segmenter(asr, vad)
+    context_processor = _RuntimeHandle()
+    asr_ref = weakref.ref(asr)
+    vad_ref = weakref.ref(vad)
+    segmenter_ref = weakref.ref(segmenter)
+    context_ref = weakref.ref(context_processor)
+    pipeline._asr = asr
+    pipeline._vad = vad
+    pipeline._seg = segmenter
+    pipeline._context_processor = context_processor
+    del asr, vad, segmenter, context_processor
+
+    assert pipeline.close() is True
+    assert pipeline._asr is None
+    assert pipeline._vad is None
+    assert pipeline._seg is None
+    assert pipeline._context_processor is None
+    gc.collect()
+    assert asr_ref() is None
+    assert vad_ref() is None
+    assert segmenter_ref() is None
+    assert context_ref() is None
+
+
+
+
+def test_close_during_startup_cancels_build_without_claiming_success(
+        monkeypatch, tmp_path):
+    """close() while building must report incomplete ownership and prevent workers."""
+    pipeline = Pipeline(models=tmp_path / "models")
+
+    class _Closable:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    cloud = _Closable()
+    translator = _Closable()
+    pipeline._asr = object()
+    pipeline._vad = object()
+    pipeline._seg = object()
+    pipeline._context_processor = object()
+    pipeline._cloud_stt = cloud
+    pipeline._translator = translator
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    close_done = threading.Event()
+    close_results = []
+    start_errors = []
+
+    class _UnstartedWorker:
+        name = "test-startup-worker"
+
+        def __init__(self):
+            self.start_count = 0
+
+        def start(self):
+            self.start_count += 1
+
+        def is_alive(self):
+            return False
+
+    worker = _UnstartedWorker()
+
+    class _TTSWorker:
+        stopped = False
+
+        def stop(self):
+            self.stopped = True
+            return True
+
+    class _Recorder:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    tts_worker = _TTSWorker()
+    recorder = _Recorder()
+
+    def blocked_build():
+        build_entered.set()
+        if not release_build.wait(timeout=2):
+            raise TimeoutError("test did not release startup")
+        pipeline._tts_worker = tts_worker
+        pipeline._recorder = recorder
+        return [worker]
+
+    def run_start():
+        try:
+            pipeline.start()
+        except Exception as error:  # captured to assert a useful failure below
+            start_errors.append(error)
+
+    def run_close():
+        close_results.append(pipeline.close())
+        close_done.set()
+
+    monkeypatch.setattr(pipeline, "_new_realtime_threads", blocked_build)
+    starter = threading.Thread(target=run_start, name="test-pipeline-start")
+    closer = threading.Thread(target=run_close, name="test-pipeline-close")
+    starter.start()
+    assert build_entered.wait(timeout=2), "startup did not enter the controlled build"
+    closer.start()
+    try:
+        assert close_done.wait(timeout=2), "close did not report the in-progress startup"
+        assert close_results == [False], (
+            "close must not claim success while startup still owns a resource build")
+    finally:
+        release_build.set()
+        starter.join(timeout=2)
+        closer.join(timeout=2)
+
+    assert not starter.is_alive()
+    assert not closer.is_alive()
+    assert start_errors == []
+    assert worker.start_count == 0
+    assert tts_worker.stopped is True
+    assert pipeline._tts_worker is None
+    assert recorder.closed is True
+    assert pipeline._recorder is None
+    assert pipeline.state is PipelineState.IDLE
+    assert pipeline._asr is None and pipeline._vad is None and pipeline._seg is None
+    assert pipeline._context_processor is None
+    assert pipeline._cloud_stt is None and pipeline._translator is None
+    assert cloud.closed == 1 and translator.closed == 1
+    assert pipeline.close() is True
+    with pytest.raises(RuntimeError, match="已关闭"):
+        pipeline.start()
+
+
+def test_close_during_builder_exception_releases_partial_runtime(
+        monkeypatch, tmp_path):
+    """A build exception after a concurrent close must still reach final cleanup."""
+    pipeline = Pipeline(models=tmp_path / "models")
+
+    class _Closable:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    translator = _Closable()
+    pipeline._asr = object()
+    pipeline._vad = object()
+    pipeline._seg = object()
+    pipeline._translator = translator
+    build_entered = threading.Event()
+    release_build = threading.Event()
+    close_result = []
+    start_errors = []
+
+    def failing_build():
+        build_entered.set()
+        if not release_build.wait(timeout=2):
+            raise TimeoutError("test did not release startup")
+        pipeline._seg = object()
+        raise RuntimeError("controlled-build-error")
+
+    def run_start():
+        try:
+            pipeline.start()
+        except Exception as error:
+            start_errors.append(error)
+
+    monkeypatch.setattr(pipeline, "_new_realtime_threads", failing_build)
+    starter = threading.Thread(target=run_start, name="test-builder-error-start")
+    starter.start()
+    assert build_entered.wait(timeout=2), "startup did not enter the controlled build"
+    close_result.append(pipeline.close())
+    try:
+        assert close_result == [False]
+    finally:
+        release_build.set()
+        starter.join(timeout=2)
+
+    assert not starter.is_alive()
+    assert len(start_errors) == 1
+    assert str(start_errors[0]) == "controlled-build-error"
+    assert pipeline._asr is None and pipeline._vad is None and pipeline._seg is None
+    assert pipeline._translator is None
+    assert translator.closed == 1
+
+
+def test_start_failure_continues_cleanup_after_tts_stop_error(
+        monkeypatch, tmp_path):
+    pipeline = Pipeline(models=tmp_path / "models")
+
+    class _BrokenTTSWorker:
+        def stop(self):
+            raise RuntimeError("tts-stop-failed")
+
+    class _Recorder:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    recorder = _Recorder()
+    pipeline._tts_worker = _BrokenTTSWorker()
+    pipeline._recorder = recorder
+
+    def fail_build():
+        raise ValueError("build-failed")
+
+    monkeypatch.setattr(pipeline, "_new_realtime_threads", fail_build)
+    with pytest.raises(ValueError, match="build-failed"):
+        pipeline.start()
+
+    assert recorder.closed is True
+    assert pipeline._recorder is None
+    assert pipeline.state is PipelineState.FAILED
+    assert pipeline._start_in_progress is False
+
+
+def test_close_releases_idle_process_backed_components(tmp_path: Path) -> None:
     class _Closable:
         def __init__(self) -> None:
             self.closed = 0
@@ -446,7 +686,7 @@ def test_close_releases_idle_process_backed_components() -> None:
         def close(self) -> None:
             self.closed += 1
 
-    p = Pipeline()
+    p = Pipeline(models=tmp_path / "models")
     translator = _Closable()
     cloud_stt = _Closable()
     p._translator = translator  # noqa: SLF001
@@ -460,7 +700,42 @@ def test_close_releases_idle_process_backed_components() -> None:
     assert p._translator is None and p._cloud_stt is None  # noqa: SLF001
 
 
-def test_close_keeps_runtime_components_until_timed_out_workers_exit(monkeypatch) -> None:
+def test_close_retains_runtime_until_tts_worker_exits(tmp_path: Path) -> None:
+    class _TTSWorker:
+        alive = True
+
+        def stop(self) -> bool:
+            return not self.alive
+
+    class _Closable:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        def close(self) -> None:
+            self.closed += 1
+
+    p = Pipeline(models=tmp_path / "models")
+    tts = _TTSWorker()
+    translator = _Closable()
+    p._tts_worker = tts  # noqa: SLF001
+    p._translator = translator  # noqa: SLF001
+    p._asr = object()  # noqa: SLF001
+
+    assert p.close() is False
+    assert p._tts_worker is tts  # noqa: SLF001
+    assert p._translator is translator  # noqa: SLF001
+    assert p._asr is not None  # noqa: SLF001
+    assert translator.closed == 0
+
+    tts.alive = False
+    assert p.close() is True
+    assert p._tts_worker is None  # noqa: SLF001
+    assert p._translator is None and p._asr is None  # noqa: SLF001
+    assert translator.closed == 1
+
+
+def test_close_keeps_runtime_components_until_timed_out_workers_exit(
+        monkeypatch, tmp_path) -> None:
     import voxsub.pipeline as pipeline_module
 
     class _StuckThread:
@@ -480,8 +755,13 @@ def test_close_keeps_runtime_components_until_timed_out_workers_exit(monkeypatch
             self.closed += 1
 
     ticks = iter((10.0, 11.0))
-    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(ticks))
-    p = Pipeline()
+    monkeypatch.setattr(
+        pipeline_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks), sleep=time.sleep),
+    )
+    p = Pipeline(models=tmp_path / "models")
+    monkeypatch.setattr(p, "_watch_settlement", lambda: None)
     p._state = PipelineState.RUNNING  # noqa: SLF001
     p._threads = [_StuckThread()]  # noqa: SLF001
     translator = _Closable()
@@ -1055,22 +1335,24 @@ def test_file_mode_translation_fallback(tmp_path: Path) -> None:
     assert all("翻译失败" in ln.translation or ln.translation == "" for ln in lines)
 
 
-def test_pipeline_has_loopback_symbol() -> None:
-    """回归: B 模式用 list_loopbacks() 但有缺失 import 会 NameError(装机实测踩过)。
-
-    pipeline.py 之前只 import 了 LoopbackSource 而非 list_loopbacks 函数,
-    导致 B 模式 _make_source 报 'name list_loopbacks is not defined'。
-    """
+def test_pipeline_has_loopback_symbol(monkeypatch) -> None:
+    """B-mode lookup reaches its imported function without enumerating real devices."""
     import voxsub.pipeline as pl
-    # 模块级必须有该符号, 且可调用(不抛 NameError)
-    assert hasattr(pl, "list_loopbacks")
-    try:
-        # 真机枚举至少能返回列表(可能空, 但不应 NameError/缺失)
-        result = pl.list_loopbacks()
-        assert isinstance(result, list)
-    except Exception as exc:
-        # 若 audio 初始化整体失败也接受被上层捕获, 但绝不能是 NameError
-        assert not isinstance(exc, NameError), f"B 模式缺 import: {exc}"
+
+    calls: list[bool] = []
+    device = SimpleNamespace(id="fixture-loopback")
+    info = SimpleNamespace(device=device, name="fixture-loopback")
+    monkeypatch.setattr(
+        pl, "list_loopbacks", lambda: calls.append(True) or [info]
+    )
+    monkeypatch.setattr(pl, "LoopbackSource", lambda device=None: device)
+
+    pipeline = Pipeline()
+    pipeline.set_mode("b")
+    pipeline._loopback_device_id = device.id  # noqa: SLF001
+
+    assert pipeline._make_source() is device  # noqa: SLF001
+    assert calls == [True]
 
 
 def test_stop_uses_one_shared_worker_join_deadline(monkeypatch) -> None:
@@ -1087,8 +1369,13 @@ def test_stop_uses_one_shared_worker_join_deadline(monkeypatch) -> None:
             timeouts.append(timeout)
 
     ticks = iter((10.0, 11.0, 13.0, 16.0, 20.0))
-    monkeypatch.setattr(pipeline_module.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        pipeline_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks), sleep=time.sleep),
+    )
     pipeline = Pipeline()
+    monkeypatch.setattr(pipeline, "_watch_settlement", lambda: None)
     pipeline._state = PipelineState.RUNNING  # noqa: SLF001
     pipeline._threads = [_StuckThread() for _ in range(4)]  # noqa: SLF001
 
