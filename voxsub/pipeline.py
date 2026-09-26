@@ -506,6 +506,8 @@ class Pipeline:
         self._state_lock = threading.RLock()
         self._closed = False
         self._start_in_progress = False
+        self._lifecycle_generation = 0
+        self._stop_finalizers = 0
         self._close_requested = False
         self._state = PipelineState.IDLE
         self._provider = provider
@@ -649,7 +651,7 @@ class Pipeline:
         只有停止中或 Pipeline 已闲置/失败但 TTS owner 仍活着时才算收尾。
         """
         state = self.state
-        if state is PipelineState.STOPPING:
+        if state is PipelineState.STOPPING or self._stop_finalizers:
             return True
         if state not in {PipelineState.IDLE, PipelineState.FAILED}:
             return False
@@ -680,9 +682,9 @@ class Pipeline:
         这条规则**只在这里实现一次**，所有替换资源的入口都必须走它。
         """
         with self._state_lock:
-            if self._start_in_progress or self._closed or self._state not in {
-                PipelineState.IDLE, PipelineState.FAILED
-            }:
+            if self._start_in_progress or self._stop_finalizers or self._closed:
+                return False
+            if self._state not in {PipelineState.IDLE, PipelineState.FAILED}:
                 return False
         return not self._workers_alive() and not self._tts_worker_is_alive()
 
@@ -1851,6 +1853,7 @@ class Pipeline:
                 names = ", ".join(_thread_label(t) for t in self._threads)
                 raise RuntimeError(f"上一任务仍在安全收尾（{names}），请稍后再开始")
             self._start_in_progress = True
+            self._lifecycle_generation += 1
             self._stop_evt.clear()
         return True
 
@@ -1983,8 +1986,31 @@ class Pipeline:
         ))
         return threads
 
-    def _finalize_stopped_workers(self) -> bool:
-        """Only report IDLE once both Pipeline and TTS workers have exited."""
+    def _finalize_stopped_workers(self, generation: int | None = None) -> bool:
+        """Revalidate ownership before touching TTS or committing an idle state."""
+        with self._state_lock:
+            # A newer start can already have failed/exited: worker/state checks
+            # alone cannot distinguish that lifecycle from the observed idle one.
+            if generation is not None and generation != self._lifecycle_generation:
+                return False
+            if self._workers_alive():
+                return False
+            # Cancellation is finalized by the builder while it still owns start.
+            if self._start_in_progress and not self._stop_evt.is_set():
+                return False
+            if self._state is PipelineState.RUNNING:
+                return False
+            # Keep admission closed across external shutdown without holding the
+            # state lock, even if another stop/watcher has already published IDLE.
+            self._stop_finalizers += 1
+        try:
+            return self._finish_stopped_workers()
+        finally:
+            with self._state_lock:
+                self._stop_finalizers -= 1
+
+    def _finish_stopped_workers(self) -> bool:
+        """No new start is admitted during external TTS shutdown; never join locked."""
         if not self._stop_tts_worker():
             if self.state is not PipelineState.STOPPING:
                 self._set_state(PipelineState.STOPPING)
@@ -1995,18 +2021,20 @@ class Pipeline:
             self._set_state(PipelineState.IDLE)
         return True
 
-    def _begin_stop(self) -> tuple[bool, bool, PipelineState | None, AudioSource | None]:
+    def _begin_stop(
+        self,
+    ) -> tuple[bool, bool, PipelineState | None, AudioSource | None, int]:
         with self._state_lock:
             if self._start_in_progress:
                 self._stop_evt.set()
-                return True, False, None, None
+                return True, False, None, None, self._lifecycle_generation
             idle = not self.is_running() and not any(
                 thread.is_alive() for thread in self._threads)
             if idle:
-                return False, True, None, None
+                return False, True, None, None, self._lifecycle_generation
             previous, self._state = self._state, PipelineState.STOPPING
             self._stop_evt.set()
-            return False, False, previous, self._source
+            return False, False, previous, self._source, self._lifecycle_generation
 
     def _join_pipeline_workers(self) -> bool:
         deadline = time.monotonic() + _STOP_JOIN_SECONDS
@@ -2043,12 +2071,12 @@ class Pipeline:
         translators must not be destroyed while a timed-out worker can still
         call them.
         """
-        startup, idle, previous_state, source = self._begin_stop()
+        startup, idle, previous_state, source, generation = self._begin_stop()
         if startup:
             self._emit_status("停止中（等待启动构建取消）")
             return False
         if idle:
-            return self._finalize_stopped_workers()
+            return self._finalize_stopped_workers(generation)
         if previous_state is not PipelineState.STOPPING:
             logger.info("Pipeline 生命周期: %s -> %s",
                         previous_state.value, PipelineState.STOPPING.value)
@@ -2065,7 +2093,7 @@ class Pipeline:
         if not workers_stopped:
             self._report_stop_timeout()
             return False
-        if not self._finalize_stopped_workers():
+        if not self._finalize_stopped_workers(generation):
             return False
         self._emit_stopped_status()
         return True
