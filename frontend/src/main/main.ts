@@ -37,9 +37,58 @@ let overlayOpacity = 0.92;
 let overlayFontSize = 20;
 let overlayDisplayMode = "bilingual";
 /** 每个操作只释放自己的退出保护，迟到/无 owner 的释放不能影响其他任务。 */
-const busyOwners = new Map<string, string>();
+interface BusyOwner {
+  reason: string;
+  migration?: { instance: object; clientId: string; jobId?: string };
+}
+const busyOwners = new Map<string, BusyOwner>();
 function busyReason(): string {
-  return [...busyOwners.values()].join("\n");
+  return [...busyOwners.values()].map((owner) => owner.reason).join("\n");
+}
+
+/** Transfer within the existing guard map, synchronously, using only backend evidence. */
+function associateMigration(owner: BusyOwner, jobId: unknown): void {
+  const task = owner.migration;
+  if (!task || typeof jobId !== "string" || !jobId || (task.jobId && task.jobId !== jobId)) return;
+  task.jobId = jobId;
+  for (const [key, previous] of busyOwners) {
+    if (previous !== owner && previous.migration?.instance === task.instance &&
+        previous.migration.jobId === jobId) busyOwners.delete(key);
+  }
+}
+
+function observeMigrationJob(instance: object, raw: unknown): void {
+  if (!raw || typeof raw !== "object") return;
+  const job = raw as Record<string, unknown>;
+  if (job["command"] !== "start_migration" || typeof job["jobId"] !== "string" || !job["jobId"]) return;
+  const terminal = ["succeeded", "failed", "cancelled"].includes(String(job["status"]));
+  for (const [key, owner] of busyOwners) {
+    const task = owner.migration;
+    if (!task || task.instance !== instance) continue;
+    if (!task.jobId && task.clientId === job["clientMigrationId"]) associateMigration(owner, job["jobId"]);
+    if (task.jobId === job["jobId"] && terminal) busyOwners.delete(key);
+  }
+}
+
+async function guardedBackendCommand(source: BackendBridge, name: string, args: unknown) {
+  const instance = source.instanceIdentity;
+  const input = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+  const clientId = input["clientMigrationId"];
+  const owner = name === "start_migration" && typeof clientId === "string" ? busyOwners.get(clientId) : undefined;
+  if (owner && !owner.migration) owner.migration = { instance, clientId: clientId as string };
+  const result = await source.command(name, args);
+  // A terminal may have removed this owner while the receipt was in flight. Never resurrect it.
+  if (owner && busyOwners.get(clientId as string) === owner && owner.migration?.instance === instance) {
+    const data = result.data as { accepted?: unknown; jobId?: unknown } | undefined;
+    if (result.ok && data?.accepted === true) associateMigration(owner, data.jobId);
+    else if (result.code === "active_job_exists" && result.delivery === "response") associateMigration(owner, result.jobId);
+    else if (result.delivery === "not_sent" || (result.delivery === "response" && !result.ok)) busyOwners.delete(clientId as string);
+  }
+  if (name === "job_status" && result.ok) {
+    const data = result.data as { ok?: unknown; job?: Record<string, unknown> } | undefined;
+    if (data?.ok === true && data.job?.["jobId"] === input["job_id"]) observeMigrationJob(instance, data.job);
+  }
+  return result;
 }
 /** 实时 OCR 定时器：仅在用户开启后运行 */
 let liveOcrTimer: NodeJS.Timeout | null = null;
@@ -322,7 +371,7 @@ function registerIpc(): void {
 
   ipcMain.handle("backend:command", (_e, name: string, args: unknown) => {
     if (!bridge) return { ok: false, error: "后端未初始化" };
-    return bridge.command(name, args);
+    return guardedBackendCommand(bridge, name, args);
   });
 
   /* ---- 浮窗 ---- */
@@ -538,9 +587,11 @@ function registerIpc(): void {
 
   ipcMain.handle("app:set-busy", (_e, busy: boolean, reason?: string, owner?: string) => {
     if (typeof owner !== "string" || !owner) return "";
-    if (busy) busyOwners.set(owner, reason || "正在执行后台任务");
-    else busyOwners.delete(owner);
-    return busyOwners.get(owner) ?? "";
+    const previous = busyOwners.get(owner);
+    if (busy && !previous) busyOwners.set(owner, { reason: reason || "正在执行后台任务" });
+    // Once sent, only backend evidence can release a migration, never a renderer.
+    else if (!busy && !previous?.migration) busyOwners.delete(owner);
+    return busyOwners.get(owner)?.reason ?? "";
   });
 
   ipcMain.handle("app:busy-reason", () => busyReason());
@@ -555,7 +606,9 @@ function stamp(): string {
 /* -------------------------------------------------------------- 生命周期 */
 
 function wireBackendEvents(source: BackendBridge): void {
-  source.onEvent((event: BackendEvent) => {
+  source.onEvent((event: BackendEvent, instance: object) => {
+    if (event.type === "disconnected") lastReadyEvent = null;
+    if ((event as { type: string }).type === "job") observeMigrationJob(instance, event);
     // 记住最后一条 ready：渲染层重载（或换窗口）后重新连上时，原始的 ready
     // 事件早已错过，必须能补发 —— 否则界面的就绪门一直等不到事件，
     // 所有命令都要先干等 30 秒超时（表现为"刚重载完什么都点不动"）。

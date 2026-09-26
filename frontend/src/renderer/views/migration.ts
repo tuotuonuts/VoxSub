@@ -637,7 +637,6 @@ function viewPlan(): HTMLElement {
 
 /* ------------------------------------------------------------ 步骤 4 */
 
-let nextMigrationClientRequestId = 0;
 let nextCleanupOperationId = 0;
 
 function showMigrationRunStatus(run: MigrationRun, statusText: string): void {
@@ -881,7 +880,7 @@ async function startMigration(
   const steps = plan.steps.filter((s) => selected.has(s.key));
   if (steps.length === 0) return;
 
-  const clientMigrationId = `migration-${Date.now().toString(36)}-${++nextMigrationClientRequestId}`;
+  const clientMigrationId = `migration-${crypto.randomUUID()}`;
   const run: MigrationRun = {
     token: Symbol("migration-run"),
     clientMigrationId,

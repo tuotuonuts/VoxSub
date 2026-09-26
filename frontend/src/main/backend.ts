@@ -43,7 +43,7 @@ export interface CommandResult {
   delivery?: "not_sent" | "unknown" | "response";
 }
 
-type Listener = (event: BackendEvent) => void;
+type Listener = (event: BackendEvent, instance: object) => void;
 
 /** 一次待返回的请求。 */
 interface PendingRequest {
@@ -62,6 +62,10 @@ export class BackendBridge {
   private pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private disposed = false;
+  private instance: object = {};
+
+  /** Opaque process identity: a restarted sidecar may reuse job IDs. */
+  get instanceIdentity(): object { return this.instance; }
 
   onEvent(listener: Listener): void {
     this.listeners.push(listener);
@@ -73,7 +77,7 @@ export class BackendBridge {
   }
 
   private emit(event: BackendEvent): void {
-    for (const listener of this.listeners) listener(event);
+    for (const listener of this.listeners) listener(event, this.instance);
   }
 
   private resolvePython(): { command: string; args: string[] } {
@@ -179,11 +183,14 @@ export class BackendBridge {
     }
 
     this.child = child;
+    this.instance = {};
     child.stdout.setEncoding("utf-8");
     child.stderr.setEncoding("utf-8");
 
     const reader = readline.createInterface({ input: child.stdout });
-    reader.on("line", (line) => this.handleLine(line));
+    reader.on("line", (line) => {
+      if (this.child === child) this.handleLine(line);
+    });
     child.stderr.on("data", (chunk: string) => {
       // 后端的 stderr 转发到界面日志区。
       //
@@ -201,6 +208,7 @@ export class BackendBridge {
     });
 
     child.on("exit", (code) => {
+      if (this.child !== child) return;
       this.child = null;
       // 独立事件：后端**退出了**，不是"启动失败"，也不是一句提示文案。
       // 渲染层据此进入 disconnected 状态，把"运行中"收回去（缺陷 #11）。
