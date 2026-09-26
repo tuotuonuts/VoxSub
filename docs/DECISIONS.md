@@ -66,52 +66,59 @@
 
 ---
 
-## 4. 契约运行时校验**默认只告警**（`CONTRACT_ENFORCE = False`）
+## 4. 契约运行时校验默认只告警（`CONTRACT_ENFORCE = False`）
 
-**决策**：`contracts/` 是单一来源、有一致性测试；运行时也接了线（唯一出站口
-`IpcLoop._send()`），但默认只把不一致记成 WARNING，**不拒绝请求**。
+**决策**：`contracts/` 是单一来源并有双向一致性测试；生产 `IpcLoop` 也接入运行时校验。
+请求信封、命令参数、成功结果、异步受理回执和业务事件都经过对应的 schema 边界。
+模块级 producer 事件由 `ipc_protocol._event` 转交给 `ipc_server.main` 安装的 dispatcher，
+再进入同一个 `IpcLoop` 校验器。默认兼容模式只记 WARNING 并继续发送，不拒绝功能请求。
 
-**为什么**：契约写错不该比没有契约更糟。如果这一版契约有偏差就硬拒绝，代价是用户功能
-直接不可用。所以按任务书 §3.6 的"分两步实施"：第一步集中定义 + 一致性测试（已完成），
-第二步运行时强制。
+**为什么默认不启用严格拒绝**：契约写错不该比没有契约更糟。如果这一版契约有偏差就硬拒绝，
+代价是用户功能直接不可用。只有在全生产调用兼容性得到验证后，才应把
+`CONTRACT_ENFORCE` 翻为 `True`。
 
-**翻成 `True` 的条件**（写在代码注释里）：连续跑通全量测试 + 一次打包版冒烟，且出站零告警。
+**打包路径**：源码模式从仓库 `contracts/` 加载；PyInstaller frozen 模式从
+`sys._MEIPASS/contracts` 加载，`ipc_server.spec` 收集 `protocol.json`、`commands.json`、
+`events.json` 和 `error-codes.json`。离线行为测试验证了路径选择及 spec 数据声明；
+实际冻结版构建和运行仍是 **NOT_RUN**，不能把静态测试写成成品冒烟证据。
 
-**已知限制（独立审查的结论比我原来写的更严厉）**：运行时校验在打包版上是**双重关闭的** ——
-`CONTRACT_ENFORCE=False` 只是一层，另一层是 `contracts/` 不进 bundle（`_load_contracts()`
-在打包版必然返回 None，连告警都没有）。所以：**作为运行时防线它目前基本没有价值** ——
-开发期只告警（长任务期间还会因去重上限静默丢弃后续告警），发布版彻底失效。
+**剩余限制**：默认仍是兼容告警；合同注册表加载失败时默认模式记 ERROR 后继续运行，
+没有 schema 校验。显式严格模式下缺失注册表会 fail-closed。严格模式已由隔离的 IPC/schema
+行为测试覆盖，但真实 renderer 全面兼容、冻结 sidecar 运行和成品打包仍未验证；运行时告警
+也有最多 50 种不同问题的去重上限。
 
-它真正的价值在**离线一致性测试**（`tests/test_contracts.py` 的双向覆盖比对、TS 字段比对、
-校验器负例），而那部分与 `CONTRACT_ENFORCE` 无关。要让运行时校验变得有意义，顺序是：
-先把 `contracts/` 打进 bundle → 再让出站告警归零 → 才能翻 `True`。
+**翻成 `True` 的条件**：连续跑通安全全量测试 + 一次打包版冒烟，且所有生产出站告警归零；
+在上述验证前保留默认兼容模式。
 
-也就是说：这份决策当前的状态是「为『契约写错不会比没有契约更糟』付了代价（多了一套运行时机制），
-收益还没到」。要么按上面顺序补齐，要么把它降级成纯离线的开发期工具 —— 不宜长期停在中间态。
-
-**代码**：`frontend/backend/ipc_loop.py`（`CONTRACT_ENFORCE`、`_send`、`_load_contracts`）
+**代码**：`frontend/backend/ipc_loop.py`（`CONTRACT_ENFORCE`、`_send`、producer-event validator）、
+`frontend/backend/ipc_protocol.py`、`frontend/backend/ipc_server.py::main`、
+`frontend/backend/contract_validation.py`、`frontend/backend/ipc_server.spec`
+**测试**：`tests/test_ipc_contract_runtime.py`、`tests/test_contracts.py`
 
 ---
 
-## 5. `stop()` 超时后保持"停止中"，而不是落 IDLE
+## 5. `stop()` 超时后保持“停止中”，而不是落 IDLE
 
-**决策**：`stop()` 的 8 秒 join 是"UI 别卡住"的预算，不是"原生推理一定能在这之内停"
-的承诺。超时后**保持 STOPPING**，由一个有界观察者等到 worker 真退出才落 IDLE。
+**决策**：`stop()` 的 8 秒 join 是“UI 别卡住”的预算，不是“原生推理一定能在这之内停”
+的承诺。超时后保持 STOPPING，普通停止观察在 30 秒后有界退出；若已请求 `close()`，
+观察者会继续等到本 Pipeline 的 worker 真退出，再完成资源释放。观察者为 daemon，不阻止
+宿主进程退出。
 
-**为什么不能落 IDLE**：两个后果 ——
-1. 界面显示"已停止"而任务还在收尾，**状态在撒谎**；
-2. `set_translator`/`set_asr_model`/`set_models_dir` 这些只判断 `self._running` 的入口
-   以为"已经空了"，把仍在被使用的实例关掉或换掉。
+**为什么不能落 IDLE**：worker 仍在收尾时显示“已停止”会撒谎；更重要的是，
+`set_translator` / `set_asr_model` / `set_models_dir` 等入口可能误以为资源已空闲，
+替换仍被 worker 使用的实例。
 
-**为什么需要观察者**：没有它，超时的 pipeline 会永远停在"停止中"，用户只能重启应用 ——
-那就把"诚实的状态"变成了"卡死"。观察者有界（30s）、单例、只等本实例自己的线程。
+**为什么关闭请求继续观察**：拥有者可能在 `close()` 尚未完成时结束自己的调用栈。
+若 watcher 只等一个观察窗口后退出，晚于该窗口结束的 worker 就没有后续调用者关闭进程型
+翻译器或释放 Pipeline 本地资源。继续持有 Pipeline 并在 worker settle 后重试 `close()`，
+避免“调用方已返回”被误当成“资源已释放”。
 
 **为什么观察者用轮询而不是再次 join**：join 的超时账本归 `stop()` 主路径所有；两条路径
-各算一套超时就会互相污染（实测：观察者再 join 一次会让既有的"共享截止时间"测试失败）。
+各算一套超时会互相污染。settlement watcher 只观察线程状态，超时后不伪报 IDLE。
 
 **代码**：`voxsub/pipeline.py`（`_STOP_JOIN_SECONDS`、`_SETTLE_WATCH_SECONDS`、
-`_may_replace_resources`、`_is_settling`、`_watch_settlement`）
-**测试**：`tests/test_pipeline_settling.py`（12 条）
+`_may_replace_resources`、`_is_settling`、`_watch_settlement`、`close`）
+**测试**：`tests/test_pipeline_settling.py` 覆盖超时状态、资源替换门禁及关闭请求越过首次观察期限后自动清理。
 
 ---
 

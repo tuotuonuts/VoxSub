@@ -323,3 +323,17 @@
 [x] 完整构建门禁 `319 passed / 7 skipped`；QtCore/OCR/安装器退出 smoke 和 Inno Setup 编译通过
 [x] 重建同版本安装包 277,285,664 字节；SHA256 F09E62016FD04A9E6847186234F58E5BA1534E3A50A52D5E03F60C5FA745C06D；本机自签名
 [ ] 等待用户安装升级验证；不创建 GitHub Release
+
+=== 2026-09-26 (生命周期与 IPC 维护跟进，提交前) ===
+[x] 回退交接已分开记录前一轮已演练与本轮 `NOT_RUN`；新增返修快照均有 `RESTORE.md`。
+[x] 严格模式异步回执校验改到 JobRunner 入队前；行为回归证明校验拒绝时没有任务被接纳。
+[x] Pipeline 资源 setter 的准入检查与更新通过 `_state_lock` 串行化；六种资源设置的受控竞态用例通过。
+[x] 隔离测试时钟与 loopback 选择测试，不再改写进程级 `time.monotonic` 或枚举真实设备。
+[x] Python 安全套件：`883 passed / 5 skipped / 17 deselected / 1 xfailed`；1 个 tarfile `DeprecationWarning`。定向 Pipeline/IPC 子集 `250 passed`。
+[x] `npm run check`：TypeScript/色板/逻辑门禁通过；页面汇总 `113/113`、catalog `8/8`。Acceptance contracts `25/25` 正例及 11 个负对照通过（结构检查，不是运行时证明）。
+[x] 未运行 GUI、真实迁移、真实模型/音频/硬件或冻结 sidecar/安装包；`CONTRACT_ENFORCE=False` 仍为默认兼容告警模式。
+[x] 完整代码回退演练已补完：隔离 clone 逆序 revert 三个代码提交，TREE_MATCH=True / CLEAN_WORKTREE=True；原仓库未回滚。
+[x] 收到上一轮三路复审后，限定缺陷经复现/修复/回归完成；不再开启全仓审计。最终证据与恢复命令见 docs/FINISH_2026-09-26.md。
+[x] IPC/Pipeline/Frontend 三阶段本地提交：f50dd05 / 869be20 / 8af1258；安全 Python 909 passed，npm run check 通过；隔离逆序 revert 的 tree/clean 匹配。未推送。
+[!] GUI、真实迁移/音频/模型/硬件与打包仍 NOT_RUN；清理硬超时无自动恢复通道，保留退出保护，详见最终报告。
+[!] `scripts/run_tests.py` 曾有未诊断的 exit 1；本轮未复跑它（runner 会清理过期 `.pytest-run` 目录），改用显式 scratch、标记排除的直接 pytest 安全套件。

@@ -365,3 +365,37 @@ cp .backups/phase1_20260921_042735/pytest.ini pytest.ini
 - 确认的剩余缓存与 Qwen 策略事项继续按本报告前文保留，不在本次顺手改变用户可见行为。
 - 本轮源文件回滚副本：`.backups/public-modules-20260925-035129/`；复审修复快照：`.backups/public-module-review-20260925-064123/`、`.backups/migration-async-timeout-20260925-084500/`；回执重关联后续快照：`.backups/migration-ack-recovery-20260925-094500/`、`.backups/migration-outcome-contract-20260925-110451/`、`.backups/migration-failed-receipt-test-20260925-114347/`；新增测试 `tests/test_realtime_builder.py` 与 `frontend/tools/test-migration-entry.ts` 回滚时删除；具体操作见各备份目录内 `RESTORE.md`。
 - Git 最终阶段提交状态见本轮任务的最新 `STATUS.md`/`TODO.txt`；**未推送**。
+
+---
+
+## 2026-09-26 收尾结果
+
+最新交付见 [FINISH_2026-09-26.md](FINISH_2026-09-26.md)：限定问题已修复，安全 Python 909 passed，前端门禁通过，三阶段代码已本地提交并完成隔离回退演练；未推送、未打包。没有启动新一轮全仓独立审查。以下为早先中间快照，验证数与待办状态均由最新交付页覆盖。
+
+### 生命周期与 IPC 返修跟进（历史快照）
+
+本节只记录 `main@1c0781e3d647846844040c21ed38f4882c5db93c` 上本轮未提交返修，不覆盖上一节 2026-09-25 的已提交阶段。保留 Electron + TypeScript + Python 架构；未引入框架、服务或存储迁移。
+
+### 经复现后修复
+
+- **异步 ack 与任务入队竞态（P2）**：严格模式下，旧顺序先把 job 放进 `JobRunner` 队列、再校验 async ack；拒绝回执时 worker 仍可能执行，renderer 却将请求当终态并释放忙碌保护。现于 `on_queued` 队列可见前校验并缓存同一 ack 快照；严格校验失败在加入 pending queue 之前拒绝。用真实 `JobRunner`、假服务和强制 ack schema failure 的行为测试确认没有任务被接纳；该测试没有启动真实 migration。
+- **Pipeline resource setter/start TOCTOU（P2）**：单独检查 `_start_in_progress` 仍留有“检查通过→start 抢先领取→setter 再改字段”的窗口。资源 setter gate 与字段更换现用 `_state_lock` 串行，和 `_claim_start()` 共享互斥边界；六种 setter 顺序用 barrier 控制测试。
+- **测试时钟/设备枚举副作用**：测试不再 monkeypatch Python 共享 `time.monotonic` 模块属性（此前有限迭代器会被 daemon settlement watcher 消耗并触发 `StopIteration`）；用 Pipeline 模块局部 clock shim，并让只验 import/调用链的 loopback 测试使用 fixture 而非枚举真设备。
+- 前一轮 reviewer 对 startup-close 部分清理、生产 producer event 绕过 dispatcher、非法 request ID 回显等发现已逐条对照当前代码及测试；fresh independent review 的最终意见仍待下方更新。
+
+### 验证与覆盖边界
+
+| 验证 | 实际结果 | 边界 |
+|---|---|---|
+| Python：显式排除 integration 与 hardware_audio 的安全套件 | `883 passed / 5 skipped / 17 deselected / 1 xfailed`，exit 0，`LOCALAPPDATA`/临时目录/pytest basetemp 均在 scratch | 1 个 `DeprecationWarning` 来自 `voxsub/model_catalog.py` 的 tar 解包；跳过项包含模型/音频样本缺失与符号链接权限。未将 integration/hardware 排除项记为通过。 |
+| Python Pipeline/IPC 专项 | `250 passed`；时钟与设备选择单测 `3 passed` | fake service/source/builders；不代表真实 Pipeline、sidecar 或设备验证。 |
+| 前端门禁 | `npm run check` exit 0，页面逻辑汇总 `113/113`；catalog races `8/8` | 纯 Node/TypeScript harness；没有 Electron GUI。 |
+| Acceptance contracts | `25/25` structural assertions + 11 in-memory negative controls | 明确不是运行时 IPC 或 packaged build 证明。 |
+
+**执行偏差（不隐藏）**：一次早期 RED Pipeline 单项测试漏设 LocalAppData 隔离，日志初始化指向用户的 `%LOCALAPPDATA%\\VoxSub\\logs\\voxsub.log`。该日志未被读取、恢复或删除；后续测试全部把 LocalAppData 和临时目录重定向到 scratch。一次较早的默认 marker 套件运行了旧版 `test_pipeline_has_loopback_symbol` 的真实 loopback **设备枚举**，未启动捕获/播放；该测试已改为 fixture，最终安全套件显式排除 `integration` 和 `hardware_audio`。
+
+**仍为 NOT_RUN/BLOCKED**：当前返修完整隔离 revert 演练（交接明确记录 `NOT_RUN`，上一轮 revert 演练不代替）；Electron GUI/静默 E2E；真实迁移、OCR、音频、模型、硬件；冻结 sidecar/安装包验证；`CONTRACT_ENFORCE=True` 的全 Renderer 路径兼容；Sherpa native 析构语义。`CONTRACT_ENFORCE=False` 仍为默认兼容告警模式。
+
+**审查与提交**：新一轮 Pipeline、IPC、Renderer 三路只读 review 正在进行。源代码/测试仍未分阶段提交；本地 main 当前 ahead 14 个既有提交；不推送。`scripts/run_tests.py` 的较早一次 exit 1 未保留失败正文；本轮未重跑该会清理过期 `.pytest-run` 的 wrapper，采用 scratch 隔离的显式 pytest 命令，不能宣称 wrapper 通过。
+
+相关快照与恢复方法：`.backups/async-ack-admission-20260926-164656/`、`.backups/pipeline-setter-atomicity-20260926-173607/`、`.backups/pipeline-test-clock-isolation-20260926-193345/`、`.backups/delivery-docs-followup-20260926-201929/`；本轮代码阶段提交与最新 review handoff 待完成。

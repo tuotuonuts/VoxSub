@@ -98,6 +98,19 @@
 - [ ] NOT_RUN：真实模型/硬件链路、Electron 静默 E2E、打包/安装包验收；本轮未修改真实配置、模型或 Release。
 - [x] 本轮代码与文档按功能阶段完成本地提交；严格按附件未推送远端。
 
+## 当前维护收尾（2026-09-26）
+
+**限定源码修复已完成并本地提交，未推送。** 最新验收以 [docs/FINISH_2026-09-26.md](docs/FINISH_2026-09-26.md) 为准：909 passed；npm run check 通过；页面 126/126、退出保护 8/8、catalog 11/11；三阶段代码回退 tree/clean 匹配。提交 f50dd05 / 869be20 / 8af1258。GUI、真实迁移、模型/音频、打包仍 NOT_RUN；清理硬超时保留退出保护且不能自动恢复。
+
+### 以下为早先中间快照（已被上方收尾报告覆盖）
+
+- 当前基线 `main@1c0781e3d647846844040c21ed38f4882c5db93c`；本地分支较 `origin/main` 超前 14 个既有提交。本轮改动尚未暂存或提交；禁止 push。
+- 本轮已修复/覆盖：迁移异步回执严格校验前置于 JobRunner 入队；Pipeline 资源 setter 与 `start()` 领取启动权通过同一状态锁串行；测试用时钟改为模块局部代理，B 模式 loopback 选择测试改用假设备，避免枚举真实设备。
+- 当前 Python 安全套件：显式排除 `integration` 与 `hardware_audio`，`883 passed / 5 skipped / 17 deselected / 1 xfailed`，另有 1 条 `DeprecationWarning`（`voxsub/model_catalog.py` 的 `tarfile.extractall`）；测试日志、LocalAppData、pytest basetemp 均定向至 Hermes scratch。定向 Pipeline/IPC 子集 `250 passed`。
+- 前端 `npm run check` 退出码 0；页面逻辑汇总 `113/113`，catalog 乱序 harness `8/8`。`npm run test:acceptance-contracts` 为 `25/25` 结构正例与 11 个内存负对照；它不是运行时/成品证明。
+- `CONTRACT_ENFORCE=False` 仍是默认兼容告警模式。严格模式全 UI 兼容、冻结 sidecar/安装包、Electron 窗口、真实迁移、模型、音频和硬件工作流均 **NOT_RUN**；当前返修整阶段回退演练也 **NOT_RUN**，不可拿前一轮隔离 revert 结果替代。
+- 当前三个独立只读复审已重新派发，结果待回传；审查通过后再完成最终报告与本地分阶段提交。
+
 ## 环境事实（接手必知）
 
 - 项目根：`D:\OneDrive\app_dve\VoxSub`（OneDrive 同步盘——**偶发文件锁，报 os error 5 时等 1-2s 重试**）

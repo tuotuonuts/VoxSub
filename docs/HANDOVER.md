@@ -181,28 +181,40 @@ python ../frontend/tools/build-release.py --check-only
 
 ## 六、出问题怎么回滚
 
-### 单次改动的回滚
+### 当前维护跟进（2026-09-25/26）
 
-每次改动前先按约定建带时间戳的备份：
+本轮返修从基线 `main@1c0781e3d647846844040c21ed38f4882c5db93c` 开始；不要把下方“前一轮已提交批次”的回退命令套到本轮工作树上。本轮文件快照及逐项恢复指引位于：
 
-```bash
-cd D:/OneDrive/app_dve/VoxSub
-mkdir -p .backups/<改动名>-$(date +%Y%m%d-%H%M%S)
-cp frontend/backend/ipc_server.py .backups/<改动名>-<时间戳>/
-```
+- `.backups/public-components-followup-20260925-183459/`
+- `.backups/ipc-contract-runtime-20260926-025434/`
+- `.backups/catalog-race-followup-20260926-050646/`
+- `.backups/pipeline-owner-followup-20260926-051723/`
+- `.backups/ipc-envelope-followup-20260926-060740/`
+- `.backups/pipeline-start-close-race-20260926-082119/`
+- `.backups/handover-followup-20260926-045619/`
+- `.backups/final-handover-contracts-20260926-100929/`
+- `.backups/async-ack-admission-20260926-164656/`
+- `.backups/pipeline-setter-atomicity-20260926-173607/`
+- `.backups/pipeline-test-clock-isolation-20260926-193345/`
+- `.backups/delivery-docs-followup-20260926-201929/`
 
-回滚就是把备份拷回去。`.backups/` 已在 `.gitignore` 里。
+每个目录的 `RESTORE.md` 记录快照文件、基线与恢复方法。先核对 `git status` 和目标路径，再依照单个阶段说明恢复；不要使用 `git reset --hard`、宽泛 `git clean` 或覆盖真实配置/用户数据。
 
-### 本轮改动的回滚
+- 本轮分阶段提交与提交后回退命令：最终审查后补入本节交接记录；当前返修尚未提交。
+- 本轮完整阶段回退演练：**NOT_RUN**，除非下方后续记录明确更新为已演练；不得用前一轮的演练结果替代。
 
-见 `docs/MAINTAINABILITY_REPORT.md` §七，含具体的 `cp` 命令。
+### 前一轮已提交批次（与本轮返修分开）
+
+返修前的五个既有提交为 `9cfc614`、`1d3b842`、`a99467e`、`afbe3c8`、`1c0781e`。2026-09-26 曾在 `E:\Hermes_data\cache\scratch\voxsub-r5-prev-revert-487\` 的隔离 clone 中实际按逆序 revert 这五个提交：结果树为 `6cfbbc7569b4627e3bf81d101f3455939ceb1e89`，revert 演练提交为 `d753a5f5d8b9591fe01b06db292643ea27206da0`，日志报告 `TREE_MATCH=yes` 与 `CLEAN_WORKTREE=yes`（`drill.log`）。该演练只证明前一轮批次在当时隔离基线上可回退；不属于 VoxSub 正式 `main` 历史，不证明本轮返修回退。
+
+### 单次改动
+
+每次改动前先建立带时间戳备份，并在对应 `RESTORE.md` 记录文件清单及恢复方法。`.backups/` 已在 `.gitignore` 中。配置、模型及发布产物不属于本轮返修回退范围；未经明确批准不得恢复覆盖。
 
 ### 配置出问题的回滚
 
-- 配置损坏：程序会自己备份成 `config.json.corrupt-<时间戳>` 再回落默认值，
-  把备份改名回 `config.json` 即可复原。
-- **配置版本比程序新**：程序进入只读保护并给出明确提示 —— 这是**刻意**的，
-  别绕过它去写文件，那会把新版本的字段抹掉。正确做法是升级程序。
+- 配置损坏：程序会自己备份成 `config.json.corrupt-<时间戳>` 再回落默认值，把备份改名回 `config.json` 即可复原。
+- **配置版本比程序新**：程序进入只读保护并给出明确提示 —— 这是**刻意**的，别绕过它去写文件，那会把新版本的字段抹掉。正确做法是升级程序。
 
 ---
 
@@ -244,6 +256,38 @@ cp frontend/backend/ipc_server.py .backups/<改动名>-<时间戳>/
 已知的不一致必须逐条登记，多一笔会红、修好不删登记也会红 —— 缺口只能被显式登记，
 不能被静默接受。
 
-运行时校验已经接线（`IpcLoop._send()` 是唯一出站口），但 `CONTRACT_ENFORCE = False`：
-**默认只把不一致记成 WARNING，不拒绝请求**。理由写在代码注释里 —— 契约写错不该比
-没有契约更糟。翻成 `True` 的条件也写在那儿。
+运行时校验现已接入生产 `IpcLoop`：请求信封在 `_split_request()` 解析边界检查，已知命令的 args 在 `_admissible()` 检查；`_send()` 校验应答信封、成功结果、异步受理回执及业务事件。Pipeline/handler 通过 `ipc_protocol._event()` 发出的模块级 producer 事件由 `ipc_server.main` 安装的 dispatcher 转入同一校验边界；只有契约诊断日志跳过自身复校以避免递归。
+
+`CONTRACT_ENFORCE = False` 仍是默认模式：违规记 WARNING 并继续发送；注册表加载失败会记 ERROR，兼容模式继续运行但没有 schema 校验。显式设为 `True` 时请求/args/响应/事件违规会拒绝或丢弃，注册表缺失 fail-closed。严格模式目前只在隔离 IpcLoop/schema 测试中验证；所有真实 renderer 调用、冻结 sidecar 与成品打包兼容仍是 **NOT_RUN**。成功 response 的 `data` 有命令级结果校验；错误回复没有成功结果可验。迁移成功终态另校验与 `start_migration` 关联的报告；这不等于 Electron 端到端证明。
+
+## 2026-09-26 收尾交接
+
+最新源码提交、验证、回退演练与剩余风险统一见 [FINISH_2026-09-26.md](FINISH_2026-09-26.md)。代码三个本地提交已完成，未推送；未知清理仍须人工核对，不存在自动恢复通道。下方为早先中间记录，未提交/待复审/回退 NOT_RUN 状态已经过期。
+
+### 早先返修快照（历史）
+
+基线为 `main@1c0781e3d647846844040c21ed38f4882c5db93c`（返修前本地 `main` 较 `origin/main` ahead 14）；当前修复均仍是未暂存工作树改动，尚未分阶段提交，禁止推送。当前快照目录及恢复方法见本文件 §六与各目录 `RESTORE.md`。
+
+### 当前复修要点
+
+- IPC：严格模式的异步受理回执改为在 `JobRunner.on_queued` 的可见队列入队前校验；校验拒绝时应答 `contract_violation`，不登记请求、不接受任务。单项 RED→GREEN 行为测试以真实 `JobRunner` 和无副作用假服务验证该边界。
+- Pipeline：资源 setter 在同一 `_state_lock` 内完成准入检查与变更，与 `_claim_start()` 串行；覆盖语言、模型目录、STT、翻译器、ASR 模型和 ASR tuning。停止/关闭超时仍保留运行时 owner，直至 worker 确实退出。
+- 测试隔离：计时用例以 Pipeline 模块局部 clock shim 替代全局 `time.monotonic` 替换；B 模式 loopback 选择测试使用 fixture 设备，避免调用真实设备枚举。
+
+### 本轮验证证据
+
+| 范围 | 命令/结果 | 解释 |
+|---|---|---|
+| Python 策略安全套件 | `.venv/Scripts/python.exe -m pytest -q -rs -m "not integration and not hardware_audio"`：`883 passed / 5 skipped / 17 deselected / 1 xfailed`，退出码 0 | `LOCALAPPDATA`、`TEMP/TMP`、缓存与 basetemp 指向 Hermes scratch；5 个 skip 包括真实模型/素材缺失与 Windows 符号链接权限；保留 1 条 `tarfile.extractall` DeprecationWarning。被显式排除的 integration/hardware 不视为通过。 |
+| Python Pipeline/IPC 专项 | 相关模块与 fake-only lifecycle selector：`250 passed`；时钟/设备选择专项 `3 passed` | 未运行真实设备、模型、音频、迁移或主进程。 |
+| 前端门禁 | `npm run check`：退出码 0；包含 `tsc --noEmit`、色板和 `test:logic` | 页面生命周期汇总 `113/113`；catalog 乱序 harness `8/8`。 |
+| Acceptance contracts | `npm run test:acceptance-contracts`：`25/25` 正例及 11 个内存负对照通过 | 这是结构/负对照证据，不是 IPC 或 Electron 运行时证明。 |
+
+### 未验证与执行边界
+
+- 三路最新独立只读复审结果待回传；收到后按发现复核并必要时返修。
+- 本轮完整返修集成 revert 演练为 **NOT_RUN**；上一轮 scratch clone 的逆序 revert 结果只属于前一轮。
+- Electron GUI、真实 sidecar/冻结包、真实 migration、OCR、音频采集/播放、模型推理和硬件工作流均未运行；`CONTRACT_ENFORCE=False` 仍为默认。
+- 曾有一次未设置隔离 `LOCALAPPDATA` 的 RED Pipeline 单项测试将日志写到本机 `%LOCALAPPDATA%\\VoxSub\\logs\\voxsub.log`；该日志未被读取或清理。此后 Python 测试均将 LocalAppData 和临时目录定向至 Hermes scratch。一次较早的默认标记套件也实际调用过旧版 loopback 枚举测试（仅设备枚举、未采集/播放）；该测试现已改为 fixture 设备，最终安全套件显式排除 `integration` 和 `hardware_audio`。
+- `scripts/run_tests.py` 曾有退出码 1 且未保留失败正文；本轮未重跑该清理型 wrapper，改用显式 scratch 的安全标记测试命令。不得据直接 pytest 的结果声称该 wrapper 已通过。
+- 本轮不覆盖 `%LOCALAPPDATA%` 真实配置、模型、安装包或 `Release`；无提交尚未完成，禁止 push。
