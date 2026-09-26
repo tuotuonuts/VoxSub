@@ -30,6 +30,8 @@ import {
   type RequestOutcome,
 } from "../shared/request-outcome";
 
+import { normalizeLog } from "../shared/log-time";
+
 type Listener = () => void;
 type UiTranslator = (source: string) => string;
 
@@ -113,6 +115,7 @@ function initialState(): AppState {
 class Store {
   private state: AppState = initialState();
   private listeners = new Set<Listener>();
+  private logSequence = 0;
 
   get(): Readonly<AppState> {
     return this.state;
@@ -146,7 +149,7 @@ class Store {
   }
 
   pushLog(entry: LogEntry): void {
-    const logs = [...this.state.logs, entry];
+    const logs = [...this.state.logs, normalizeLog(entry, Date.now(), ++this.logSequence)];
     if (logs.length > MAX_LOG_LINES) logs.splice(0, logs.length - MAX_LOG_LINES);
     this.patch({ logs });
   }
@@ -184,7 +187,9 @@ class Store {
         if (!job) break;
         const terminal = isTerminalJobStatus(job.status);
         this.pushLog({
-          ts: new Date().toISOString(),
+          ts: event.ts ?? "",
+          source: "job",
+          raw: JSON.stringify(event),
           level: isJobFailure(job.status) ? "ERROR" : "INFO",
           message: `任务 ${job.command || job.jobId} ${job.status}${job.error ? `：${job.error}` : ""}`,
         });
@@ -282,7 +287,7 @@ class Store {
         });
         break;
       case "log":
-        this.pushLog({ ts: event.ts, level: event.level, message: event.message });
+        this.pushLog({ ts: event.ts, level: event.level, message: event.message, source: "backend", raw: JSON.stringify(event) });
         break;
       case "error":
         this.pushLog({ ts: new Date().toISOString(), level: "ERROR", message: event.message });

@@ -55,7 +55,7 @@ def _now_iso() -> str:
     """
     import datetime  # noqa: PLC0415
 
-    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
 
 
 @dataclass

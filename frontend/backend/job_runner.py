@@ -37,6 +37,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
@@ -321,6 +322,7 @@ class JobRunner:
             "command": job.command,
             "status": job.status,
             "sequence": job.next_sequence(),
+            "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         }
         payload.update({key: value for key, value in fields.items() if value != ""})
         try:

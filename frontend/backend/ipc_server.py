@@ -356,7 +356,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         try:
             import logging  # noqa: PLC0415
 
-            from voxsub.logging_setup import get_logger  # noqa: PLC0415
+            from voxsub.logging_setup import get_logger, log_timestamp  # noqa: PLC0415
 
             get_logger("ipc")  # 确保 setup_logging 已跑过，handler 已就位
             target = logging.getLogger("voxsub")
@@ -371,7 +371,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
                         message = self.format(record)
                     except Exception:  # noqa: BLE001
                         return
-                    entry = {"ts": _now_iso(), "level": record.levelname,
+                    entry = {"ts": log_timestamp(record.created), "level": record.levelname,
                              "message": message}
                     self._outer._log_buffer.append(entry)  # noqa: SLF001
                     del self._outer._log_buffer[:-500]  # noqa: SLF001

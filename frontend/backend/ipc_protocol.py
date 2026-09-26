@@ -74,7 +74,7 @@ def _cancel_requested() -> bool:
 def _now_iso() -> str:
     import datetime  # noqa: PLC0415
 
-    return datetime.datetime.now().isoformat(timespec="seconds")
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _exit_process() -> None:

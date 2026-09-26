@@ -352,6 +352,10 @@
           "event": {
             "const": "job"
           },
+          "ts": {
+            "type": "string",
+            "description": "Producer event instant: timezone-aware ISO 8601, milliseconds. Optional for old sidecars."
+          },
           "jobId": {
             "type": "string",
             "description": "uuid4 hex"
@@ -575,7 +579,7 @@
           },
           "ts": {
             "type": "string",
-            "description": "本地 ISO8601，秒精度（_now_iso）"
+            "description": "带时区的 ISO8601，毫秒精度；日志桥使用 record.created（事件时间，不是接收时间）"
           },
           "level": {
             "$ref": "#/$defs/LogLevelName"

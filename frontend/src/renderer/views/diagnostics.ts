@@ -12,10 +12,12 @@
  *   打开文件夹  ← log_path + shell.openExternal
  */
 import { h, on } from "../dom";
+import { formatLogTime, parseFileLogs, exportLogEntries } from "../../shared/log-time";
+import type { LogEntry } from "../protocol";
 import { call, store } from "../store";
 import { CMD, type DeviceEntry, type HardwareProfile, type SelfCheckItem } from "../protocol";
 import { tr } from "../i18n";
-import { guessStderrLevel, splitStderrLines } from "../../shared/log-levels";
+
 import { type PageHandle } from "../../shared/page-lifecycle";
 import { runAfterConfirm } from "../../shared/confirm-action";
 import { buildStatusRow } from "../ui/status-row";
@@ -38,6 +40,7 @@ let detached = false;
 
 /** 日志来源：live=实时事件流；file=磁盘日志（含历史运行）。 */
 let logSource: "live" | "file" = "live";
+let fileEntries: LogEntry[] = [];
 
 async function runCheck(): Promise<void> {
   if (!resultsEl) return;
@@ -97,7 +100,7 @@ function renderLog(): void {
     const ts = String(entry?.ts ?? "");
     const row = h("div", { class: `log-row log-row--${level.toLowerCase()}` });
     row.append(
-      h("span", { class: "log-row__ts", text: ts.length > 11 ? ts.slice(11) : ts }),
+      h("span", { class: "log-row__ts", text: formatLogTime(entry, tr), title: entry.raw ?? ts }),
       h("span", { class: "log-row__level", text: level.toUpperCase() }),
       h("span", { class: "log-row__msg", text: String(entry?.message ?? "") }),
     );
@@ -118,6 +121,7 @@ async function renderFileLog(): Promise<void> {
   });
   const text = result?.text ?? "";
 
+  fileEntries = [];
   if (!text.trim()) {
     logEl.replaceChildren(h("p", { class: "hint", text: tr("日志文件为空或尚未生成") }));
     if (logStateEl) logStateEl.textContent = tr("文件 · 空");
@@ -127,13 +131,14 @@ async function renderFileLog(): Promise<void> {
   // 文件日志是纯文本，按行渲染并识别级别。
   // 用共享的 guessStderrLevel：此前这里是 /(ERROR|CRITICAL)/.test(line)，
   // 匹配整行的话，正文里提到 "ERROR" 的 INFO 行也会被误标成错误级别。
-  const rows = splitStderrLines(text).map((line) => {
-    const level = guessStderrLevel(line);
+  fileEntries = parseFileLogs(text);
+  const rows = fileEntries.map((entry) => {
+    const level = entry.level;
     const row = h("div", { class: `log-row log-row--${level.toLowerCase()}` });
     row.append(
-      h("span", { class: "log-row__ts", text: line.slice(0, 10) }),
+      h("span", { class: "log-row__ts", text: formatLogTime(entry, tr), title: entry.raw ?? "" }),
       h("span", { class: "log-row__level", text: level }),
-      h("span", { class: "log-row__msg", text: line.slice(10) }),
+      h("span", { class: "log-row__msg", text: entry.message }),
     );
     return row;
   });
@@ -335,6 +340,7 @@ function buildLogTab(): HTMLElement {
     clearBtn,
   );
   page.append(actions);
+  page.append(h("p", { class: "hint", text: tr("本地时间（含时区）· 按接收顺序显示，迟到记录不重排") }));
 
   logEl = h("div", { class: "log-view" });
   page.append(logEl);
@@ -368,19 +374,7 @@ async function exportLog(): Promise<void> {
   const target = await api.dialog.saveReport();
   if (!target) return;
 
-  let text = "";
-  if (logSource === "file") {
-    const result = await call<{ text: string }>(CMD.recentLogs, {
-      limit: 2000,
-      source: "file",
-    });
-    text = result?.text ?? "";
-  } else {
-    text = store
-      .get()
-      .logs.map((e) => `${e.ts} ${e.level} ${e.message}`)
-      .join("\n");
-  }
+  const text = exportLogEntries(logSource === "file" ? fileEntries : store.get().logs.slice(-300), tr);
 
   const saved = await call<{ path: string }>(CMD.exportDiagnostics, {
     path: target,

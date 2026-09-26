@@ -1242,13 +1242,14 @@ body::before {
 
 .log-row {
   display: grid;
-  grid-template-columns: 5.0769rem 4.7692rem minmax(0, 1fr);
+  grid-template-columns: minmax(0, 18rem) 4.7692rem minmax(0, 1fr);
   gap: 0.6154rem;
   padding: 1px 0;
 }
 
 .log-row__ts {
   color: var(--ink2);
+  overflow-wrap: anywhere;
 }
 
 .log-row__level {

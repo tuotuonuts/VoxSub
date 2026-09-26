@@ -158,22 +158,9 @@ console.log("\n=== 拆行 ===\n");
 console.log("\n=== 时间戳格式（须与 Python 侧 _now_iso 一致）===\n");
 {
   const ts = localIsoNow();
-  // 格式：2026-09-13T19:24:38 —— 本地时间、秒精度、无 Z 后缀
-  check("形如 YYYY-MM-DDTHH:MM:SS", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(ts), ts);
-
-  const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const expectedLocal =
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-  check("用本地时间（不是 UTC）", ts.slice(0, 13) === expectedLocal.slice(0, 13), `${ts} vs ${expectedLocal}`);
-
-  // 关键回归：带 Z 的 UTC 时间戳会和 Python 侧并排显示成两个时刻
-  check("不带 Z 后缀（否则与 Python 的本地时间并排显示成两个时刻）", !ts.endsWith("Z"), ts);
-  check("秒精度，无毫秒", !ts.includes("."), ts);
-
-  // 界面上的显示逻辑：ts.length > 11 ? ts.slice(11) : ts
-  check("切片后显示为 HH:MM:SS", ts.slice(11) === expectedLocal.slice(11), ts.slice(11));
+  // Absolute time with milliseconds; renderer owns local-zone formatting.
+  check("absolute UTC ISO with milliseconds", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(ts), ts);
+  check("clock represents current instant", Math.abs(Date.parse(ts) - Date.now()) < 1000, ts);
 }
 
 /* ------------------------------------------------------------ 清理 */

@@ -14,21 +14,11 @@
  * （见 tools/test-log-levels.mjs）。
  */
 
-/**
- * 本地时区的 ISO 时间戳（形如 `2026-09-13T19:24:38`）。
- *
- * 必须与 Python 侧 `_now_iso()`（`datetime.now().isoformat(timespec="seconds")`）
- * 格式一致：两边的时间戳会同时出现在日志列表里，一边本地时间、一边 UTC
- * （`toISOString()`）的话，同一时刻会显示成 19:24 与 11:24 两个值 ——
- * 用户会以为日志乱序或时间错乱。
+/** Absolute bridge observation time; legacy name retained for existing callers.
+ * Local conversion belongs to the shared log display formatter, never the producer.
  */
 export function localIsoNow(): string {
-  const now = new Date();
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  return (
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
-    `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
-  );
+  return new Date().toISOString();
 }
 
 /**

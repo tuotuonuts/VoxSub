@@ -198,7 +198,13 @@ export interface SelfCheckItem {
 }
 
 export interface LogEntry {
+  /** Unmodified producer timestamp; never inferred for legacy records. */
   ts: string;
+  eventTimeMs?: number | null;
+  receivedAtMs?: number;
+  receiveSequence?: number;
+  source?: string;
+  raw?: string;
   level: string;
   message: string;
 }
@@ -256,6 +262,7 @@ export type JobStatus = "queued" | "running" | "cancelling" | "succeeded" | "fai
 /** 后端 `job` 事件：长任务的进度/终态（async 命令的结果走这条路送达）。 */
 export interface JobEvent {
   type: "job";
+  ts?: string;
   jobId: string;
   command: string;
   status: JobStatus;

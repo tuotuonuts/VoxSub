@@ -23,6 +23,16 @@ from pathlib import Path
 from typing import Any
 
 
+def log_timestamp(created: float) -> str:
+    """Serialize the record creation instant, not formatter/transport time."""
+    return datetime.fromtimestamp(created, timezone.utc).isoformat(timespec="milliseconds")
+
+
+class _AbsoluteTimeFormatter(logging.Formatter):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        return log_timestamp(record.created)
+
+
 def _log_dir() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VoxSub" / "logs"
 
@@ -133,7 +143,7 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
         try:
             file_handler = logging.handlers.RotatingFileHandler(
                 str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
-            file_handler.setFormatter(logging.Formatter(
+            file_handler.setFormatter(_AbsoluteTimeFormatter(
                 "%(asctime)s %(levelname)-8s [%(name)s] [session=%(diagnostic_session_id)s] %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"))
             file_handler.addFilter(_DiagnosticSessionFilter())
@@ -261,8 +271,7 @@ def drain_events(limit: int = 200) -> list[dict]:
     with _QUEUE_LOCK:
         items = list(_EVENT_QUEUE.queue)
     for r in items[-limit:]:
-        ts = (r.asctime if hasattr(r, "asctime")
-              else logging.Formatter().formatTime(r, "%H:%M:%S"))
+        ts = log_timestamp(r.created)
         out.append({
             "ts": ts,
             "level": r.levelname,
@@ -380,7 +389,10 @@ def diagnostic_session_log_snapshot() -> tuple[str, dict[str, Any] | None]:
         return "", None
     marker = f"[session={metadata['session_id']}]"
     lines = [line for line in tail_log_file(10**6).splitlines() if marker in line]
-    timestamps = [line[:19] for line in lines if len(line) >= 19 and line[4:5] == "-"]
+    timestamps = [
+        line.split(" ", 1)[0] if line[10:11] == "T" else line[:19]
+        for line in lines if len(line) >= 19 and line[4:5] == "-"
+    ]
     metadata = dict(metadata)
     metadata.update({
         "line_count": len(lines),

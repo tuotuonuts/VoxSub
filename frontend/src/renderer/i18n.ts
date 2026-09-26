@@ -10,6 +10,8 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "时间不完整或无效：无法确定绝对时刻": "Incomplete or invalid time: absolute instant unknown",
+  "本地时间（含时区）· 按接收顺序显示，迟到记录不重排": "Local time (with zone) · Receive order; late entries are not reordered",
   "仅「智能上下文」档可用": "Only available in the Smart context profile",
   "由当前预设决定；切到「自定义」可自行调整": "Set by the current profile; switch to Custom to adjust it yourself",
   "当前档位下不可调整": "Not adjustable in the current profile",
