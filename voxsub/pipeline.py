@@ -1965,6 +1965,10 @@ class Pipeline:
                 logger.warning("启动结束后完成延迟关闭失败", exc_info=True)
         elif finalize_stop:
             self.stop()
+        elif self.state is PipelineState.IDLE:
+            # A cancelled start can finish stop while the builder still holds
+            # admission. Notify again after that final owner has released it.
+            self._emit_state()
 
     def _new_file_threads(self) -> list[threading.Thread]:
         if self._in_path is None or not self._in_path.exists():
@@ -2024,6 +2028,12 @@ class Pipeline:
         finally:
             with self._state_lock:
                 self._stop_finalizers -= 1
+                publish_settled = (self._stop_finalizers == 0
+                                   and self._state is PipelineState.IDLE)
+            # IDLE can precede the last external shutdown owner releasing its
+            # admission guard. Publish current capability, never a fixed true.
+            if publish_settled:
+                self._emit_state()
 
     def _finish_stopped_workers(self) -> bool:
         """No new start is admitted during external TTS shutdown; never join locked."""

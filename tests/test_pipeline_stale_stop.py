@@ -92,8 +92,15 @@ def runtime(tmp_path, monkeypatch):
             worker.join(timeout=2)
 
 
+def _record_states(pipe):
+    events = []
+    pipe.on_state(lambda: events.append((pipe.state, pipe.recording_state)))
+    return events
+
+
 def test_stale_idle_stop_cannot_finalize_a_new_start(runtime, monkeypatch):
     pipe, source, segmenter, recognizer, translator = runtime
+    events = _record_states(pipe)
     decided, resume = threading.Event(), threading.Event()
     original_begin = pipe._begin_stop
     results, errors = [], []
@@ -128,6 +135,10 @@ def test_stale_idle_stop_cannot_finalize_a_new_start(runtime, monkeypatch):
         assert pipe.state is PipelineState.RUNNING
         assert pipe.is_running() is True
         assert results == [False], "live workers cannot be reported fully stopped"
+        assert events[-1][0] is PipelineState.RUNNING
+        assert all(not snapshot["recordingCanChange"] for _, snapshot in events)
+        with pytest.raises(RuntimeError):
+            pipe.set_recording(True)
         assert tuple(pipe._threads) == workers
         assert all(worker.is_alive() for worker in workers)
         assert not pipe._stop_evt.is_set()
@@ -247,6 +258,7 @@ def _timed_out_tts(pipe, monkeypatch):
 
 def test_stale_watcher_cannot_stop_or_finalize_a_new_start(runtime, monkeypatch):
     pipe, source, _seg, _asr, translator = runtime
+    events = _record_states(pipe)
     old_tts = _timed_out_tts(pipe, monkeypatch)
     paused, resume = threading.Event(), threading.Event()
     original_alive = pipe._tts_worker_is_alive
@@ -270,8 +282,14 @@ def test_stale_watcher_cannot_stop_or_finalize_a_new_start(runtime, monkeypatch)
         assert source.reading.wait(timeout=2)
         new_tts = pipe._tts_worker
         workers = tuple(pipe._threads)
+        start_events = len(events)
         resume.set()
         watcher.join(timeout=2)
+        assert events[-1][0] is PipelineState.RUNNING
+        assert not events[-1][1]["recordingCanChange"]
+        assert len(events) == start_events, "stale watcher must not publish for a new owner"
+        with pytest.raises(RuntimeError):
+            pipe.set_recording(True)
         assert not watcher.is_alive()
         assert pipe.state is PipelineState.RUNNING
         assert pipe.is_running() and not pipe._stop_evt.is_set()
