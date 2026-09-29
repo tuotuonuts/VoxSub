@@ -30,6 +30,7 @@ import {
   type RequestOutcome,
 } from "../shared/request-outcome";
 
+import { parseRecordingState } from "./recording-control";
 import { normalizeLog } from "../shared/log-time";
 
 type Listener = () => void;
@@ -162,7 +163,7 @@ class Store {
         // 后端新增了握手字段（protocolVersion / backendGeneration /
         // readiness / session）：**只挑认识的字段，多出来的字段一律忽略**，
         // 否则老渲染层会把新字段当异常。
-        this.patch({ connected: true, version: event.version });
+        this.patch({ connected: true, version: event.version, recordingState: null });
         setBackendStatus({ type: "ready" });
         const handshake = parseReadyPayload(event);
         if (handshake) {
@@ -179,7 +180,7 @@ class Store {
           }
           // 握手自带的会话状态：比再发一次 state 命令更快，且避免"重载后先显示错状态"
           if (handshake.session) {
-            applySessionState(handshake.session);
+            applySessionState(event.session ?? null);
             if ("recordingEnabled" in handshake.session) this.pushLog({ ts: new Date().toISOString(), level: "DEBUG", message: "录音状态已从握手恢复" });
           }
         }
@@ -226,6 +227,7 @@ class Store {
         break;
       }
       case "request-timeout":
+        if (event.command === CMD.setRecording || event.command === CMD.state) applySessionState(null);
         // 请求超时**不是失败**：任务可能仍在进行（缺陷 #4）。
         // 记一条 WARNING 说明情况，不写 ERROR —— 写 ERROR 会让用户以为任务挂了。
         this.pushLog({
@@ -261,14 +263,7 @@ class Store {
         // 接收也不查询状态，running/paused 永远是初始的 false —— 于是主按钮
         // 永远显示"开始"、结束按钮永远隐藏、暂停分支永远走不到。
         applySessionState(event);
-        if (typeof event.recordingEnabled === "boolean" && typeof event.recordingActive === "boolean" && typeof event.recordingSupported === "boolean" && typeof event.recordingCanChange === "boolean") {
-          this.patch({ recording: event.recordingEnabled, recordingState: {
-            recordingEnabled: event.recordingEnabled,
-            recordingActive: event.recordingActive,
-            recordingSupported: event.recordingSupported,
-            recordingCanChange: event.recordingCanChange,
-          } });
-        }
+
         break;
       case "utterance":
         this.commitSubtitle(event.source, event.translation);
@@ -338,11 +333,14 @@ export interface CommandResult<T = unknown> {
  * 状态机还要表达"后端是起来了、还是退了、还是压根没起来"。
  */
 let backendStatus: BackendStatus = INITIAL_BACKEND_STATUS;
+let sessionRevision = 0;
 
 /** 把状态机事件落到 store。所有相位变化都必须走这里，避免两处口径不一致。 */
 function setBackendStatus(event: BackendStatusEvent): void {
+  sessionRevision++;
   backendStatus = reduceBackendStatus(backendStatus, event);
-  store.patch({ backendPhase: backendStatus.phase, backendReason: backendStatus.reason });
+  store.patch({ backendPhase: backendStatus.phase, backendReason: backendStatus.reason,
+    ...(backendStatus.phase !== "ready" ? { recordingState: null } : {}) });
 }
 
 export function getBackendStatus(): BackendStatus {
@@ -484,9 +482,13 @@ export async function call<T = unknown>(
 export function applySessionState(
   payload: { running?: boolean; paused?: boolean; mode?: string } | null,
 ): void {
-  if (!payload) return;
+  sessionRevision++;
+  if (!payload) { store.patch({ recordingState: null }); return; }
   const commanded: SessionView = { running: Boolean(payload.running), paused: Boolean(payload.paused) };
-  const patch: { running: boolean; paused: boolean; mode?: AppState["mode"] } = {
+  const recordingState = backendStatus.phase === "ready" ? parseRecordingState(payload) : null;
+  const patch: Partial<AppState> = {
+    recordingState,
+    ...(recordingState ? { recording: recordingState.recordingEnabled } : {}),
     ...sessionViewFor(backendStatus.phase, commanded),
   };
   const mode = normalizeMode(payload.mode);
@@ -502,7 +504,16 @@ export function applySessionState(
  * 拉回来的载荷里带 `mode`，模式一起恢复 —— 只补按钮文案是不够的。
  */
 export async function refreshSessionState(): Promise<void> {
-  const result = await call<{ running: boolean; paused: boolean; mode?: string }>(CMD.state);
+  const revision = sessionRevision;
+  const recordingSnapshot = store.get().recordingState;
+  let result: { running: boolean; paused: boolean; mode?: string } | null = null;
+  try {
+    result = await call<typeof result>(CMD.state);
+  } catch (error) {
+    store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: `${CMD.state}: ${String(error)}` });
+  }
+  // An event, connection change or recording acknowledgement supersedes this read.
+  if (revision !== sessionRevision || recordingSnapshot !== store.get().recordingState) return;
   applySessionState(result);
 }
 

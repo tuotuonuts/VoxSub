@@ -72,4 +72,6 @@ try {
   assert.equal(newer.view.checked, false, 'late acknowledgement must not overwrite a newer state event');
   assert.equal(newer.view.disabled, true);
   console.log('PASS newer state event wins over older acknowledgement');
+  const { testRecordingWorkspace } = await import('./test-recording-workspace.mjs');
+  await testRecordingWorkspace();
 } finally { cleanupShared(); }

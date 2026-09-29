@@ -4,6 +4,8 @@ export interface RecordingState {
   recordingActive: boolean;
   recordingSupported: boolean;
   recordingCanChange: boolean;
+  /** Optional backend explanation; display as plain text, never infer capabilities from it. */
+  recordingReason?: string;
 }
 export interface RecordingView {
   checked: boolean;
@@ -11,15 +13,16 @@ export interface RecordingView {
   known: boolean;
   disabled: boolean;
   pending: boolean;
+  reason: string;
   notice: "" | "pending" | "unknown" | "disconnected" | "rejected" | "unsupported" | "idle-only";
 }
 type Dependencies = {
   read: () => Promise<unknown>;
   set: (enabled: boolean) => Promise<unknown>;
-  changed?: (view: RecordingView) => void;
+  changed?: (view: RecordingView, state: RecordingState | null) => void;
 };
 
-function parse(value: unknown): RecordingState | null {
+export function parseRecordingState(value: unknown): RecordingState | null {
   if (!value || typeof value !== "object") return null;
   const data = value as Record<string, unknown>;
   const keys = ["recordingEnabled", "recordingActive", "recordingSupported", "recordingCanChange"];
@@ -27,7 +30,8 @@ function parse(value: unknown): RecordingState | null {
   return { recordingEnabled: data.recordingEnabled as boolean,
     recordingActive: data.recordingActive as boolean,
     recordingSupported: data.recordingSupported as boolean,
-    recordingCanChange: data.recordingCanChange as boolean };
+    recordingCanChange: data.recordingCanChange as boolean,
+    ...(typeof data.recordingReason === "string" ? { recordingReason: data.recordingReason } : {}) };
 }
 
 export class RecordingControl {
@@ -45,22 +49,23 @@ export class RecordingControl {
     const s = this.state;
     let notice = this.issue;
     if (!this.online) notice = "disconnected";
-    else if (this.work) notice = "pending";
     else if (!s) notice = "unknown";
+    else if (this.work) notice = "pending";
     else if (!s.recordingSupported) notice = "unsupported";
     else if (!s.recordingCanChange) notice = "idle-only";
     return { checked: s?.recordingEnabled ?? false, active: s?.recordingActive ?? false,
       known: s !== null, disabled: !this.online || !s?.recordingCanChange || !s?.recordingSupported,
-      pending: this.work !== null, notice };
+      pending: this.work !== null, reason: s?.recordingReason ?? "", notice };
   }
 
-  private publish(): void { this.deps.changed?.(this.view); }
+  private publish(): void { this.deps.changed?.(this.view, this.state); }
 
   /** Use authoritative state events; pending intents are not state. */
   observe(value: unknown): void {
     if (!this.online) return;
     this.revision++;
-    this.state = parse(value);
+    this.wanted = null; // A newer backend event supersedes queued click intent too.
+    this.state = parseRecordingState(value);
     this.issue = this.state ? "" : "unknown";
     this.publish();
   }
@@ -83,9 +88,10 @@ export class RecordingControl {
     this.publish();
   }
 
-  async reconnect(): Promise<void> {
+  async reconnect(snapshot?: unknown): Promise<void> {
     this.online = true;
-    await this.refresh();
+    if (snapshot !== undefined) this.observe(snapshot);
+    else await this.refresh();
   }
 
   toggle(): Promise<void> {
@@ -115,7 +121,7 @@ export class RecordingControl {
       let result: unknown = null;
       try { result = await this.deps.set(target); } catch { /* Transport outcome is unknown. */ }
       if (epoch !== this.epoch || revision !== this.revision) return;
-      this.state = parse(result);
+      this.state = parseRecordingState(result);
       this.revision++;
       if (!this.state) { this.issue = "unknown"; return; }
       if (this.state.recordingEnabled !== target) { this.issue = "rejected"; return; }

@@ -7,7 +7,7 @@
  *   尾部：C 模式的文件导入与进度
  */
 import { h, on, percent } from "../dom";
-import { applySessionState, call, store } from "../store";
+import { applySessionState, call, refreshSessionState, store } from "../store";
 import { CMD } from "../protocol";
 import { tr } from "../i18n";
 import { hasExportableSubtitles } from "../../shared/session-timeline";
@@ -37,6 +37,7 @@ let pauseBtnEl: HTMLButtonElement | null = null;
 let recInputEl: HTMLInputElement | null = null;
 let recDotEl: HTMLElement | null = null;
 let recordingControl: RecordingControl | null = null;
+let workspaceLifecycle: PageLifecycle | null = null;
 
 /**
  * 该模式是否支持暂停。
@@ -94,6 +95,7 @@ function syncControls(): void {
     else if (notice === "unknown") recordHintEl.textContent = tr("录音保存状态未确认，请重新连接后端后重试");
     else if (notice === "disconnected") recordHintEl.textContent = tr("后端已断开，无法确认录音保存状态");
     else if (notice === "rejected") recordHintEl.textContent = tr("后端未接受录音保存设置，已保留原状态");
+    else if (recording?.reason) recordHintEl.textContent = recording.reason;
     else if (notice === "idle-only") recordHintEl.textContent = tr("请先结束会话，再更改录音保存设置");
     else if (notice === "unsupported" || !inMicMode) recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
     else if (recordingChecked) recordHintEl.textContent = tr("结束后保存为 WAV，放在本机录音文件夹");
@@ -335,11 +337,15 @@ function fileName(path: string): string {
 }
 
 export function buildWorkspace(): PageHandle {
+  // Module DOM references have exactly one live page owner, even during replacement.
+  workspaceLifecycle?.dispose();
   const state = store.get();
 
   // 页面级生命周期（缺陷 #10）：这一页注册的监听器与会话计时器都记在这里，
   // 切模式/关页时一次释放 —— 原先监听器与 1 秒定时器只增不减。
   const lifecycle = new PageLifecycle();
+  workspaceLifecycle = lifecycle;
+  lifecycle.add(() => { if (workspaceLifecycle === lifecycle) workspaceLifecycle = null; });
 
   const pane = h("section", { class: "workspace" });
 
@@ -381,10 +387,9 @@ export function buildWorkspace(): PageHandle {
   const recSwitch = h("label", { class: "switch" });
   recInputEl = h("input", { type: "checkbox" });
   recInputEl.checked = state.recording;
-  on(recInputEl, "change", () => {
-      recInputEl!.checked = recInputEl!.checked;
-      void recordingControl?.toggle();
-      syncControls();
+  lifecycle.listen(recInputEl, "change", () => {
+    void recordingControl?.toggle();
+    syncControls();
   });
   recSwitch.append(recInputEl, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
   // 录音指示：红点比文字更接近"正在录"的直觉，也不占宽度
@@ -432,16 +437,31 @@ export function buildWorkspace(): PageHandle {
   // ---- 字幕流
   streamEl = h("div", { class: "subtitle-stream" });
   pane.append(streamEl);
+  let observedRecording = state.recordingState;
+  let observedPhase = state.backendPhase;
+  let observing = false;
   recordingControl = new RecordingControl({
-    read: () => call<RecordingState>(CMD.state),
+    read: async () => {
+      await refreshSessionState();
+      return store.get().recordingState;
+    },
     set: enabled => call<RecordingState>(CMD.setRecording, { enabled }),
-    changed: view => {
-      if (view.known && store.get().recording !== view.checked) store.patch({ recording: view.checked });
+    changed: (view, confirmed) => {
+      if (lifecycle.disposed) return;
+      if (!observing && store.get().recordingState !== confirmed) {
+        // Only accepted controller outcomes are shared; intents never change the snapshot.
+        observedRecording = confirmed;
+        store.patch({ recordingState: confirmed, ...(view.known ? { recording: view.checked } : {}) });
+      }
       syncControls();
     },
   });
   lifecycle.add(() => { recordingControl?.disconnect(); recordingControl = null; });
-  void recordingControl.refresh();
+  observing = true;
+  if (state.backendPhase === "failed" || state.backendPhase === "disconnected") recordingControl.disconnect();
+  else recordingControl.observe(state.recordingState);
+  observing = false;
+  if (!state.recordingState && state.backendPhase === "ready") void recordingControl.refresh();
 
   rebuildStream();
   // 页面刚构建时节点还没进文档（clientHeight 为 0），此时写 scrollTop 无效；
@@ -454,10 +474,21 @@ export function buildWorkspace(): PageHandle {
   syncControls();
   startClock();
 
-  lifecycle.listen(window, "voxsub:state", () => {
-    filePanel.hidden = store.get().mode !== "c";
+  lifecycle.add(store.subscribe(() => {
+    const current = store.get();
+    if (current.recordingState !== observedRecording || current.backendPhase !== observedPhase) {
+      const phaseChanged = current.backendPhase !== observedPhase;
+      observedRecording = current.recordingState;
+      observedPhase = current.backendPhase;
+      observing = true;
+      if (current.backendPhase === "failed" || current.backendPhase === "disconnected") recordingControl?.disconnect();
+      else if (phaseChanged && current.backendPhase === "ready") void recordingControl?.reconnect(observedRecording ?? null);
+      else recordingControl?.observe(observedRecording);
+      observing = false;
+    }
+    filePanel.hidden = current.mode !== "c";
     syncControls();
-  });
+  }));
 
   // 释放：停表 + 让所有模块级的节点引用失效。
   // 引用必须置空：index.ts 的刷新循环（updateStatus/updateStream/updateProgress）

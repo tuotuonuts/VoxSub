@@ -57,7 +57,7 @@ const VIEWS = [
   ["设置页", "src/renderer/views/settings.ts", (m) => m.buildSettings()],
   ["诊断页", "src/renderer/views/diagnostics.ts", (m) => m.buildDiagnostics()],
   ["模型目录", "src/renderer/views/catalog.ts", (m) => m.buildModelCatalog()],
-  ["字幕工作区", "src/renderer/views/workspace.ts", (m) => m.buildWorkspace()],
+  ["字幕工作区", "tools/test-recording-workspace-entry.ts", (m) => m.buildWorkspace()],
   ["OCR 工作区", "src/renderer/views/ocr.ts", (m) => m.buildOcrWorkspace()],
   ["迁移向导", "tools/test-migration-safety-entry.ts", (m) => m.buildMigrationWizard(DETECT_FIXTURE)],
 ];
@@ -952,15 +952,21 @@ console.log("\n=== 订阅成对释放 ===\n");
     Boolean(added[0]) && added[0].handler === removed[0]?.handler && added[0].options === removed[0]?.options,
   );
 
-  const stateBase = dom.counters.window.adds.length;
-  const stateRemoveBase = dom.counters.window.removes.length;
   const ws = loaded[3];
+  const store = ws.module.store;
+  const subscribe = store.subscribe.bind(store);
+  const storeAdded = [], storeRemoved = [];
+  store.subscribe = (listener) => {
+    storeAdded.push(listener);
+    const unsubscribe = subscribe(listener);
+    return () => { storeRemoved.push(listener); unsubscribe(); };
+  };
   const wsHandle = ws.build();
   wsHandle.dispose();
-  const stateAdded = dom.counters.window.adds.slice(stateBase).filter((c) => c.type === "voxsub:state");
-  const stateRemoved = dom.counters.window.removes.slice(stateRemoveBase).filter((c) => c.type === "voxsub:state");
-  check("工作区订阅 voxsub:state 一次", stateAdded.length === 1, `${stateAdded.length} 次`);
-  check("切模式释放时成对移除", stateRemoved.length === 1, `${stateRemoved.length} 次`);
+  wsHandle.dispose();
+  store.subscribe = subscribe;
+  check("工作区订阅真实 store 一次", storeAdded.length === 1, `${storeAdded.length} 次`);
+  check("切模式释放时同一 store 监听恰好移除一次", storeRemoved.length === 1 && storeRemoved[0] === storeAdded[0], `${storeRemoved.length} 次`);
   check("工作区还清掉了自己的会话计时器", timersLive() === 0, `残留 ${timersLive()} 个`);
 }
 
@@ -1145,8 +1151,8 @@ async function switchAll(rounds, disposeEach) {
   console.log(`       计时器不再随轮次增长（新的 startClock 会顺手停掉上一个），但切页结束后始终有 1 个在跑，\n       且它的回调指向已被换走的时钟节点\n`);
 
   check(
-    `改造前：切页 ${ROUNDS} 轮后 window 监听只增不减（残留 ${after.window - before.window} 个）`,
-    after.window - before.window === ROUNDS * 2,
+    `当前代码省略 dispose：切页 ${ROUNDS} 轮后设置页 window 监听逐轮残留（工作区改用 store）`,
+    after.window - before.window === ROUNDS,
     `多出 ${after.window - before.window} 个`,
   );
   check(
