@@ -66,13 +66,29 @@
     "AsyncAccepted": {
       "type": "object",
       "description": "Transport acknowledgement for an async=true request; not the command's final result.",
-      "required": ["jobId", "accepted", "status"],
+      "required": [
+        "jobId",
+        "accepted",
+        "status"
+      ],
       "additionalProperties": false,
       "properties": {
-        "jobId": { "type": "string", "minLength": 1 },
-        "accepted": { "const": true },
+        "jobId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "accepted": {
+          "const": true
+        },
         "status": {
-          "enum": ["queued", "running", "cancelling", "succeeded", "failed", "cancelled"]
+          "enum": [
+            "queued",
+            "running",
+            "cancelling",
+            "succeeded",
+            "failed",
+            "cancelled"
+          ]
         }
       }
     },
@@ -108,6 +124,18 @@
           "type": "integer",
           "minimum": 0,
           "description": "影响结果的配置代次。任何会改变译文/识别结果的配置变更（语言对、翻译档位、ASR 模型、模型目录、调优档位）都会 +1；同值重发不加。在途任务用它判断自己的快照是否已过期。"
+        },
+        "recordingEnabled": {
+          "type": "boolean"
+        },
+        "recordingActive": {
+          "type": "boolean"
+        },
+        "recordingSupported": {
+          "type": "boolean"
+        },
+        "recordingCanChange": {
+          "type": "boolean"
         }
       }
     },

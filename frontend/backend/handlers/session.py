@@ -210,9 +210,11 @@ class SessionHandlers:
         models = args.get("models") or {}
         pipeline.set_tts_models({str(k): str(v) for k, v in models.items()})
 
-    def _cmd_set_recording(self, pipeline: Any, args: dict[str, Any]) -> None:
+    def _cmd_set_recording(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
+        """Return the backend's effective WAV-saving state, never the UI intent."""
         pipeline.set_recording(bool(args.get("enabled", False)),
                                args.get("directory"))
+        return pipeline.recording_state
 
     def _cmd_translate_tiers(self, args: dict[str, Any]) -> dict[str, Any]:
         """各翻译档位支持的语言对（供界面提示，只读配置不加载模型）。

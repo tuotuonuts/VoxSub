@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { importShared, cleanupShared, ROOT } from './esbuild-ts.mjs';
+import { join } from 'node:path';
+assert.ok(existsSync(join(ROOT, 'src/renderer/recording-control.ts')), 'missing confirmed recording controller');
+const { RecordingControl } = await importShared('src/renderer/recording-control.ts');
+const state = (enabled = false, extra = {}) => ({recordingEnabled: enabled, recordingActive: false,
+  recordingSupported: true, recordingCanChange: true, ...extra});
+const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => {resolve=a; reject=b}); return {promise,resolve,reject}; };
+try {
+  const reply = deferred();
+  const c = new RecordingControl({ read: async () => state(), set: () => reply.promise });
+  await c.refresh();
+  const done = c.request(true);
+  assert.equal(c.view.checked, false, 'must not optimistically show requested enabled');
+  assert.equal(c.view.pending, true);
+  reply.resolve(state(true)); await done;
+  assert.equal(c.view.checked, true);
+  assert.equal(c.view.pending, false);
+  console.log('PASS confirmed state only');
+  const calls = [], a = deferred(), b = deferred();
+  const serial = new RecordingControl({ read: async () => state(), set: enabled => {
+    calls.push(enabled); return calls.length === 1 ? a.promise : b.promise;
+  }});
+  await serial.refresh();
+  const pending = serial.request(true); await Promise.resolve();
+  serial.request(false);
+  assert.deepEqual(calls, [true]);
+  a.resolve(state(true)); await new Promise(r => setImmediate(r));
+  assert.deepEqual(calls, [true, false]);
+  b.resolve(state(false)); await pending;
+  assert.equal(serial.view.checked, false);
+  console.log('PASS serialized latest intent');
+  for (const response of [null, {}, {recordingEnabled: true}, 'ok']) {
+    const unknown = new RecordingControl({read: async () => state(), set: async () => response});
+    await unknown.refresh(); await unknown.request(true);
+    assert.equal(unknown.view.known, false); assert.equal(unknown.view.checked, false);
+    assert.equal(unknown.view.notice, 'unknown'); assert.equal(unknown.view.disabled, true);
+  }
+  const timeout = new RecordingControl({read: async () => state(), set: async () => { throw Error('timeout'); }});
+  await timeout.refresh(); await timeout.request(true);
+  assert.equal(timeout.view.notice, 'unknown');
+  const rejected = new RecordingControl({read: async () => state(), set: async () => state()});
+  await rejected.refresh(); await rejected.request(true);
+  assert.equal(rejected.view.notice, 'rejected'); assert.equal(rejected.view.checked, false);
+  console.log('PASS malformed/null/timeout/rejected outcomes truthful');
+  const late = deferred();
+  const disconnected = new RecordingControl({read: async () => state(), set: () => late.promise});
+  await disconnected.refresh(); const old = disconnected.request(true); await Promise.resolve();
+  disconnected.disconnect();
+  assert.equal(disconnected.view.notice, 'disconnected'); assert.equal(disconnected.view.known, false);
+  await disconnected.reconnect();
+  late.resolve(state(true)); await old;
+  assert.equal(disconnected.view.checked, false);
+  console.log('PASS disconnect/reconnect ignores stale acknowledgement');
+  const initial = deferred();
+  const stale = new RecordingControl({read: () => initial.promise, set: async () => state(true)});
+  const reading = stale.refresh(); stale.observe(state(true)); initial.resolve(state(false)); await reading;
+  assert.equal(stale.view.checked, true);
+  stale.observe(state(true, {recordingCanChange: false, recordingActive: true}));
+  assert.equal(stale.view.disabled, true); assert.equal(stale.view.active, true); assert.equal(stale.view.notice, 'idle-only');
+  stale.observe(state(true, {recordingCanChange: false, recordingActive: false}));
+  assert.equal(stale.view.active, false);
+  stale.observe(state(true, {recordingSupported: false, recordingCanChange: false}));
+  assert.equal(stale.view.notice, 'unsupported'); assert.equal(stale.view.disabled, true);
+  console.log('PASS state refresh, running/pause/mode capability');
+  const ack = deferred();
+  const newer = new RecordingControl({read: async () => state(), set: () => ack.promise});
+  await newer.refresh(); const oldWrite = newer.request(true); await Promise.resolve();
+  newer.observe(state(false, {recordingCanChange: false}));
+  ack.resolve(state(true)); await oldWrite;
+  assert.equal(newer.view.checked, false, 'late acknowledgement must not overwrite a newer state event');
+  assert.equal(newer.view.disabled, true);
+  console.log('PASS newer state event wins over older acknowledgement');
+} finally { cleanupShared(); }

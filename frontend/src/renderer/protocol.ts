@@ -301,7 +301,7 @@ export type BackendEvent =
       backendGeneration?: number | string;
       frozen?: boolean;
       readiness?: { ready?: boolean; activeJobs?: string[] };
-      session?: { running?: boolean; paused?: boolean; mode?: string };
+      session?: { running?: boolean; paused?: boolean; mode?: string; state?: string; configGeneration?: number; recordingEnabled?: boolean; recordingActive?: boolean; recordingSupported?: boolean; recordingCanChange?: boolean };
     }
   | { type: "status"; text: string }
   /**
@@ -321,7 +321,7 @@ export type BackendEvent =
   /** 后台任务事件（async 命令的进度与终态）。 */
   | JobEvent
   | { type: "session"; action: "start" | "stop" }
-  | { type: "state"; running: boolean; paused: boolean; mode: string; state: string; configGeneration?: number }
+  | { type: "state"; running: boolean; paused: boolean; mode: string; state: string; configGeneration?: number; recordingEnabled?: boolean; recordingActive?: boolean; recordingSupported?: boolean; recordingCanChange?: boolean }
   | { type: "migration"; phase: string; key?: string; index?: number; total?: number; error?: string; target?: string }
   | { type: "utterance"; source: string; translation: string }
   | { type: "draft"; source: string; translation: string }

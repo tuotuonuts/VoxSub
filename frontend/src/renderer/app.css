@@ -473,6 +473,7 @@ body::before {
 /* --------------------------------------------------------------- 工作区 */
 .workspace-slot {
   min-width: 0;
+  min-height: 0;
   display: flex;
 }
 
@@ -480,6 +481,7 @@ body::before {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   width: 100%;
   border: 1px solid var(--rule);
   border-radius: 0.1538rem;
@@ -492,6 +494,11 @@ body::before {
   justify-content: space-between;
   padding: 0.7692rem 1.0769rem;
   border-bottom: 1px solid var(--rule);
+}
+
+/* Only the transcript consumes remaining height; controls never shrink into it. */
+.workspace > :not(.subtitle-stream) {
+  flex-shrink: 0;
 }
 
 .workspace__title {
@@ -613,9 +620,11 @@ body::before {
 /* 字幕流：原文与译文对照（印刷词典的并置传统） */
 .subtitle-stream {
   flex: 1;
-  min-height: 9.2308rem;
+  min-height: 0;
   padding: 0.9231rem 1.0769rem;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   gap: 0.7692rem;
@@ -631,6 +640,7 @@ body::before {
 
 .sub-row {
   display: grid;
+  flex-shrink: 0;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1.2308rem;
   padding-bottom: 0.6923rem;

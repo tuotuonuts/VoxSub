@@ -13,6 +13,8 @@ import { tr } from "../i18n";
 import { hasExportableSubtitles } from "../../shared/session-timeline";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 import { buildProgressBar, type ProgressBar } from "../ui/progress";
+import { updateFollowing } from "../../shared/subtitle-scroll";
+import { RecordingControl, type RecordingState } from "../recording-control";
 
 let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
@@ -34,6 +36,7 @@ let ctaEl: HTMLButtonElement | null = null;
 let pauseBtnEl: HTMLButtonElement | null = null;
 let recInputEl: HTMLInputElement | null = null;
 let recDotEl: HTMLElement | null = null;
+let recordingControl: RecordingControl | null = null;
 
 /**
  * 该模式是否支持暂停。
@@ -58,7 +61,8 @@ function supportsPause(mode: string): boolean {
  */
 function syncControls(): void {
   const s = store.get();
-  const recording = Boolean(recInputEl?.checked);
+  const recording = recordingControl?.view;
+  const recordingChecked = recording?.checked ?? s.recording;
   const inMicMode = s.mode === "a";
 
   // 主按钮：开始 ⇄ 结束
@@ -76,18 +80,24 @@ function syncControls(): void {
   }
 
   // 红点：真的在录（开关开着 + 会话在跑 + 没暂停 + 是麦克风模式）
-  if (recDotEl) recDotEl.hidden = !(recording && s.running && !s.paused && inMicMode);
-  if (recInputEl) recInputEl.disabled = !inMicMode;
+  if (recDotEl) recDotEl.hidden = !(recording?.active && inMicMode);
+  if (recInputEl) {
+    recInputEl.checked = recordingChecked;
+    recInputEl.indeterminate = !recording?.known;
+    recInputEl.disabled = !inMicMode || Boolean(recording?.disabled);
+    recInputEl.setAttribute("aria-busy", String(Boolean(recording?.pending)));
+  }
 
   if (recordHintEl) {
-    if (!inMicMode) {
-      recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
-    } else if (recording) {
-      // 告诉用户文件会落在哪 —— 这才是他们需要知道的信息
-      recordHintEl.textContent = tr("结束后保存为 WAV，放在本机录音文件夹");
-    } else {
-      recordHintEl.textContent = tr("仅生成字幕，不保存麦克风音频");
-    }
+    const notice = recording?.notice;
+    if (notice === "pending") recordHintEl.textContent = tr("正在确认录音保存设置…");
+    else if (notice === "unknown") recordHintEl.textContent = tr("录音保存状态未确认，请重新连接后端后重试");
+    else if (notice === "disconnected") recordHintEl.textContent = tr("后端已断开，无法确认录音保存状态");
+    else if (notice === "rejected") recordHintEl.textContent = tr("后端未接受录音保存设置，已保留原状态");
+    else if (notice === "idle-only") recordHintEl.textContent = tr("请先结束会话，再更改录音保存设置");
+    else if (notice === "unsupported" || !inMicMode) recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
+    else if (recordingChecked) recordHintEl.textContent = tr("结束后保存为 WAV，放在本机录音文件夹");
+    else recordHintEl.textContent = tr("仅生成字幕，不保存麦克风音频");
   }
 }
 
@@ -115,8 +125,9 @@ function subtitleRow(source: string, translation: string, draft = false): HTMLEl
   return row;
 }
 
-function scrollToBottom(): void {
-  if (streamEl) streamEl.scrollTop = streamEl.scrollHeight;
+/** 只有更新前就在底部附近才贴底；用户上滚阅读历史时不拉回（见 shared/subtitle-scroll）。 */
+function mutateStream(mutate: () => void): void {
+  if (streamEl) updateFollowing(streamEl, mutate);
 }
 
 /** 增量更新：只在最后一行变化时重绘最后一行，避免整块重排导致滚动跳动。 */
@@ -129,14 +140,16 @@ export function updateStream(): void {
     if (lastDraft) {
       const src = lastDraft.querySelector(".sub-row__src");
       const dst = lastDraft.querySelector(".sub-row__dst");
-      if (src) src.textContent = state.draft.source || "…";
-      if (dst) dst.textContent = state.draft.translation || "";
-      scrollToBottom();
+      mutateStream(() => {
+        if (src) src.textContent = state.draft!.source || "…";
+        if (dst) dst.textContent = state.draft!.translation || "";
+      });
       return;
     }
-    streamEl.querySelector(".stream__empty")?.remove();
-    streamEl.append(subtitleRow(state.draft.source, state.draft.translation, true));
-    scrollToBottom();
+    mutateStream(() => {
+      streamEl!.querySelector(".stream__empty")?.remove();
+      streamEl!.append(subtitleRow(state.draft!.source, state.draft!.translation, true));
+    });
     return;
   }
 
@@ -155,18 +168,25 @@ export function updateStream(): void {
 function rebuildStream(): void {
   if (!streamEl) return;
   const state = store.get();
-  streamEl.replaceChildren();
+  const el = streamEl;
   if (state.subtitles.length === 0 && !state.draft) {
-    streamEl.append(h("p", { class: "stream__empty", text: tr("开始后，原文与译文会并排出现在这里") }));
+    el.replaceChildren(h("p", { class: "stream__empty", text: tr("开始后，原文与译文会并排出现在这里") }));
+    el.scrollTop = 0;
     return;
   }
-  for (const line of state.subtitles) {
-    streamEl.append(subtitleRow(line.source, line.translation));
-  }
-  if (state.draft) {
-    streamEl.append(subtitleRow(state.draft.source, state.draft.translation, true));
-  }
-  scrollToBottom();
+  const committed = el.querySelectorAll(".sub-row:not(.is-draft)").length;
+  const appending = committed > 0 && committed < state.subtitles.length && !el.querySelector(".stream__empty");
+  mutateStream(() => {
+    if (appending) {
+      // 增量追加：不重建已有行，历史阅读位置才保得住
+      el.querySelector(".sub-row.is-draft")?.remove();
+      for (const line of state.subtitles.slice(committed)) el.append(subtitleRow(line.source, line.translation));
+    } else {
+      el.replaceChildren();
+      for (const line of state.subtitles) el.append(subtitleRow(line.source, line.translation));
+    }
+    if (state.draft) el.append(subtitleRow(state.draft.source, state.draft.translation, true));
+  });
 }
 
 export function updateStatus(): void {
@@ -362,9 +382,9 @@ export function buildWorkspace(): PageHandle {
   recInputEl = h("input", { type: "checkbox" });
   recInputEl.checked = state.recording;
   on(recInputEl, "change", () => {
-    store.patch({ recording: recInputEl!.checked });
-    void call(CMD.setRecording, { enabled: recInputEl!.checked });
-    syncControls();
+      recInputEl!.checked = recInputEl!.checked;
+      void recordingControl?.toggle();
+      syncControls();
   });
   recSwitch.append(recInputEl, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
   // 录音指示：红点比文字更接近"正在录"的直觉，也不占宽度
@@ -412,8 +432,25 @@ export function buildWorkspace(): PageHandle {
   // ---- 字幕流
   streamEl = h("div", { class: "subtitle-stream" });
   pane.append(streamEl);
+  recordingControl = new RecordingControl({
+    read: () => call<RecordingState>(CMD.state),
+    set: enabled => call<RecordingState>(CMD.setRecording, { enabled }),
+    changed: view => {
+      if (view.known && store.get().recording !== view.checked) store.patch({ recording: view.checked });
+      syncControls();
+    },
+  });
+  lifecycle.add(() => { recordingControl?.disconnect(); recordingControl = null; });
+  void recordingControl.refresh();
 
   rebuildStream();
+  // 页面刚构建时节点还没进文档（clientHeight 为 0），此时写 scrollTop 无效；
+  // 挂载后的下一帧再定位到最新内容。之后是否跟随由 mutateStream 按真实位置判断。
+  const initialStream = streamEl;
+  const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn: FrameRequestCallback) => setTimeout(fn, 0) as unknown as number;
+  schedule(() => {
+    if (initialStream && streamEl === initialStream) initialStream.scrollTop = initialStream.scrollHeight;
+  });
   syncControls();
   startClock();
 

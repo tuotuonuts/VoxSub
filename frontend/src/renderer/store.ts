@@ -66,6 +66,7 @@ export interface AppState {
   logs: LogEntry[];
   theme: "dark" | "light";
   recording: boolean;
+  readonly recordingState?: import("../renderer/recording-control").RecordingState | null;
   /** 模型根目录（由 list_models 回传，供设置页与目录页展示） */
   modelsRoot: string;
   /** 临时缓存目录（OCR 译后图等落盘位置，由后端回传） */
@@ -104,6 +105,7 @@ function initialState(): AppState {
     logs: [],
     theme: window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
     recording: false,
+    recordingState: null,
     modelsRoot: "",
     cacheRoot: "",
     releaseNotes: [],
@@ -176,7 +178,10 @@ class Store {
             });
           }
           // 握手自带的会话状态：比再发一次 state 命令更快，且避免"重载后先显示错状态"
-          if (handshake.session) applySessionState(handshake.session);
+          if (handshake.session) {
+            applySessionState(handshake.session);
+            if ("recordingEnabled" in handshake.session) this.pushLog({ ts: new Date().toISOString(), level: "DEBUG", message: "录音状态已从握手恢复" });
+          }
         }
         break;
       }
@@ -256,6 +261,14 @@ class Store {
         // 接收也不查询状态，running/paused 永远是初始的 false —— 于是主按钮
         // 永远显示"开始"、结束按钮永远隐藏、暂停分支永远走不到。
         applySessionState(event);
+        if (typeof event.recordingEnabled === "boolean" && typeof event.recordingActive === "boolean" && typeof event.recordingSupported === "boolean" && typeof event.recordingCanChange === "boolean") {
+          this.patch({ recording: event.recordingEnabled, recordingState: {
+            recordingEnabled: event.recordingEnabled,
+            recordingActive: event.recordingActive,
+            recordingSupported: event.recordingSupported,
+            recordingCanChange: event.recordingCanChange,
+          } });
+        }
         break;
       case "utterance":
         this.commitSubtitle(event.source, event.translation);

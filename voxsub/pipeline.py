@@ -962,12 +962,28 @@ class Pipeline:
             "asr_filler_mode": values["filler_mode"],
         }
 
+    @_state_locked
     def set_recording(self, enabled: bool, directory: str | Path | None = None) -> None:
-        """Enable microphone recording alongside translation for the next run."""
-        if self._running:
-            return
+        """Configure opt-in microphone WAV saving while fully stopped."""
+        if not self._may_replace_resources():
+            raise RuntimeError("请先结束会话，再更改录音保存设置")
         self._recording_enabled = bool(enabled)
         self._recordings_dir = Path(directory) if directory else None
+
+    @property
+    def recording_state(self) -> dict[str, bool]:
+        """Authoritative recording capability, intent and actual WAV ownership."""
+        with self._state_lock:
+            supported = self._mode == "a"
+            active = (supported and self._recorder is not None
+                      and self._state is PipelineState.RUNNING
+                      and not self._pause_evt.is_set())
+            return {
+                "recordingEnabled": self._recording_enabled,
+                "recordingActive": active,
+                "recordingSupported": supported,
+                "recordingCanChange": supported and self._may_replace_resources(),
+            }
 
     def pause(self) -> None:
         """Pause microphone recording and translation without closing the device."""

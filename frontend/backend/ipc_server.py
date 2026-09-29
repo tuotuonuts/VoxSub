@@ -331,6 +331,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             "mode": str(pipeline.mode),
             "state": str(getattr(pipeline.state, "value", pipeline.state)),
             "configGeneration": int(getattr(pipeline, "config_generation", 0) or 0),
+            **pipeline.recording_state,
         }
 
     def _install_log_sink(self) -> None:
