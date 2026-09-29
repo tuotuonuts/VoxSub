@@ -63,10 +63,20 @@ function sendToWindow(win: BrowserWindow | null, channel: string, ...args: unkno
   return sent;
 }
 
-function showWindow(win: BrowserWindow | null): void {
-  if (!HEADLESS && !quitting && win) ignoreDestroyed("show", () => {
-    if (!win.isDestroyed()) win.show();
+/** Capture one owner for the whole operation; false means skipped or destroyed. */
+function useWindow(win: BrowserWindow | null, operation: string, action: (owner: BrowserWindow) => void): boolean {
+  if (quitting || !win) return false;
+  let applied = false;
+  const survived = ignoreDestroyed(operation, () => {
+    if (win.isDestroyed()) return;
+    action(win);
+    applied = true;
   });
+  return survived && applied;
+}
+
+function showWindow(win: BrowserWindow | null): void {
+  if (!HEADLESS) useWindow(win, "show", owner => owner.show());
 }
 
 
@@ -245,6 +255,7 @@ function createMainWindow(): BrowserWindow {
 
   // 有后台长任务时拦一次关闭，避免把模型库留在半路
   win.on("close", (event) => {
+    if (quitting || mainWindow !== win) return;
     if (busyReason()) {
       event.preventDefault();
       requestQuit();
@@ -309,10 +320,12 @@ function createOverlayWindow(): BrowserWindow {
 }
 
 function applyOverlayClickThrough(enabled: boolean): void {
+  if (quitting) return;
   overlayClickThrough = enabled;
-  if (!overlayWindow) return;
-  overlayWindow.setIgnoreMouseEvents(enabled, { forward: enabled });
-  sendToWindow(overlayWindow, "overlay:click-through", enabled);
+  useWindow(overlayWindow, "overlay:click-through", win => {
+    win.setIgnoreMouseEvents(enabled, { forward: enabled });
+    sendToWindow(win, "overlay:click-through", enabled);
+  });
 }
 
 /* ------------------------------------------------------------------ 托盘 */
@@ -356,10 +369,14 @@ function openPage(page: string): void {
   sendToWindow(mainWindow, "app:open-page", page);
 }
 
-function toggleOverlay(): void {
-  if (!overlayWindow) return;
-  if (overlayWindow.isVisible()) overlayWindow.hide();
-  else overlayWindow.showInactive();
+function toggleOverlay(): boolean {
+  let visible = false;
+  const applied = useWindow(overlayWindow, "overlay:toggle-visible", win => {
+    if (win.isVisible()) win.hide();
+    else win.showInactive();
+    visible = win.isVisible();
+  });
+  return applied && visible;
 }
 
 /* ------------------------------------------------------------ 实时 OCR */
@@ -420,20 +437,11 @@ function registerIpc(): void {
   });
 
   /* ---- 浮窗 ---- */
-  ipcMain.handle("overlay:toggle-visible", () => {
-    toggleOverlay();
-    return overlayWindow?.isVisible() ?? false;
-  });
+  ipcMain.handle("overlay:toggle-visible", () => toggleOverlay());
 
-  ipcMain.handle("overlay:show", () => {
-    overlayWindow?.showInactive();
-    return true;
-  });
+  ipcMain.handle("overlay:show", () => useWindow(overlayWindow, "overlay:show", win => win.showInactive()));
 
-  ipcMain.handle("overlay:hide", () => {
-    overlayWindow?.hide();
-    return true;
-  });
+  ipcMain.handle("overlay:hide", () => useWindow(overlayWindow, "overlay:hide", win => win.hide()));
 
   ipcMain.handle("overlay:set-click-through", (_e, enabled: boolean) => {
     applyOverlayClickThrough(Boolean(enabled));
@@ -456,11 +464,10 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("overlay:set-size", (_e, w: number, h: number) => {
-    if (!overlayWindow) return null;
     const width = Math.max(320, Math.round(w));
     const height = Math.max(64, Math.round(h));
-    overlayWindow.setSize(width, height);
-    return { width, height };
+    return useWindow(overlayWindow, "overlay:set-size", win => win.setSize(width, height))
+      ? { width, height } : null;
   });
 
   ipcMain.handle("overlay:set-display-mode", (_e, mode: string) => {
@@ -689,16 +696,17 @@ if (!HAS_SINGLE_INSTANCE) {
 } else {
   app.on("second-instance", () => {
     if (HEADLESS) return; // 无头模式不抢焦点
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    useWindow(mainWindow, "second-instance", win => {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    });
   });
 }
 
 void app.whenReady().then(() => {
   // 第二个实例：不建任何窗口（app.quit() 已在上面发起）
-  if (!HAS_SINGLE_INSTANCE) return;
+  if (!HAS_SINGLE_INSTANCE || quitting) return;
 
   // Windows 任务栏身份。
   //
@@ -729,6 +737,7 @@ void app.whenReady().then(() => {
   registerIpc();
 
   app.on("activate", () => {
+    if (quitting) return;
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createMainWindow();
   });
 });
