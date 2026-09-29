@@ -1,4 +1,14 @@
-# Experience completion — 2026-09-29
+# 历史体验接入报告 — 2026-09-29（本轮返修已更正其范围）
+
+## 当前更正
+
+本文件原报告过度概括了“录音已完整接入”：controller 单测不能证明 workspace 持续状态链。验收指出实时 observe 接线、Pipeline 最后事件、剩余 native 窗口操作及文档存在缺口。本轮对应源码修复、测试矩阵和回滚见 [ACCEPTANCE_REPAIR_2026-09-29.md](ACCEPTANCE_REPAIR_2026-09-29.md)，不以本文件作为当前完整验收证明。
+
+原 `68c3b4d4c9d8a5e86d87c540a3a87bb28156c554` 是功能代码提交；原报告自身提交为 `ce74a02988c3e11cd82c33cbcdd1d119027207cd`。二者不是当前最终 HEAD。本轮 main 代码 HEAD `992790b73201524f9c770c42e1c9c1b7640fe32b`；最终文档SHA、clean及回滚结果见 `C:/Users/Zhang Ruiduo/Hermes/Tool_cache/voxsub-acceptance-20260929/DELIVERY.json`。
+
+下方旧数字为历史记录，不重新背书；本轮隔离基线实际 934 passed / 5 skipped / 17 deselected / 1 xfailed，与原944不同，以新原始日志为准。本轮不推送、不重建安装版。
+
+## 以下为原始报告（非当前状态）
 
 The previously deferred subtitle scrolling and recording-save controls are now integrated and pushed.
 
@@ -28,5 +38,5 @@ Real microphone/loopback, real model inference, hardware acceleration, packaged 
 
 Remote: `https://github.com/tuotuonuts/VoxSub.git`
 Branch: `main`
-Verified remote HEAD: `68c3b4d4c9d8a5e86d87c540a3a87bb28156c554`
-Working tree: clean
+Historical code SHA (not current remote HEAD): `68c3b4d4c9d8a5e86d87c540a3a87bb28156c554`
+Historical working-tree claim: clean at the reported snapshot; current final status is in DELIVERY.json

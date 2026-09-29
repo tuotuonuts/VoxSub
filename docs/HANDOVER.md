@@ -6,6 +6,10 @@
 > 配套阅读：`docs/ARCHITECTURE.md`（模块边界与状态所有权）、
 > `docs/MAINTAINABILITY_REPORT.md`（本轮改了什么、还剩什么）。
 
+## 当前交接入口（2026-09-29）
+
+[ACCEPTANCE_REPAIR_2026-09-29.md](ACCEPTANCE_REPAIR_2026-09-29.md) 是当前源码、测试分层、提交及回滚依据。main 基线 `ce74a02988c3e11cd82c33cbcdd1d119027207cd`；代码 HEAD `992790b73201524f9c770c42e1c9c1b7640fe32b`。最终含文档 HEAD/clean 与隔离 revert 实测以仓库外 `C:/Users/Zhang Ruiduo/Hermes/Tool_cache/voxsub-acceptance-20260929/DELIVERY.json` 为准；该清单提交后生成，避免自身SHA循环。本轮不推送、不打包、不更新安装版。下文历史收尾数字及旧回退起点不代表当前版本。
+
 ---
 
 ## 一、日常安全验收（Windows Git Bash）
@@ -19,9 +23,9 @@ cd D:/OneDrive/app_dve/VoxSub
 unset PYTHONPATH PYTHONHOME
 run="E:/Hermes_data/cache/scratch/voxsub-safe-$(./.venv/Scripts/python.exe -c 'import uuid; print(uuid.uuid4().hex)')"
 mkdir -p "$run/APPDATA" "$run/LOCALAPPDATA" "$run/TEMP" "$run/TMP"
-export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP"
+export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP" TZ=UTC PYTHONDONTWRITEBYTECODE=1
 ./.venv/Scripts/python.exe -c 'import os,pathlib; root=pathlib.Path("E:/Hermes_data/cache/scratch").resolve(); paths={k:pathlib.Path(os.environ[k]).resolve() for k in ("APPDATA","LOCALAPPDATA","TEMP","TMP","TMPDIR")}; assert all(p.is_relative_to(root) for p in paths.values()); print(paths)'
-./.venv/Scripts/python.exe -m pytest -q -rs -m "not integration and not hardware_audio" --basetemp "$run/pytest"
+./.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider -q -rs -m "not integration and not hardware_audio" --basetemp "$run/pytest"
 cd D:/OneDrive/app_dve/VoxSub/frontend
 npm run check
 npm run test:acceptance-contracts
@@ -41,9 +45,9 @@ cd D:/OneDrive/app_dve/VoxSub
 unset PYTHONPATH PYTHONHOME
 run="E:/Hermes_data/cache/scratch/voxsub-ipc-$(./.venv/Scripts/python.exe -c 'import uuid; print(uuid.uuid4().hex)')"
 mkdir -p "$run/APPDATA" "$run/LOCALAPPDATA" "$run/TEMP" "$run/TMP"
-export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP"
+export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" TMP="$run/TMP" TMPDIR="$run/TMP" TZ=UTC PYTHONDONTWRITEBYTECODE=1
 ./.venv/Scripts/python.exe -c 'import os,pathlib; root=pathlib.Path("E:/Hermes_data/cache/scratch").resolve(); paths={k:pathlib.Path(os.environ[k]).resolve() for k in ("APPDATA","LOCALAPPDATA","TEMP","TMP","TMPDIR")}; assert all(p.is_relative_to(root) for p in paths.values()); print(paths)'
-./.venv/Scripts/python.exe -m pytest tests/test_ipc_integration.py -q -rs -m "integration and not hardware_audio" --basetemp "$run/pytest"
+./.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider tests/test_ipc_integration.py -q -rs -m "integration and not hardware_audio" --basetemp "$run/pytest"
 )
 ```
 
@@ -53,7 +57,7 @@ export APPDATA="$run/APPDATA" LOCALAPPDATA="$run/LOCALAPPDATA" TEMP="$run/TEMP" 
 - `npm run verify` 会继续调用 backend probe/OCR/迁移检查。`tools/probe-backend.py` 继承用户环境并包含 set_config、set_mode、set_langs、set_asr_tuning、导出等写操作；禁止把它当成无副作用校验直接执行。
 - 发布脚本、GUI、模型/音频和成品验证须另行确认环境与副作用。本轮未运行发布脚本，不把 `--check-only` 称为完全无副作用。
 
-最新返修证据与三个 Git 回退目标见 [LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md)。
+当前验收与回退入口见 [ACCEPTANCE_REPAIR_2026-09-29.md](ACCEPTANCE_REPAIR_2026-09-29.md)；LAST_REPAIR 为上轮历史证据。
 
 ---
 
@@ -193,8 +197,7 @@ python ../frontend/tools/build-release.py --check-only
 
 1. **构建前置检查只许检查，不许静默改写源码。**
    `frontend/package.json` 的 `prebuild` 过去会跑 `scripts/sanitize.mjs` 直接改源文件 ——
-   这类"构建时偷偷改代码"的行为已经收口（见 `build-release.py` 的 `--allow-source-rewrite`），
-   默认不写源。
+   **2026-09-29 核实：直接 npm run build 仍触发此原地修改脚本。** 旧版“默认不写源”表述不适用于直接 npm build；发布脚本的保护不能推广到所有入口。本輪只执行 check/专项测试，不运行 prebuild/build，也不修改 dist。
 2. **正式发布目录不覆盖。** 约定输出到 `D:\OneDrive\app_dve\Release`；
    构建/验证实验一律走 `--dir-only` 或临时目录。
 
@@ -204,7 +207,7 @@ python ../frontend/tools/build-release.py --check-only
 
 ### 当前可靠恢复入口
 
-以 [LAST_REPAIR_2026-09-27.md](LAST_REPAIR_2026-09-27.md) 的三个 Git revert 目标为准；从最终含文档 HEAD 的完整演练证据保存在仓库外。禁止把以下历史局部快照视为整版本恢复。`.backups/phase1_20260921_042735/` 在本轮复核为空，历史恢复命令不得执行。
+以 [ACCEPTANCE_REPAIR_2026-09-29.md](ACCEPTANCE_REPAIR_2026-09-29.md) 的当前 Git revert 路径为准；从最终含文档 HEAD 的完整演练证据保存在仓库外。禁止把以下历史局部快照视为整版本恢复。`.backups/phase1_20260921_042735/` 在本轮复核为空，历史恢复命令不得执行。
 
 ### 历史维护跟进（2026-09-25/26，非当前执行入口）
 
