@@ -88,6 +88,9 @@
         },
         "recordingCanChange": {
           "type": "boolean"
+        },
+        "recordingReason": {
+          "type": "string"
         }
       }
     },

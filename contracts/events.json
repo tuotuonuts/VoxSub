@@ -85,6 +85,9 @@
         },
         "recordingCanChange": {
           "type": "boolean"
+        },
+        "recordingReason": {
+          "type": "string"
         }
       }
     },
@@ -331,6 +334,9 @@
           },
           "recordingCanChange": {
             "type": "boolean"
+          },
+          "recordingReason": {
+            "type": "string"
           }
         },
         "description": "字段集合必须与 protocol.json#/$defs/StatePayload 完全相同 —— 它就是 _event(\"state\", **self._state_payload(pipeline))，测试会钉住这一点。"
