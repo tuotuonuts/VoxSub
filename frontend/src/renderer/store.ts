@@ -30,7 +30,7 @@ import {
   type RequestOutcome,
 } from "../shared/request-outcome";
 
-import { parseRecordingState } from "./recording-control";
+import { parseRecordingState, type RecordingState } from "./recording-control";
 import { normalizeLog } from "../shared/log-time";
 
 type Listener = () => void;
@@ -335,6 +335,9 @@ export interface CommandResult<T = unknown> {
 let backendStatus: BackendStatus = INITIAL_BACKEND_STATUS;
 let sessionRevision = 0;
 
+/** Includes repeated unknown snapshots: null -> null can still revoke a pending intent. */
+export function getSessionRevision(): number { return sessionRevision; }
+
 /** 把状态机事件落到 store。所有相位变化都必须走这里，避免两处口径不一致。 */
 function setBackendStatus(event: BackendStatusEvent): void {
   sessionRevision++;
@@ -496,24 +499,62 @@ export function applySessionState(
   store.patch(patch);
 }
 
-/**
- * 主动查询当前会话状态。
- *
- * 用途：界面在后端已经在跑的情况下才连上时（后端重启、渲染层重载），
- * state 事件已经错过，必须主动拉一次，否则按钮会停在"开始"而会话实际在运行。
- * 拉回来的载荷里带 `mode`，模式一起恢复 —— 只补按钮文案是不够的。
- */
-export async function refreshSessionState(): Promise<void> {
+/** Request authority is independent of the DOM owner and shared by reads and writes. */
+function sessionAuthority(): () => boolean {
   const revision = sessionRevision;
   const recordingSnapshot = store.get().recordingState;
+  return () => revision === sessionRevision && recordingSnapshot === store.get().recordingState;
+}
+
+let recordingWrite: { current: () => boolean; done: Promise<unknown> } | null = null;
+
+/** Shared request owner outlives a workspace; the callback suppresses only its local echo. */
+export async function setRecordingState(
+  enabled: boolean,
+  beforePublish: (snapshot: RecordingState | null) => void,
+): Promise<RecordingState | null> {
+  sessionRevision++;
+  beforePublish(null);
+  store.patch({ recordingState: null });
+  const current = sessionAuthority();
+  const done = call<RecordingState>(CMD.setRecording, { enabled });
+  const write = { current, done };
+  recordingWrite = write;
+  let result: unknown = null;
+  try { result = await done; } catch { /* No acknowledgement means unknown. */ }
+  if (recordingWrite === write) recordingWrite = null;
+  if (!current()) return store.get().recordingState ?? null;
+  const snapshot = parseRecordingState(result);
+  sessionRevision++;
+  beforePublish(snapshot);
+  store.patch({ recordingState: snapshot, ...(snapshot ? { recording: snapshot.recordingEnabled } : {}) });
+  return snapshot;
+}
+
+export async function refreshSessionState(): Promise<void> {
+  // A page rebuild must join the sent write, not race it with a pre-write state read.
+  if (recordingWrite?.current()) {
+    try { await recordingWrite.done; } catch { /* The write owner publishes unknown. */ }
+    return;
+  }
+  await requestSessionState(CMD.state);
+}
+
+/** All session acknowledgements use the same event/connection/snapshot guard as resync. */
+export async function requestSessionState(
+  command: typeof CMD.state | typeof CMD.start | typeof CMD.pause | typeof CMD.resume | typeof CMD.stop,
+): Promise<void> {
+  // A newer command supersedes older requests even before either response arrives.
+  if (command !== CMD.state) sessionRevision++;
+  const current = sessionAuthority();
   let result: { running: boolean; paused: boolean; mode?: string } | null = null;
   try {
-    result = await call<typeof result>(CMD.state);
+    result = await call<typeof result>(command);
   } catch (error) {
-    store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: `${CMD.state}: ${String(error)}` });
+    store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: `${command}: ${String(error)}` });
   }
   // An event, connection change or recording acknowledgement supersedes this read.
-  if (revision !== sessionRevision || recordingSnapshot !== store.get().recordingState) return;
+  if (!current()) return;
   applySessionState(result);
 }
 

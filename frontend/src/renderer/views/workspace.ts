@@ -7,14 +7,14 @@
  *   尾部：C 模式的文件导入与进度
  */
 import { h, on, percent } from "../dom";
-import { applySessionState, call, refreshSessionState, store } from "../store";
+import { call, getSessionRevision, refreshSessionState, requestSessionState, setRecordingState, store } from "../store";
 import { CMD } from "../protocol";
 import { tr } from "../i18n";
 import { hasExportableSubtitles } from "../../shared/session-timeline";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
 import { buildProgressBar, type ProgressBar } from "../ui/progress";
 import { updateFollowing } from "../../shared/subtitle-scroll";
-import { RecordingControl, type RecordingState } from "../recording-control";
+import { RecordingControl } from "../recording-control";
 
 let streamEl: HTMLElement | null = null;
 let statusTextEl: HTMLElement | null = null;
@@ -270,9 +270,6 @@ async function exportSession(): Promise<void> {
   await api.dialog.saveSession({ lines });
 }
 
-/** 会话状态载荷（后端 start/stop/pause/resume/state 都返回这个形状）。 */
-type SessionState = { running: boolean; paused: boolean };
-
 /**
  * 主按钮：开始 ⇄ 结束。
  *
@@ -284,9 +281,8 @@ async function toggleSession(): Promise<void> {
     await finishSession();
     return;
   }
-  const result = await call<SessionState>(CMD.start);
   // 立即用命令返回值更新界面，不等 state 事件（事件是异步的另一条路）
-  applySessionState(result);
+  await requestSessionState(CMD.start);
 }
 
 /**
@@ -298,8 +294,7 @@ async function toggleSession(): Promise<void> {
 async function togglePause(): Promise<void> {
   const state = store.get();
   if (!state.running) return;
-  const result = await call<SessionState>(state.paused ? CMD.resume : CMD.pause);
-  applySessionState(result);
+  await requestSessionState(state.paused ? CMD.resume : CMD.pause);
 }
 
 /**
@@ -316,8 +311,7 @@ async function finishSession(): Promise<void> {
   const recording = store.get().recording;
   if (recording) store.patch({ statusText: tr("正在结束录音…") });
 
-  const stopped = await call<SessionState>(CMD.stop);
-  applySessionState(stopped);
+  await requestSessionState(CMD.stop);
 
   const result = await call<{ path: string | null }>(CMD.lastRecording);
   if (result?.path) {
@@ -438,29 +432,27 @@ export function buildWorkspace(): PageHandle {
   streamEl = h("div", { class: "subtitle-stream" });
   pane.append(streamEl);
   let observedRecording = state.recordingState;
+  let observedRevision = getSessionRevision();
   let observedPhase = state.backendPhase;
-  let observing = false;
   recordingControl = new RecordingControl({
     read: async () => {
       await refreshSessionState();
       return store.get().recordingState;
     },
-    set: enabled => call<RecordingState>(CMD.setRecording, { enabled }),
-    changed: (view, confirmed) => {
+    set: enabled => setRecordingState(enabled, snapshot => {
+      // This controller consumes its own acknowledgement in drain(), preserving queued clicks.
+      // Other/current pages observe the shared publication normally, even after our disposal.
+      observedRecording = snapshot;
+      observedRevision = getSessionRevision();
+    }),
+    changed: () => {
       if (lifecycle.disposed) return;
-      if (!observing && store.get().recordingState !== confirmed) {
-        // Only accepted controller outcomes are shared; intents never change the snapshot.
-        observedRecording = confirmed;
-        store.patch({ recordingState: confirmed, ...(view.known ? { recording: view.checked } : {}) });
-      }
       syncControls();
     },
   });
   lifecycle.add(() => { recordingControl?.disconnect(); recordingControl = null; });
-  observing = true;
   if (state.backendPhase === "failed" || state.backendPhase === "disconnected") recordingControl.disconnect();
   else recordingControl.observe(state.recordingState);
-  observing = false;
   if (!state.recordingState && state.backendPhase === "ready") void recordingControl.refresh();
 
   rebuildStream();
@@ -476,15 +468,14 @@ export function buildWorkspace(): PageHandle {
 
   lifecycle.add(store.subscribe(() => {
     const current = store.get();
-    if (current.recordingState !== observedRecording || current.backendPhase !== observedPhase) {
+    if (getSessionRevision() !== observedRevision || current.recordingState !== observedRecording || current.backendPhase !== observedPhase) {
       const phaseChanged = current.backendPhase !== observedPhase;
+      observedRevision = getSessionRevision();
       observedRecording = current.recordingState;
       observedPhase = current.backendPhase;
-      observing = true;
       if (current.backendPhase === "failed" || current.backendPhase === "disconnected") recordingControl?.disconnect();
       else if (phaseChanged && current.backendPhase === "ready") void recordingControl?.reconnect(observedRecording ?? null);
       else recordingControl?.observe(observedRecording);
-      observing = false;
     }
     filePanel.hidden = current.mode !== "c";
     syncControls();

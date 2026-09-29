@@ -16,6 +16,7 @@ export async function testRecordingWorkspace() {
   let page, off;
   let read = async () => ({ ok: true, data: state() });
   let set = async () => { throw Error('unexpected set_recording'); };
+  let session = async command => { throw Error(`unexpected session command: ${command}`); };
   const commands = [];
   const pages = [];
   const results = [];
@@ -29,6 +30,8 @@ export async function testRecordingWorkspace() {
         commands.push({ command, args });
         if (command === CMD.state) return read();
         if (command === CMD.setRecording) return set(args);
+        if ([CMD.start, CMD.pause, CMD.resume, CMD.stop].includes(command)) return session(command);
+        if (command === CMD.lastRecording) return Promise.resolve({ ok: true, data: { path: null } });
         throw Error(`unexpected command: ${command}`);
       },
     } };
@@ -64,6 +67,7 @@ export async function testRecordingWorkspace() {
       try {
         read = async () => ({ ok: true, data: state() });
         set = async () => { throw Error('unexpected set_recording'); };
+        session = async command => { throw Error(`unexpected session command: ${command}`); };
         ready(state()); await settle();
         await fn();
         results.push({ name, ok: true }); console.log(`PASS MiniDOM production workspace: ${name}`);
@@ -352,6 +356,104 @@ export async function testRecordingWorkspace() {
       safeUnknown(p);
       assert.equal(store.get().recordingState, null);
     });
+    for (const [label, response, enabled] of [
+      ['success', { ok: true, data: state(true) }, true],
+      ['refused snapshot', { ok: true, data: state(false) }, false],
+      ['refused command', { ok: false, code: 'busy', error: 'closing' }, null],
+      ['unknown timeout', { ok: false, timedOut: true, delivery: 'unknown' }, null],
+      ['malformed success', { ok: true, data: {} }, null],
+      ['transport rejection', null, null],
+    ]) {
+      await test(`sent recording ${label} settles shared authority after dispose/rebuild without events`, async () => {
+        const ack = deferred(), sent = deferred();
+        set = args => { assert.equal(args.enabled, true); sent.resolve(); return ack.promise; };
+        const old = build(); change(old); await sent.promise;
+        old.dispose(); const before = snapshot(old);
+        let reads = 0; read = async () => { reads++; return { ok: true, data: state() }; };
+        const next = build();
+        assert.equal(subscriptions.size, 1);
+        // The previous known snapshot must not admit another write while one is sent.
+        assert.equal(next.input.disabled, true, 'replacement cannot reuse pre-command authority');
+        const sentCount = commands.filter(c => c.command === CMD.setRecording).length;
+        change(next); await settle();
+        assert.equal(commands.filter(c => c.command === CMD.setRecording).length, sentCount, 'replacement cannot dispatch a concurrent recording write');
+        if (response) ack.resolve(response); else ack.reject(Error('transport closed'));
+        await settle();
+        assert.deepEqual(snapshot(old), before, 'old DOM never receives the completion');
+        assert.equal(reads, 0, 'do not race an in-flight write with an unsequenced page read');
+        if (enabled === null) { safeUnknown(next); assert.equal(store.get().recordingState, null); }
+        else {
+          assert.equal(next.input.checked, enabled);
+          assert.equal(next.input.disabled, false);
+          assert.equal(next.input.indeterminate, false);
+          assert.equal(store.get().recordingState.recordingEnabled, enabled);
+        }
+      });
+    }
+    for (const superseder of ['state', 'reconnect']) {
+      await test(`newer ${superseder} supersedes recording reply after dispose/rebuild`, async () => {
+        const ack = deferred(), sent = deferred();
+        set = () => { sent.resolve(); return ack.promise; };
+        const old = build(); change(old); await sent.promise;
+        old.dispose(); const before = snapshot(old); const next = build();
+        const latest = state(false, { recordingCanChange: false, recordingReason: 'New authority' });
+        if (superseder === 'state') send(latest);
+        else { emit({ type: 'disconnected' }); read = async () => ({ ok: true, data: latest }); ready(latest); await settle(); }
+        const expected = snapshot(next);
+        ack.resolve({ ok: true, data: state(true) }); await settle();
+        assert.deepEqual(snapshot(next), expected);
+        assert.equal(store.get().recordingState.recordingReason, 'New authority');
+        assert.deepEqual(snapshot(old), before);
+      });
+    }
+    const sessionClick = (p, command) => p.element.querySelector(
+      command === CMD.pause || command === CMD.resume ? 'button.btn--ghost' : 'button.btn--primary',
+    ).dispatchEvent(dom.makeEvent('click'));
+    for (const command of [CMD.start, CMD.pause, CMD.resume, CMD.stop]) {
+      const initial = state(false, { running: command !== CMD.start, paused: command === CMD.resume });
+      const reply = state(true, { running: command !== CMD.stop, paused: command === CMD.pause,
+        recordingCanChange: command === CMD.stop, recordingReason: `${command} acknowledged` });
+      await test(`${command} valid reply reaches replacement without a state event`, async () => {
+        send(initial);
+        const ack = deferred(), sent = deferred();
+        session = actual => { assert.equal(actual, command); sent.resolve(); return ack.promise; };
+        const old = build(); sessionClick(old, command); await sent.promise;
+        old.dispose(); const before = snapshot(old); const next = build();
+        ack.resolve({ ok: true, data: reply }); await settle();
+        assert.equal(store.get().running, reply.running);
+        assert.equal(store.get().paused, reply.paused);
+        assert.equal(next.input.checked, true);
+        assert.equal(next.input.disabled, !reply.recordingCanChange);
+        assert.equal(next.hint.textContent, reply.recordingReason);
+        assert.deepEqual(snapshot(old), before);
+      });
+      for (const superseder of ['state', 'reconnect', 'newer command']) {
+        await test(`${command} stale reply cannot overwrite ${superseder} in replacement`, async () => {
+          send(initial);
+          const ack = deferred(), sent = deferred();
+          session = actual => { assert.equal(actual, command); sent.resolve(); return ack.promise; };
+          const old = build(); sessionClick(old, command); await sent.promise;
+          old.dispose(); const before = snapshot(old); const next = build();
+          const latest = state(false, { recordingReason: 'Latest authority' });
+          if (superseder === 'state') send(latest);
+          else if (superseder === 'reconnect') {
+            emit({ type: 'disconnected' }); read = async () => ({ ok: true, data: latest }); ready(latest); await settle();
+          } else {
+            const newer = deferred(), newerSent = deferred();
+            session = actual => { assert.equal(actual, command); newerSent.resolve(); return newer.promise; };
+            sessionClick(next, command); await newerSent.promise;
+            newer.resolve({ ok: true, data: latest }); await settle();
+          }
+          const expected = snapshot(next);
+          ack.resolve({ ok: true, data: reply }); await settle();
+          assert.deepEqual(snapshot(next), expected);
+          assert.equal(store.get().recordingState.recordingReason, 'Latest authority');
+          assert.equal(store.get().running, false);
+          assert.equal(store.get().paused, false);
+          assert.deepEqual(snapshot(old), before);
+        });
+      }
+    }
     const failures = results.filter(r => !r.ok);
     console.log(`Recording workspace MiniDOM: ${results.length - failures.length} passed / ${failures.length} failed / ${results.length} total`);
     assert.equal(failures.length, 0, failures.map(r => r.name).join('; '));
