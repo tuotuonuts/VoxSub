@@ -12,7 +12,7 @@
  */
 import { palette, type ThemeName } from "./palette";
 import { h, on } from "./dom";
-import { applySessionState, call, connectBackend, setUiTranslator, store } from "./store";
+import { applySessionState, call, callWithOutcome, connectBackend, refreshSessionState, setUiTranslator, store } from "./store";
 import { CMD } from "./protocol";
 import { persistLanguagePair } from "./language-selection";
 import { tr } from "./i18n";
@@ -267,7 +267,13 @@ async function switchMode(mode: Mode): Promise<void> {
     node.setAttribute("aria-pressed", String(isActive));
   });
 
-  await call(CMD.setMode, { mode });
+  const result = await callWithOutcome(CMD.setMode, { mode });
+  // set_mode has no state event: do not retain the previous mode's recording capability.
+  // OCR is renderer-only; reading the audio pipeline mode here would overwrite D.
+  // A newer click owns the workspace, not this late acknowledgement.
+  if (result.outcome === "ok" && mode !== "d" && store.get().mode === mode) {
+    await refreshSessionState();
+  }
 }
 
 function renderWorkspace(): void {

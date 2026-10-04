@@ -2,7 +2,15 @@
 
 > 本文件是项目的"交接单"。任何 AI / 开发者接手时：先读本文件 + TODO.txt 即可定位当前进度。**每次里程碑 / 关键节点后必须更新**。
 
-## 当前：验收返修（2026-09-29）
+## 当前：静默真实验收返修完成（2026-10-04）
+
+用户确认修复“C 文件处理完成后切回 A，录音开关仍禁用”。基线 3d8bbbb2bc6dab83b063a1b71b2ebb6aaa77107a；仅修改 Electron 渲染侧：set_mode 成功后刷新权威会话状态，跳过 renderer-only D/OCR，并拒绝跨模式的迟到响应。新增 7 个生产 index/store/workspace MiniDOM 场景，接入默认 check。
+
+**本轮限定范围 PASS**：前端 check 通过；安全 Python 946 passed / 5 skipped / 17 deselected / 1 xfailed；隐藏真实 Electron 复验两次文件完成→A 录音开关恢复、停止后重新处理文件→A、A/B/C/D 及快速切换、静态 OCR、真实 sidecar 断连重连与正常退出。监测期间无窗口显示/聚焦；未采集或播放音频。详见 [docs/ACCEPTANCE_REPAIR_2026-10-04.md](docs/ACCEPTANCE_REPAIR_2026-10-04.md)。最终提交与 clean 状态以仓库外 D:/OneDrive/app_dve/acceptance-repair-20261004-210245/DELIVERY.json 为准。
+
+本地提交、不推送、不打包、不更新安装版。麦克风/系统声音实时链路、TTS 播放、屏幕 OCR 原位覆盖、云 API、NPU/硬件、安装升级仍为 **NOT_RUN**，不能把本轮 PASS 扩大为全功能或发布验收。下方历史记录不代表本轮结果。
+
+## 历史：验收返修（2026-09-29）
 
 唯一当前交接入口：[docs/ACCEPTANCE_REPAIR_2026-09-29.md](docs/ACCEPTANCE_REPAIR_2026-09-29.md)。基线 `ce74a02988c3e11cd82c33cbcdd1d119027207cd`；当前代码 HEAD `992790b73201524f9c770c42e1c9c1b7640fe32b`，main。录音实时状态接线、Pipeline 最终收尾能力通知、剩余窗口操作销毁保护已分阶段本地提交；滚动/日志沿用已实现源码。完整隔离回归与范围内独立审查已通过（包括审查发现的R1/R2返修）；Python946通过，真实生产workspace MiniDOM46/46及窗口替身46/46。最终提交/回退证据以新报告引用的交付清单为准。
 

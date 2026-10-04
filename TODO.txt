@@ -1,3 +1,13 @@
+=== 2026-10-04 (当前：静默真实验收返修) ===
+[x] 用户授权修复 C 完成后→A 录音开关禁用；仅渲染侧刷新权威状态，不改 Python 后端。
+[x] 跳过 D/OCR 音频状态刷新；模式变化使迟到的会话响应失效。
+[x] 新增生产 index/store/workspace MiniDOM 7 场景，接入 npm run check；旧 index 负对照正确失败。
+[x] 前端 check 通过；安全 Python 946 passed / 5 skipped / 17 deselected / 1 xfailed。
+[x] 隐藏真实 Electron：两次文件完成→A 录音开关可用，停止/重启文件→A，A/B/C/D/快速切换，静态 OCR，真实断连重连及退出清理通过。
+[x] 独立配置/userData、静音与隐藏窗口监测；用户配置和两份模型清单启动前/退出后哈希一致。
+[x] 覆盖前已备份源码与完整 dist；报告 docs/ACCEPTANCE_REPAIR_2026-10-04.md；最终本地提交 SHA/clean 见仓库外 acceptance-repair-20261004-210245/DELIVERY.json。
+[ ] NOT_RUN：实时麦克风/系统声音、TTS播放、屏幕区域OCR覆盖、云API、NPU/硬件、打包/安装升级；本轮不推送、不替换安装版。
+
 [x] 2026-08-24 v0.6.0-beta 候选：智能上下文新增单行双语动态草稿、Zipformer 140ms partial、partial 保守纠偏、最新 revision 临时翻译、过期结果淘汰和终句优先；Qwen3/生成式/云 STT 由 Zipformer 流式旁路提供草稿、所选模型负责最终定稿；新增默认开启且可关闭的“实时双语草稿”开关，关闭不影响其他智能上下文能力；真实 Qwen3 + 旁路音频链路产生 7 次草稿更新；源码与构建门禁均 251 passed / 8 skipped；安装包 214,819,528 字节，SHA256 585116D524FD75BD9E672339FCF04CC681F9FFF9BC3E6F1B91E3BF8FBAC6E2D2；隔离启动 12 秒通过；未签名，用户验证前不发布 Release
 
 [x] 2026-08-24 v0.5.0-beta 已发布：新增“智能上下文（动态断句）”调优模式；流式 ASR 语义延长、生成式/云 STT 片段合并、不可续期硬等待、保守可审计纠偏、可关闭的轻度语气词清理和旧模式旁路完成；标签指向 0791575；构建门禁 243 passed / 8 skipped；安装包 214,795,950 字节，SHA256 38CF47DE43CB39B45BAF8241464A7C06B5AEF6AF28CE15FF76E7B32063047EA8；GitHub 资产复核通过；未签名
@@ -6,7 +16,7 @@
 
 [x] 2026-08-21 v0.4.1-beta 返修：调优按钮、异步目录选择、后台模型迁移、诊断模块打包、升级翻译模型兼容发现、Teams 宿主进程捕获；全量 193 passed / 7 skipped；安装包 204.80 MiB（开发者自签名），SHA256 4196F2DF70E8097A287DF6399A40CAE7DFD60A0E4949F8760FFA9796F9D96CF8
 
-=== 2026-09-29 (当前验收返修；下方日期均为历史记录) ===
+=== 历史 2026-09-29 (当时验收返修；已被2026-10-04记录取代) ===
 [x] 录音后台确认状态持续同步到真实 workspace；生命周期/拒绝/超时/断连/乱序测试接入默认门禁。
 [x] Pipeline 最后收尾 owner 释放后发布真实录音能力；同步/异步/close/交错路径覆盖。
 [x] 剩余 BrowserWindow 操作与旧 close owner 防护；活窗与销毁竞态行为测试。

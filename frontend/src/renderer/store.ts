@@ -503,7 +503,10 @@ export function applySessionState(
 function sessionAuthority(): () => boolean {
   const revision = sessionRevision;
   const recordingSnapshot = store.get().recordingState;
-  return () => revision === sessionRevision && recordingSnapshot === store.get().recordingState;
+  const mode = store.get().mode;
+  // A mode click supersedes an in-flight read even before its set_mode response.
+  return () => revision === sessionRevision && recordingSnapshot === store.get().recordingState
+    && mode === store.get().mode;
 }
 
 let recordingWrite: { current: () => boolean; done: Promise<unknown> } | null = null;
