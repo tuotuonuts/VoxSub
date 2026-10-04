@@ -20,7 +20,7 @@ _CJK_RUN_RE = re.compile(r"[\u3400-\u9fff]{4,}")
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{2,}")
 _TERMINAL_RE = re.compile(r"[。！？!?；;.]\s*$")
 _LIGHT_FILLER_RE = re.compile(
-    r"(?:嗯+|呃+|额+|唔+|啊+|(?:um+|uh+|erm+)\b)",
+    r"(?:嗯+|呃+|额+|啊+|(?:um+|uh+|erm+)\b)",
     re.IGNORECASE,
 )
 _ISOLATED_FILLER_RE = re.compile(
@@ -31,7 +31,7 @@ _LEADING_FILLER_RE = re.compile(
     rf"^\s*{_LIGHT_FILLER_RE.pattern}(?:\s+|[，,、。.!！?？…]+\s*)",
     re.IGNORECASE,
 )
-_LEADING_CJK_FILLER_RE = re.compile(r"^\s*(?:嗯+|呃+|额+|唔+)(?=[\u3400-\u9fff])")
+_LEADING_CJK_FILLER_RE = re.compile(r"^\s*嗯+(?=[\u3400-\u9fff])")
 _MID_FILLER_RE = re.compile(
     rf"([，,、；;]\s*){_LIGHT_FILLER_RE.pattern}(?=\s|[，,、。.!！?？；;])",
     re.IGNORECASE,
@@ -53,6 +53,7 @@ _ZH_ACKNOWLEDGEMENTS = frozenset({
 _EN_INCOMPLETE_SUFFIXES = frozenset({
     "and", "or", "but", "because", "if", "although", "when", "while",
     "to", "from", "with", "for", "of", "the", "a", "an", "that",
+    "can", "could", "should", "would", "will", "must", "may", "might",
 })
 _EN_ACKNOWLEDGEMENTS = frozenset({
     "ok", "okay", "yes", "no", "thanks", "agreed", "understood",
@@ -121,11 +122,28 @@ def looks_incomplete(text: str, source_lang: str = "zh") -> bool:
     value = _normalize_text(text)
     if not value or not _balanced(value):
         return True
-    if _TERMINAL_RE.search(value):
+    # ASR punctuation is evidence, not proof: "because." or "我们需要。"
+    # still requires a complement. Closing quotation marks do not hide a stop.
+    tail = value.rstrip('。！？!?；;.… \t\r\n”’"）)]')
+    if not tail or value.rstrip().endswith(("...", "…", ",", "，", ":", "：")):
+        return True
+    if _ends_with_connector(tail):
+        return True
+    if _TERMINAL_RE.search(value.rstrip('”’"）)]')):
         return False
     if source_lang.lower().startswith("zh") or _CJK_RE.search(value):
         return _looks_incomplete_zh(value)
     return _looks_incomplete_en(value)
+
+
+def _ends_with_connector(text: str) -> bool:
+    if _CJK_RE.search(text):
+        # Single grammatical particles may also end complete statements;
+        # only strong multi-character complements override a decoder period.
+        return any(text.endswith(word) for word in _ZH_INCOMPLETE_SUFFIXES
+                   if len(word) >= 2)
+    words = re.findall(r"[A-Za-z']+", text.lower())
+    return bool(words and words[-1] in _EN_INCOMPLETE_SUFFIXES)
 
 
 def _looks_incomplete_zh(text: str) -> bool:
@@ -151,25 +169,26 @@ def _looks_incomplete_en(text: str) -> bool:
         return False
     if words[-1] in _EN_INCOMPLETE_SUFFIXES:
         return True
+    # A short subject/predicate is not intrinsically incomplete. Keep bare
+    # auxiliaries and trailing prepositions waiting, without delaying every
+    # four-word statement until the hard deadline.
+    if any(word in {"is", "are", "was", "were", "has", "have"} for word in words[:-1]):
+        return False
     return len(words) < 7
 
 
-def _levenshtein(left: str, right: str) -> int:
-    if left == right:
-        return 0
-    if len(left) < len(right):
-        left, right = right, left
-    previous = list(range(len(right) + 1))
-    for row, char_left in enumerate(left, 1):
-        current = [row]
-        for column, char_right in enumerate(right, 1):
-            current.append(min(
-                current[-1] + 1,
-                previous[column] + 1,
-                previous[column - 1] + (char_left != char_right),
-            ))
-        previous = current
-    return previous[-1]
+def _substitution_distance(left: str, right: str, limit: int) -> int:
+    """Same-length correction only: no insertions/deletions or word reordering.
+
+    Acoustic typos are substitutions here. Stop at the edit budget rather than
+    constructing a quadratic edit-distance matrix for every sliding window.
+    """
+    distance = 0
+    for char_left, char_right in zip(left, right):
+        distance += char_left != char_right
+        if distance > limit:
+            break
+    return distance
 
 
 def _split_hotwords(value: str | Iterable[str]) -> tuple[str, ...]:
@@ -179,8 +198,8 @@ def _split_hotwords(value: str | Iterable[str]) -> tuple[str, ...]:
         parts = list(value)
     return tuple(dict.fromkeys(
         normalized for part in parts
-        if (normalized := _normalize_text(str(part))) and len(normalized) >= 3
-    ))
+        if (normalized := _normalize_text(str(part))) and 3 <= len(normalized) <= 64
+    ))[:64]
 
 
 def _clean_fillers(text: str, mode: str) -> tuple[str, int]:
@@ -197,7 +216,7 @@ def _clean_fillers(text: str, mode: str) -> tuple[str, int]:
 
 def _extract_context_ngrams(text: str) -> set[str]:
     result: set[str] = set()
-    for run in _CJK_RUN_RE.findall(text):
+    for run in _CJK_RUN_RE.findall(text[-512:]):
         for size in range(4, min(8, len(run)) + 1):
             result.update(run[index:index + size] for index in range(len(run) - size + 1))
     return result
@@ -276,7 +295,7 @@ class ContextualTextProcessor:
             self._pending_fillers += fillers
             if self._deadline is None:
                 self._deadline = received_at + self._hold_seconds
-            if self._defer_incomplete and looks_incomplete(
+            if self._defer_incomplete and len(self._pending_text) < 600 and looks_incomplete(
                     self._pending_text, self._source_lang):
                 return committed
             committed.append(self._finalize_locked())
@@ -306,7 +325,8 @@ class ContextualTextProcessor:
             tuple(self._pending_corrections),
             self._pending_fillers,
         )
-        self._remember(segment.text)
+        # Corrections must not become their own evidence on later sentences.
+        self._remember(segment.raw_text)
         self._pending_text = ""
         self._pending_raw = ""
         self._pending_corrections = []
@@ -317,7 +337,7 @@ class ContextualTextProcessor:
     def _remember(self, text: str) -> None:
         if len(self._history) == self._history.maxlen:
             self._rebuild_term_counts(tuple(self._history)[1:])
-        self._history.append(text)
+        self._history.append(text[-512:])
         for term in _extract_context_ngrams(text):
             self._term_counts[term] += 1
 
@@ -328,11 +348,13 @@ class ContextualTextProcessor:
                 self._term_counts[term] += 1
 
     def _correct(self, text: str) -> tuple[str, list[tuple[str, str]]]:
-        if not self._correction_enabled:
+        if not self._correction_enabled or len(text) > 1024:
             return text, []
         terms = [(term, 2) for term in self._hotwords]
         terms.extend(
-            (term, 1) for term, count in self._term_counts.items() if count >= 2
+            (term, 1) for term, count in sorted(
+                self._term_counts.items(), key=lambda item: (-item[1], -len(item[0]), item[0]))[:64]
+            if count >= 2
         )
         corrected = text
         changes: list[tuple[str, str]] = []
@@ -351,16 +373,37 @@ def _best_correction(
     text: str,
     terms: Iterable[tuple[str, int]],
 ) -> tuple[int, int, str] | None:
-    best: tuple[tuple[float, int], int, int, str] | None = None
-    for canonical, max_distance in terms:
+    candidates = tuple(terms)
+    protected = [(match.start(), match.end()) for canonical, _ in candidates
+                 for match in re.finditer(re.escape(canonical), text)]
+    options: list[tuple[tuple[float, int], int, int, str]] = []
+    for canonical, max_distance in candidates:
         match = _term_match(text, canonical, max_distance)
         if match is None:
             continue
         start, end, distance = match
+        if any(start < right and end > left for left, right in protected):
+            continue
+        if _meaning_signature(text[start:end]) != _meaning_signature(canonical):
+            continue
         score = (distance / max(1, len(canonical)), -len(canonical))
-        if best is None or score < best[0]:
-            best = (score, start, end, canonical)
-    return None if best is None else (best[1], best[2], best[3])
+        options.append((score, start, end, canonical))
+    if not options:
+        return None
+    best = min(options)
+    if any(option[0] == best[0] and option[3] != best[3]
+           and option[1] < best[2] and option[2] > best[1] for option in options):
+        return None  # equally plausible terms: retain the acoustic evidence
+    return best[1], best[2], best[3]
+
+
+def _meaning_signature(text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Reject numeric/version edits and changes to polarity/action markers."""
+    numbers = tuple(re.findall(r"\d+(?:[._-]\d+)*|[零〇一二三四五六七八九十百千万亿两]+", text))
+    polarity = tuple(re.findall(
+        r"不|没|无|未|非|禁|否|拒|勿|唔|停|减|增|开|关|启|闭|"
+        r"\b(?:not|no|none|never|without|cannot|off|on|disable[ds]?|enable[ds]?|stop(?:ped)?|start(?:ed)?)\b", text.lower()))
+    return numbers, polarity
 
 
 def _term_match(text: str, canonical: str, max_distance: int) -> tuple[int, int, int] | None:
@@ -380,7 +423,7 @@ def _cjk_term_match(text: str, canonical: str, max_distance: int) -> tuple[int, 
         candidate = text[start:start + length]
         if not _CJK_RUN_RE.fullmatch(candidate):
             continue
-        distance = _levenshtein(candidate, canonical)
+        distance = _substitution_distance(candidate, canonical, max_distance)
         if 0 < distance <= max_distance and (
                 best is None or distance < best[2]):
             best = (start, start + length, distance)
@@ -393,7 +436,7 @@ def _latin_term_match(text: str, canonical: str, max_distance: int) -> tuple[int
         candidate = match.group(0)
         if len(candidate) != len(canonical):
             continue
-        distance = _levenshtein(candidate.lower(), canonical.lower())
+        distance = _substitution_distance(candidate.lower(), canonical.lower(), max_distance)
         if 0 < distance <= max_distance and (
                 best is None or distance < best[2]):
             best = (match.start(), match.end(), distance)

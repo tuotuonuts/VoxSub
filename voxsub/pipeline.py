@@ -51,6 +51,7 @@ from voxsub.diagnostic_trace import record as trace_record, error as trace_error
 from voxsub.recording import WaveSessionRecorder
 from voxsub.realtime_builder import RealtimeBuildSpec, build_realtime_components
 from voxsub.subtitles import SubtitleExporter, SubtitleLine
+from voxsub.translate.context import TranslationContext, translate_contextual
 from voxsub.tts_worker import TTSWorker
 
 logger = get_logger("pipeline")
@@ -574,6 +575,7 @@ class Pipeline:
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
         self._is_generative = False
         self._is_cloud_stt = False
+        self._translation_context = TranslationContext()
         self._context_processor: ContextualTextProcessor | None = None
         self._recording_enabled = False
         self._recordings_dir: Path | None = None
@@ -1644,6 +1646,25 @@ class Pipeline:
             text, snapshot, queue_wait_ms, started)
         self._present_translation(text, translation, snapshot, speak=can_speak)
 
+    def _translate_contextual(self, text: str, snapshot: _LangSnapshot, *,
+                              commit: bool = False) -> str:
+        enabled = (self._asr_tuning.get("profile") == "context"
+                   and snapshot.generation == self.config_generation)
+        scope = (snapshot.generation, snapshot.pair, id(self._translator))
+        started = time.perf_counter()
+        translation = translate_contextual(
+            self._translator, text, snapshot.src, snapshot.dst,
+            memory=self._translation_context, scope=scope, enabled=enabled)
+        model_result("translation" if commit else "draft_translation", translation,
+                     expected=snapshot.dst, source=snapshot.src, target=snapshot.dst,
+                     generation=snapshot.generation,
+                     duration_ms=round((time.perf_counter() - started) * 1000, 2))
+        if self._trans_kind is not None:
+            translation = guard_text(translation, snapshot.dst, kind="translation")
+        if commit and enabled and snapshot.generation == self.config_generation:
+            self._translation_context.remember(scope, text, translation)
+        return translation
+
     @traced_stage("translation")
     def _run_translation(self, text: str, snapshot: _LangSnapshot,
                          queue_wait_ms: float | None, started: float
@@ -1657,13 +1678,7 @@ class Pipeline:
             trace_record("translation", "started", source=snapshot.src, target=snapshot.dst,
                          generation=snapshot.generation, input_chars=len(text), queue_wait_ms=queue_wait_ms,
                          model=str(self._requested_trans_kind), runtime=str(self._trans_kind))
-            translation = self._translator.translate(text, snapshot.src, snapshot.dst)
-            model_result("translation", translation, expected=snapshot.dst, source=snapshot.src,
-                         target=snapshot.dst, generation=snapshot.generation,
-                         duration_ms=round((time.perf_counter() - started) * 1000, 2))
-            if self._trans_kind is not None:
-                translation = guard_text(
-                    translation, snapshot.dst, kind="translation")
+            translation = self._translate_contextual(text, snapshot, commit=True)
         except Exception as exc:
             self._log_translate_failure(
                 text, queue_wait_ms, (time.perf_counter() - started) * 1000.0,
@@ -1717,12 +1732,7 @@ class Pipeline:
         if snapshot.src != "auto" and not text_matches_language(request.source, snapshot.src):
             return
         try:
-            translation = self._translator.translate(
-                request.source, snapshot.src, snapshot.dst)
-            model_result("draft_translation", translation, expected=snapshot.dst, source=snapshot.src, target=snapshot.dst, generation=snapshot.generation)
-            if self._trans_kind is not None:
-                translation = guard_text(
-                    translation, snapshot.dst, kind="draft translation")
+            translation = self._translate_contextual(request.source, snapshot)
         except Exception as exc:
             trace_error("draft_translation", exc, source=snapshot.src, target=snapshot.dst, generation=snapshot.generation)
             logger.debug("实时草稿翻译失败: chars=%d error_type=%s", len(request.source), type(exc).__name__,
@@ -2049,12 +2059,14 @@ class Pipeline:
             self._emit_state()
 
     def _new_file_threads(self) -> list[threading.Thread]:
+        self._translation_context.reset()
         if self._in_path is None or not self._in_path.exists():
             raise FileNotFoundError("请先选择要处理的音频或视频文件")
         return [threading.Thread(
             target=self._run_file_mode, name="pipeline-file", daemon=True)]
 
     def _new_realtime_threads(self) -> list[threading.Thread]:
+        self._translation_context.reset()
         self._build_real_time()
         if self._context_processor is not None:
             self._context_processor.reset()
@@ -2341,6 +2353,7 @@ class Pipeline:
         # Drop it first, then release every Pipeline-owned local runtime reference.
         self._seg = None
         self._context_processor = None
+        self._translation_context.reset()
         self._asr = None
         self._vad = None
         return True

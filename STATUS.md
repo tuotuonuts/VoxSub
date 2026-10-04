@@ -1,3 +1,9 @@
+## 智能上下文识别/翻译优化（本轮）
+
+- 智能上下文 A/B 实时与 C 文件字幕加入有界近期定稿参考；质量/云支持，快档和普通模式旁路；草稿、失败、旧配置不进入参考。纠偏/断句/填充词安全与性能同步优化。
+- Python 安全全套 1059 passed, 4 skipped, 17 deselected, 1 xfailed, 1 warning in 56.14s；前端完整 check 与架构门禁 PASS。真实 Hy-MT2 CPU 文本对照观察到一项消歧改善，也保留一项未消歧，不能称质量全面通过。详见 docs/SEMANTIC_CONTEXT_ACCEPTANCE.md。
+- 仅源码，本地提交见仓库外 20261005-semantic-context/DELIVERY.json；不打包、不发布、不修改用户配置/历史/安装版。本轮不改变上一任务的模型未上架/单模型未集成边界。
+
 ## 诊断、开发者模式与专用模型验收（2026-10-05）
 
 - 初始 main@e840097 已按授权推送 GitHub。

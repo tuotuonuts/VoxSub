@@ -21,6 +21,7 @@ from voxsub.logging_setup import get_logger
 from voxsub.language_guard import detect_text_language, language_name, normalize_language
 
 from ._http_client import OpenAICompatError, chat_completion, normalize_api_base
+from .context import ContextPairs, context_prefix
 from .base import TranslationError, Translator, parse_translation_batch
 
 logger = get_logger("translate.cloud")
@@ -108,8 +109,13 @@ class CloudTranslator(Translator):
             return False
 
     # ------------------------------------------------------------------
+    def translate_with_context(self, text: str, src_lang: str, dst_lang: str, *,
+                               context: ContextPairs, timeout_ms: int = 15000) -> str:
+        return self.translate(text, src_lang, dst_lang,
+                              timeout_ms=timeout_ms, context=context)
+
     def translate(self, text: str, src_lang: str, dst_lang: str, *,
-                  timeout_ms: int = 15000) -> str:
+                  timeout_ms: int = 15000, context: ContextPairs = ()) -> str:
         text = (text or "").strip()
         if not text:
             return ""
@@ -149,7 +155,7 @@ class CloudTranslator(Translator):
             {"role": "system",
              "content": ("You are a professional translator. " + lang_hint +
                          " Reply with only the translation, no explanations.")},
-            {"role": "user", "content": text},
+            {"role": "user", "content": context_prefix(context, byte_budget=1024) + text},
         ]
         try:
             with self._lock:

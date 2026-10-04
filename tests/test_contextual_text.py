@@ -125,3 +125,74 @@ def test_english_context_preview_formats_uppercase_decoder_tokens() -> None:
     assert processor.preview("THIS IS A LIVE ENGLISH DRAFT") == (
         "This is a live english draft"
     )
+
+
+def test_decoder_punctuation_does_not_finalize_a_dangling_connector() -> None:
+    for source, lang in [("Because.", "en"), ("We should.", "en"),
+                         ("我们需要。", "zh"), ("这个方案……", "zh"),
+                         ("我们准备好了，", "zh")]:
+        assert looks_incomplete(source, lang), source
+    assert not looks_incomplete('“这个方案已经完成。”', "zh")
+    assert not looks_incomplete("The door is closed", "en")
+    assert not looks_incomplete("The build is ready", "en")
+
+
+def test_ambiguous_hotwords_preserve_raw_evidence() -> None:
+    for words in ["模型迁移,模型转移", "模型转移,模型迁移"]:
+        p = ContextualTextProcessor(hotwords=words, defer_incomplete=False)
+        segment = p.submit("我们讨论模型移移。")[0]
+        assert segment.text == segment.raw_text
+        assert segment.corrections == ()
+
+
+def test_hotwords_cannot_rewrite_numbers_polarity_or_a_known_correct_term() -> None:
+    cases = [("GPT-4", "We use GPT-5."), ("v2.0", "We use v2-0."),
+             ("一百万元", "预算二百万元。"), ("禁止访问", "允许访问。"),
+             ("模型停用", "模型启用。"), ("not", "now"),
+             ("VoxSub,VoxSob", "VoxSub is ready.")]
+    for hotwords, text in cases:
+        p = ContextualTextProcessor(hotwords=hotwords, defer_incomplete=False)
+        segment = p.submit(text)[0]
+        assert segment.text == text
+        assert not segment.corrections
+
+
+def test_corrected_output_does_not_establish_its_own_evidence() -> None:
+    p = ContextualTextProcessor(hotwords="模型迁移", defer_incomplete=False)
+    p.submit("我们讨论磨鞋迁移。")
+    p.submit("继续完善磨鞋迁移。")
+    assert p._term_counts["模型迁移"] == 0
+    assert p._term_counts["磨鞋迁移"] == 2
+
+
+def test_pending_context_has_a_size_limit_without_losing_fragments() -> None:
+    p = ContextualTextProcessor(source_lang="zh", hold_ms=1800)
+    source = "如果" + "这个方案" * 155
+    result = p.submit(source, now=0.0)
+    assert [item.text for item in result] == [source]
+    assert p.pending_text == ""
+
+
+def test_context_evidence_and_hotword_candidates_are_bounded() -> None:
+    p = ContextualTextProcessor(hotwords=",".join(f"term{i}" for i in range(500)),
+                                defer_incomplete=False)
+    assert len(p._hotwords) == 64
+    long_text = "因为目前的测试结果需要等待" * 200
+    assert p.submit(long_text)[0].text == long_text
+    assert len(p._history[-1]) <= 512
+
+
+def test_context_correction_does_not_reorder_a_shifted_character_sequence() -> None:
+    p = ContextualTextProcessor(hotwords="模型迁移方案", defer_incomplete=False)
+    segment = p.submit("型迁移方案模。")[0]
+    assert segment.text == "型迁移方案模。"
+    assert not segment.corrections
+
+
+def test_filler_cleanup_preserves_real_words_and_cantonese_negation() -> None:
+    p = ContextualTextProcessor(filler_mode="light", defer_incomplete=False)
+    for text in ["额外预算已经批准。", "呃逆需要治疗。", "唔好开门。", "唔，好。"]:
+        segment = p.submit(text)[0]
+        assert segment.text == text
+        assert segment.fillers_removed == 0
+    assert p.submit("嗯我们开始。 ")[0].text == "我们开始。"

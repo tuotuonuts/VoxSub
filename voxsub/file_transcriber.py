@@ -18,6 +18,7 @@ from voxsub.language_guard import guard_text
 from voxsub.logging_setup import get_logger
 from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result
 from voxsub.subtitles import SubtitleLine
+from voxsub.translate.context import TranslationContext, translate_contextual
 
 logger = get_logger("file_transcriber")
 SAMPLE_RATE = 16_000
@@ -171,6 +172,7 @@ class FileRecognizer:
             lines, translator, source_lang, target_lang, validate_translation,
             progress=progress, start_progress=75, end_progress=95,
             last_progress=last_progress,
+            context_enabled=bool(tuning.get("context_enabled", False)),
         )
         return lines
 
@@ -406,6 +408,7 @@ class FileRecognizer:
             lines, translator, source_lang, target_lang, validate_translation,
             progress=progress, start_progress=75, end_progress=95,
             last_progress=last_progress,
+            context_enabled=bool(tuning.get("context_enabled", False)),
         )
         return lines
 
@@ -421,20 +424,31 @@ class FileRecognizer:
         start_progress: int = 0,
         end_progress: int = 100,
         last_progress: list[int] | None = None,
+        context_enabled: bool = False,
     ) -> None:
         emitted = last_progress if last_progress is not None else [-1]
         total = max(1, len(lines))
+        # File context follows subtitle time, not CPU/network processing time.
+        position = [0.0]
+        memory = TranslationContext(clock=lambda: position[0])
+        scope = (source_lang, target_lang, id(translator))
         for index, line in enumerate(lines, start=1):
+            if line.ts_ms / 1000.0 < position[0]:
+                memory.reset()
+            position[0] = max(0.0, line.ts_ms / 1000.0)
             started = time.perf_counter()
             trace_record("file_translation", "started", source=source_lang, target=target_lang, input_chars=len(line.text))
             try:
-                line.translation = translator.translate(
-                    line.text, source_lang, target_lang)
+                line.translation = translate_contextual(
+                    translator, line.text, source_lang, target_lang,
+                    memory=memory, scope=scope, enabled=context_enabled)
                 model_result("file_translation", line.translation, expected=target_lang, source=source_lang, target=target_lang,
                              duration_ms=round((time.perf_counter() - started) * 1000, 2))
                 if validate_translation:
                     line.translation = guard_text(
                         line.translation, target_lang, kind="translation")
+                if context_enabled:
+                    memory.remember(scope, line.text, line.translation)
             except Exception as exc:
                 trace_error("file_translation", exc, source=source_lang, target=target_lang,
                             duration_ms=round((time.perf_counter() - started) * 1000, 2))

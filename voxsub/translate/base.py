@@ -84,6 +84,12 @@ class Translator(ABC):
             TranslationError: 本次翻译失败 (网络/模型/超时), 调用方降级。
         """
 
+    def translate_with_context(self, text: str, src_lang: str, dst_lang: str, *,
+                               context: tuple[tuple[str, str], ...],
+                               timeout_ms: int = 15000) -> str:
+        """Optional capability; non-generative engines keep their proven path."""
+        return self.translate(text, src_lang, dst_lang, timeout_ms=timeout_ms)
+
     @abstractmethod
     def close(self) -> None:
         """释放底层资源 (推理会话 / 模型 / 网络句柄)。幂等。"""

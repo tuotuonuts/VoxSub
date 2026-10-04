@@ -44,6 +44,7 @@ from voxsub.model_storage import resolve_models_root
 from voxsub.text_cleaning import strip_model_control_tokens
 
 from ._http_client import OpenAICompatError, chat_completion
+from .context import ContextPairs, context_prefix
 from .base import TranslationError, Translator, parse_translation_batch
 from .llama_launch import build_llama_launch_plan
 
@@ -692,8 +693,13 @@ class QwenQualityTranslator(Translator):
         return self._ensure_instance()[0]
 
     # ------------------------------------------------------------------
+    def translate_with_context(self, text: str, src_lang: str, dst_lang: str, *,
+                               context: ContextPairs, timeout_ms: int = 15000) -> str:
+        return self.translate(text, src_lang, dst_lang,
+                              timeout_ms=timeout_ms, context=context)
+
     def translate(self, text: str, src_lang: str, dst_lang: str, *,
-                  timeout_ms: int = 15000) -> str:
+                  timeout_ms: int = 15000, context: ContextPairs = ()) -> str:
         text = (text or "").strip()
         if not text:
             return ""
@@ -713,7 +719,9 @@ class QwenQualityTranslator(Translator):
             endpoint, generation = self._ensure_instance()
             try:
                 with self._lock:
-                    out = self._request_translation(endpoint, text, names, timeout_ms)
+                    out = self._request_translation(
+                        endpoint, text, names, timeout_ms,
+                        **({"context": context} if context else {}))
                     cleaned = _clean(out, source=text)
                     reason = _translation_invalid_reason(
                         text, cleaned, src_lang, dst_lang)
@@ -880,7 +888,7 @@ class QwenQualityTranslator(Translator):
 
     def _request_translation(self, endpoint: str, text: str,
                              names: tuple[str, str], timeout_ms: int,
-                             retry: bool = False) -> str:
+                             retry: bool = False, context: ContextPairs = ()) -> str:
         src_name, dst_name = names
         source_auto = src_name == _AUTO_SOURCE_NAME
         if self._prompt_style == "hy-mt2":
@@ -935,6 +943,13 @@ class QwenQualityTranslator(Translator):
             ]
             output_budget = min(self._max_tokens, max(24, len(text) * 2))
             request_options = {"temperature": 0.0}
+        # Context never increases the generated-output budget. Reserve space
+        # for current input/output; accelerated backends may have only 1024 ctx.
+        room = min(384, min(1024, self._n_ctx) - len(text.encode("utf-8"))
+                   - output_budget - 320)
+        prefix = context_prefix(context, byte_budget=room)
+        if prefix:
+            messages[-1]["content"] = prefix + messages[-1]["content"]
         return chat_completion(
             endpoint,
             messages=messages,
