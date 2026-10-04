@@ -68,6 +68,9 @@ export interface VoxSubApi {
     hide(): Promise<boolean>;
     setClickThrough(enabled: boolean): Promise<boolean>;
     isClickThrough(): Promise<boolean>;
+    getGlass(): Promise<import("../shared/overlay-glass").OverlayGlassState>;
+    setGlass(enabled: boolean, strength: number): Promise<import("../shared/overlay-glass").OverlayGlassState>;
+    onGlassChanged(handler: (value: import("../shared/overlay-glass").OverlayGlassState) => void): () => void;
     setOpacity(value: number): Promise<number>;
     setFontSize(value: number): Promise<number>;
     setSize(w: number, h: number): Promise<{ width: number; height: number } | null>;

@@ -21,6 +21,7 @@ import {
 } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { OverlayGlassState } from "../shared/overlay-glass";
 
 import { BackendBridge, type BackendEvent } from "./backend";
 import { createShortcutService } from "./shortcuts";
@@ -85,6 +86,40 @@ function showWindow(win: BrowserWindow | null): void {
 
 let overlayClickThrough = false;
 let overlayOpacity = 0.92;
+let overlayGlassEnabled = false;
+let overlayGlassStrength = 50;
+let overlayGlassState: OverlayGlassState | null = null;
+
+function applyOverlayGlass(): OverlayGlassState {
+  // Electron's documented DWM material requires Windows 11 build 22621+.
+  const supported = process.platform === "win32" &&
+    Number(process.getSystemVersion().split(".")[2]) >= 22621;
+  const requested = overlayGlassEnabled && overlayGlassStrength > 0;
+  let active = false;
+  let reason: OverlayGlassState["reason"] = supported ? null : "unsupported";
+  if (supported && (requested || overlayGlassState?.active)) {
+    try {
+      const applied = useWindow(overlayWindow, "overlay:glass", win => {
+        if (overlayGlassState?.active !== requested) {
+          win.setBackgroundMaterial(requested ? "acrylic" : "none");
+        }
+      });
+      active = requested && applied;
+      if (requested && !applied) reason = "unavailable";
+    } catch (error) {
+      // Material is optional. Never replace/recreate the protected transparent window.
+      console.warn("[overlay:glass] native material request failed", error);
+      reason = "unavailable";
+      useWindow(overlayWindow, "overlay:glass-fallback", win => {
+        try { win.setBackgroundMaterial("none"); } catch { /* retain original background */ }
+      });
+    }
+  }
+  overlayGlassState = { enabled: overlayGlassEnabled, strength: overlayGlassStrength, supported, active, reason };
+  sendToWindow(overlayWindow, "overlay:glass", overlayGlassState);
+  return overlayGlassState;
+}
+
 let overlayFontSize = 20;
 let overlayDisplayMode = "bilingual";
 /** 每个操作只释放自己的退出保护，迟到/无 owner 的释放不能影响其他任务。 */
@@ -466,6 +501,14 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("overlay:is-click-through", () => overlayClickThrough);
+
+  ipcMain.handle("overlay:get-glass", () => overlayGlassState ?? applyOverlayGlass());
+  ipcMain.handle("overlay:set-glass", (_e, enabled: unknown, strength: unknown) => {
+    overlayGlassEnabled = enabled === true;
+    overlayGlassStrength = typeof strength === "number" && Number.isFinite(strength)
+      ? Math.round(Math.min(100, Math.max(0, strength))) : 50;
+    return applyOverlayGlass();
+  });
 
   ipcMain.handle("overlay:set-opacity", (_e, value: number) => {
     overlayOpacity = typeof value === "number" && Number.isFinite(value)

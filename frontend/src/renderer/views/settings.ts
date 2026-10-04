@@ -1,3 +1,4 @@
+import { buildPercentageSlider } from "../ui/percentage-slider";
 import { buildShortcutSettings } from "./shortcuts";
 import { buildTabNav } from "../ui/tab-nav";
 import { buildButton } from "../ui/button";
@@ -625,24 +626,48 @@ function buildTuningContent(
 function appearanceTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
   const theme = String(config["theme"] ?? "system");
-  const opacity = h("input", {
-    class: "input", type: "range", min: "20", max: "100", step: "1",
-    value: String(Math.round(Number(config["overlay_opacity"] ?? 0.92) * 100)),
-    "aria-label": tr("浮窗背景不透明度"),
+  const opacity = buildPercentageSlider(Number(config["overlay_opacity"] ?? 0.92) * 100,
+    tr("浮窗背景不透明度"), { min: 20,
+      onInput: value => { void window.voxsub?.overlay.setOpacity(value / 100); },
+      onChange: value => { void saveConfig({ overlay_opacity: value / 100 }); },
+    });
+  let glassEnabled = config["overlay_glass_enabled"] === true;
+  let glassStrength = Number(config["overlay_glass_strength"] ?? 50);
+  let glassUpdate = 0;
+  const glassHint = h("p", { class: "hint", text: tr("正在检查毛玻璃支持情况…") });
+  const showGlassState = (state: import("../../shared/overlay-glass").OverlayGlassState): void => {
+    glassHint.textContent = state.reason === "unsupported" ? tr("当前系统不支持原生毛玻璃，需要 Windows 11 22H2 或更新版本；保留原有背景。")
+      : state.reason === "unavailable" ? tr("毛玻璃暂时不可用，已保留原有背景。")
+      : tr("百分比调节毛玻璃的可见程度，系统模糊半径固定；0% 无毛玻璃。字幕文字不受影响，松开后自动保存。系统透明效果设置可能影响实际效果。");
+  };
+  const previewGlass = (): void => {
+    const revision = ++glassUpdate;
+    void window.voxsub?.overlay.setGlass(glassEnabled, glassStrength).then(state => {
+      if (revision === glassUpdate) showGlassState(state);
+    }).catch(() => {
+      if (revision === glassUpdate) glassHint.textContent = tr("毛玻璃暂时不可用，已保留原有背景。");
+    });
+  };
+  const glassSlider = buildPercentageSlider(glassStrength, tr("毛玻璃百分比"), {
+    onInput: value => { glassStrength = value; previewGlass(); },
+    onChange: value => { glassStrength = value; previewGlass(); void saveConfig({ overlay_glass_strength: value }); },
   });
-  const opacityValue = h("output", { text: `${opacity.value}%` });
-  on(opacity, "input", () => {
-    opacityValue.textContent = `${opacity.value}%`;
-    void window.voxsub?.overlay.setOpacity(Number(opacity.value) / 100);
+  glassSlider.setDisabled(!glassEnabled);
+  const glassToggle = toggleSwitch(glassEnabled, tr("启用悬浮窗毛玻璃"), enabled => {
+    glassEnabled = enabled; glassSlider.setDisabled(!enabled); previewGlass();
+    void saveConfig({ overlay_glass_enabled: enabled });
   });
-  on(opacity, "change", () => {
-    void saveConfig({ overlay_opacity: Number(opacity.value) / 100 });
-  });
+  void window.voxsub?.overlay.getGlass().then(state => {
+    if (glassUpdate === 0) showGlassState(state);
+  }).catch(() => { if (glassUpdate === 0) glassHint.textContent = tr("毛玻璃暂时不可用，已保留原有背景。"); });
 
   page.append(
     card(tr("外观"), [
-      field(tr("浮窗背景不透明度"), h("div", { class: "tuning-actions" }, [opacity, opacityValue]),
+      field(tr("浮窗背景不透明度"), opacity.element,
         tr("20%–100%，默认 92%。越低越透明，字幕文字保持清晰；松开后自动保存。")),
+      field(tr("悬浮窗毛玻璃"), glassToggle),
+      field(tr("毛玻璃百分比"), glassSlider.element),
+      glassHint,
       field(tr("主题"), radioGroup<"light" | "dark" | "system">(
         theme as "light" | "dark" | "system",
         [["light", tr("浅色")], ["dark", tr("深色")], ["system", tr("跟随系统")]],

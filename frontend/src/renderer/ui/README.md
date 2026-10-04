@@ -23,6 +23,7 @@
 | `controls.ts` | `buildToggleSwitch` | label + checkbox + track + label；支持页面生命周期管理监听 |
 | `tab-nav.ts` | `buildTabNav` | 设置式分页导航，独立激活状态与 aria-selected；页面管理面板生命周期 |
 | `shortcut-field.ts` | `buildShortcutField` | 可编辑/可录入的组合键字段；挂起/恢复注册接口由页面注入，组件不直接发 IPC，支持取消/异步失效/清空和状态说明 |
+| `percentage-slider.ts` | `buildPercentageSlider` | 带百分比读数的原生滑条，input 预览/change 提交、边界校验及禁用；无 IPC/配置 |
 | `field.ts` | `buildField` | 标签、控件、说明和禁用原因 |
 | `path-picker.ts` | `buildPathPicker` | 路径字段；选择取消不提交，按钮复用公共组件 |
 | `progress.ts` | `buildProgressBar` | 进度展示 |
@@ -32,6 +33,6 @@
 
 设置、诊断、开发者页、日志容量、模型广场、OCR、字幕工作区、迁移向导、主导航和路径选择字段已使用这些公共基础元素。设置页原来的 5 个私有构造器已迁出（输入、下拉、单选、开关、卡片），两处相同分页导航已合并。
 
-未强行抽象：模型卡片 cell、迁移向导判定/步骤、字幕流条目、OCR 预览和覆盖层等业务结构；原生范围滑杆、数字输入以及动态重建的模型/语言选择仍由各自页面编排，不能机械地把所有 `h()` 都替换为包装函数。后续新增对应通用元素仍遵循组件优先约定。
+未强行抽象：模型卡片 cell、迁移向导判定/步骤、字幕流条目、OCR 预览和覆盖层等业务结构；数字输入以及动态重建的模型/语言选择仍由各自页面编排，不能机械地把所有 `h()` 都替换为包装函数。后续新增对应通用元素仍遵循组件优先约定。
 
 验证：`npm run test:shared-ui`（真实模块 + MiniDOM），已纳入 `npm run check`；页面生命周期、诊断、模型广场竞态与主页提示由既有生产 DOM 测试继续覆盖。

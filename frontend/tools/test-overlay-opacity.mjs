@@ -7,19 +7,19 @@ import { transformSync } from 'esbuild';
 import { installMiniDom } from './mini-dom.mjs';
 import { importShared } from './esbuild-ts.mjs';
 const dom = installMiniDom();
-const [{ h, on }] = await importShared(['src/renderer/dom.ts'], { bundle: true });
+const [{ h, on }, { buildPercentageSlider }, { glassTint }] = await importShared(['src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/shared/overlay-glass.ts'], { bundle: true });
 const read = (p) => fs.readFileSync(new URL('../src/' + p, import.meta.url), 'utf8');
 const run = (source, context) => vm.runInNewContext(transformSync(source, { loader: 'ts', format: 'cjs' }).code, context);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const settings = read('renderer/views/settings.ts');
 const appearance = settings.slice(settings.indexOf('function appearanceTab()'), settings.indexOf('function aboutTab()'));
 const saved = [], applied = [];
-const context = { h, on, config: { overlay_opacity: 0.64 }, tr: x => x,
+const context = { h, on, buildPercentageSlider, toggleSwitch: () => h('div'), config: { overlay_opacity: 0.64 }, tr: x => x,
   currentLanguage: () => 'zh', setLanguage() {}, applyThemeChoice() {},
   radioGroup: () => h('div'), field: (_l, control) => control,
   card: (_l, children) => h('section', {}, children),
   saveConfig: async updates => { saved.push(updates); return { ...updates }; },
-  window: { voxsub: { overlay: { setOpacity: async v => { applied.push(v); return v; } } } },
+  window: { voxsub: { overlay: { getGlass: async () => ({ supported: false, reason: 'unsupported' }), setOpacity: async v => { applied.push(v); return v; } } } },
 };
 const page = run(appearance + '\nappearanceTab();', context);
 const slider = page.querySelector('input[type="range"]');
@@ -55,7 +55,7 @@ console.log('PASS IPC: clamps finite numbers, defaults invalid types/nonfinite v
 
 const overlay = read('renderer/overlay.ts');
 assert.ok(overlay.includes('async function restoreOpacity()'), 'renderer restores opacity on startup');
-const restore = overlay.slice(overlay.indexOf('async function restoreOpacity()'), overlay.indexOf('/** 把显示模式写回配置'));
+const restore = overlay.slice(overlay.indexOf('async function restoreOpacity()'), overlay.indexOf('/** Independent revision:'));
 for (const value of [0.2, 0.48, 0.92, 1]) {
   const css = [], sync = [];
   const ctx = { window: { voxsub: {
@@ -75,11 +75,11 @@ const visual = overlay.slice(overlay.indexOf('function applyVisuals()'), overlay
 const receiver = overlay.slice(overlay.indexOf('  window.voxsub?.overlay.onOpacityChanged'), overlay.indexOf('  window.voxsub?.overlay.onFontSizeChanged'));
 let receive;
 const styles = new Map();
-const renderContext = { document: { documentElement: { style: { setProperty: (k, v) => styles.set(k, v) } } },
+const renderContext = { glassTint, document: { documentElement: { style: { setProperty: (k, v) => styles.set(k, v) } } },
   window: { voxsub: { overlay: { onOpacityChanged: fn => { receive = fn; } } } },
   applyTextColors() {}, fontValueEl: null, paddingValueEl: null, gapValueEl: null,
 };
-run('let opacity = 0.92, opacityRevision = 0, fontSize = 20, contentPadding = 18, lineGap = 6;\n' + visual + receiver, renderContext);
+run('let opacity = 0.92, opacityRevision = 0, fontSize = 20, contentPadding = 18, lineGap = 6; let glassState = { active: false };\n' + visual + receiver, renderContext);
 receive(0.31);
 assert.equal(styles.get('--overlay-opacity'), '0.31');
 let resolveRead;
@@ -103,7 +103,7 @@ for (const timing of ['before-read', 'during-read', 'after-save']) {
   let stored = 0.22;
   const setOpacity = async value => { syncs.push(value); receiveOpacity(value); return value; };
   const renderer = vm.createContext({
-    document: { documentElement: { style: { setProperty: (k, v) => css.set(k, v) } } },
+    glassTint, document: { documentElement: { style: { setProperty: (k, v) => css.set(k, v) } } },
     window: { voxsub: {
       backend: { command: () => new Promise(resolve => reads.push(resolve)) },
       overlay: { setOpacity, onOpacityChanged: fn => { receiveOpacity = fn; } },
@@ -111,9 +111,9 @@ for (const timing of ['before-read', 'during-read', 'after-save']) {
     applyTextColors() {}, fontValueEl: null, paddingValueEl: null, gapValueEl: null,
   });
   const evaluate = source => vm.runInContext(transformSync(source, { loader: 'ts', format: 'cjs' }).code, renderer);
-  evaluate('let opacity = 0.92, opacityRevision = 0, fontSize = 20, contentPadding = 18, lineGap = 6;\n' + visual + receiver + restore);
+  evaluate('let opacity = 0.92, opacityRevision = 0, fontSize = 20, contentPadding = 18, lineGap = 6; let glassState = { active: false };\n' + visual + receiver + restore);
   const settingsPage = run(appearance + '\nappearanceTab();', { ...context,
-    window: { voxsub: { overlay: { setOpacity } } },
+    window: { voxsub: { overlay: { setOpacity, getGlass: async () => ({ supported: false }) } } },
     saveConfig: async updates => { stored = updates.overlay_opacity; return updates; },
   });
   const input = settingsPage.querySelector('input[type="range"]');

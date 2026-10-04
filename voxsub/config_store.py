@@ -132,6 +132,8 @@ _DEFAULTS: dict[str, Any] = {
     "overlay_content_padding": 18,
     "overlay_line_gap": 6,
     "overlay_opacity": 0.92,
+    "overlay_glass_enabled": False,
+    "overlay_glass_strength": 50,
     "overlay_click_through": False,
     "record_with_translation": False,
 }
@@ -211,6 +213,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "overlay_content_padding": (8, 64),
         "overlay_line_gap": (0, 40),
         "overlay_opacity": (0.2, 1.0),
+        "overlay_glass_strength": (0, 100),
         "ocr_cache_limit": (0, 10_000),
         "log_limit_mb": (10, 10240),
     },

@@ -1,3 +1,4 @@
+import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
 /**
  * 字幕浮窗渲染层。
  *
@@ -24,6 +25,8 @@ interface HistoryItem {
 
 let locked = false;
 let opacity = 0.92;
+let glassRevision = 0;
+let glassState: OverlayGlassState = { enabled: false, strength: 50, active: false, supported: false, reason: null };
 let opacityRevision = 0;
 let fontSize = 20;
 let contentPadding = 18;
@@ -82,6 +85,7 @@ function applyTextColors(): void {
 function applyVisuals(): void {
   const root = document.documentElement.style;
   root.setProperty("--overlay-opacity", String(opacity));
+  root.setProperty("--overlay-glass-opacity", String(glassTint(opacity, glassState)));
   root.setProperty("--font-size", `${fontSize}px`);
   root.setProperty("--content-padding", `${contentPadding}px`);
   root.setProperty("--line-gap", `${lineGap}px`);
@@ -297,6 +301,18 @@ async function restoreOpacity(): Promise<void> {
   }
 }
 
+/** Independent revision: opacity previews must not cancel glass restoration. */
+async function restoreGlass(): Promise<void> {
+  if (glassRevision !== 0) return;
+  try {
+    const result = await window.voxsub?.backend.command("get_config", null);
+    if (!result?.ok || glassRevision !== 0) return;
+    const saved = result.data as Record<string, unknown>;
+    await window.voxsub?.overlay.setGlass(saved?.overlay_glass_enabled === true,
+      typeof saved?.overlay_glass_strength === "number" ? saved.overlay_glass_strength : 50);
+  } catch { /* backend ready retries; untouched defaults stay opaque */ }
+}
+
 /** 把显示模式写回配置，下次启动沿用。 */
 async function persistDisplayMode(mode: DisplayMode): Promise<void> {
   try {
@@ -438,6 +454,12 @@ function wireMainProcess(): void {
     if (lockBtn) lockBtn.textContent = locked ? "已锁定" : "锁定";
   });
 
+  window.voxsub?.overlay.onGlassChanged(value => {
+    glassRevision++;
+    glassState = value;
+    applyVisuals();
+  });
+
   window.voxsub?.overlay.onOpacityChanged((value) => {
     opacityRevision += 1;
     opacity = value;
@@ -504,7 +526,7 @@ function handleBackendEvent(event: {
 /** 后端事件 → 字幕。 */
 function wireBackend(): void {
   window.voxsub?.backend.onEvent((raw) => {
-    if (raw.type === "ready") void restoreOpacity();
+    if (raw.type === "ready") { void restoreOpacity(); void restoreGlass(); }
     handleBackendEvent(raw as Parameters<typeof handleBackendEvent>[0]);
   });
 }
@@ -523,6 +545,7 @@ function boot(): void {
   // （浮窗是要长期压在别的应用上的，晚出现几百毫秒很显眼）。
   void restoreDisplayMode();
   void restoreOpacity();
+  void restoreGlass();
 
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTextColors);
 
