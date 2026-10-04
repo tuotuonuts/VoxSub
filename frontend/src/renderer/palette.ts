@@ -28,6 +28,7 @@ export const palette = {
     mark: "rgba(27, 75, 143, 0.14)",
     ok: "#1F7A4D",
     warn: "#9A6412",
+    attention: "#A54B16",
     err: "#A63232",
   },
   dark: {
@@ -44,6 +45,7 @@ export const palette = {
     mark: "rgba(111, 168, 220, 0.18)",
     ok: "#5FC98D",
     warn: "#E0B45C",
+    attention: "#EEA16F",
     err: "#E88A8A",
   },
 } as const;

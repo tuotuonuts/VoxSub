@@ -810,7 +810,8 @@ body::before {
 }
 
 .cell.is-installed {
-  border-left: 2px solid var(--accent);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .cell__head {
@@ -818,14 +819,6 @@ body::before {
   align-items: center;
   justify-content: space-between;
   gap: 0.6154rem;
-}
-
-.cell__no {
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 0.6923rem;
-  letter-spacing: 0.08em;
-  color: var(--ink2);
-  text-transform: uppercase;
 }
 
 .cell__task {
@@ -920,21 +913,6 @@ body::before {
   margin-top: auto;
   padding-top: 0.5385rem;
   border-top: 1px solid var(--rule);
-}
-
-.cell__badge {
-  font-size: 0.6923rem;
-  color: var(--ink2);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 未验证的硬件标签必须一眼可辨 —— 不可与已验证混同 */
-.cell__badge.is-unverified {
-  border-bottom: 1px dashed var(--ink2);
-  cursor: help;
 }
 
 .cell__state {
@@ -1553,3 +1531,29 @@ body::before {
 
 /* Shared shortcut-field layout: retain standard input/button tokens. */
 .shortcut-field__control .input { flex: 1; min-width: 10rem; width: auto; }
+
+/* Shared labelled rating / semantic badge / provider repository link. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.6923rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ink2);
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 0.2308rem;
+  padding: 0.0769rem 0.3846rem;
+}
+.badge--positive { color: var(--ok); }
+.badge--attention { color: var(--attention); }
+.badge--danger { color: var(--err); }
+.rating { display: inline-flex; align-items: center; gap: 0.3846rem; color: var(--ink2); font-size: 0.6923rem; white-space: nowrap; }
+.rating__label { font-weight: 500; }
+.repository-link { display: inline-flex; align-items: center; justify-content: center; width: 1.6923rem; height: 1.6923rem; border-radius: 0.2308rem; color: var(--ink2); text-decoration: none; flex: 0 0 auto; }
+.repository-link:hover { background: var(--sunken); color: var(--ink); }
+.repository-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.repository-link__github { display: block; width: 1.2308rem; height: 1.2308rem; background: currentColor; mask-image: var(--repository-icon); mask-repeat: no-repeat; mask-size: contain; }
+.repository-link__hf { font-size: 1.2308rem; line-height: 1; }
+.cell__spacer { flex: 1; }
+.cell__installed { font-weight: 500; }

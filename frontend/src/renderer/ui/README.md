@@ -16,6 +16,9 @@
 |---|---|---|
 | `button.ts` | `buildButton` | 标准 ghost/primary 按钮，small/block、disabled/hidden/title；页面绑定业务事件 |
 | `button.ts` | `buildFilterChip` | 紧凑筛选/切换按钮，初始激活样式与 aria-pressed；页面同步后续选择状态 |
+| `badge.ts` | `buildBadge` | 文本语义徽标，灰/绿/橙/红，不接业务状态或 IPC |
+| `rating.ts` | `buildRating` | 带可见标签/无障碍说明的五点能力参考，不能当速度或进度条 |
+| `repository-link.ts` | `buildRepositoryLink` | 安全 GitHub/Hugging Face 仓库图标链接，本地图标不联网；打开回调由页面注入 |
 | `card.ts` | `buildCard` / `buildCardFrame` | 标题与正文卡片；Frame 返回 body 引用供增量填充，保留 section/div 语义 |
 | `controls.ts` | `buildTextInput` | 文本/密码输入，change 提交值；实时 input 事件由调用方绑定 |
 | `controls.ts` | `buildSelect` | 有类型的值/标签列表及初始选择，change 回调可省略 |

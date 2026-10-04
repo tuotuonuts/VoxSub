@@ -48,16 +48,6 @@ export function clear(node: HTMLElement): void {
   node.replaceChildren();
 }
 
-/** 质量分：用方格表示，不用进度条（避免与真实进度混淆）。 */
-export function scorePips(score: number, max = 5): HTMLElement {
-  const wrap = h("span", { class: "pip-row", title: `质量分 ${score}` });
-  const filled = Math.max(0, Math.min(max, Math.round(score / (100 / max))));
-  for (let i = 0; i < max; i += 1) {
-    wrap.append(h("i", { class: i < filled ? "pip is-on" : "pip" }));
-  }
-  return wrap;
-}
-
 export function humanBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "内置";
   const units = ["B", "KB", "MB", "GB"];

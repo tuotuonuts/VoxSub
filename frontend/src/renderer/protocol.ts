@@ -119,6 +119,9 @@ export interface ModelEntry {
   igpuSupported: boolean;
   npuSupported: boolean;
   minRamGb: number;
+  tags?: string[];
+  officialRepo?: string;
+  recommendation?: { level: "basic" | "recommended" | "elevated" | "heavy" | "insufficient" | "unknown"; loadPercent: number | null; reason: string };
 }
 
 export interface AudioDevice {

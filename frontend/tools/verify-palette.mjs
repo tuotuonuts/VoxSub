@@ -134,13 +134,15 @@ for (const [name, set] of [
   );
 
   // 4) 语义色在两种表面上都要能读
-  for (const semantic of ["ok", "warn", "err"]) {
+  for (const semantic of ["ok", "warn", "err", "attention"]) {
     for (const bg of ["surface"]) {
       if (!isHex(set[semantic]) || !isHex(set[bg])) continue;
       const r = contrast(set[semantic], set[bg]);
       check(`${semantic} on ${bg}`, r >= 3, `${r.toFixed(2)}:1`);
     }
   }
+
+  check("attention text on surface", contrast(set.attention, set.surface) >= 4.5, `${contrast(set.attention, set.surface).toFixed(2)}:1`);
 
   // 5) always tint：表面不得是纯中性灰
   for (const key of ["ground", "surface", "ink"]) {

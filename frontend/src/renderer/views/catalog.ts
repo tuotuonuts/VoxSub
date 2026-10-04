@@ -1,3 +1,6 @@
+import { buildBadge, type BadgeTone } from "../ui/badge";
+import { buildRating } from "../ui/rating";
+import { buildRepositoryLink } from "../ui/repository-link";
 import { buildButton, buildFilterChip } from "../ui/button";
 /**
  * 模型目录 —— 同人展目录方向的核心落点。
@@ -5,7 +8,7 @@ import { buildButton, buildFilterChip } from "../ui/button";
  * 对应原 Qt 版的 model_hub_window.py（623 行）。
  * 结构沿用"展位格"：密铺网格、格内贴元数据小字、选中被圈出。
  */
-import { h, on, scorePips, percent } from "../dom";
+import { h, on, percent } from "../dom";
 import { call, callWithOutcome, store } from "../store";
 import { CMD, type ModelCatalogResult, type ModelEntry } from "../protocol";
 import { tr } from "../i18n";
@@ -72,23 +75,17 @@ export async function loadModels(pageId = activePageId): Promise<void> {
   renderGrid();
 }
 
-/** 硬件标签：如实标注，未验证不得写成可用。 */
-function hardwareBadge(model: ModelEntry): HTMLElement {
-  const parts: string[] = [];
-  if (model.npuSupported) parts.push(tr("NPU 已验证"));
-  else if (model.gpuSupported) parts.push("GPU");
-  else parts.push(tr("不支持 NPU"));
-
-  const badge = h("span", { class: "cell__badge", text: parts.join(" · ") });
-  if (!model.npuSupported) badge.classList.add("is-unverified");
-  badge.title = [
-    `GPU: ${model.gpuSupported ? "✓" : "—"}`,
-    `核显: ${model.igpuSupported ? "✓" : "—"}`,
-    `NPU: ${model.npuSupported ? "✓" : "—"}`,
-    model.minRamGb ? `最低内存 ${model.minRamGb} GB` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+/** Four usable tiers plus insufficient/unknown states; color is never the only cue. */
+function recommendationBadge(model: ModelEntry): HTMLElement {
+  const tiers: Record<string, readonly [string, BadgeTone]> = {
+    basic: ["基础款", "neutral"], recommended: ["推荐", "positive"],
+    elevated: ["中高负载", "attention"], heavy: ["高负载", "danger"],
+    insufficient: ["配置不足", "neutral"], unknown: ["待评估", "neutral"],
+  };
+  const [label, tone] = tiers[model.recommendation?.level ?? "unknown"] ?? tiers.unknown!;
+  const explanation = model.recommendation?.reason || tr("暂时无法评估本机配置");
+  const badge = buildBadge(tr(label), tone, `${tr("按本机配置估算，不是实际运行负载")}\n${tr(explanation)}`);
+  badge.classList.add("cell__recommendation");
   return badge;
 }
 
@@ -97,33 +94,34 @@ function modelCell(model: ModelEntry): HTMLElement {
   const card = h("article", { class: "cell", "data-task": model.task, "data-id": model.id });
   if (model.installed) card.classList.add("is-installed");
 
-  // 头：编号 + 任务标签（像目录的摊位号）
+  // 头：本机适配评级 + 原有任务标签
   const head = h("header", { class: "cell__head" });
   head.append(
-    h("span", { class: "cell__no", text: model.id.slice(-6).toUpperCase() }),
-    h("span", { class: "cell__task", text: TASK_LABEL[model.task] ?? model.task }),
+    recommendationBadge(model),
+    h("span", { class: "cell__task", text: tr(TASK_LABEL[model.task] ?? model.task) }),
   );
   card.append(head);
 
   card.append(h("h3", { class: "cell__name", text: model.name }));
 
   if (model.description) {
-    card.append(h("p", { class: "cell__desc", text: model.description }));
+    card.append(h("p", { class: "cell__desc", text: tr(model.description), title: tr(model.description) }));
   }
 
   // 元数据行：大小 + 质量分
   const meta = h("div", { class: "cell__meta" });
   meta.append(
     h("span", { class: "cell__size", text: model.sizeLabel || "—" }),
-    scorePips(model.quality),
+    buildRating(model.quality, tr("能力"), tr("同类模型的能力参考，点亮越多通常越擅长复杂内容；不是本机运行速度。")),
   );
   card.append(meta);
 
-  // 语言与运行时
+  // 普通用户可读的语言与用途标签，不显示运行库/许可证代码
   const facts = h("div", { class: "cell__facts" });
-  if (model.languages) facts.append(h("span", { text: model.languages }));
-  if (model.runtime) facts.append(h("span", { text: model.runtime }));
-  if (model.license) facts.append(h("span", { text: model.license }));
+  if (model.languages) facts.append(h("span", { text: tr(model.languages) }));
+  for (const tag of [...new Set(model.tags ?? [])].slice(0, 3)) {
+    if (tag !== model.languages) facts.append(h("span", { text: tr(tag) }));
+  }
   if (facts.childElementCount) card.append(facts);
 
   // 下载进度（只在下载中显示）—— 内芯用 ProgressBar 组件，外层仍是本页的
@@ -137,9 +135,21 @@ function modelCell(model: ModelEntry): HTMLElement {
     card.append(box);
   }
 
-  // 底部：硬件标签 + 操作
+  // 底部：官方仓库 + 清晰的已下载状态 + 原有操作
   const foot = h("footer", { class: "cell__foot" });
-  foot.append(hardwareBadge(model));
+  const repository = buildRepositoryLink(model.officialRepo ?? "", tr("模型官方仓库"), url => {
+    const warn = (): void => {
+      store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: tr("无法打开模型官方仓库") });
+    };
+    void window.voxsub?.dialog.openExternal(url).then(opened => { if (!opened) warn(); }).catch(warn);
+  });
+  if (repository) foot.append(repository);
+  if (model.installed) {
+    const installed = buildBadge(`✓ ${tr("已下载")}`, "positive", tr("模型文件已在本机"));
+    installed.classList.add("cell__installed");
+    foot.append(installed);
+  }
+  foot.append(h("span", { class: "cell__spacer" }));
 
   const isActiveModel = isSelectedModel(model);
 
