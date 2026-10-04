@@ -27,7 +27,7 @@
     "test:acceptance-contracts": "node tools/test-acceptance-contracts.mjs && node tools/test-acceptance-contracts-self.mjs",
     "test:recording-control": "node tools/test-recording-control.mjs && node tools/test-mode-recording.mjs",
     "test:logic": "npm run test:recording-control && npm run test:window-lifecycle && npm run test:log-time && npm run test:language-selection && npm run test:language-capabilities && npm run test:overlay-opacity && npm run test:session-timeline && npm run test:backend-status && npm run test:main-quit-guard && npm run test:migration-takeover && npm run test:backend-command-result && npm run test:request-outcome && npm run test:page-lifecycle && npm run test:migration-cleanup && npm run test:catalog-races && npm run test:ui-components && npm run test:progress-bar && npm run test:confirm-action && npm run test:status-row && npm run test:page-dispose",
-    "check": "npm run typecheck && npm run verify:palette && npm run test:logic && npm run test:diagnostics-observability",
+    "check": "npm run typecheck && npm run verify:palette && npm run test:logic && npm run test:diagnostics-observability && npm run test:command-feedback",
     "start": "npm run build && electron .",
     "watch": "esbuild src/renderer/index.ts src/renderer/overlay.ts src/renderer/selector.ts src/renderer/ocr-overlay.ts --bundle --format=iife --target=chrome120 --external:electron --outdir=dist/renderer --watch",
     "probe:backend": "python tools/probe-backend.py",
@@ -72,7 +72,8 @@
     "test:page-dispose": "node tools/test-page-dispose.mjs",
     "test:status-row": "node tools/test-status-row.mjs",
     "test:language-capabilities": "node tools/test-language-capabilities.mjs",
-    "test:diagnostics-observability": "node tools/test-diagnostics-observability.mjs"
+    "test:diagnostics-observability": "node tools/test-diagnostics-observability.mjs",
+    "test:command-feedback": "node tools/test-command-feedback.mjs"
   },
   "devDependencies": {
     "@types/node": "22.13.1",

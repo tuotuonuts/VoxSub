@@ -1,3 +1,4 @@
+import { describeJobFeedback } from "../shared/command-feedback";
 import { recordIPC, setDeveloperEnabled } from "../shared/diagnostic-controls";
 /**
  * 应用状态与后端连接。
@@ -211,9 +212,7 @@ class Store {
           // 终态：把任务的去向写进状态行，用户不必去日志里找。
           // 三个终态各有各的说法 —— 尤其"已取消"不能显示成"失败"（用户自己
           // 点的取消，弹红字是骗人的），也不能显示成"已完成"。
-          const label =
-            job.status === "succeeded" ? "已完成" : job.status === "failed" ? "失败" : "已取消";
-          this.patch({ statusText: `${job.command || job.jobId} ${label}` });
+          this.patch({ statusText: describeJobFeedback(job.command, job.status, uiTranslator) });
         }
         break;
       }
