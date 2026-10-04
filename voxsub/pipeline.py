@@ -992,7 +992,7 @@ class Pipeline:
 
     @_state_locked
     def set_recording(self, enabled: bool, directory: str | Path | None = None) -> None:
-        """Configure opt-in microphone WAV saving while fully stopped."""
+        """Configure opt-in selected-source WAV saving while fully stopped."""
         if not self._may_replace_resources():
             raise RuntimeError("请先结束会话，再更改录音保存设置")
         self._recording_enabled = bool(enabled)
@@ -1002,7 +1002,7 @@ class Pipeline:
     def recording_state(self) -> dict[str, bool]:
         """Authoritative recording capability, intent and actual WAV ownership."""
         with self._state_lock:
-            supported = self._mode == "a"
+            supported = self._mode in ("a", "b")
             active = (supported and self._recorder is not None
                       and self._state is PipelineState.RUNNING
                       and not self._pause_evt.is_set())
@@ -1014,7 +1014,7 @@ class Pipeline:
             }
 
     def pause(self) -> None:
-        """Pause microphone recording and translation without closing the device."""
+        """Pause realtime recording and translation without closing the device."""
         if not self._running or self._mode == "c" or self._pause_evt.is_set():
             return
         self._pause_evt.set()
@@ -1904,6 +1904,8 @@ class Pipeline:
     def start(self) -> None:
         if not self._claim_start():
             return
+        # A newly admitted session must never advertise a previous session WAV.
+        self._last_recording_path = None
         try:
             if not self._prepare_start():
                 self._cancel_start()
@@ -2024,7 +2026,8 @@ class Pipeline:
         if self._context_processor is not None:
             self._context_processor.reset()
         self._start_tts_worker()
-        if self._mode == "a" and self._recording_enabled:
+        self._last_recording_path = None
+        if self._mode in ("a", "b") and self._recording_enabled:
             self._recorder = WaveSessionRecorder(self._recordings_dir)
             self._last_recording_path = self._recorder.path
         threads = [
@@ -2127,7 +2130,7 @@ class Pipeline:
         self._watch_settlement()
 
     def _emit_stopped_status(self) -> None:
-        if self._last_recording_path is not None and self._recording_enabled:
+        if self._mode in ("a", "b") and self._last_recording_path is not None and self._recording_enabled:
             self._emit_status(f"已停止 · 录音已保存：{self._last_recording_path}")
         else:
             self._emit_status("已停止")

@@ -132,6 +132,19 @@ export async function testRecordingWorkspace() {
       assert.equal(p.input.checked, false);
       assert.equal(p.dot.hidden, true);
     };
+    await test('English recording label covers microphone and system audio without claiming microphone capture', async () => {
+      setLanguage('en');
+      for (const mode of ['a', 'b']) {
+        read = async () => ({ ok: true, data: state(false, { mode }) });
+        send(state(false, { mode })); const p = build(); await settle();
+        assert.equal(p.element.querySelector('.switch__label').textContent, 'Save audio');
+        assert.equal(p.input.disabled, false);
+        assert.equal(p.hint.textContent, mode === 'b'
+          ? 'Captions only; system or selected app audio is not saved'
+          : 'Captions only; microphone audio is not saved');
+        p.dispose();
+      }
+    });
     await test('malformed state events clear old authority and recover', async () => {
       const p = build(); await settle();
       for (const invalid of [{}, { recordingEnabled: true }, state(true, { recordingActive: 'yes' })]) {
@@ -150,10 +163,17 @@ export async function testRecordingWorkspace() {
       assert.equal(p.dot.hidden, true); assert.equal(p.input.disabled, true);
       send(state(true, { running: true, recordingActive: true, recordingCanChange: false }));
       assert.equal(p.dot.hidden, false);
+      send(state(false, { mode: 'b' }));
+      assert.equal(p.input.disabled, false);
+      assert.equal(p.hint.textContent, tr('仅生成字幕，不保存系统或指定应用音频'));
+      send(state(true, { mode: 'b', running: true, recordingActive: true, recordingCanChange: false }));
+      assert.equal(p.dot.hidden, false); assert.equal(p.input.disabled, true);
+      send(state(true, { mode: 'b', running: true, paused: true, recordingActive: false, recordingCanChange: false }));
+      assert.equal(p.dot.hidden, true);
       for (const mode of ['b', 'c', 'd']) {
         send(state(true, { mode, recordingSupported: false, recordingCanChange: false }));
         assert.equal(p.input.disabled, true); assert.equal(p.dot.hidden, true);
-        assert.equal(p.hint.textContent, tr('录音仅在麦克风同传模式可用'));
+        assert.equal(p.hint.textContent, tr('录音仅在麦克风或系统声音模式可用'));
       }
       send(state()); assert.equal(p.input.disabled, false); assert.equal(p.input.checked, false);
     });

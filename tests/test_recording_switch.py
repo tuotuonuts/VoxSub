@@ -69,17 +69,19 @@ def test_mode_capability_and_no_capture_side_effect(tmp_path, mode):
     pipeline.set_recording(True, tmp_path)
     pipeline.set_mode(mode)
     snapshot = pipeline.recording_state
-    assert snapshot["recordingSupported"] is (mode == "a")
+    assert snapshot["recordingSupported"] is (mode in ("a", "b"))
     assert snapshot["recordingActive"] is False
     assert pipeline._source is None
     assert pipeline.is_running() is False
 
 
-def test_synthetic_frames_append_pause_finalize_and_restart(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["a", "b"])
+def test_synthetic_frames_append_pause_finalize_and_restart(tmp_path, monkeypatch, mode):
     pipeline = Pipeline(models=tmp_path / "models")
     monkeypatch.setattr(pipeline, "_build_real_time", lambda: None)
     monkeypatch.setattr(pipeline, "_start_tts_worker", lambda: None)
     pipeline.set_recording(True, tmp_path / "wav")
+    pipeline.set_mode(mode)
     # Build the real WAV owner; no worker is started, no device or model opened.
     pipeline._new_realtime_threads()
     first = pipeline._recorder
@@ -111,6 +113,7 @@ def test_synthetic_frames_append_pause_finalize_and_restart(tmp_path, monkeypatc
     pipeline._accept_capture_chunk(frame)
     assert first.path.read_bytes() == before
     assert pipeline._recorder is None
+    assert pipeline.last_recording_path is None, "Recording off must not advertise an old file"
     assert not pipeline._queue.empty(), "WAV off must not stop independent recognition input"
     pipeline.set_recording(True, tmp_path / "wav")
     pipeline._new_realtime_threads()
@@ -120,3 +123,74 @@ def test_synthetic_frames_append_pause_finalize_and_restart(tmp_path, monkeypatc
     pipeline._capture_loop()
     with wave.open(str(second.path), "rb") as wav:
         assert wav.getnframes() == 5
+
+
+@pytest.mark.parametrize("selection", ["default", "endpoint", "process"])
+def test_system_recording_uses_selected_source_not_microphone(tmp_path, monkeypatch, selection):
+    from types import SimpleNamespace
+    from voxsub import pipeline as module
+    import voxsub.process_audio as process_audio
+    pipeline = Pipeline(models=tmp_path / "models")
+    pipeline.set_mode("b")
+    pipeline.set_recording(True, tmp_path / "wav")
+    calls = []
+    def loopback(**kwargs):
+        calls.append(("loopback", kwargs))
+        return object()
+    def process(pid):
+        calls.append(("process", pid))
+        return object()
+    def no_microphone(*args, **kwargs):
+        pytest.fail("System recording must never open a microphone")
+    monkeypatch.setattr(module, "LoopbackSource", loopback)
+    monkeypatch.setattr(module, "MicSource", no_microphone)
+    monkeypatch.setattr(process_audio, "ProcessLoopbackSource", process)
+    device = SimpleNamespace(id="selected-speaker", name="Selected speaker")
+    monkeypatch.setattr(module, "list_loopbacks", lambda: [SimpleNamespace(device=device, name=device.name)])
+    if selection == "endpoint":
+        pipeline._loopback_device_id = device.id
+    elif selection == "process":
+        pipeline._capture_process_id = 12345
+    source = pipeline._make_source()
+    assert source is not None
+    assert calls == ([("process", 12345)] if selection == "process" else
+                     [("loopback", {"device": device})] if selection == "endpoint" else
+                     [("loopback", {})])
+    assert list(tmp_path.rglob("*.wav")) == [], "Opt-in alone must not start recording"
+
+
+@pytest.mark.parametrize("mode", ["a", "b"])
+def test_recording_active_tracks_real_owner_pause_and_stop(tmp_path, monkeypatch, mode):
+    pipeline = Pipeline(models=tmp_path / "models")
+    pipeline.set_mode(mode)
+    pipeline.set_recording(True, tmp_path / "wav")
+    monkeypatch.setattr(pipeline, "_build_real_time", lambda: None)
+    monkeypatch.setattr(pipeline, "_start_tts_worker", lambda: None)
+    pipeline._new_realtime_threads()
+    recorder = pipeline._recorder
+    try:
+        assert pipeline.recording_state["recordingActive"] is False
+        pipeline._set_state(PipelineState.RUNNING)
+        assert pipeline.recording_state["recordingActive"] is True
+        pipeline._pause_evt.set()
+        assert pipeline.recording_state["recordingActive"] is False
+        pipeline._pause_evt.clear()
+        assert pipeline.recording_state["recordingActive"] is True
+        pipeline._set_state(PipelineState.STOPPING)
+        assert pipeline.recording_state["recordingActive"] is False
+        assert pipeline.recording_state["recordingCanChange"] is False
+    finally:
+        recorder.close()
+        pipeline._recorder = None
+        pipeline._set_state(PipelineState.IDLE)
+
+
+def test_new_file_or_failed_session_does_not_advertise_previous_wav(tmp_path, monkeypatch):
+    pipeline = Pipeline(models=tmp_path / "models")
+    pipeline.set_mode("c")
+    pipeline.set_recording(True, tmp_path / "wav")
+    pipeline._last_recording_path = tmp_path / "previous.wav"
+    monkeypatch.setattr(pipeline, "_prepare_start", lambda: False)
+    pipeline.start()
+    assert pipeline.last_recording_path is None
+    assert pipeline.recording_state["recordingSupported"] is False

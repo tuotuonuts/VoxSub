@@ -16,7 +16,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const snapshot = (mode, enabled = false) => ({ mode, running: false, paused: false,
   recordingEnabled: enabled, recordingActive: false,
-  recordingSupported: mode === 'a', recordingCanChange: mode === 'a' });
+  recordingSupported: ['a', 'b'].includes(mode), recordingCanChange: ['a', 'b'].includes(mode) });
 let backend = snapshot('c');
 let read = async () => ({ ok: true, data: backend });
 let setMode = async args => { if (args.mode !== 'd') backend = snapshot(args.mode, backend.recordingEnabled); return { ok: true, data: null }; };
@@ -72,10 +72,16 @@ try {
   for (const mode of ['b', 'a', 'c', 'a']) {
     await switchMode(mode);
     assert.equal(store.get().mode, mode);
-    assert.equal(input().disabled, mode !== 'a');
+    assert.equal(input().disabled, !['a', 'b'].includes(mode));
     assert.equal(input().checked, true, 'mode refresh preserves backend recording preference');
   }
-  console.log('PASS repeated A/B/C switches reflect backend capabilities and preference');
+  await switchMode('b');
+  input().checked = false; input().dispatchEvent(new Event('change')); await settle();
+  assert.equal(backend.recordingEnabled, false, 'B must accept actual recording writes');
+  assert.equal(hint(), '仅生成字幕，不保存系统或指定应用音频');
+  input().checked = true; input().dispatchEvent(new Event('change')); await settle();
+  assert.equal(backend.recordingEnabled, true);
+  console.log('PASS repeated A/B/C switches and real B writes reflect backend capabilities and preference');
 
   const beforeD = commands.length;
   await switchMode('d');

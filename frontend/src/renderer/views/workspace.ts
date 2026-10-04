@@ -64,7 +64,7 @@ function syncControls(): void {
   const s = store.get();
   const recording = recordingControl?.view;
   const recordingChecked = recording?.checked ?? s.recording;
-  const inMicMode = s.mode === "a";
+  const inRecordingMode = s.mode === "a" || s.mode === "b";
 
   // 主按钮：开始 ⇄ 结束
   if (ctaEl) {
@@ -81,12 +81,12 @@ function syncControls(): void {
     pauseBtnEl.classList.toggle("is-paused", s.paused);
   }
 
-  // 红点：真的在录（开关开着 + 会话在跑 + 没暂停 + 是麦克风模式）
-  if (recDotEl) recDotEl.hidden = !(recording?.active && inMicMode);
+  // 红点：真的在录（开关开着 + 会话在跑 + 没暂停 + 是实时音频模式）
+  if (recDotEl) recDotEl.hidden = !(recording?.active && inRecordingMode);
   if (recInputEl) {
     recInputEl.checked = recordingChecked;
     recInputEl.indeterminate = !recording?.known;
-    recInputEl.disabled = !inMicMode || Boolean(recording?.disabled);
+    recInputEl.disabled = !inRecordingMode || Boolean(recording?.disabled);
     recInputEl.setAttribute("aria-busy", String(Boolean(recording?.pending)));
   }
 
@@ -98,9 +98,11 @@ function syncControls(): void {
     else if (notice === "rejected") recordHintEl.textContent = tr("后端未接受录音保存设置，已保留原状态");
     else if (recording?.reason) recordHintEl.textContent = recording.reason;
     else if (notice === "idle-only") recordHintEl.textContent = tr("请先结束会话，再更改录音保存设置");
-    else if (notice === "unsupported" || !inMicMode) recordHintEl.textContent = tr("录音仅在麦克风同传模式可用");
+    else if (notice === "unsupported" || !inRecordingMode) recordHintEl.textContent = tr("录音仅在麦克风或系统声音模式可用");
     else if (recordingChecked) recordHintEl.textContent = tr("结束后保存为 WAV，放在本机录音文件夹");
-    else recordHintEl.textContent = tr("仅生成字幕，不保存麦克风音频");
+    else recordHintEl.textContent = tr(s.mode === "b"
+      ? "仅生成字幕，不保存系统或指定应用音频"
+      : "仅生成字幕，不保存麦克风音频");
   }
 }
 
@@ -310,7 +312,8 @@ async function togglePause(): Promise<void> {
  * 最想知道的下一件事就是"文件在哪"。
  */
 async function finishSession(): Promise<void> {
-  const recording = store.get().recording;
+  const state = store.get();
+  const recording = state.recording && supportsPause(state.mode);
   if (recording) store.patch({ statusText: tr("正在结束录音…") });
 
   await requestSessionState(CMD.stop);

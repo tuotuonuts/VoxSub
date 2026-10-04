@@ -31,8 +31,10 @@ def assert_ready(pipe, events):
     pipe.set_recording(False)
 
 
-def test_public_synchronous_stop_publishes_setter_admission(runtime):
+@pytest.mark.parametrize("mode", ["a", "b"])
+def test_public_synchronous_stop_publishes_setter_admission(runtime, mode):
     pipe, source, *_ = runtime
+    pipe.set_mode(mode)
     events, _ = observe(pipe)
     pipe.start()
     assert source.reading.wait(2)
