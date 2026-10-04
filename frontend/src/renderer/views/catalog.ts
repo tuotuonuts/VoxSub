@@ -1,3 +1,7 @@
+import { buildSearchField } from "../ui/search-field";
+import { buildEmptyState } from "../ui/empty-state";
+import { buildSelect, buildToggleSwitch } from "../ui/controls";
+import { createSearchDocument, searchModels, type SearchDocument, type ModelSearchScope } from "../../shared/model-search";
 import { buildBadge, type BadgeTone } from "../ui/badge";
 import { buildRating } from "../ui/rating";
 import { buildRepositoryLink } from "../ui/repository-link";
@@ -11,7 +15,7 @@ import { buildButton, buildFilterChip } from "../ui/button";
 import { h, on, percent } from "../dom";
 import { call, callWithOutcome, store } from "../store";
 import { CMD, type ModelCatalogResult, type ModelEntry } from "../protocol";
-import { tr } from "../i18n";
+import { tr, englishText } from "../i18n";
 import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
 import { type PageHandle } from "../../shared/page-lifecycle";
 import { buildProgressBar } from "../ui/progress";
@@ -26,6 +30,13 @@ const TASK_LABEL: Record<string, string> = {
 };
 
 let models: ModelEntry[] = [];
+let searchDocuments: SearchDocument<ModelEntry>[] = [];
+let searchQuery = "";
+let searchScope: ModelSearchScope = "all";
+let installedOnly = false;
+let searchField: ReturnType<typeof buildSearchField> | null = null;
+let scopeEl: HTMLSelectElement | null = null;
+let installedInput: HTMLInputElement | null = null;
 let downloadSource: "auto" | "global" | "china" = "auto";
 let filter: TaskFilter = "all";
 let gridEl: HTMLElement | null = null;
@@ -56,6 +67,12 @@ export async function loadModels(pageId = activePageId): Promise<void> {
   if (!isCurrent() || !result) return;
 
   models = result.models;
+  const aliases = (text: string): string[] => [text, englishText(text)];
+  searchDocuments = models.map(model => createSearchDocument(model, {
+    names: [model.name, model.id],
+    tags: [model.languages, ...(model.tags ?? [])].flatMap(aliases),
+    descriptions: [model.description, TASK_LABEL[model.task] ?? model.task].flatMap(aliases),
+  }));
   if (result?.modelsRoot) store.patch({ modelsRoot: result.modelsRoot });
 
   // OCR 临时目录：译后图片要落盘，界面需要知道往哪写
@@ -183,13 +200,34 @@ function isSelectedModel(model: ModelEntry): boolean {
 
 function renderGrid(): void {
   if (!gridEl) return;
-  const shown = filter === "all" ? models : models.filter((m) => m.task === filter);
-  if (countEl) countEl.textContent = `${shown.length} 项`;
-  gridEl.replaceChildren(...shown.map(modelCell));
+  const eligible = searchDocuments.filter(({ value }) =>
+    (filter === "all" || value.task === filter) && (!installedOnly || value.installed));
+  const shown = searchModels(eligible, searchQuery, searchScope);
+  if (countEl) countEl.textContent = searchQuery.trim()
+    ? tr("{shown} / {total} 项").replace("{shown}", String(shown.length)).replace("{total}", String(eligible.length))
+    : tr("{count} 项").replace("{count}", String(shown.length));
+  if (shown.length) gridEl.replaceChildren(...shown.map(modelCell));
+  else {
+    const owner = activePageId;
+    const reset = buildButton(tr("重置筛选"));
+    on(reset, "click", () => { if (owner === activePageId) resetFilters(); });
+    gridEl.replaceChildren(buildEmptyState(tr("没有找到匹配的模型"),
+      tr("试试更短的名称或标签，或重置用途与下载状态筛选。"), reset));
+  }
+}
+
+function resetFilters(): void {
+  searchQuery = ""; searchScope = "all"; installedOnly = false; filter = "all";
+  searchField?.setValue("");
+  if (scopeEl) scopeEl.value = "all";
+  if (installedInput) installedInput.checked = false;
+  filterBarEl?.replaceWith(renderFilterBar());
+  renderGrid();
 }
 
 function renderFilterBar(): HTMLElement {
   const bar = h("div", { class: "filter-bar", role: "tablist", "aria-label": tr("按任务筛选") });
+  const owner = activePageId;
   const options: ReadonlyArray<readonly [TaskFilter, string]> = [
     ["all", tr("全部")],
     ["translate", tr("翻译")],
@@ -200,12 +238,14 @@ function renderFilterBar(): HTMLElement {
   for (const [value, label] of options) {
     const chip = buildFilterChip(label, value === filter);
     on(chip, "click", () => {
+      if (owner !== activePageId) return;
       filter = value;
       filterBarEl?.replaceWith(renderFilterBar());
       renderGrid();
     });
     bar.append(chip);
   }
+  filterBarEl = bar;
   return bar;
 }
 
@@ -322,7 +362,7 @@ export function buildModelCatalog(): PageHandle {
 
   // 工具行：计数 · 空间 · 筛选 · 刷新
   const bar = h("div", { class: "catalog-page__bar" });
-  countEl = h("span", { class: "catalog__count", text: "" });
+  countEl = h("span", { class: "catalog__count", text: "", "aria-live": "polite", "aria-atomic": "true" });
   diskEl = h("span", { class: "catalog__disk", text: "" });
   const refresh = buildButton(tr("刷新"), { small: true });
   on(refresh, "click", () => void loadModels(pageId).then(() => updateDiskUsage(pageId)));
@@ -341,6 +381,23 @@ export function buildModelCatalog(): PageHandle {
   bar.append(countEl, diskEl, h("span", { class: "catalog__spacer" }), sourceLabel, refresh);
   page.append(bar);
 
+  const search = buildSearchField(searchQuery, {
+    label: tr("搜索模型"), placeholder: tr("搜索名称、标签或用途，例如：Moonshine 英语"), clear: tr("清空搜索"),
+  }, value => { if (pageId === activePageId) { searchQuery = value; renderGrid(); } });
+  searchField = search;
+  scopeEl = buildSelect<ModelSearchScope>(searchScope,
+    [["all", tr("全部内容")], ["name", tr("仅名称")], ["tags", tr("仅标签")]],
+    value => { if (pageId === activePageId) { searchScope = value; renderGrid(); } });
+  scopeEl.setAttribute("aria-label", tr("搜索范围")); scopeEl.setAttribute("data-search-scope", "");
+  const installedToggle = buildToggleSwitch(installedOnly, tr("只看已下载"), checked => {
+    if (pageId === activePageId) { installedOnly = checked; renderGrid(); }
+  });
+  installedInput = installedToggle.querySelector("input");
+  if (installedInput) installedInput.setAttribute("data-installed-filter", "");
+  page.append(h("div", { class: "catalog-search", role: "search", "aria-label": tr("搜索模型") },
+    [search.element, scopeEl, installedToggle]));
+  page.append(h("p", { class: "catalog-search__hint", text: tr("支持中英文、部分名称和轻微拼写错误；空格分隔的关键词需同时匹配。") }));
+
   filterBarEl = renderFilterBar();
   page.append(filterBarEl);
 
@@ -356,6 +413,7 @@ export function buildModelCatalog(): PageHandle {
   return {
     element: page,
     dispose: () => {
+      search.dispose();
       if (activePageId !== pageId) return;
       activePageId = ++nextPageId;
       loadRequestId += 1;
@@ -363,6 +421,7 @@ export function buildModelCatalog(): PageHandle {
       countEl = null;
       diskEl = null;
       filterBarEl = null;
+      searchField = null; scopeEl = null; installedInput = null;
     },
   };
 }

@@ -16,6 +16,8 @@
 |---|---|---|
 | `button.ts` | `buildButton` | 标准 ghost/primary 按钮，small/block、disabled/hidden/title；页面绑定业务事件 |
 | `button.ts` | `buildFilterChip` | 紧凑筛选/切换按钮，初始激活样式与 aria-pressed；页面同步后续选择状态 |
+| `search-field.ts` | `buildSearchField` | IME安全搜索输入、清空/Escape、去重提交和dispose；无全局热键/IPC/保存 |
+| `empty-state.ts` | `buildEmptyState` | 空结果标题/说明/可选动作，业务筛选由页面管理 |
 | `badge.ts` | `buildBadge` | 文本语义徽标，灰/绿/橙/红，不接业务状态或 IPC |
 | `rating.ts` | `buildRating` | 带可见标签/无障碍说明的五点能力参考，不能当速度或进度条 |
 | `repository-link.ts` | `buildRepositoryLink` | 安全 GitHub/Hugging Face 仓库图标链接，本地图标不联网；打开回调由页面注入 |

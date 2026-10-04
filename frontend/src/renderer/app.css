@@ -1557,3 +1557,19 @@ body::before {
 .repository-link__hf { font-size: 1.2308rem; line-height: 1; }
 .cell__spacer { flex: 1; }
 .cell__installed { font-weight: 500; }
+
+/* Shared search/empty-state primitives; query controls never resize the model cards. */
+.search-field { display: flex; align-items: center; min-width: 0; position: relative; }
+.search-field .input { width: 100%; min-width: 0; padding-right: 2.6rem; }
+.search-field input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search-field__clear { position: absolute; right: 0.3rem; min-width: 1.7rem; padding: 0 0.35rem; }
+.catalog-search { display: flex; align-items: center; flex-wrap: wrap; gap: 0.7692rem; }
+.catalog-search .search-field { flex: 1 1 24rem; }
+.catalog-search > .select { width: auto; min-width: 7rem; }
+.catalog-search .switch { flex: 0 0 auto; }
+.catalog-search__hint { margin: 0; font-size: 0.7692rem; color: var(--ink2); }
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.7692rem; padding: 2.4rem 1rem; text-align: center; color: var(--ink2); }
+.empty-state__title { margin: 0; color: var(--ink); font-size: 1rem; font-weight: 600; }
+.empty-state__detail { margin: 0; max-width: 36rem; font-size: 0.8462rem; }
+.catalog__sheet > .empty-state { grid-column: 1 / -1; }
+.catalog-page__bar { flex-wrap: wrap; }

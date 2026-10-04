@@ -578,6 +578,20 @@ const EN: Dict = {
   "中文 / 英语 / 中英混读": "Chinese / English / mixed reading",
   "英语（美国）": "English (US)",
   "使用": "Use",
+  "搜索模型": "Search models",
+  "搜索名称、标签或用途，例如：Moonshine 英语": "Search names, tags or uses, e.g. Moonshine English",
+  "清空搜索": "Clear search",
+  "全部内容": "All content",
+  "仅名称": "Names only",
+  "仅标签": "Tags only",
+  "搜索范围": "Search scope",
+  "只看已下载": "Installed only",
+  "支持中英文、部分名称和轻微拼写错误；空格分隔的关键词需同时匹配。": "Supports Chinese and English, partial names and minor typos. Space-separated keywords must all match.",
+  "{shown} / {total} 项": "{shown} / {total} models",
+  "{count} 项": "{count} models",
+  "没有找到匹配的模型": "No matching models",
+  "试试更短的名称或标签，或重置用途与下载状态筛选。": "Try a shorter name or tag, or reset the task and installation filters.",
+  "重置筛选": "Reset filters",
   "浮窗背景不透明度": "Overlay background opacity",
   "20%–100%，默认 92%。越低越透明，字幕文字保持清晰；松开后自动保存。": "20%–100%, default 92%. Lower values make the background more transparent while subtitle text stays clear. Saved automatically on release.",
   "深色": "Dark",
@@ -636,6 +650,9 @@ const EN: Dict = {
   "未执行：后端未运行": "was not run: the backend is not running",
   "：": ": ",
 };
+
+/** English alias for curated catalog text; never translate user content for indexing. */
+export function englishText(zh: string): string { return EN[zh] ?? zh; }
 
 export function tr(zh: string): string {
   const state = store.get();
