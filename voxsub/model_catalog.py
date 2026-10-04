@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib import request as urlrequest
+from urllib.parse import quote
 
+from voxsub.catalog_assets import (
+    KOKORO_FILES, KOKORO_REPO, KOKORO_REVISION,
+    PARAKEET_FILES, PARAKEET_REPO, PARAKEET_REVISION,
+)
 from voxsub.logging_setup import get_logger
 from voxsub.file_io import (
     copy_file_atomically,
@@ -32,7 +37,7 @@ from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 logger = get_logger("model_catalog")
 
 GIB = 1024 ** 3
-CATALOG_UPDATED = "2026-08-24"
+CATALOG_UPDATED = "2026-10-04"
 
 
 def default_models_dir() -> Path:
@@ -88,6 +93,7 @@ class ModelSpec:
     igpu_supported: bool = False
     tags: tuple[str, ...] = ()
     tts_languages: tuple[str, ...] = ()
+    tts_speaker_ids: tuple[tuple[str, int], ...] = ()
 
     @property
     def task_label(self) -> str:
@@ -135,7 +141,78 @@ def _opus_remote_files(language_pair: str, base_url: str) -> tuple[RemoteFile, .
     )
 
 
+def _pinned_mirror_source(repo: str, revision: str,
+                          files: tuple[tuple[str, int, str], ...]) -> ModelSource:
+    """China option is explicitly a third-party HF mirror, pinned and verified."""
+    prefix = f"{_HF_MIRROR}/{repo}/resolve/{revision}"
+    return ModelSource(
+        "china", "中国大陆 · HF 第三方镜像（校验固定版本）", prefix,
+        f"{prefix}/tokens.txt",
+        tuple(RemoteFile(f"{prefix}/{quote(path, safe='/')}", path, size, sha)
+              for path, size, sha in files),
+    )
+
+
 CATALOG: tuple[ModelSpec, ...] = (
+    ModelSpec(
+        id="asr-moonshine-tiny-en-v2", task="asr",
+        name="Moonshine Tiny EN · 轻量离线", vendor="Useful Sensors / k2-fsa",
+        release="2026-02-27",
+        description="英语轻量离线识别，量化 v2 导出；整句解码，不是原生流式模型。仅验证 CPU。",
+        runtime="sherpa-moonshine-v2", quality_score=77, languages="英语", license="MIT",
+        download_bytes=29_858_559, installed_bytes=44_243_206,
+        install_rel="asr/moonshine-tiny-en-v2",
+        required_paths=("encoder_model.ort", "decoder_model_merged.ort", "tokens.txt"),
+        sources=(
+            ModelSource("global", "海外 · GitHub 上游发布", f"{_GH_ASR}/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2", "https://github.com/favicon.ico"),
+            ModelSource("china", "中国大陆 · ModelScope 上游镜像", f"{_MS_ASR}/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2", "https://modelscope.cn/favicon.ico"),
+        ),
+        asset_name="sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2",
+        sha256="9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d",
+        archive=True, min_ram_gb=4, working_ram_gb=0.5, compute_cost=16,
+        gpu_supported=False, tags=("英语", "轻量", "离线整句", "CPU"),
+    ),
+    ModelSpec(
+        id="asr-parakeet-tdt-0.6b-v3-int8", task="asr",
+        name="Parakeet TDT 0.6B v3 INT8 · 欧洲多语", vendor="NVIDIA / k2-fsa",
+        release="v3（上游导出）",
+        description="25 种欧洲语言离线识别，包含英语、不含中文；整句解码。仅验证 CPU，内存需求为建议值。",
+        runtime="sherpa-parakeet-tdt", quality_score=94,
+        languages="英语 / 德语 / 法语 / 西班牙语等 25 种欧洲语言（不含中文）",
+        license="CC-BY-4.0", download_bytes=487_170_055,
+        installed_bytes=sum(item[1] for item in PARAKEET_FILES),
+        install_rel="asr/parakeet-tdt-0.6b-v3-int8",
+        required_paths=tuple(item[0] for item in PARAKEET_FILES),
+        sources=(
+            ModelSource("global", "海外 · GitHub 上游发布", f"{_GH_ASR}/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2", "https://github.com/favicon.ico"),
+            _pinned_mirror_source(PARAKEET_REPO, PARAKEET_REVISION, PARAKEET_FILES),
+        ),
+        asset_name="sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+        sha256="5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf",
+        archive=True, min_ram_gb=8, working_ram_gb=2, compute_cost=55,
+        gpu_supported=False, tags=("欧洲多语", "不含中文", "离线整句", "CPU"),
+    ),
+    ModelSpec(
+        id="tts-kokoro-v1.1-int8-zh-en", task="tts",
+        name="Kokoro v1.1 INT8 · 中英朗读", vendor="hexgrad / k2-fsa",
+        release="v1.1（上游导出）",
+        description="中英离线语音合成，完整音色、词典与音素资源包；默认中文 zf_001、英文 af_maple。仅验证 CPU。",
+        runtime="sherpa-kokoro", quality_score=95, languages="中文 / 英语",
+        license="Apache-2.0", download_bytes=147_031_220,
+        installed_bytes=sum(item[1] for item in KOKORO_FILES),
+        install_rel="tts/kokoro-v1.1-int8-zh-en",
+        required_paths=tuple(item[0] for item in KOKORO_FILES),
+        sources=(
+            ModelSource("global", "海外 · GitHub 上游发布", f"{_GH_TTS}/kokoro-int8-multi-lang-v1_1.tar.bz2", "https://github.com/favicon.ico"),
+            _pinned_mirror_source(KOKORO_REPO, KOKORO_REVISION, KOKORO_FILES),
+        ),
+        asset_name="kokoro-int8-multi-lang-v1_1.tar.bz2",
+        sha256="a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6",
+        archive=True, min_ram_gb=4, working_ram_gb=1, compute_cost=35,
+        gpu_supported=False, tags=("中英双语", "离线朗读", "CPU"),
+        tts_languages=("zh", "en"), tts_speaker_ids=(("zh", 3), ("en", 0)),
+    ),
+
     ModelSpec(
         id="ocr-rapidocr-v6-small-builtin",
         task="ocr",
@@ -1158,7 +1235,13 @@ class ModelMarketplace:
             destination = target / item.install_rel
             copy_file_atomically(staged, destination)
         if download_root.exists():
-            shutil.rmtree(download_root)
+            try:
+                shutil.rmtree(download_root)
+            except OSError as exc:
+                # Runtime files are already atomically committed and will be
+                # checked by install(). A locked cache is not a failed model.
+                logger.warning("模型已提交，但下载缓存暂无法清理: path=%s error=%s",
+                               download_root, exc)
 
     def _install_archive(self, model: ModelSpec, archive: Path, target: Path) -> None:
         staging_parent = self.models_dir / ".installing"

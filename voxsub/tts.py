@@ -60,7 +60,7 @@ def _resample_to_16k(pcm: np.ndarray, src_rate: int) -> np.ndarray:
 
 
 class TTSEngine:
-    """sherpa-onnx OfflineTts 封装 (vits 生态), 线程安全。
+    """sherpa-onnx OfflineTts 封装 (VITS / Kokoro), 线程安全。
 
     用法::
 
@@ -84,6 +84,7 @@ class TTSEngine:
             if lang in _CANDIDATE_LANGS and model_id
         }
         self._lock = threading.RLock()
+        self._speaker_ids: dict[str, int] = {}
         self._tts: dict[str, object] = {}       # lang -> OfflineTts 实例 (懒加载)
         self._ready: dict[str, bool] = {}       # lang -> 模型文件就绪?
         for lang in _CANDIDATE_LANGS:
@@ -110,7 +111,8 @@ class TTSEngine:
                         and lang in model.tts_languages):
                     selected = ModelMarketplace(
                         self._model_dir.parent).available_model_dir(model)
-                    if self._model_files_at(selected) is not None:
+                    if (ModelMarketplace(self._model_dir.parent).is_installed(model)
+                            and self._model_files_at(selected) is not None):
                         return selected
                 logger.warning("所选 TTS 模型不可用，尝试兼容目录: lang=%s id=%s",
                                lang, model_id)
@@ -150,21 +152,14 @@ class TTSEngine:
             model_path, tokens_path = model_files
             rule_fsts = [
                 str(d / name)
-                for name in ("phone.fst", "date.fst", "number.fst")
+                for name in ("phone.fst", "date.fst", "number.fst",
+                             "phone-zh.fst", "date-zh.fst", "number-zh.fst")
                 if (d / name).is_file()
             ]
 
-            vits = sherpa_onnx.OfflineTtsVitsModelConfig(
-                model=str(model_path),
-                tokens=str(tokens_path),
-                lexicon=str(d / "lexicon.txt") if (d / "lexicon.txt").is_file() else "",
-                data_dir=str(d / "espeak-ng-data")
-                if (d / "espeak-ng-data").is_dir() else "",
-            )
+            model_config = self._tts_model_config(sherpa_onnx, d, lang, model_path, tokens_path)
             cfg = sherpa_onnx.OfflineTtsConfig(
-                model=sherpa_onnx.OfflineTtsModelConfig(
-                    vits=vits, provider=self._provider, num_threads=self._num_threads,
-                ),
+                model=model_config,
                 rule_fsts=",".join(rule_fsts),
                 max_num_sentences=1,
             )
@@ -173,6 +168,39 @@ class TTSEngine:
             logger.warning("TTS 模型构建失败 (lang=%s, 目录=%s), 本次返回 None",
                            lang, d.name, exc_info=True)
             return None
+
+    def _tts_model_config(self, sherpa, directory: Path, lang: str,
+                          model_path: Path, tokens_path: Path):
+        """Choose Kokoro only for an explicitly selected, complete catalog bundle."""
+        from voxsub.model_catalog import get_model
+
+        model = get_model(self._model_ids.get(lang, ""))
+        kokoro = (model is not None and model.runtime == "sherpa-kokoro"
+                  and (directory / "voices.bin").is_file())
+        common = dict(provider=self._provider, num_threads=self._num_threads)
+        if kokoro:
+            self._speaker_ids[lang] = dict(model.tts_speaker_ids)[lang]
+            return sherpa.OfflineTtsModelConfig(
+                kokoro=sherpa.OfflineTtsKokoroModelConfig(
+                    model=str(model_path), tokens=str(tokens_path),
+                    voices=str(directory / "voices.bin"),
+                    lexicon=",".join(str(directory / name) for name in
+                                     ("lexicon-us-en.txt", "lexicon-zh.txt")),
+                    data_dir=str(directory / "espeak-ng-data"),
+                    dict_dir=str(directory / "dict"),
+                    lang="zh" if lang == "zh" else "en-us",
+                ), **common,
+            )
+        self._speaker_ids[lang] = 0
+        return sherpa.OfflineTtsModelConfig(
+            vits=sherpa.OfflineTtsVitsModelConfig(
+                model=str(model_path), tokens=str(tokens_path),
+                lexicon=str(directory / "lexicon.txt")
+                if (directory / "lexicon.txt").is_file() else "",
+                data_dir=str(directory / "espeak-ng-data")
+                if (directory / "espeak-ng-data").is_dir() else "",
+            ), **common,
+        )
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -204,7 +232,7 @@ class TTSEngine:
                 if tts is None:
                     self._ready[lang] = False
                     return None
-                result = tts.generate(text, sid=0, speed=1.0)
+                result = tts.generate(text, sid=self._speaker_ids.get(lang, 0), speed=1.0)
                 if result is None or result.samples is None or len(result.samples) == 0:
                     logger.warning("TTS 生成返回空结果 (lang=%s), 降级返回 None", lang)
                     return None

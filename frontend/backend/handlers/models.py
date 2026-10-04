@@ -87,7 +87,10 @@ class ModelsHandlers:
             _event("download", modelId=model_id, completed=done,
                    total=total, stage=str(stage))
 
-        marketplace.install(spec, progress_callback=_progress)
+        preference = str(args.get("source", "auto"))
+        if preference not in {"auto", "global", "china"}:
+            raise ValueError("无效下载源，须为 auto / global / china")
+        marketplace.install(spec, preference=preference, progress=_progress)
         return {"model_id": model_id}
 
     def _cmd_uninstall_model(self, args: dict[str, Any]) -> dict[str, Any]:

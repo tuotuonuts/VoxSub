@@ -1,4 +1,14 @@
-=== 2026-10-04 (当前：静默真实验收返修) ===
+=== 2026-10-04 (当前：模型广场扩容) ===
+[x] 源码上架 Moonshine Tiny EN v2、Parakeet TDT v3 INT8、Kokoro v1.1 INT8；CPU真实推理样例通过，不宣称流式/中文Parakeet/硬件加速。
+[x] 三个海外/大陆源完整下载并校验；HF镜像固定版本及376/4文件SHA；大陆选项明确第三方，本机访问不代表大陆全网。
+[x] 新增自动/海外优先/中国大陆优先；修复安装按钮progress接线、特殊路径编码、缓存清理锁误报；测试覆盖。
+[x] 安全Python967 passed / 5 skipped / 17 deselected / 1 xfailed；前端check/契约/renderer构建通过。
+[x] 隐藏真实Electron下载按钮到IPC（已校验缓存、非网络）、双语选择；2617采样0显示/聚焦违规；未采集/播放音频。
+[x] 报告 docs/MARKETPLACE_EXPANSION_2026-10-04.md；备份 .backups/marketplace-expansion-20261004-213622；最终本地提交/clean见仓库外同名证据目录DELIVERY.json。
+[ ] BLOCKED未上架：Qwen3-ASR1.7B、VibeVoice-ASR、TranslateGemma4B（适配/授权未完成）。
+[ ] NOT_RUN：新模型完整文件→SRT、真实录音、TTS听感、GPU/iGPU/NPU、完整多语言质量、安装升级；不推送、不更新安装包。
+
+=== 2026-10-04 (历史：静默真实验收返修) ===
 [x] 用户授权修复 C 完成后→A 录音开关禁用；仅渲染侧刷新权威状态，不改 Python 后端。
 [x] 跳过 D/OCR 音频状态刷新；模式变化使迟到的会话响应失效。
 [x] 新增生产 index/store/workspace MiniDOM 7 场景，接入 npm run check；旧 index 负对照正确失败。

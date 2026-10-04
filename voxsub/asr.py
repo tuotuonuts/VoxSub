@@ -180,7 +180,8 @@ class _OfflineBuffer:
 class OfflineGenerativeASR:
     """Sentence-level adapter for offline sherpa ASR models.
 
-    Qwen3-ASR, Fun-ASR-Nano, and SenseVoice are non-streaming recognizers. The
+    Qwen3-ASR, Fun-ASR-Nano, SenseVoice, Moonshine and Parakeet use offline
+    recognizers in this adapter. The
     existing VAD segmenter still provides live sentence boundaries and feeds
     audio into this buffer; inference happens once at the boundary so the
     decoder is never rerun every few hundred milliseconds for a partial result.
@@ -264,11 +265,36 @@ class OfflineGenerativeASR:
                 language=language,
                 use_itn=True,
             )
+        elif runtime in {"sherpa-moonshine-v2", "sherpa-parakeet-tdt"}:
+            self._recognizer = self._build_additional_recognizer(runtime, threads)
         else:
             raise ValueError(f"不支持的离线 ASR runtime: {runtime}")
         self.source_lang = normalize_language(source_lang)
         logger.info("生成式 ASR 加载成功 (runtime=%s provider=%s threads=%d 目录=%s)",
                     runtime, provider, threads, self._model_dir.name)
+
+    def _build_additional_recognizer(self, runtime: str, threads: int):
+        """Use the pinned sherpa export contracts, not generic ONNX loading.
+
+        These are offline models: VAD supplies sentence boundaries for A/B,
+        while C feeds file segments. They do not provide native partials.
+        """
+        if runtime == "sherpa-moonshine-v2":
+            names = ("encoder_model.ort", "decoder_model_merged.ort", "tokens.txt")
+            paths = [self._model_dir / name for name in names]
+            self._require(paths)
+            return sherpa_onnx.OfflineRecognizer.from_moonshine_v2(
+                encoder=str(paths[0]), decoder=str(paths[1]), tokens=str(paths[2]),
+                num_threads=threads, provider=self.provider,
+            )
+        names = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt")
+        paths = [self._model_dir / name for name in names]
+        self._require(paths)
+        return sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=str(paths[0]), decoder=str(paths[1]), joiner=str(paths[2]),
+            tokens=str(paths[3]), model_type="nemo_transducer",
+            num_threads=threads, provider=self.provider,
+        )
 
     @staticmethod
     def _require(paths) -> None:

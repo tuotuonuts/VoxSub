@@ -2,7 +2,15 @@
 
 > 本文件是项目的"交接单"。任何 AI / 开发者接手时：先读本文件 + TODO.txt 即可定位当前进度。**每次里程碑 / 关键节点后必须更新**。
 
-## 当前：静默真实验收返修完成（2026-10-04）
+## 当前：模型广场扩容与静默验收完成（2026-10-04）
+
+源码上架 Moonshine Tiny EN v2（英语离线）、Parakeet TDT v3 INT8（欧洲多语，不含中文）、Kokoro v1.1 INT8（中英朗读）。三个海外源及大陆源完整下载/校验通过，HF 大陆选项明确标记第三方并固定版本/逐文件 SHA；新增自动/海外优先/中国大陆优先选择，修复真实安装按钮 progress 接线、特殊路径 URL 编码及 OneDrive 缓存清理误报。
+
+安全 Python **967 passed / 5 skipped / 17 deselected / 1 xfailed**；前端 check/契约/renderer 构建通过。真实 CPU 英语/德语识别和中英 TTS 数组生成通过，未播放；真实隐藏 Electron 下载按钮（缓存归档、真实 IPC）、双语模型选择通过，2617 次监测无显示/聚焦违规。验证使用隔离配置与模型，用户配置和安装版不替换。
+
+报告：docs/MARKETPLACE_EXPANSION_2026-10-04.md；基线 8d74ae448c1295687e265dbd2e1f78f513c93313；最终本地提交与 clean 状态见 D:/OneDrive/app_dve/marketplace-expansion-20261004-213622/DELIVERY.json。不推送、不打包。Qwen3-ASR 1.7B / VibeVoice-ASR / TranslateGemma 4B 因适配或授权问题 BLOCKED，未上架。大陆源本机可访问不代表中国大陆所有网络可用；GPU/NPU、实时采集、TTS听感、新模型完整文件→SRT及安装升级 NOT_RUN。
+
+## 历史：静默真实验收返修完成（2026-10-04）
 
 用户确认修复“C 文件处理完成后切回 A，录音开关仍禁用”。基线 3d8bbbb2bc6dab83b063a1b71b2ebb6aaa77107a；仅修改 Electron 渲染侧：set_mode 成功后刷新权威会话状态，跳过 renderer-only D/OCR，并拒绝跨模式的迟到响应。新增 7 个生产 index/store/workspace MiniDOM 场景，接入默认 check。
 

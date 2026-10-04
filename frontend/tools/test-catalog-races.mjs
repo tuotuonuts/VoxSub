@@ -15,6 +15,7 @@ process.on("unhandledRejection", (reason) => pendingUnhandled.push(reason));
 const catalog = await importShared("tools/test-catalog-entry.ts", { bundle: true });
 const modelRequests = [];
 const cacheRequests = [];
+const installRequests = [];
 const eventListeners = new Set();
 
 window.voxsub = {
@@ -30,6 +31,10 @@ window.voxsub = {
       }
       if (command === catalog.CMD.ocrCacheDir) {
         return new Promise((resolve, reject) => cacheRequests.push({ args, resolve, reject }));
+      }
+      if (command === catalog.CMD.installModel) {
+        installRequests.push(args);
+        return Promise.resolve({ ok: false, error: "simulated download refusal" });
       }
       if (command === catalog.CMD.state) {
         return Promise.resolve({ ok: true, data: { running: false, paused: false, mode: "a" } });
@@ -294,6 +299,30 @@ check("successful empty response clears old models rather than retaining stale e
   !isModel(samePageHandle, "Latest model") &&
     samePageHandle.element.querySelector(".catalog__count")?.textContent === "0 项" &&
     storeRoots().modelsRoot === "C:/empty-catalog");
+
+// A real catalog download button must carry the selected region to IPC.
+document.documentElement.dataset["modelsRoot"] = "C:/dual-source";
+const sourceRefresh = catalog.loadModels();
+await settle();
+resolveModels(modelRequests.at(-1), "C:/dual-source", [
+  { ...fixtureModel("asr-moonshine-tiny-en-v2", "asr", "Moonshine"), installed: false },
+]);
+await settle();
+resolveCache(cacheRequests.at(-1), "C:/dual-source-cache");
+await sourceRefresh;
+const sourceSelect = samePageHandle.element.querySelector("[data-download-source]");
+check("catalog offers auto overseas and mainland sources", sourceSelect &&
+  [...sourceSelect.querySelectorAll("option")].map(o => o.value).join(",") === "auto,global,china");
+for (const source of ["china", "global", "auto"]) {
+  sourceSelect.value = source;
+  sourceSelect.dispatchEvent(new Event("change"));
+  const download = [...samePageHandle.element.querySelectorAll("button")].find(b => b.textContent === "下载");
+  download.click();
+  await settle();
+  const args = installRequests.at(-1);
+  check(`download button forwards ${source} preference`, args?.source === source &&
+    args?.model_id === "asr-moonshine-tiny-en-v2" && args?.models_root === "C:/dual-source", JSON.stringify(args));
+}
 
 samePageHandle.dispose();
 samePageLayer.remove();

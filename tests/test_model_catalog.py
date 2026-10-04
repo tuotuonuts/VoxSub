@@ -48,6 +48,7 @@ def test_catalog_is_quality_sorted_and_has_no_old_qwen_translation() -> None:
 def test_tts_catalog_has_selectable_zh_en_and_bilingual_models(tmp_path: Path) -> None:
     voices = models_for_task("tts")
     assert {model.id for model in voices} == {
+        "tts-kokoro-v1.1-int8-zh-en",
         "tts-melo-zh-en",
         "tts-icefall-zh-aishell3",
         "tts-icefall-en-ljspeech-low",

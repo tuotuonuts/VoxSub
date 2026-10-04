@@ -92,10 +92,13 @@ _GGUF_1_8B_VERIFIED = NpuCompatibility(
 # Hardware-probe results are promoted from pending only after both the explicit
 # NPU probe and VoxSub's automatic application route pass for the exact file.
 NPU_COMPATIBILITY: dict[str, NpuCompatibility] = {
+    "asr-moonshine-tiny-en-v2": _ASR_UNSUPPORTED,
+    "asr-parakeet-tdt-0.6b-v3-int8": _ASR_UNSUPPORTED,
     "asr-funasr-nano-2512-int8": _ASR_UNSUPPORTED,
     "asr-qwen3-0.6b-int8": _ASR_UNSUPPORTED,
     "asr-sensevoice-small-int8": _ASR_UNSUPPORTED,
     "asr-zipformer-bilingual-fast": _ASR_UNSUPPORTED,
+    "tts-kokoro-v1.1-int8-zh-en": _TTS_UNSUPPORTED,
     "tts-melo-zh-en": _TTS_UNSUPPORTED,
     "tts-icefall-zh-aishell3": _TTS_UNSUPPORTED,
     "tts-icefall-en-ljspeech-low": _TTS_UNSUPPORTED,

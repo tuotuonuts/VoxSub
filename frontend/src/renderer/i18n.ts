@@ -10,6 +10,10 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "下载源": "Download source",
+  "自动（失败切换备用源）": "Auto (fallback on failure)",
+  "海外优先": "Overseas first",
+  "中国大陆优先": "Mainland China first",
   "时间不完整或无效：无法确定绝对时刻": "Incomplete or invalid time: absolute instant unknown",
   "本地时间（含时区）· 按接收顺序显示，迟到记录不重排": "Local time (with zone) · Receive order; late entries are not reordered",
   "仅「智能上下文」档可用": "Only available in the Smart context profile",

@@ -22,6 +22,7 @@ const TASK_LABEL: Record<string, string> = {
 };
 
 let models: ModelEntry[] = [];
+let downloadSource: "auto" | "global" | "china" = "auto";
 let filter: TaskFilter = "all";
 let gridEl: HTMLElement | null = null;
 let countEl: HTMLElement | null = null;
@@ -256,6 +257,7 @@ async function installModel(model: ModelEntry): Promise<void> {
   const { outcome, data } = await callWithOutcome<unknown>(CMD.installModel, {
     model_id: model.id,
     models_root: modelsRoot || null,
+    source: downloadSource,
   });
 
   if (isTaskRunning(outcome)) {
@@ -316,7 +318,19 @@ export function buildModelCatalog(): PageHandle {
   diskEl = h("span", { class: "catalog__disk", text: "" });
   const refresh = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新") });
   on(refresh, "click", () => void loadModels(pageId).then(() => updateDiskUsage(pageId)));
-  bar.append(countEl, diskEl, h("span", { class: "catalog__spacer" }));
+  const sourceLabel = h("label", { text: tr("下载源") });
+  const source = h("select", { class: "input", "aria-label": tr("下载源"), "data-download-source": "" });
+  for (const [value, label] of [["auto", "自动（失败切换备用源）"], ["global", "海外优先"], ["china", "中国大陆优先"]] as const) {
+    source.append(h("option", { value, text: tr(label) }));
+  }
+  source.value = downloadSource;
+  on(source, "change", () => {
+    if (source.value === "auto" || source.value === "global" || source.value === "china") {
+      downloadSource = source.value;
+    }
+  });
+  sourceLabel.append(source);
+  bar.append(countEl, diskEl, h("span", { class: "catalog__spacer" }), sourceLabel, refresh);
   page.append(bar);
 
   filterBarEl = renderFilterBar();
