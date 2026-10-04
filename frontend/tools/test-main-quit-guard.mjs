@@ -13,7 +13,7 @@ let quitCalls = 0;
 let disposals = 0;
 const messages = [];
 class FakeWindow {
-  constructor() { this.events = new Map(); this.webContents = { isDestroyed: () => false, send: (...args) => messages.push(args) }; windows.push(this); }
+  constructor() { this.events = new Map(); this.webContents = { on() {}, isDestroyed: () => false, send: (...args) => messages.push(args) }; windows.push(this); }
   isDestroyed() { return false; }
   loadFile() { return Promise.resolve(); }
   on(name, fn) { this.events.set(name, fn); }
@@ -41,7 +41,7 @@ const context = vm.createContext({
     if (name === 'electron') return electron;
     if (name === 'node:path') return path;
     if (name === 'node:fs') return new Proxy({}, { get() { throw Error('Real filesystem access forbidden'); } });
-    if (name === './backend' || name === './capture') return {};
+    if (name === './backend' || name === './capture' || name === './shortcuts') return {};
     throw Error(`Unexpected import: ${name}`);
   },
   fakeBridge: { dispose: () => { disposals++; } },

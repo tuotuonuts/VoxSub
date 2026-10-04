@@ -13,6 +13,15 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 }
 
 const api = {
+  shortcuts: {
+    get: () => ipcRenderer.invoke("shortcuts:get"),
+    check: (bindings: unknown) => ipcRenderer.invoke("shortcuts:check", bindings),
+    save: (bindings: unknown) => ipcRenderer.invoke("shortcuts:save", bindings),
+    beginCapture: (token: string) => ipcRenderer.invoke("shortcuts:capture-start", token),
+    endCapture: (token: string) => ipcRenderer.invoke("shortcuts:capture-end", token),
+    onChanged: (handler: (snapshot: unknown) => void) => subscribe("shortcuts:changed", handler),
+    onNotice: (handler: (key: string) => void) => subscribe("shortcuts:notice", handler),
+  },
   backend: {
     start: () => ipcRenderer.invoke("backend:start"),
     stop: () => ipcRenderer.invoke("backend:stop"),

@@ -33,7 +33,7 @@ function harness() {
   const handlers = new Map(), appEvents = new Map(), children = [], renderers = [];
   let currentRenderer, quitCalls = 0;
   const checkpoints = [];
-  const sender = { isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) };
+  const sender = { on() {}, isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) };
   const electron = {
     app: { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}),
       on: (n, f) => appEvents.set(n, f), quit: () => quitCalls++, getAppPath: () => ROOT },

@@ -22,6 +22,7 @@
 | `controls.ts` | `buildRadioGroup` | 单选项互斥、aria-checked、可选说明徽标；徽标不自动禁用选项 |
 | `controls.ts` | `buildToggleSwitch` | label + checkbox + track + label；支持页面生命周期管理监听 |
 | `tab-nav.ts` | `buildTabNav` | 设置式分页导航，独立激活状态与 aria-selected；页面管理面板生命周期 |
+| `shortcut-field.ts` | `buildShortcutField` | 可编辑/可录入的组合键字段；挂起/恢复注册接口由页面注入，组件不直接发 IPC，支持取消/异步失效/清空和状态说明 |
 | `field.ts` | `buildField` | 标签、控件、说明和禁用原因 |
 | `path-picker.ts` | `buildPathPicker` | 路径字段；选择取消不提交，按钮复用公共组件 |
 | `progress.ts` | `buildProgressBar` | 进度展示 |

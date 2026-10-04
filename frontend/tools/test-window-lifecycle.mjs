@@ -10,7 +10,7 @@ function makeRuntime({headless=false}={}) {
   let ready;
   class Window {
     constructor(){ this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
-      this.webContents={isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
+      this.webContents={on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
     assertLive(){if(this.dead)throw new TypeError('Object has been destroyed');}
     call(name,...args){if(this.raceMethod===name)this.dead=true;this.assertLive();if(this.errorMethod===name)throw this.methodError;this.calls.push([name,...args]);}
     isDestroyed(){return this.dead;} // Electron's safe liveness probe.
@@ -41,7 +41,7 @@ function makeRuntime({headless=false}={}) {
     destroy(){}
   }
   const electron={BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},
-    app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){}},
+    app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){},getPath:()=>"fixture:/userData"},
     screen:{getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
     ipcMain:{handle:(n,f)=>handlers.set(n,f),on:()=>{}}};
   const cache=new Map();let context;
@@ -68,7 +68,7 @@ function makeRuntime({headless=false}={}) {
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
     if(name==='electron')return electron;if(name==='./capture')return {};if(name==='node:path')return path;if(name==='node:fs')return {};
-    if(name==='./backend')return load('src/main/backend.ts');throw Error(name);
+    if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');throw Error(name);
   };
   vm.runInContext(code,context);
   return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};

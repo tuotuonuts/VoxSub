@@ -11,6 +11,7 @@ import {
   app,
   BrowserWindow,
   dialog,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -22,6 +23,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { BackendBridge, type BackendEvent } from "./backend";
+import { createShortcutService } from "./shortcuts";
+let shortcuts: ReturnType<typeof createShortcutService> | null = null;
 import { captureRegion, createOverlayForArea, pickScreenArea, type SelectionArea } from "./capture";
 
 const RENDERER_DIR = path.join(__dirname, "..", "renderer");
@@ -158,6 +161,7 @@ function requestQuit(): boolean {
     return false;
   }
   quitting = true;
+  shortcuts?.dispose();
   stopLiveOcr();
   bridge?.dispose();
   app.quit();
@@ -251,7 +255,12 @@ function createMainWindow(): BrowserWindow {
     win.webContents.openDevTools({ mode: "detach" });
   }
 
-  win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
+  win.on("closed", () => { if (mainWindow === win) { shortcuts?.endCapture(); mainWindow = null; } });
+  const endShortcutCapture = (): void => { if (mainWindow === win) shortcuts?.endCapture(); };
+  win.on("blur", endShortcutCapture);
+  win.on("minimize", endShortcutCapture);
+  win.webContents.on("did-start-loading", endShortcutCapture);
+  win.webContents.on("destroyed", endShortcutCapture);
 
   // 有后台长任务时拦一次关闭，避免把模型库留在半路
   win.on("close", (event) => {
@@ -412,6 +421,14 @@ async function runLiveOcrTick(): Promise<void> {
 /* ------------------------------------------------------------------ IPC */
 
 function registerIpc(): void {
+  /* ---- 全局快捷键：仅主窗可配置，不暴露任意主进程操作 ---- */
+  const owned = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === mainWindow?.webContents && !quitting;
+  ipcMain.handle("shortcuts:get", event => owned(event) ? shortcuts?.snapshot ?? null : null);
+  ipcMain.handle("shortcuts:check", (event, bindings: unknown) => owned(event) ? shortcuts?.check(bindings) ?? null : null);
+  ipcMain.handle("shortcuts:save", (event, bindings: unknown) => owned(event) ? shortcuts?.check(bindings, true) ?? null : null);
+  ipcMain.handle("shortcuts:capture-start", (event, token: unknown) => owned(event) && typeof token === "string" && token.length <= 80 && token.length > 0 ? shortcuts?.beginCapture(token) ?? false : false);
+  ipcMain.handle("shortcuts:capture-end", (event, token: unknown) => { if (owned(event) && typeof token === "string") shortcuts?.endCapture(token); });
+
   /* ---- 后端 ---- */
   ipcMain.handle("backend:start", (event) => {
     if (!bridge) return { ok: false, error: "后端未初始化" };
@@ -734,6 +751,37 @@ void app.whenReady().then(() => {
         : `[tray] 未创建：读不到图标 ${APP_ICON}`,
     );
   }
+  shortcuts = createShortcutService(app.getPath("userData"), {
+    command: async (name, args) => {
+      const started = Date.now();
+      const result = bridge ? await guardedBackendCommand(bridge, name, args) : { ok: false, unavailable: true, delivery: "not_sent" as const };
+      if (name !== "state" && name !== "job_list") sendToWindow(mainWindow, "backend:event", {
+        type: "log", ts: new Date().toISOString(), level: result.ok ? "INFO" : "WARNING",
+        message: `[global-shortcut] command=${name} receipt=${result.ok ? "accepted" : result.delivery ?? "unconfirmed"} durationMs=${Date.now() - started}`,
+      });
+      return result;
+    },
+    allowed: () => !quitting && !busyReason() && !!bridge?.isRunning(),
+    local: action => {
+      if (action === "toggle_overlay") { if (!HEADLESS) toggleOverlay(); }
+      else if (action === "toggle_click_through") applyOverlayClickThrough(!overlayClickThrough);
+      else if (action === "toggle_window" && !HEADLESS && !quitting) {
+        if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow();
+        useWindow(mainWindow, "shortcut:window", win => {
+          if (win.isVisible() && !win.isMinimized()) win.hide();
+          else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+        });
+      }
+    },
+    notice: key => {
+      sendToWindow(mainWindow, "shortcuts:notice", key);
+      sendToWindow(mainWindow, "backend:event", { type: "log", ts: new Date().toISOString(), level: "INFO", message: "[global-shortcut] " + key });
+    },
+    state: data => {
+      sendToWindow(mainWindow, "backend:event", { ...data, type: "state" });
+      sendToWindow(overlayWindow, "backend:event", { ...data, type: "state" });
+    },
+  }, () => sendToWindow(mainWindow, "shortcuts:changed", shortcuts?.snapshot), globalShortcut);
   registerIpc();
 
   app.on("activate", () => {
@@ -753,6 +801,7 @@ app.on("before-quit", (event) => {
     return;
   }
   quitting = true;
+  shortcuts?.dispose();
   stopLiveOcr();
   bridge?.dispose();
   tray?.destroy();

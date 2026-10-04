@@ -1550,3 +1550,6 @@ body::before {
 /* Diagnostic controls wrap inside the embedded settings pane, including narrow layouts. */
 .diagnostic-actions { flex-wrap: wrap; }
 .diagnostic-actions .input { flex: 1 1 12rem; min-width: 0; max-width: 22rem; }
+
+/* Shared shortcut-field layout: retain standard input/button tokens. */
+.shortcut-field__control .input { flex: 1; min-width: 10rem; width: auto; }

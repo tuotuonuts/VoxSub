@@ -173,3 +173,11 @@ tests/      Pytest test suite
 scripts/    Build and utility scripts
 models/     Runtime model cache; excluded by .gitignore
 ```
+
+## Global shortcuts (source candidate)
+
+Customize them in **Settings → Shortcuts**. Every binding is empty by default, so no key combination is claimed. Capture a combination or type one such as `Ctrl+Alt+T`, then select **Save shortcuts**. Clear a binding and save to disable it.
+
+Actions: show/hide the main window, start/end the current session, pause/resume, end the session, toggle save recording, show/hide the subtitle overlay, and toggle overlay click-through. Registered shortcuts continue to work while the running app is minimized or hidden in the tray; they stop when the app fully exits. Session actions use the current mode, source and models. They do not pick a file or operate OCR, and toggling recording respects session capabilities without starting audio capture on its own.
+
+Validation checks app duplicates, known reserved combinations and OS registration failures. Conflicts or failed saves preserve the old settings and registrations. Other apps' window-local shortcuts cannot be reliably detected; avoid common editing combinations. Global shortcuts are suspended during capture and restored on cancellation, loss of focus, minimization or page closure. Restoration failures are shown as inactive. On restart, bindings are registered again and conflicts are reported without silently assigning replacements.

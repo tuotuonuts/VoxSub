@@ -1,3 +1,4 @@
+import type { ShortcutBindings, ShortcutResult, ShortcutSnapshot } from "../shared/shortcuts";
 /**
  * 渲染进程可见的 API 类型声明（与 src/main/preload.ts 的 contextBridge 对应）。
  * 只声明实际暴露的方法，避免在渲染层误用 Node 能力。
@@ -46,6 +47,15 @@ export interface SelectionAreaShape {
 }
 
 export interface VoxSubApi {
+  shortcuts: {
+    get(): Promise<ShortcutSnapshot | null>;
+    check(bindings: ShortcutBindings): Promise<ShortcutResult | null>;
+    save(bindings: ShortcutBindings): Promise<ShortcutResult | null>;
+    beginCapture(token: string): Promise<boolean>;
+    endCapture(token: string): Promise<void>;
+    onChanged(handler: (snapshot: ShortcutSnapshot) => void): () => void;
+    onNotice(handler: (key: string) => void): () => void;
+  };
   backend: {
     start(): Promise<CommandResult>;
     stop(): Promise<CommandResult>;

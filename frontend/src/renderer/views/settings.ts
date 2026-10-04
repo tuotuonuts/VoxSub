@@ -1,3 +1,4 @@
+import { buildShortcutSettings } from "./shortcuts";
 import { buildTabNav } from "../ui/tab-nav";
 import { buildButton } from "../ui/button";
 import { DeveloperGesture, developerEnabled, setDeveloperEnabled } from "../../shared/diagnostic-controls";
@@ -971,6 +972,7 @@ export function buildSettings(): PageHandle {
   const lifecycle = new PageLifecycle();
   settingsLifecycle = lifecycle;
 
+  let shortcutPage: PageHandle | null = null;
   const tabs: ReadonlyArray<readonly [string, () => HTMLElement]> = [
     [tr("翻译"), translationTab],
     [tr("语音"), voiceTab],
@@ -978,6 +980,7 @@ export function buildSettings(): PageHandle {
     [tr("识别调优"), tuningTab],
     [tr("存储与模型"), storageTab],
     [tr("外观"), appearanceTab],
+    [tr("快捷键"), () => { shortcutPage = buildShortcutSettings(); return shortcutPage.element; }],
     [tr("关于"), aboutTab],
   ];
 
@@ -985,6 +988,7 @@ export function buildSettings(): PageHandle {
 
   let current = 0;
   const renderPane = (): void => {
+    shortcutPage?.dispose(); shortcutPage = null;
     panes.replaceChildren(tabs[current]![1]());
   };
 
@@ -997,7 +1001,7 @@ export function buildSettings(): PageHandle {
   renderPane();
 
   // 页面失效后（已被关闭/替换）不再重绘：在途的配置/设备请求回来时页面可能早就没了。
-  const refreshPane = lifecycle.guard(() => renderPane());
+  const refreshPane = lifecycle.guard(() => { if (!shortcutPage) renderPane(); });
 
   // 配置与设备列表可能在 boot 之后才到齐，这里补一次刷新。
   // 只在配置**尚未就绪**时重绘：已就绪还重绘会把用户正在输入的内容清掉。
@@ -1027,6 +1031,7 @@ export function buildSettings(): PageHandle {
   return {
     element: shell,
     dispose: () => {
+      shortcutPage?.dispose(); shortcutPage = null;
       lifecycle.dispose();
       if (settingsLifecycle === lifecycle) settingsLifecycle = null;
     },

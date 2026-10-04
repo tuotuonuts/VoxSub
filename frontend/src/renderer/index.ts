@@ -394,6 +394,8 @@ function boot(): void {
     closePage();
   });
 
+  window.voxsub?.shortcuts?.onNotice(key => { store.patch({ statusText: tr(key) }); });
+
   // 主进程可请求打开设置（例如从托盘）
   window.voxsub?.app.onOpenPage?.((page) => openPage(page as PageName));
 
