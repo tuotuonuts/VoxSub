@@ -20,6 +20,7 @@ export const CMD = {
   // 模式与语言
   setMode: "set_mode",
   setLangs: "set_langs",
+  languageCapabilities: "language_capabilities",
   setInputFile: "set_input_file",
 
   // 音频

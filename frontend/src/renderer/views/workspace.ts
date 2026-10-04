@@ -70,7 +70,8 @@ function syncControls(): void {
   if (ctaEl) {
     ctaEl.textContent = s.running ? tr("结束") : tr("开始");
     // D 模式没有会话概念（走 OCR 工作区），主按钮禁用
-    ctaEl.disabled = s.mode === "d";
+    ctaEl.disabled = s.mode === "d" || (!s.running && (s.languagePending || !s.languageCompatible));
+    ctaEl.title = !s.running && !s.languageCompatible ? s.languageNotice : "";
   }
 
   // 暂停按钮：只在运行中且模式支持时出现
@@ -281,6 +282,7 @@ async function toggleSession(): Promise<void> {
     await finishSession();
     return;
   }
+  if (store.get().languagePending || !store.get().languageCompatible) return;
   // 立即用命令返回值更新界面，不等 state 事件（事件是异步的另一条路）
   await requestSessionState(CMD.start);
 }

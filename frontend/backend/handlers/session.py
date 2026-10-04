@@ -57,8 +57,8 @@ class SessionHandlers:
         pipeline.set_mode(str(args.get("mode", "a")))
 
     def _cmd_set_langs(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_langs(str(args.get("source", "auto")),
-                           str(args.get("target", "zh")))
+        pipeline.apply_language_pair(str(args.get("source", "auto")),
+                                     str(args.get("target", "zh")))
 
     def _cmd_set_input_file(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_input_file(str(args.get("path", "")))
@@ -133,8 +133,11 @@ class SessionHandlers:
                                      str(args.get("title", "") or ""))
 
     def _cmd_set_stt(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_stt(str(args.get("provider", "local")),
-                         args.get("config") or {})
+        from voxsub.config_store import ConfigStore
+
+        config = {**dict(ConfigStore().load()), **(args.get("config") or {})}
+        if pipeline.set_stt(str(args.get("provider", "local")), config) is False:
+            raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
 
     def _cmd_set_translator(self, pipeline: Any, args: dict[str, Any]) -> None:
         """切换翻译档位/模型。
@@ -168,10 +171,16 @@ class SessionHandlers:
             kind = kind_for_tier(str(tier), config)
         else:
             kind = str(args.get("kind", "opus-fast"))
-        pipeline.set_translator(kind, config)
+        if pipeline.set_translator(kind, config) is False:
+            raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
 
     def _cmd_set_asr_model(self, pipeline: Any, args: dict[str, Any]) -> None:
-        pipeline.set_asr_model(str(args.get("model_id", "")))
+        from voxsub.config_store import ConfigStore
+
+        model_id = str(args.get("model_id", ""))
+        if pipeline.set_asr_model(model_id) is False:
+            raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
+        ConfigStore().update({"asr_model_id": model_id})
 
     def _cmd_set_asr_tuning(self, pipeline: Any, args: dict[str, Any]) -> None:
         pipeline.set_asr_tuning(args.get("tuning") or {})
@@ -215,6 +224,16 @@ class SessionHandlers:
         pipeline.set_recording(bool(args.get("enabled", False)),
                                args.get("directory"))
         return pipeline.recording_state
+
+    def _cmd_language_capabilities(self, args: dict[str, Any]) -> dict[str, Any]:
+        from voxsub.config_store import ConfigStore
+        from voxsub.language_capabilities import language_capabilities
+
+        mode = str(args.get("mode") or "a")
+        pipeline = getattr(self, "_pipeline", None)
+        if pipeline is not None and mode != "d":
+            return pipeline.language_capabilities
+        return language_capabilities(dict(ConfigStore().load()), mode=mode)
 
     def _cmd_translate_tiers(self, args: dict[str, Any]) -> dict[str, Any]:
         """各翻译档位支持的语言对（供界面提示，只读配置不加载模型）。

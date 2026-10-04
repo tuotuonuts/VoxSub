@@ -12,9 +12,9 @@
  */
 import { palette, type ThemeName } from "./palette";
 import { h, on } from "./dom";
-import { applySessionState, call, callWithOutcome, connectBackend, refreshSessionState, setUiTranslator, store } from "./store";
+import { applySessionState, callWithOutcome, connectBackend, refreshSessionState, setUiTranslator, store } from "./store";
 import { CMD } from "./protocol";
-import { persistLanguagePair } from "./language-selection";
+import { buildLanguageControls, initializeLanguageCapabilities, refreshLanguageCapabilities } from "./language-capabilities";
 import { tr } from "./i18n";
 import { buildWorkspace, updateProgress, updateStatus, updateStream } from "./views/workspace";
 import { buildModelCatalog, refreshDownloads } from "./views/catalog";
@@ -33,21 +33,6 @@ const MODES: ReadonlyArray<readonly [Mode, string, string, string]> = [
   ["b", "B", tr("系统声音"), tr("会议 / 网课 / 视频")],
   ["c", "C", tr("音视频文件"), tr("导入并导出 SRT")],
   ["d", "D", tr("屏幕 OCR"), tr("框选后原位覆盖译文")],
-];
-
-const SOURCE_LANGS: ReadonlyArray<readonly [string, string]> = [
-  ["auto", tr("自动识别")],
-  ["zh", tr("中文")],
-  ["en", tr("英文")],
-  ["ja", tr("日文")],
-  ["ko", tr("韩文")],
-];
-
-const TARGET_LANGS: ReadonlyArray<readonly [string, string]> = [
-  ["zh", tr("中文")],
-  ["en", tr("英文")],
-  ["ja", tr("日文")],
-  ["ko", tr("韩文")],
 ];
 
 let workspaceSlot: HTMLElement | null = null;
@@ -190,47 +175,7 @@ function buildModeIndex(): HTMLElement {
     nav.append(card);
   }
 
-  // 语言选择（识别语言 + 翻译为，与原 Qt 版一致的双下拉）
-  const langBox = h("div", { class: "lang-box" });
-  const state = store.get();
-
-  const srcSel = h("select", { class: "select select--sm", "aria-label": tr("识别语言") });
-  for (const [val, label] of SOURCE_LANGS) {
-    const opt = h("option", { value: val, text: label });
-    if (val === state.sourceLang) opt.selected = true;
-    srcSel.append(opt);
-  }
-  // 语言对要**写进配置**：否则重启后回退到配置里存的那一对，用户改的语言
-  // 白改了（配置键 lang_pair 一直存在，但此前没有任何地方写它）。
-  const saveLangPair = (source: string, target: string): void => {
-    void persistLanguagePair(source, target, (command, args) => call(command as typeof CMD.setLangs, args), (message) => {
-      console.error("语言选择更新失败", message);
-    });
-  };
-
-  on(srcSel, "change", () => {
-    store.patch({ sourceLang: srcSel.value });
-    const target = store.get().targetLang;
-    void saveLangPair(srcSel.value, target);
-  });
-
-  const dstSel = h("select", { class: "select select--sm", "aria-label": tr("翻译为") });
-  for (const [val, label] of TARGET_LANGS) {
-    const opt = h("option", { value: val, text: label });
-    if (val === state.targetLang) opt.selected = true;
-    dstSel.append(opt);
-  }
-  on(dstSel, "change", () => {
-    store.patch({ targetLang: dstSel.value });
-    const source = store.get().sourceLang;
-    void saveLangPair(source, dstSel.value);
-  });
-
-  langBox.append(
-    h("span", { class: "lang-box__label", text: tr("识别语言") }), srcSel,
-    h("span", { class: "lang-box__label", text: tr("翻译为") }), dstSel,
-  );
-  nav.append(langBox);
+  nav.append(buildLanguageControls());
 
   // 二级页面入口
   const navBox = h("div", { class: "side-actions" });
@@ -359,12 +304,13 @@ function boot(): void {
   // 先把后端拉起来再接界面：模型目录、设备列表都在挂载时就要取数据，
   // 晚一步启动会让首屏所有请求落空（见 store.ts 的"后端就绪门"）。
   connectBackend();
+  initializeLanguageCapabilities();
   render();
 
   // 预取配置：设置页的控件（模型目录、模型下拉、调优默认值）全都依赖它。
   // 这里异步拉取、不阻塞首屏；buildSettings 打开时若已就绪就直接用上，
   // 未就绪则由它自己的刷新补上。
-  void loadConfig();
+  void loadConfig().then(() => refreshLanguageCapabilities(), () => refreshLanguageCapabilities());
 
   // 首次启动：检测旧版数据风险，需要时弹出迁移向导。
   // 放在 render 之后异步执行 —— 检测要读注册表与遍历目录，不能阻塞首屏。

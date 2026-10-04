@@ -210,10 +210,12 @@ async function selectModel(model: ModelEntry): Promise<void> {
     : null;
 
   if (command === CMD.setAsrModel) {
-    await call(CMD.setAsrModel, { model_id: model.id });
+    const result = await callWithOutcome(CMD.setAsrModel, { model_id: model.id });
+    if (result.outcome !== "ok") return;
   } else if (model.task === "translate") {
-    await call(CMD.setConfig, { updates: { translate_model_id: model.id } });
-    await call(CMD.setTranslator, { kind: "qwen-quality", config: {} });
+    const tier = model.runtime === "opus-onnx" ? "fast" : "quality";
+    const result = await callWithOutcome(CMD.setConfig, { updates: { translate_model_id: model.id, translate_tier: tier } });
+    if (result.outcome !== "ok") return;
   } else if (model.task === "tts") {
     const updates: Record<string, string> = {};
     if (model.languages.includes("中") || model.languages.toLowerCase().includes("zh")) {

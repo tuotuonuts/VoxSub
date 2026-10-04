@@ -728,9 +728,9 @@ class Pipeline:
             self._mode = mode
 
     @_state_locked
-    def set_langs(self, src: str, dst: str) -> None:
+    def set_langs(self, src: str, dst: str) -> bool:
         if self._closed or self._start_in_progress:
-            return
+            return False
         normalized = (normalize_language(src, strict=True),
                       normalize_language(dst, strict=True))
         # 语言对的写入与代次递增必须与 :meth:`_lang_snapshot` 互斥，否则取快照
@@ -746,6 +746,16 @@ class Pipeline:
             self._seg = None
             self._context_processor = None
         logger.info("语言约束更新: source=%s target=%s", self._src_lang, self._dst_lang)
+        return True
+
+    @_state_locked
+    def apply_language_pair(self, source: str, target: str) -> None:
+        """IPC capability validation and language mutation share one owner lock."""
+        from voxsub.language_capabilities import validate_pair
+
+        validate_pair(self.language_capabilities, source, target)
+        if not self.set_langs(source, target):
+            raise RuntimeError("启动中或已关闭，无法修改语言设置")
 
     def set_input_file(self, path: str | Path) -> None:
         self._in_path = Path(path)
@@ -842,17 +852,17 @@ class Pipeline:
         self._capture_window_title = str(window_title or "")
 
     @_state_locked
-    def set_stt(self, provider: str = "local", config=None) -> None:
+    def set_stt(self, provider: str = "local", config=None) -> bool:
         """Select the speech-to-text side independently from translation."""
         if not self._may_replace_resources():
-            return
+            return False
         normalized = "cloud" if str(provider or "").lower() == "cloud" else "local"
         snapshot = dict(config) if isinstance(config, dict) else config
         changed = normalized != self._requested_stt_provider or snapshot != self._stt_config
         self._requested_stt_provider = normalized
         self._stt_config = snapshot
         if not changed:
-            return
+            return True
         if self._cloud_stt is not None:
             try:
                 self._cloud_stt.close()
@@ -865,19 +875,20 @@ class Pipeline:
         self._context_processor = None
         self._is_cloud_stt = False
         self._is_generative = False
+        return True
 
-    def set_translator(self, kind: str, config=None) -> None:
+    def set_translator(self, kind: str, config=None) -> bool:
         """选择翻译档位；下一次 start 前立即替换旧实例。"""
         with self._state_lock:
-            self._set_translator_locked(kind, config)
+            return self._set_translator_locked(kind, config)
 
-    def _set_translator_locked(self, kind: str, config=None) -> None:
+    def _set_translator_locked(self, kind: str, config=None) -> bool:
         """Atomically gate and update the translator owner."""
         if not self._may_replace_resources():
             # 运行中或还在收尾：不替换。原来的行为是静默 return（改动留到下次
             # start 生效），这里保持同一语义 —— 只是把"还在收尾"也纳入判断。
             # 旧实现在 stop 超时后会误判为空闲，把 worker 正在用的实例关掉。
-            return
+            return False
         normalized = kind if kind in ("opus-fast", "qwen-quality", "cloud") else "opus-fast"
         changed = normalized != self._requested_trans_kind or config != self._translator_config
         self._requested_trans_kind = normalized
@@ -892,17 +903,18 @@ class Pipeline:
                 logger.debug("关闭旧翻译器失败", exc_info=True)
             self._translator = None
             self._trans_kind = None
+        return True
 
     @_state_locked
-    def set_asr_model(self, model_id: str) -> None:
+    def set_asr_model(self, model_id: str) -> bool:
         """Select a catalog ASR model for the next run."""
         if not self._may_replace_resources():
             # 同 set_translator：连同"还在收尾"一起判断，避免把 worker 正在用的
             # 识别器置空后又被下一次读引用。
-            return
+            return False
         normalized = str(model_id or "asr-zipformer-bilingual-fast")
         if normalized == self._requested_asr_model_id:
-            return
+            return True
         self._requested_asr_model_id = normalized
         # 换识别模型 = 换"原文怎么来的"：下游翻译结果不可跨代复用。
         self._bump_config_generation("set_asr_model")
@@ -911,6 +923,22 @@ class Pipeline:
         self._vad = None
         self._seg = None
         self._context_processor = None
+        return True
+
+    @_state_locked
+    def apply_language_model_config(self, config: dict, updates: dict) -> None:
+        """Apply saved model selection atomically, before acknowledging persistence."""
+        from voxsub.translate.factory import kind_for_tier
+
+        if not self._may_replace_resources():
+            raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
+        if "asr_model_id" in updates:
+            self.set_asr_model(str(config["asr_model_id"]))
+        if any(key.startswith("stt_") for key in updates):
+            self.set_stt(str(config.get("stt_provider") or "local"), config)
+        if any(key.startswith("translate_") for key in updates):
+            kind = kind_for_tier(str(config.get("translate_tier") or "fast"), config)
+            self.set_translator(kind, config)
 
     @_state_locked
     def set_asr_tuning(self, tuning: dict | None = None) -> None:
@@ -1890,7 +1918,22 @@ class Pipeline:
         finally:
             self._finish_start()
 
+    @property
+    @_state_locked
+    def language_capabilities(self) -> dict:
+        """Capabilities of actual selected runtime owners, without loading models."""
+        from voxsub.language_capabilities import language_capabilities
+
+        config = dict(self._translator_config or {})
+        config.update(asr_model_id=self._requested_asr_model_id,
+                      stt_provider=self._requested_stt_provider)
+        return language_capabilities(config, mode=self._mode,
+                                     translation_kind=self._requested_trans_kind)
+
     def _prepare_start(self) -> bool:
+        from voxsub.language_capabilities import validate_pair
+
+        validate_pair(self.language_capabilities, self._src_lang, self._dst_lang)
         # 清理上次异常退出留下的旧音频块。
         self._drain_queue(self._queue)
         self._drain_queue(self._recognition_queue)

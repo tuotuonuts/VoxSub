@@ -346,7 +346,7 @@ function translationTab(): HTMLElement {
         "asr",
         String(config["asr_model_id"] ?? ""),
         (v) => {
-          void saveConfig({ asr_model_id: v }).then(() => call(CMD.setAsrModel, { model_id: v }));
+          void saveConfig({ asr_model_id: v });
         },
         tr("还没有下载本地识别模型。请到「模型」页下载后回到这里选择。"),
       ),
@@ -372,7 +372,6 @@ function translationTab(): HTMLElement {
         // 只发档位 id：档位→翻译器 kind 的映射由后端决定（此前前端也存了一份，
         // 与后端各写各的；质量档在特定配置下其实会落到 opus）。
         void saveConfig({ translate_tier: v }).then(() => {
-          void call(CMD.setTranslator, { tier: v, config: {} });
           window.dispatchEvent(new Event("voxsub:settings"));
         });
       },

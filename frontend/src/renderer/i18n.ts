@@ -10,6 +10,11 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "正在确认模型支持的语言…": "Confirming model language support…",
+  "语言设置未确认成功，请重新选择或刷新模型设置": "Language settings were not confirmed. Select again or refresh model settings.",
+  "原语言组合不受当前模型支持，已调整为 {source} → {target}": "The previous language pair is unsupported; adjusted to {source} → {target}",
+  "当前识别模型与翻译模型不兼容": "The selected recognition and translation models are incompatible",
+  "无法确认模型支持的语言，请检查后端连接": "Unable to confirm model language support. Check the backend connection.",
   "下载源": "Download source",
   "自动（失败切换备用源）": "Auto (fallback on failure)",
   "海外优先": "Overseas first",

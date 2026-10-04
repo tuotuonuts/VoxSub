@@ -452,7 +452,9 @@ def test_may_replace_resources_is_the_single_gate(stalled_pipeline, fast_deadlin
     worker.may_exit.set()
     assert worker.exited.wait(timeout=5.0)
     assert _wait_until(lambda: pipe.state is PipelineState.IDLE)
-    assert pipe._may_replace_resources() is True  # noqa: SLF001
+    # IDLE is published before the stop finalizer releases its ownership.
+    # Wait for the actual resource gate, not just the earlier state event.
+    assert _wait_until(pipe._may_replace_resources)  # noqa: SLF001
 
 
 # ------------------------------------------------------------- 超时后能自愈

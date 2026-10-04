@@ -51,6 +51,9 @@ export interface AppState {
   running: boolean;
   paused: boolean;
   mode: "a" | "b" | "c" | "d";
+  languagePending: boolean;
+  languageCompatible: boolean;
+  languageNotice: string;
   sourceLang: string;
   targetLang: string;
   statusText: string;
@@ -95,6 +98,9 @@ function initialState(): AppState {
     running: false,
     paused: false,
     mode: "a",
+    languagePending: false,
+    languageCompatible: true,
+    languageNotice: "",
     sourceLang: "auto",
     targetLang: "zh",
     statusText: "待机",
@@ -413,6 +419,16 @@ export interface CallOutcome<T> {
  * 返回，任务可能仍在进行。调用点若要区分（长任务），用这个函数；
  * 只关心数据的调用点用 `call()`（返回 data，超时同样是 null）。
  */
+let languageModelListener: ((stage: "begin" | "end") => void) | null = null;
+export function setLanguageModelListener(listener: typeof languageModelListener): void { languageModelListener = listener; }
+function changesLanguageModels(command: CommandName, args: unknown): boolean {
+  if ([CMD.setAsrModel, CMD.setStt, CMD.setTranslator].some(value => value === command)) return true;
+  if (command !== CMD.setConfig || !args || typeof args !== "object") return false;
+  const updates = (args as { updates?: Record<string, unknown> }).updates ?? {};
+  return ["asr_model_id", "translate_model_id", "translate_tier", "stt_provider", "stt_model", "translate_model"]
+    .some(key => key in updates);
+}
+
 export async function callWithOutcome<T = unknown>(
   command: CommandName,
   args: unknown = null,
@@ -438,7 +454,11 @@ export async function callWithOutcome<T = unknown>(
     return { outcome: "unavailable", data: null, delivery: "not_sent" };
   }
 
-  const result = (await api.backend.command(command, args)) as CommandResult<T>;
+  const modelChange = changesLanguageModels(command, args);
+  if (modelChange) languageModelListener?.("begin");
+  let result: CommandResult<T>;
+  try { result = (await api.backend.command(command, args)) as CommandResult<T>; }
+  finally { if (modelChange) languageModelListener?.("end"); }
   const outcome = classifyCommandResult(result as CommandResultLike);
   const delivery: CommandDelivery = result.delivery === "not_sent" ||
     result.delivery === "unknown" || result.delivery === "response"

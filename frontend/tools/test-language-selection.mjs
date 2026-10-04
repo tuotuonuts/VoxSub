@@ -30,4 +30,14 @@ assert.equal(failures.length, 1);
 assert.equal(failures[0].includes("fr-de"), true);
 assert.equal(calls.filter(([name]) => name === "set_config").length, 2);
 
+let current = false;
+const before = calls.length;
+await persistLanguagePair("en", "zh", call, () => {}, () => current);
+assert.equal(calls.length, before, "obsolete queued work must not send commands");
+current = true;
+await persistLanguagePair("en", "zh", async (name, args) => {
+  calls.push([name, args]); current = false; return { outcome: "ok", data: null };
+}, () => {}, () => current);
+assert.equal(calls.length, before + 1, "model change during set_langs must suppress stale config write");
+
 console.log("PASS language selection sequencing and failure semantics");

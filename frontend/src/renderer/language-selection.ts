@@ -14,12 +14,15 @@ export function persistLanguagePair(
   target: string,
   call: Call,
   report: (message: string) => void,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   const update = languageUpdateQueue.then(async () => {
+    if (!isCurrent()) return;
     const langsResult = await call("set_langs", { source, target });
     if (!commandSucceeded(langsResult)) {
       throw new Error("set_langs 未确认成功");
     }
+    if (!isCurrent()) return;
     const configResult = await call("set_config", { updates: { lang_pair: `${source}-${target}` } });
     if (!commandSucceeded(configResult)) {
       throw new Error("set_config 未确认成功");

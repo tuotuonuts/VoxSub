@@ -486,6 +486,11 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
         updates = args.get("updates") or {}
         store = ConfigStore()
+        if self._pipeline is not None and any(
+                key == "asr_model_id" or key.startswith(("stt_", "translate_"))
+                for key in updates):
+            config = {**dict(store.load()), **updates}
+            self._pipeline.apply_language_model_config(config, updates)
         store.update({str(k): v for k, v in updates.items()})
         return dict(store.load())
 
@@ -638,6 +643,7 @@ for _name in (
     "asr_tuning_meta",
     # 同理：档位能力查询只是读配置算语言对支持情况。
     "translate_tiers",
+    "language_capabilities",
 ):
     _fn = getattr(BackendService, f"_cmd_{_name}", None)
     if _fn is not None:

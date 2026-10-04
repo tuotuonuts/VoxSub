@@ -161,13 +161,13 @@ def test_resource_setter_and_start_admission_are_atomic(tmp_path, monkeypatch):
 
 def _apply_other_resource_update(pipe, tmp_path, setter_name: str) -> None:
     if setter_name == "set_langs":
-        pipe.set_langs("en", "ja")
+        pipe.set_langs("en", "zh")
     elif setter_name == "set_models_dir":
         pipe.set_models_dir(tmp_path / "alternate-models")
     elif setter_name == "set_stt":
         pipe.set_stt("cloud", {"test_only": True})
     elif setter_name == "set_asr_model":
-        pipe.set_asr_model("fixture-only-asr")
+        pipe.set_asr_model("asr-funasr-nano-2512-int8")
     elif setter_name == "set_asr_tuning":
         pipe.set_asr_tuning({"asr_vad_threshold": 0.22})
     else:

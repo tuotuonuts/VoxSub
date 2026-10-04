@@ -21,7 +21,6 @@ const calls = (root, callee) => nodes(root, n => ts.isCallExpression(n) && print
 const call = (root, callee, args) => calls(root, callee).find(n =>
   args.every((arg, i) => arg === null || (n.arguments[i] && print(n.arguments[i]) === expression(arg))));
 const fn = (root, name) => nodes(root, n => ts.isFunctionDeclaration(n) && n.name?.text === name)[0];
-const variable = (root, name) => nodes(root, n => ts.isVariableDeclaration(n) && n.name.getText() === name)[0];
 const event = (root, control, name) => call(root, 'on', [control, JSON.stringify(name)])?.arguments[2];
 
 export function inspectFrontend(readSource = read) {
@@ -37,6 +36,7 @@ export function inspectFrontend(readSource = read) {
   const overlay = load('src/renderer/overlay.ts');
   const renderer = load('src/renderer/index.ts');
   const language = load('src/renderer/language-selection.ts');
+  const capabilities = load('src/renderer/language-capabilities.ts');
   const settings = load('src/renderer/views/settings.ts');
   const opacityHandler = call(main, 'ipcMain.handle', ['"overlay:set-opacity"'])?.arguments[1];
   check('main: opacity handler clamps and broadcasts',
@@ -64,15 +64,15 @@ export function inspectFrontend(readSource = read) {
   check('overlay: receiver updates visuals and CSS uses opacity',
     call(call(overlay, 'window.voxsub?.overlay.onOpacityChanged', [])?.arguments[0], 'applyVisuals', []) &&
     calls(fn(overlay, 'applyVisuals'), 'root.setProperty').some(n => print(n.arguments[0]) === '"--overlay-opacity"' && print(n.arguments[1]) === 'String(opacity)'));
-  check('index: imports persistLanguagePair from real module',
-    nodes(renderer, n => ts.isImportDeclaration(n) && n.moduleSpecifier.text === './language-selection' &&
-      nodes(n, c => ts.isImportSpecifier(c) && c.name.text === 'persistLanguagePair' && !c.propertyName).length).length);
-  check('index: shared wrapper delegates source/target to persistence',
-    call(variable(renderer, 'saveLangPair'), 'persistLanguagePair', ['source', 'target']));
-  for (const [control, other, args] of [['srcSel', 'targetLang', ['srcSel.value', 'target']], ['dstSel', 'sourceLang', ['source', 'dstSel.value']]]) {
-    const handler = event(renderer, control, 'change');
-    check(`index: ${control} change uses current store pair`, call(handler, 'saveLangPair', args) &&
-      nodes(handler, n => ts.isPropertyAccessExpression(n) && print(n) === `store.get().${other}`).length);
+  check('index: imports language controls from real module',
+    nodes(renderer, n => ts.isImportDeclaration(n) && n.moduleSpecifier.text === './language-capabilities' &&
+      nodes(n, c => ts.isImportSpecifier(c) && c.name.text === 'buildLanguageControls').length).length &&
+    call(renderer, 'buildLanguageControls', []));
+  check('controls: shared wrapper delegates source/target to persistence',
+    call(fn(capabilities, 'savePair'), 'persistLanguagePair', ['source', 'target']));
+  for (const control of ['sourceSelect', 'targetSelect']) {
+    check('controls: ' + control + ' change uses acknowledged persistence',
+      call(event(fn(capabilities, 'buildLanguageControls'), control, 'change'), 'savePair', []));
   }
   const persist = fn(language, 'persistLanguagePair');
   check('language-selection: set_langs uses source/target object', call(persist, 'call', ['"set_langs"', '{ source, target }']));
@@ -96,7 +96,7 @@ pipeline = tree('voxsub/pipeline.py')
 loader = function(pipeline, '_load_translator_for_pair')
 usable = function(pipeline, '_usable_for_pair')
 checks = [
- ('backend: set_langs reads exact source/target payload', has(session, 'pipeline.set_langs', "str(args.get('source', 'auto'))", "str(args.get('target', 'zh'))")),
+ ('backend: set_langs reads exact source/target payload', has(session, 'pipeline.apply_language_pair', "str(args.get('source', 'auto'))", "str(args.get('target', 'zh'))")),
  ('backend: config restoration applies parsed language pair', bool(calls(ipc, 'pipeline.set_langs')) and has(ipc, 'pair.partition', "'-'")),
  ('factory: resolver checks selected and candidate language support', has(factory, 'tier_supports', 'tier', 'src_lang', 'dst_lang', 'config') and has(factory, 'tier_supports', 'candidate', 'src_lang', 'dst_lang', 'config')),
  ('pipeline: candidate loader checks actual translator support', has(loader, '_candidate_tiers', 'kind') and bool(calls(loader, '_load_translator')) and has(loader, '_usable_for_pair', 'translator', 'src_lang', 'dst_lang')),
