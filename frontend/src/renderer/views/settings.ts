@@ -1,3 +1,5 @@
+import { buildTabNav } from "../ui/tab-nav";
+import { buildButton } from "../ui/button";
 import { DeveloperGesture, developerEnabled, setDeveloperEnabled } from "../../shared/diagnostic-controls";
 import { buildLogCapacity } from "./log-capacity";
 /**
@@ -7,6 +9,8 @@ import { buildLogCapacity } from "./log-capacity";
  * 纪律：调优参数使用显式保存（保存/放弃事务），其余项即时生效。
  */
 import { h, on } from "../dom";
+import { buildTextInput as textInput, buildSelect as select, buildRadioGroup as radioGroup, buildToggleSwitch as toggleSwitch } from "../ui/controls";
+import { buildCardFrame, buildCard as card } from "../ui/card";
 import { call, store } from "../store";
 import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry, type TranslateTierMeta } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
@@ -206,83 +210,6 @@ function field(label: string, control: HTMLElement, hint?: string, disabledBy?: 
   return buildField({ label, control, hint, lockedBy: disabledBy });
 }
 
-function textInput(value: string, onChange: (v: string) => void, opts?: { type?: string; placeholder?: string }): HTMLElement {
-  const input = h("input", {
-    class: "input",
-    type: opts?.type ?? "text",
-    value,
-    placeholder: opts?.placeholder ?? "",
-  });
-  on(input, "change", () => onChange(input.value));
-  return input;
-}
-
-function select<T extends string>(
-  value: T,
-  options: ReadonlyArray<readonly [T, string]>,
-  onChange: (v: T) => void,
-): HTMLSelectElement {
-  const sel = h("select", { class: "select" });
-  for (const [val, label] of options) {
-    const opt = h("option", { value: val, text: label });
-    if (val === value) opt.selected = true;
-    sel.append(opt);
-  }
-  on(sel, "change", () => onChange(sel.value as T));
-  return sel;
-}
-
-/** 单选组：用圆形指示，避免原生控件在深色档下几何变形。 */
-function radioGroup<T extends string>(
-  value: T,
-  options: ReadonlyArray<readonly [T, string, string?]>,
-  onChange: (v: T) => void,
-): HTMLElement {
-  const group = h("div", { class: "radio-group", role: "radiogroup" });
-  for (const [val, label, badge] of options) {
-    const item = h("button", {
-      class: val === value ? "radio is-checked" : "radio",
-      type: "button",
-      role: "radio",
-      "aria-checked": String(val === value),
-    });
-    item.append(h("i", { class: "radio__dot" }), h("span", { text: label }));
-    // 徽标用于说明"这一档在当前语言对下不可用"之类的限定条件。
-    // 只放在标签旁边而不禁用选项：用户仍可选中它（换语言后就能用），
-    // 禁掉会让他以为界面坏了。
-    if (badge) item.append(h("span", { class: "radio__badge", text: badge }));
-    on(item, "click", () => {
-      group.querySelectorAll(".radio").forEach((n) => {
-        n.classList.remove("is-checked");
-        n.setAttribute("aria-checked", "false");
-      });
-      item.classList.add("is-checked");
-      item.setAttribute("aria-checked", "true");
-      onChange(val);
-    });
-    group.append(item);
-  }
-  return group;
-}
-
-function toggleSwitch(checked: boolean, label: string, onChange: (v: boolean) => void): HTMLElement {
-  const wrap = h("label", { class: "switch" });
-  const input = h("input", { type: "checkbox" });
-  input.checked = checked;
-  on(input, "change", () => onChange(input.checked));
-  wrap.append(input, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: label }));
-  return wrap;
-}
-
-function card(title: string, children: Array<HTMLElement | null>): HTMLElement {
-  const section = h("section", { class: "card" });
-  if (title) section.append(h("h3", { class: "card__title", text: title }));
-  const body = h("div", { class: "card__body" });
-  for (const child of children) if (child) body.append(child);
-  section.append(body);
-  return section;
-}
-
 /* ------------------------------------------------------------ 各分页 */
 
 /** 按用途取**已安装**的本地模型（设置页下拉只列能真正跑起来的）。 */
@@ -466,7 +393,7 @@ function devicesTab(): HTMLElement {
           tr("只在 B 模式下生效：选择后只捕获该应用的声音，其它声音不会被识别"),
         );
 
-  const refreshBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新应用列表") });
+  const refreshBtn = buildButton(tr("刷新应用列表"), { small: true });
   on(refreshBtn, "click", () => {
     void loadCaptureTargets().then(() => window.dispatchEvent(new Event("voxsub:settings")));
   });
@@ -678,14 +605,14 @@ function buildTuningContent(
 
   const actions = h("div", { class: "tuning-actions" });
   const stateEl = h("span", { class: "tuning-actions__state", text: tuningDirty ? "有未保存的更改" : "未修改" });
-  const saveBtn = h("button", { class: "btn btn--primary", type: "button", text: tr("保存") });
+  const saveBtn = buildButton(tr("保存"), { variant: "primary" });
   on(saveBtn, "click", async () => {
     await saveConfig(tuningDraft);
     await call(CMD.setAsrTuning, { tuning: tuningDraft });
     tuningDirty = false;
     stateEl.textContent = "已保存 · 下次开始时生效";
   });
-  const resetBtn = h("button", { class: "btn btn--ghost", type: "button", text: "放弃更改" });
+  const resetBtn = buildButton("放弃更改");
   on(resetBtn, "click", () => {
     void loadConfig().then(() => window.dispatchEvent(new Event("voxsub:settings")));
   });
@@ -741,13 +668,13 @@ function aboutTab(): HTMLElement {
   const state = store.get();
 
   const gesture = new DeveloperGesture();
-  const version = h("button", { class: "btn btn--ghost", type: "button", text: state.version || "—" });
+  const version = buildButton(state.version || "—");
   const developerControl = h("div", { class: "tuning-actions" });
   const refreshDeveloper = (): void => {
     developerControl.replaceChildren();
     if (!developerEnabled()) return;
     developerControl.append(h("span", { class: "hint", text: tr("开发者模式已开启：请进入诊断页查看；重启后关闭") }));
-    const close = h("button", { type: "button", class: "btn btn--ghost", text: tr("关闭开发者模式") });
+    const close = buildButton(tr("关闭开发者模式"));
     on(close, "click", async () => {
       const result = await call<{ enabled: boolean }>(CMD.developerMode, { enabled: false });
       if (result?.enabled === false) { setDeveloperEnabled(false); refreshDeveloper(); }
@@ -896,11 +823,7 @@ function storageTab(): HTMLElement {
   );
 
   // ---- 迁移已有模型 ----
-  const importBtn = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("迁移已有模型"),
-  });
+  const importBtn = buildButton(tr("迁移已有模型"));
   const importState = h("span", { class: "tuning-actions__state", text: "" });
   on(importBtn, "click", async () => {
     const api = window.voxsub;
@@ -933,11 +856,7 @@ function storageTab(): HTMLElement {
   // ---- 旧版数据检查 ----
   // 用户跳过首次向导后反悔的入口。放在这里而不是"关于"：它与数据位置同类。
   const legacyState = h("span", { class: "tuning-actions__state", text: "" });
-  const legacyBtn = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("检查旧版数据"),
-  });
+  const legacyBtn = buildButton(tr("检查旧版数据"));
   on(legacyBtn, "click", async () => {
     legacyState.textContent = tr("正在检查…");
     const result = await call<{
@@ -959,11 +878,7 @@ function storageTab(): HTMLElement {
       : `${tr("旧版")} ${result.legacy.version} · ${tr("数据位置安全")}`;
   });
 
-  const legacyOpen = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("打开迁移向导"),
-  });
+  const legacyOpen = buildButton(tr("打开迁移向导"));
   on(legacyOpen, "click", () => {
     const host = document.querySelector<HTMLElement>(".page-layer");
     const lifecycle = settingsLifecycle;
@@ -993,14 +908,10 @@ function storageTab(): HTMLElement {
 /** 更新日志卡片：默认折叠到最近一版（原 Qt 版行为一致）。 */
 function buildReleaseNotes(): HTMLElement {
   const notes = store.get().releaseNotes;
-  const card = h("div", { class: "card" });
-  card.append(h("h3", { class: "card__title", text: tr("更新日志") }));
-
-  const body = h("div", { class: "card__body" });
+  const { element: card, body } = buildCardFrame(tr("更新日志"), "div");
 
   if (!notes || notes.length === 0) {
     body.append(h("p", { class: "field__hint", text: tr("暂无更新日志") }));
-    card.append(body);
     return card;
   }
 
@@ -1024,11 +935,7 @@ function buildReleaseNotes(): HTMLElement {
     const history = h("div", { class: "release-history", hidden: true });
     older.forEach((item) => history.append(render(item)));
 
-    const toggle = h("button", {
-      class: "btn btn--ghost btn--sm",
-      type: "button",
-      text: tr("展开历史更新日志（还有 {n} 版）").replace("{n}", String(older.length)),
-    });
+    const toggle = buildButton(tr("展开历史更新日志（还有 {n} 版）").replace("{n}", String(older.length)), { small: true });
     let expanded = false;
     on(toggle, "click", () => {
       expanded = !expanded;
@@ -1041,7 +948,6 @@ function buildReleaseNotes(): HTMLElement {
     body.append(toggle, history);
   }
 
-  card.append(body);
   return card;
 }
 
@@ -1075,7 +981,6 @@ export function buildSettings(): PageHandle {
     [tr("关于"), aboutTab],
   ];
 
-  const nav = h("nav", { class: "settings__nav", role: "tablist" });
   const panes = h("div", { class: "settings__panes" });
 
   let current = 0;
@@ -1083,21 +988,9 @@ export function buildSettings(): PageHandle {
     panes.replaceChildren(tabs[current]![1]());
   };
 
-  tabs.forEach(([label], index) => {
-    const btn = h("button", {
-      class: index === current ? "settings__tab is-active" : "settings__tab",
-      type: "button",
-      role: "tab",
-      text: label,
-    });
-    on(btn, "click", () => {
-      current = index;
-      nav.querySelectorAll(".settings__tab").forEach((n, i) => {
-        n.classList.toggle("is-active", i === index);
-      });
-      renderPane();
-    });
-    nav.append(btn);
+  const nav = buildTabNav(tabs.map(([label]) => label), index => {
+    current = index;
+    renderPane();
   });
 
   shell.append(nav, panes);

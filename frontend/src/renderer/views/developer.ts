@@ -1,3 +1,4 @@
+import { buildButton } from "../ui/button";
 /** Developer diagnostics is a view, not a shell or privilege bypass. */
 import { h, on } from "../dom";
 import { call } from "../store";
@@ -26,7 +27,7 @@ export function buildDeveloperTab(onDisabled: () => void): PageHandle {
     expires = session?.expires_at ? Date.parse(session.expires_at) : 0;
   };
   const add = (label: string, action: () => void | Promise<void>): HTMLButtonElement => {
-    const button = h("button", { class: "btn btn--ghost", type: "button", text: tr(label) });
+    const button = buildButton(tr(label));
     on(button, "click", () => void action()); actions.append(button); return button;
   };
   add("刷新运行状态", () => refresh());

@@ -1,3 +1,4 @@
+import { buildButton, buildFilterChip } from "../ui/button";
 /**
  * 模型目录 —— 同人展目录方向的核心落点。
  *
@@ -187,12 +188,7 @@ function renderFilterBar(): HTMLElement {
     ["ocr", "OCR"],
   ];
   for (const [value, label] of options) {
-    const chip = h("button", {
-      class: value === filter ? "filter-chip is-active" : "filter-chip",
-      type: "button",
-      text: label,
-      "aria-pressed": String(value === filter),
-    });
+    const chip = buildFilterChip(label, value === filter);
     on(chip, "click", () => {
       filter = value;
       filterBarEl?.replaceWith(renderFilterBar());
@@ -318,7 +314,7 @@ export function buildModelCatalog(): PageHandle {
   const bar = h("div", { class: "catalog-page__bar" });
   countEl = h("span", { class: "catalog__count", text: "" });
   diskEl = h("span", { class: "catalog__disk", text: "" });
-  const refresh = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("刷新") });
+  const refresh = buildButton(tr("刷新"), { small: true });
   on(refresh, "click", () => void loadModels(pageId).then(() => updateDiskUsage(pageId)));
   const sourceLabel = h("label", { text: tr("下载源") });
   const source = h("select", { class: "input", "aria-label": tr("下载源"), "data-download-source": "" });

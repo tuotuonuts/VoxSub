@@ -1,3 +1,5 @@
+import { buildToggleSwitch } from "../ui/controls";
+import { buildButton } from "../ui/button";
 /**
  * 字幕工作区 —— A/B/C 模式共用；D 模式时被 OCR 工作区替换。
  *
@@ -369,28 +371,26 @@ export function buildWorkspace(): PageHandle {
   // 时，用户点之前无法预判会发生什么。拆成两个按钮后各自的语义是唯一的。
   const actions = h("div", { class: "workspace__actions" });
 
-  ctaEl = h("button", { class: "btn btn--primary", type: "button" });
+  ctaEl = buildButton("", { variant: "primary" });
   on(ctaEl, "click", () => void toggleSession());
 
-  pauseBtnEl = h("button", { class: "btn btn--ghost", type: "button", hidden: true });
+  pauseBtnEl = buildButton("", { hidden: true });
   on(pauseBtnEl, "click", () => void togglePause());
 
   clockEl = h("span", { class: "recorder__clock", hidden: true });
 
-  const exportBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("导出会话") });
+  const exportBtn = buildButton(tr("导出会话"));
   on(exportBtn, "click", () => void exportSession());
 
-  const clearBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("清空") });
+  const clearBtn = buildButton(tr("清空"));
   on(clearBtn, "click", () => store.patch({ subtitles: [], draft: null }));
 
-  const recSwitch = h("label", { class: "switch" });
-  recInputEl = h("input", { type: "checkbox" });
-  recInputEl.checked = state.recording;
+  const recSwitch = buildToggleSwitch(state.recording, tr("同时录音"));
+  recInputEl = recSwitch.querySelector<HTMLInputElement>("input")!;
   lifecycle.listen(recInputEl, "change", () => {
     void recordingControl?.toggle();
     syncControls();
   });
-  recSwitch.append(recInputEl, h("span", { class: "switch__track" }), h("span", { class: "switch__label", text: tr("同时录音") }));
   // 录音指示：红点比文字更接近"正在录"的直觉，也不占宽度
   recDotEl = h("span", { class: "rec-dot", hidden: true });
   recSwitch.append(recDotEl);
@@ -412,7 +412,7 @@ export function buildWorkspace(): PageHandle {
 
   // ---- C 模式文件区
   const filePanel = h("div", { class: "file-panel" });
-  const pickBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("选择文件") });
+  const pickBtn = buildButton(tr("选择文件"));
   on(pickBtn, "click", async () => {
     const api = window.voxsub;
     if (!api) return;

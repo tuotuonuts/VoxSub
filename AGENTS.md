@@ -145,6 +145,9 @@ python frontend/tools/build-release.py --dir-only   # 只出免安装目录
 
 ## 7. 前端（Electron）
 
+**公共 UI 组件优先（用户明确要求）。** 新增 UI 元素前先检查 `frontend/src/renderer/ui/`；已有组件必须优先复用。尚无对应组件时，优先将通用结构与基础交互实现为公共组件，再由页面组合；不复制页面私有控件。公共组件不读 store、不发 IPC、不隐式保存配置，文案由调用方经 `tr()` 传入；业务特有结构不要强行抽象。新增或收编组件必须补真实组件 DOM/行为测试，并迁移已有相同形态的调用点。组件清单与边界见该目录 `README.md`。
+
+
 **进程模型。** 主进程（`src/main/`）管窗口/托盘/原生对话框，并通过 stdio 拉起 Python sidecar（`backend/ipc_server.py`）；渲染层（`src/renderer/`）只做界面，业务逻辑一律在后端。IPC 协议：stdin 收 `{"id":N,"command":"...","args":{...}}`，stdout 发 `{"event":...}` 或 `{"id":N,"ok":true,"data":...}`。
 
 **验证纪律（血泪教训，务必遵守）。**

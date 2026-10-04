@@ -1,3 +1,7 @@
+import { buildTabNav } from "../ui/tab-nav";
+import { buildCardFrame } from "../ui/card";
+import { buildSelect, buildTextInput } from "../ui/controls";
+import { buildButton } from "../ui/button";
 import { developerEnabled, checkSummary, matchesLog, pipelineSession } from "../../shared/diagnostic-controls";
 import { buildDeveloperTab } from "./developer";
 /**
@@ -191,21 +195,16 @@ async function loadDevicesAndHardware(): Promise<void> {
       [tr("可用推理后端（非实际运行设备）"), profile.gpuProvider || "CPU"],
       ["NPU", profile.npu || "未检测到"],
     ];
-    const card = h("section", { class: "card" });
-    card.append(h("h3", { class: "card__title", text: tr("硬件画像") }));
-    const body = h("div", { class: "card__body" });
+    const { element: card, body } = buildCardFrame(tr("硬件画像"));
     for (const [key, value] of rows) {
       const row = h("div", { class: "kv" });
       row.append(h("span", { class: "kv__key", text: key }), h("span", { class: "kv__value", text: value }));
       body.append(row);
     }
-    card.append(body);
     blocks.push(card);
   }
 
-  const deviceCard = h("section", { class: "card" });
-  deviceCard.append(h("h3", { class: "card__title", text: tr("检测到的设备（运行未验证）") }));
-  const deviceBody = h("div", { class: "card__body" });
+  const { element: deviceCard, body: deviceBody } = buildCardFrame(tr("检测到的设备（运行未验证）"));
   for (const device of devices?.devices ?? []) {
     const row = h("div", { class: "kv" });
     row.append(
@@ -217,7 +216,6 @@ async function loadDevicesAndHardware(): Promise<void> {
   if (!deviceBody.childElementCount) {
     deviceBody.append(h("p", { class: "hint", text: "未枚举到可用设备" }));
   }
-  deviceCard.append(deviceBody);
   blocks.push(deviceCard);
 
   deviceEl.replaceChildren(...blocks);
@@ -243,7 +241,6 @@ export function buildDiagnostics(): PageHandle {
     } }] : []),
   ];
 
-  const nav = h("nav", { class: "settings__nav", role: "tablist" });
   const panes = h("div", { class: "settings__panes" });
 
   let current = 0;
@@ -261,19 +258,9 @@ export function buildDiagnostics(): PageHandle {
     panes.replaceChildren(tabs[current]!.build());
   };
 
-  tabs.forEach((tab, index) => {
-    const btn = h("button", {
-      class: index === current ? "settings__tab is-active" : "settings__tab",
-      type: "button",
-      role: "tab",
-      text: tab.label,
-    });
-    on(btn, "click", () => {
-      current = index;
-      nav.querySelectorAll(".settings__tab").forEach((n, i) => n.classList.toggle("is-active", i === index));
-      renderPane();
-    });
-    nav.append(btn);
+  const nav = buildTabNav(tabs.map(tab => tab.label), index => {
+    current = index;
+    renderPane();
   });
 
   shell.append(nav, panes);
@@ -305,9 +292,9 @@ function detach(): void {
 function buildCheckTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
   const actions = h("div", { class: "tuning-actions" });
-  const run = h("button", { class: "btn btn--primary", type: "button", text: tr("重新检查") });
+  const run = buildButton(tr("重新检查"), { variant: "primary" });
   on(run, "click", () => void runCheck());
-  const exportBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("导出报告") });
+  const exportBtn = buildButton(tr("导出报告"));
   on(exportBtn, "click", () => void exportReport());
   actions.append(run, exportBtn);
   page.append(actions);
@@ -322,13 +309,13 @@ function buildLogTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
 
   const filters = h("div", { class: "tuning-actions diagnostic-actions" });
-  const level = h("select", { class: "select", "aria-label": tr("日志级别") });
-  for (const value of ["all", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]) level.append(h("option", { value, text: value === "all" ? tr("全部级别") : value }));
-  level.value = logLevel;
-  const query = h("input", { class: "input", placeholder: tr("搜索日志关键词"), value: logQuery, "aria-label": tr("搜索日志关键词") });
-  const session = h("button", { class: "btn btn--ghost", type: "button", text: tr("仅本次运行") });
+  const level = buildSelect(logLevel, ["all", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map(value => [value, value === "all" ? tr("全部级别") : value] as const));
+  level.setAttribute("aria-label", tr("日志级别"));
+  const query = buildTextInput(logQuery, undefined, { placeholder: tr("搜索日志关键词") });
+  query.setAttribute("aria-label", tr("搜索日志关键词"));
+  const session = buildButton(tr("仅本次运行"));
   session.setAttribute("aria-pressed", String(currentRunOnly));
-  const taskSession = h("button", { class: "btn btn--ghost", type: "button", text: tr("仅本次模型会话") });
+  const taskSession = buildButton(tr("仅本次模型会话"));
   taskSession.setAttribute("aria-pressed", String(pipelineSessionOnly));
   on(taskSession, "click", () => {
     pipelineSessionOnly = !pipelineSessionOnly;
@@ -336,7 +323,7 @@ function buildLogTab(): HTMLElement {
     currentPipelineSession = [...entries].reverse().map(e => pipelineSession(e.message)).find(Boolean) || "";
     taskSession.setAttribute("aria-pressed", String(pipelineSessionOnly)); redraw();
   });
-  const pause = h("button", { class: "btn btn--ghost", type: "button", text: tr(logPaused ? "恢复滚动" : "暂停滚动") });
+  const pause = buildButton(tr(logPaused ? "恢复滚动" : "暂停滚动"));
   const redraw = (): void => { if (logSource === "file") renderFileEntries(); else renderLog(); };
   on(level, "change", () => { logLevel = level.value; redraw(); });
   on(query, "input", () => { logQuery = query.value; redraw(); });
@@ -348,8 +335,8 @@ function buildLogTab(): HTMLElement {
   // 来源切换：实时（本次运行） / 文件（含历史运行）
   const actions = h("div", { class: "tuning-actions" });
 
-  const liveBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("实时") });
-  const fileBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("历史文件") });
+  const liveBtn = buildButton(tr("实时"), { small: true });
+  const fileBtn = buildButton(tr("历史文件"), { small: true });
   const markSource = (source: "live" | "file"): void => {
     logSource = source;
     liveBtn.classList.toggle("btn--primary", source === "live");
@@ -363,11 +350,11 @@ function buildLogTab(): HTMLElement {
   logStateEl = h("span", { class: "tuning-actions__state", text: "" });
 
   // 导出日志：把当前视图内容写到用户选的路径
-  const exportBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("导出日志") });
+  const exportBtn = buildButton(tr("导出日志"), { small: true });
   on(exportBtn, "click", () => void exportLog());
 
   // 打开日志所在文件夹：排障时用户常要自己翻
-  const openBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("打开文件夹") });
+  const openBtn = buildButton(tr("打开文件夹"), { small: true });
   on(openBtn, "click", async () => {
     const result = await call<{ path: string }>(CMD.logPath);
     if (result?.path) {
@@ -378,7 +365,7 @@ function buildLogTab(): HTMLElement {
   });
 
   // 清除本机日志：破坏性操作，需二次确认
-  const clearBtn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("清除本机日志") });
+  const clearBtn = buildButton(tr("清除本机日志"), { small: true });
   on(clearBtn, "click", () => {
     // 确认闸门（ConfirmAction）：用户取消时 clearLocalLogs 一次都不会被调用
     runAfterConfirm(

@@ -1,3 +1,5 @@
+import { buildCard } from "../ui/card";
+import { buildButton, buildFilterChip } from "../ui/button";
 /**
  * OCR 工作区 —— 对应原 Qt 版 ocr_workspace.py + ocr_overlay.py（1293 行）。
  *
@@ -72,8 +74,14 @@ function renderPreview(): void {
     previewEl.src = `file:///${path.replace(/\\/g, "/")}?t=${Date.now()}`;
   }
 
-  if (sourceTabBtn) sourceTabBtn.classList.toggle("is-active", !showingTranslated);
-  if (translatedTabBtn) translatedTabBtn.classList.toggle("is-active", showingTranslated);
+  if (sourceTabBtn) {
+    sourceTabBtn.classList.toggle("is-active", !showingTranslated);
+    sourceTabBtn.setAttribute("aria-pressed", String(!showingTranslated));
+  }
+  if (translatedTabBtn) {
+    translatedTabBtn.classList.toggle("is-active", showingTranslated);
+    translatedTabBtn.setAttribute("aria-pressed", String(showingTranslated));
+  }
   if (exportBtnEl) exportBtnEl.disabled = !translatedImagePath;
 }
 
@@ -234,26 +242,26 @@ function buildShotPage(): HTMLElement {
 
   // 动作行
   const actions = h("div", { class: "workspace__actions" });
-  const areaBtn = h("button", { class: "btn btn--primary", type: "button", text: tr("框选屏幕并翻译") });
+  const areaBtn = buildButton(tr("框选屏幕并翻译"), { variant: "primary" });
   on(areaBtn, "click", () => void selectScreenArea());
-  const uploadBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("上传图片并翻译") });
+  const uploadBtn = buildButton(tr("上传图片并翻译"));
   on(uploadBtn, "click", () => void pickImage());
   actions.append(areaBtn, uploadBtn);
   page.append(actions);
 
   // 预览区（原图⇄译后切换 + 导出）
   const previewBar = h("div", { class: "ocr-preview-bar" });
-  sourceTabBtn = h("button", { class: "filter-chip", type: "button", text: tr("原图") });
+  sourceTabBtn = buildFilterChip(tr("原图"));
   on(sourceTabBtn, "click", () => {
     showingTranslated = false;
     renderPreview();
   });
-  translatedTabBtn = h("button", { class: "filter-chip", type: "button", text: tr("译后") });
+  translatedTabBtn = buildFilterChip(tr("译后"));
   on(translatedTabBtn, "click", () => {
     showingTranslated = true;
     renderPreview();
   });
-  exportBtnEl = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("导出译后图片") });
+  exportBtnEl = buildButton(tr("导出译后图片"), { small: true });
   on(exportBtnEl, "click", () => void exportTranslatedImage());
   exportBtnEl.disabled = true;
 
@@ -280,7 +288,7 @@ function buildShotPage(): HTMLElement {
   srcHead.append(
     h("h3", { class: "ocr__col-title", text: tr("识别原文") }),
     (() => {
-      const btn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("复制") });
+      const btn = buildButton(tr("复制"), { small: true });
       on(btn, "click", () => void copyText("source"));
       return btn;
     })(),
@@ -294,7 +302,7 @@ function buildShotPage(): HTMLElement {
   dstHead.append(
     h("h3", { class: "ocr__col-title", text: tr("译文") }),
     (() => {
-      const btn = h("button", { class: "btn btn--ghost btn--sm", type: "button", text: tr("复制") });
+      const btn = buildButton(tr("复制"), { small: true });
       on(btn, "click", () => void copyText("translation"));
       return btn;
     })(),
@@ -322,20 +330,16 @@ function buildLivePage(): HTMLElement {
   // 新子页面：作废旧代号（见 viewToken 的说明）
   viewToken += 1;
 
-  const intro = h("div", { class: "card" });
-  intro.append(
-    h("h3", { class: "card__title", text: tr("实时区域 OCR") }),
-    h("div", { class: "card__body" }, [
+  const intro = buildCard(tr("实时区域 OCR"), [
       h("p", { class: "field__hint", text: tr("原位覆盖，不重复识别静止画面。选中一块区域后持续识别，译文直接盖在原文位置上。") }),
       h("p", { class: "field__hint", text: tr("覆盖窗不会被下一轮截图识别到（已排除捕获），因此不会出现译文被再翻译的回路。") }),
-    ]),
-  );
+    ], "div");
   page.append(intro);
 
   const actions = h("div", { class: "workspace__actions" });
-  const startBtn = h("button", { class: "btn btn--primary", type: "button", text: tr("选择区域并开始") });
+  const startBtn = buildButton(tr("选择区域并开始"), { variant: "primary" });
   on(startBtn, "click", () => void startLiveRegion());
-  const stopBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("结束实时 OCR") });
+  const stopBtn = buildButton(tr("结束实时 OCR"));
   on(stopBtn, "click", () => void stopLiveRegion());
   actions.append(startBtn, stopBtn);
   page.append(actions);
@@ -372,17 +376,15 @@ export function buildOcrWorkspace(): PageHandle {
     const found = tabs.find(([id]) => id === current);
     body.replaceChildren(found ? found[2]() : h("div"));
     bar.querySelectorAll(".filter-chip").forEach((node) => {
-      node.classList.toggle("is-active", (node as HTMLElement).dataset["mode"] === current);
+      const active = (node as HTMLElement).dataset["mode"] === current;
+      node.classList.toggle("is-active", active);
+      node.setAttribute("aria-pressed", String(active));
     });
   };
 
   for (const [id, label] of tabs) {
-    const btn = h("button", {
-      class: "filter-chip",
-      type: "button",
-      "data-mode": id,
-      text: label,
-    });
+    const btn = buildFilterChip(label);
+    btn.dataset["mode"] = id;
     on(btn, "click", () => {
       current = id;
       render();

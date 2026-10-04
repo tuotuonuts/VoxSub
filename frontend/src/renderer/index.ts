@@ -1,3 +1,4 @@
+import { buildButton } from "./ui/button";
 /**
  * 主窗渲染入口。
  *
@@ -179,11 +180,11 @@ function buildModeIndex(): HTMLElement {
 
   // 二级页面入口
   const navBox = h("div", { class: "side-actions" });
-  const settingsBtn = h("button", { class: "btn btn--ghost btn--block", type: "button", text: tr("设置") });
+  const settingsBtn = buildButton(tr("设置"), { block: true });
   on(settingsBtn, "click", () => openPage("settings"));
-  const diagBtn = h("button", { class: "btn btn--ghost btn--block", type: "button", text: tr("诊断") });
+  const diagBtn = buildButton(tr("诊断"), { block: true });
   on(diagBtn, "click", () => openPage("diagnostics"));
-  const overlayBtn = h("button", { class: "btn btn--ghost btn--block", type: "button", text: "打开浮窗" });
+  const overlayBtn = buildButton("打开浮窗", { block: true });
   on(overlayBtn, "click", () => void window.voxsub?.overlay.toggleVisible());
   navBox.append(overlayBtn, settingsBtn, diagBtn);
   nav.append(navBox);
@@ -245,23 +246,19 @@ function buildTopbar(): HTMLElement {
 
   const actions = h("div", { class: "topbar__actions" });
 
-  const catalogBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("模型") });
+  const catalogBtn = buildButton(tr("模型"));
   on(catalogBtn, "click", () => openPage("catalog"));
   actions.append(catalogBtn);
 
-  const settingsBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("设置") });
+  const settingsBtn = buildButton(tr("设置"));
   on(settingsBtn, "click", () => openPage("settings"));
   actions.append(settingsBtn);
 
-  const diagnosticsBtn = h("button", {
-    class: "btn btn--ghost",
-    type: "button",
-    text: tr("诊断"),
-  });
+  const diagnosticsBtn = buildButton(tr("诊断"));
   on(diagnosticsBtn, "click", () => openPage("diagnostics"));
   actions.append(diagnosticsBtn);
 
-  const themeBtn = h("button", { class: "btn btn--ghost", type: "button", text: tr("主题") });
+  const themeBtn = buildButton(tr("主题"));
   on(themeBtn, "click", () => {
     const next: ThemeName = store.get().theme === "dark" ? "light" : "dark";
     store.patch({ theme: next });

@@ -1,3 +1,4 @@
+import { buildButton } from "./button";
 /**
  * 路径选择字段（工作单 §3.7 的 PathPicker）。
  *
@@ -68,7 +69,7 @@ export function buildPathPicker(options: PathPickerOptions): PathPickerHandle {
     text: options.value || options.emptyText,
   });
 
-  const openBtn = h("button", { class: "btn btn--ghost", type: "button", text: options.openLabel });
+  const openBtn = buildButton(options.openLabel);
   on(openBtn, "click", () => {
     // 没有可打开的位置就不发命令：发出去只会表现为"点了没反应"
     const target = options.openFor();
@@ -76,7 +77,7 @@ export function buildPathPicker(options: PathPickerOptions): PathPickerHandle {
     options.onOpen(target);
   });
 
-  const changeBtn = h("button", { class: "btn btn--ghost", type: "button", text: options.changeLabel });
+  const changeBtn = buildButton(options.changeLabel);
   on(changeBtn, "click", async () => {
     const picked = await options.pick();
     // 取消：什么都不做（不落库、不刷新、不改显示）

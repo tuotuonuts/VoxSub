@@ -1,3 +1,5 @@
+import { buildButton } from "../ui/button";
+import { buildCardFrame } from "../ui/card";
 /**
  * 旧版迁移向导 —— 首次启动时识别老用户，引导数据搬迁。
  *
@@ -397,11 +399,7 @@ function actionsRow(buttons: HTMLElement[]): HTMLElement {
 }
 
 function button(label: string, kind: "primary" | "ghost", onClick: () => void): HTMLElement {
-  const btn = h("button", {
-    class: kind === "primary" ? "btn btn--primary" : "btn btn--ghost",
-    type: "button",
-    text: label,
-  });
+  const btn = buildButton(label, { variant: kind });
   on(btn, "click", onClick);
   return btn;
 }
@@ -418,10 +416,7 @@ function viewDetect(): HTMLElement {
   }
 
   const legacy = detection.legacy;
-  const card = h("div", { class: "card" });
-  card.append(h("h3", { class: "card__title", text: tr("检测结果") }));
-
-  const info = h("div", { class: "card__body" });
+  const { element: card, body: info } = buildCardFrame(tr("检测结果"), "div");
   const rows: Array<[string, string]> = [
     [tr("状态"), legacy.found ? tr("检测到旧版") : tr("未检测到旧版")],
     [tr("版本"), legacy.version || "—"],
@@ -438,7 +433,6 @@ function viewDetect(): HTMLElement {
       info.append(h("p", { class: "field__hint", text: note }));
     }
   }
-  card.append(info);
   body.append(card);
 
   const buttons: HTMLElement[] = [];
@@ -1218,9 +1212,7 @@ function viewReport(): HTMLElement {
 
   // 失败项：给出可复制的摘要，便于反馈开发者
   if (report.failed.length) {
-    const card = h("div", { class: "card" });
-    card.append(h("h3", { class: "card__title", text: tr("失败详情（请复制给开发者）") }));
-    const box = h("div", { class: "card__body" });
+    const { element: card, body: box } = buildCardFrame(tr("失败详情（请复制给开发者）"), "div");
 
     const lines: string[] = [];
     for (const item of report.failed) {
@@ -1256,7 +1248,6 @@ function viewReport(): HTMLElement {
       }
     });
     box.append(h("div", { class: "tuning-actions" }, [copyBtn, openLogBtn]));
-    card.append(box);
     body.append(card);
 
     body.append(h("p", {
