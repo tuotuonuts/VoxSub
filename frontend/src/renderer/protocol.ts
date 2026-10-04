@@ -58,6 +58,9 @@ export const CMD = {
 
   // 诊断
   runSelfCheck: "run_self_check",
+  developerMode: "developer_mode",
+  diagnosticSnapshot: "diagnostic_snapshot",
+  diagnosticSession: "diagnostic_session",
   exportDiagnostics: "export_diagnostics",
   listDevices: "list_devices",
   hardwareProfile: "hardware_profile",
@@ -196,9 +199,13 @@ export interface SelfCheckItem {
   check: string;
   status: "ok" | "warn" | "fail" | string;
   detail: string;
+  suggestion?: string;
+  impact?: string;
 }
 
 export interface LogEntry {
+  run_id?: string | undefined;
+  session_id?: string | undefined;
   /** Unmodified producer timestamp; never inferred for legacy records. */
   ts: string;
   eventTimeMs?: number | null;
@@ -329,5 +336,5 @@ export type BackendEvent =
   | { type: "partial"; text: string }
   | { type: "progress"; completed: number; total: number; stage: string }
   | { type: "download"; modelId: string; completed: number; total: number; stage: string }
-  | { type: "log"; ts: string; level: string; message: string }
+  | { type: "log"; ts: string; level: string; message: string; run_id?: string | undefined; session_id?: string | undefined }
   | { type: "error"; message: string };

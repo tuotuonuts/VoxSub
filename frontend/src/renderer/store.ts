@@ -1,3 +1,4 @@
+import { recordIPC, setDeveloperEnabled } from "../shared/diagnostic-controls";
 /**
  * 应用状态与后端连接。
  *
@@ -166,6 +167,7 @@ class Store {
   applyEvent(event: BackendEvent): void {
     switch (event.type) {
       case "ready": {
+        setDeveloperEnabled(false);
         // 后端新增了握手字段（protocolVersion / backendGeneration /
         // readiness / session）：**只挑认识的字段，多出来的字段一律忽略**，
         // 否则老渲染层会把新字段当异常。
@@ -301,7 +303,7 @@ class Store {
         });
         break;
       case "log":
-        this.pushLog({ ts: event.ts, level: event.level, message: event.message, source: "backend", raw: JSON.stringify(event) });
+        this.pushLog({ ts: event.ts, level: event.level, message: event.message, source: "backend", raw: JSON.stringify(event), run_id: event.run_id, session_id: event.session_id });
         break;
       case "error":
         this.pushLog({ ts: new Date().toISOString(), level: "ERROR", message: event.message });
@@ -434,7 +436,9 @@ export async function callWithOutcome<T = unknown>(
   args: unknown = null,
 ): Promise<CallOutcome<T>> {
   const api = window.voxsub;
+  const requestStarted = performance.now();
   if (!api) {
+    recordIPC(command, "unavailable", 0);
     store.pushLog({
       ts: new Date().toISOString(),
       level: "ERROR",
@@ -446,6 +450,7 @@ export async function callWithOutcome<T = unknown>(
   await whenBackendReady();
 
   if (backendFailed) {
+    recordIPC(command, "unavailable", performance.now() - requestStarted);
     store.pushLog({
       ts: new Date().toISOString(),
       level: "ERROR",
@@ -458,8 +463,14 @@ export async function callWithOutcome<T = unknown>(
   if (modelChange) languageModelListener?.("begin");
   let result: CommandResult<T>;
   try { result = (await api.backend.command(command, args)) as CommandResult<T>; }
+  catch {
+    recordIPC(command, "unavailable", performance.now() - requestStarted);
+    store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: command + ": " + uiTranslator("回执状态未知，任务可能仍在运行") });
+    return { outcome: "unavailable", data: null, delivery: "unknown" };
+  }
   finally { if (modelChange) languageModelListener?.("end"); }
   const outcome = classifyCommandResult(result as CommandResultLike);
+  recordIPC(command, outcome, performance.now() - requestStarted);
   const delivery: CommandDelivery = result.delivery === "not_sent" ||
     result.delivery === "unknown" || result.delivery === "response"
     ? result.delivery

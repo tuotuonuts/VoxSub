@@ -148,6 +148,8 @@ except Exception:  # noqa: BLE001 - 日志设施不可用时退回标准库
 
 
 
+from voxsub.diagnostic_trace import traced_command
+
 class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHandlers, DiagnosticsHandlers, JobsHandlers):
     """把 voxsub 的能力翻译成协议命令。
 
@@ -163,6 +165,8 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         # 后台作业执行器。由 main() 在启动时注入 —— 命令实现只读它，
         # 不自己创建线程，避免"谁都能起线程"的失控。
         self._job_runner: Any = None
+        self._developer_enabled = False
+        self._diagnostic_results: list[dict[str, Any]] = []
 
     def bind_job_runner(self, runner: Any) -> None:
         """注入作业执行器（测试可直接传入假执行器）。"""
@@ -373,13 +377,14 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
                     except Exception:  # noqa: BLE001
                         return
                     entry = {"ts": log_timestamp(record.created), "level": record.levelname,
-                             "message": message}
+                             "message": message, "run_id": getattr(record, "run_id", ""),
+                             "session_id": getattr(record, "diagnostic_session_id", "-")}
                     self._outer._log_buffer.append(entry)  # noqa: SLF001
                     del self._outer._log_buffer[:-500]  # noqa: SLF001
                     _event("log", **entry)
 
             handler = _Bridge(self)
-            handler.setLevel(logging.INFO)
+            handler.setLevel(logging.DEBUG)
             handler.setFormatter(
                 logging.Formatter("%(name)s: %(message)s"))
             target.addHandler(handler)
@@ -398,6 +403,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
                    message="日志桥安装失败", ts=_now_iso())
 
     # ------------------------------------------------------------------ 分发
+    @traced_command
     def handle(self, command: str, args: Any) -> Any:
         args = args or {}
         if command == "ping":
@@ -479,7 +485,10 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
     def _cmd_get_config(self, args: dict[str, Any]) -> dict[str, Any]:
         from voxsub.config_store import ConfigStore  # noqa: PLC0415
 
-        return dict(ConfigStore().load())
+        config = dict(ConfigStore().load())
+        from voxsub.logging_setup import set_log_budget
+        set_log_budget(config.get("log_limit_mb", 50))
+        return config
 
     def _cmd_set_config(self, args: dict[str, Any]) -> dict[str, Any]:
         from voxsub.config_store import ConfigStore  # noqa: PLC0415
@@ -492,7 +501,13 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             config = {**dict(store.load()), **updates}
             self._pipeline.apply_language_model_config(config, updates)
         store.update({str(k): v for k, v in updates.items()})
-        return dict(store.load())
+        self._diagnostic_results = []
+        self._diagnostic_checked_at = None
+        config = dict(store.load())
+        if "log_limit_mb" in updates:
+            from voxsub.logging_setup import set_log_budget
+            set_log_budget(config["log_limit_mb"])
+        return config
 
     # ================================================================== 诊断
 
@@ -631,6 +646,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 for _name in (
     "list_models", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
+    "developer_mode", "diagnostic_snapshot", "diagnostic_session",
     "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",
     "detect_legacy", "plan_migration", "start_migration", "verify_copy",
     "write_model_snapshot", "cleanup_migrated_source", "migration_decision",

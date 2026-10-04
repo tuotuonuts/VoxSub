@@ -14,6 +14,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
@@ -46,6 +47,7 @@ from voxsub.file_transcriber import FileAudioDecoder, FileRecognizer
 from voxsub.language_guard import guard_text, normalize_language, text_matches_language
 from voxsub.live_draft import DraftTranslationRequest, DraftView, LiveDraftState
 from voxsub.logging_setup import get_logger
+from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result, traced_stage
 from voxsub.recording import WaveSessionRecorder
 from voxsub.realtime_builder import RealtimeBuildSpec, build_realtime_components
 from voxsub.subtitles import SubtitleExporter, SubtitleLine
@@ -510,7 +512,9 @@ class Pipeline:
         self._stop_finalizers = 0
         self._close_requested = False
         self._state = PipelineState.IDLE
+        self._diagnostic_session_id = ""
         self._provider = provider
+        self._diagnostic_capture = {"captured_chunks": 0, "paused_frames": 0, "queue_rejected_frames": 0}
         self._models_dir = Path(models) if models else models_dir()
         self._mode = "a"
         self._in_path: Optional[Path] = None          # C 模式输入文件
@@ -1153,6 +1157,7 @@ class Pipeline:
         self._emit_partial(preview)
 
     # ---- 组件构造 ----
+    @traced_stage("translation_load")
     def _ensure_translator(self, snapshot: _LangSnapshot | None = None) -> None:
         """惰性创建翻译器。
 
@@ -1249,6 +1254,8 @@ class Pipeline:
                 fallback = candidate
             else:
                 _close_quietly(candidate)
+        trace_record("translation", "fallback", source=pair[0], target=pair[1],
+                     fallback=str(fallback_kind), model=str(self._requested_trans_kind))
         self._translator, self._trans_kind = fallback, fallback_kind
         self._trans_pair = pair
         self._trans_substituted_from = self._requested_trans_kind if fallback_kind else None
@@ -1295,6 +1302,7 @@ class Pipeline:
         try:
             target.put(item, timeout=0.5)
         except queue.Full as exc:
+            trace_record("queue_overload", "failed", error_type=type(exc).__name__, error_code="queue_full")
             self._stop_evt.set()
             self._emit_status(message)
             raise RuntimeError(message) from exc
@@ -1311,8 +1319,10 @@ class Pipeline:
         """Resolve friendly presets to concrete values with safe bounds."""
         return resolve_tuning_values(self._asr_tuning, generative)
 
+    @traced_stage("model_load")
     def _build_real_time(self) -> None:
         """构建 A/B 模式实时组件 (惰性, 只建一次)。"""
+        trace_record("model_load", "started", model=str(self._requested_asr_model_id))
         cloud_ready = self._requested_stt_provider == "cloud" and self._cloud_stt is not None
         local_ready = self._requested_stt_provider != "cloud" and self._asr is not None
         if (self._vad is not None and self._seg is not None and
@@ -1403,6 +1413,7 @@ class Pipeline:
             "识别后端持续落后，音频分段缓存已满；任务已停止，请切换更轻量的识别模型",
         )
 
+    @traced_stage("recognition_result")
     def _on_sentence(self, text: str) -> None:
         """Recognition callback: validate and route an acoustic fragment."""
         text = str(text or "").strip()
@@ -1411,11 +1422,13 @@ class Pipeline:
         # **提交点快照**（缺陷 #9）：这句识别结果从这一刻起就固定用哪一对语言、
         # 哪一代配置。用户之后再切语言只影响**新**的句子，不会回头改写这句。
         snapshot = self._lang_snapshot()
+        model_result("recognition", text, expected=snapshot.src, source=snapshot.src,
+                     target=snapshot.dst, generation=snapshot.generation, model=str(self._requested_asr_model_id))
         try:
             text = guard_text(text, snapshot.src, kind="STT")
         except ValueError as exc:
-            logger.warning("STT 结果被语言约束拦截: source=%s text=%r reason=%s",
-                           snapshot.src, text[:160], exc)
+            logger.warning("STT 结果被语言约束拦截: source=%s chars=%d error_type=%s",
+                           snapshot.src, len(text), type(exc).__name__)
             self._emit_status("识别到其他语言，已忽略当前片段")
             return
         queued_at = time.monotonic()
@@ -1584,6 +1597,9 @@ class Pipeline:
         把不同配置下的失败混成同一个。
         """
         key = snapshot or self._lang_snapshot()
+        trace_error("translation", exc, source=key.src, target=key.dst, generation=key.generation,
+                    duration_ms=round(request_ms, 2), queue_wait_ms=queue_wait_ms,
+                    model=str(self._requested_trans_kind), input_chars=len(text))
         fail_key = (str(self._trans_kind), key.src, key.dst, key.generation)
         first_time = fail_key != self._pair_fail_key
         self._pair_fail_key = fail_key
@@ -1628,6 +1644,7 @@ class Pipeline:
             text, snapshot, queue_wait_ms, started)
         self._present_translation(text, translation, snapshot, speak=can_speak)
 
+    @traced_stage("translation")
     def _run_translation(self, text: str, snapshot: _LangSnapshot,
                          queue_wait_ms: float | None, started: float
                          ) -> tuple[str, bool]:
@@ -1637,7 +1654,13 @@ class Pipeline:
         这里，:meth:`_translate_sentence` 只负责编排与回调。
         """
         try:
+            trace_record("translation", "started", source=snapshot.src, target=snapshot.dst,
+                         generation=snapshot.generation, input_chars=len(text), queue_wait_ms=queue_wait_ms,
+                         model=str(self._requested_trans_kind), runtime=str(self._trans_kind))
             translation = self._translator.translate(text, snapshot.src, snapshot.dst)
+            model_result("translation", translation, expected=snapshot.dst, source=snapshot.src,
+                         target=snapshot.dst, generation=snapshot.generation,
+                         duration_ms=round((time.perf_counter() - started) * 1000, 2))
             if self._trans_kind is not None:
                 translation = guard_text(
                     translation, snapshot.dst, kind="translation")
@@ -1679,6 +1702,7 @@ class Pipeline:
                 if self._pause_evt.is_set() else "拾音中"
             )
 
+    @traced_stage("draft_translation")
     def _translate_draft(self, request: DraftTranslationRequest,
                          snapshot: _LangSnapshot | None = None) -> None:
         """Translate a revision and retain compatible lagging results.
@@ -1695,11 +1719,13 @@ class Pipeline:
         try:
             translation = self._translator.translate(
                 request.source, snapshot.src, snapshot.dst)
+            model_result("draft_translation", translation, expected=snapshot.dst, source=snapshot.src, target=snapshot.dst, generation=snapshot.generation)
             if self._trans_kind is not None:
                 translation = guard_text(
                     translation, snapshot.dst, kind="draft translation")
-        except Exception:
-            logger.debug("实时草稿翻译失败: source=%r", request.source[:160],
+        except Exception as exc:
+            trace_error("draft_translation", exc, source=snapshot.src, target=snapshot.dst, generation=snapshot.generation)
+            logger.debug("实时草稿翻译失败: chars=%d error_type=%s", len(request.source), type(exc).__name__,
                          exc_info=True)
             self._disable_quality_translator(snapshot)
             return
@@ -1816,6 +1842,7 @@ class Pipeline:
         # Keep integrations that enqueue raw PCM compatible with the queue.
         return np.asarray(item, dtype=np.float32), None, None
 
+    @traced_stage("recognition")
     def _decode_recognition_audio(self, audio: np.ndarray,
                                   snapshot: _LangSnapshot | None = None) -> str | None:
         client = self._cloud_stt if self._is_cloud_stt else self._asr
@@ -1855,6 +1882,9 @@ class Pipeline:
             client.reset(stream)
             return text
         except Exception as exc:
+            key = snapshot or self._lang_snapshot()
+            trace_error("recognition", exc, source=key.src, target=key.dst, generation=key.generation,
+                        audio_ms=round(audio.size * 1000.0 / SAMPLE_RATE, 2))
             kind = "云" if self._is_cloud_stt else "本地"
             logger.error(
                 "%s STT 片段失败: audio_ms=%.1f error=%s", kind,
@@ -1904,8 +1934,10 @@ class Pipeline:
     def start(self) -> None:
         if not self._claim_start():
             return
+        self._diagnostic_session_id = uuid.uuid4().hex[:12]
         # A newly admitted session must never advertise a previous session WAV.
         self._last_recording_path = None
+        self._diagnostic_capture = {"captured_chunks": 0, "paused_frames": 0, "queue_rejected_frames": 0}
         try:
             if not self._prepare_start():
                 self._cancel_start()
@@ -1982,6 +2014,7 @@ class Pipeline:
         self._emit_status(status)
 
     def _handle_start_failure(self, exc: Exception) -> None:
+        trace_error("model_load", exc)
         self._stop_evt.set()
         self._stop_tts_worker()
         recorder, self._recorder = self._recorder, None
@@ -2391,7 +2424,9 @@ class Pipeline:
                     logger.debug("释放音频源失败", exc_info=True)
 
     def _accept_capture_chunk(self, chunk: np.ndarray) -> None:
+        self._diagnostic_capture["captured_chunks"] += 1
         if self._pause_evt.is_set():
+            self._diagnostic_capture["paused_frames"] += int(chunk.size)
             # Drain WASAPI while paused, but omit samples from recording/ASR.
             return
         if self._recorder is not None:
@@ -2399,6 +2434,8 @@ class Pipeline:
         try:
             self._queue.put(chunk, timeout=0.5)
         except queue.Full as exc:
+            self._diagnostic_capture["queue_rejected_frames"] += int(chunk.size)
+            trace_record("capture_queue", "failed", error_type="Full", error_code="queue_full")
             raise RuntimeError(
                 "识别持续落后超过 10 分钟；为避免静默丢音已停止任务，"
                 "请改用更轻量模型或硬件加速"
@@ -2436,6 +2473,7 @@ class Pipeline:
                     continue
                 seg.feed(chunk)
         except Exception as exc:
+            trace_error("recognition", exc)
             logger.exception("ASR/VAD 处理线程失败")
             self._emit_status(f"识别处理错误: {exc}")
             self._set_state(PipelineState.FAILED)
@@ -2455,6 +2493,7 @@ class Pipeline:
                     self._translation_input_done.set()
 
     # ---- C 模式 (文件 → 双语字幕) ----
+    @traced_stage("file_session")
     def _run_file_mode(self) -> None:
         if self._in_path is None or not self._in_path.exists():
             self._emit_status("文件不存在")

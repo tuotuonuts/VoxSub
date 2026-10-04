@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://voxsub.local/contracts/commands.json",
   "title": "VoxSub IPC 命令契约",
-  "description": "每一条 IPC 命令的名称、参数、返回结果与可能错误码。命令集合由 ast 静态解析 frontend/backend/ipc_server.py 得到，共 56 条。与 frontend/src/renderer/protocol.ts 的 CMD 表逐项对齐（测试会断言双向相等）。",
+  "description": "每一条 IPC 命令的名称、参数、返回结果与可能错误码。命令集合由 ast 静态解析 frontend/backend/ipc_server.py 得到，共 59 条。与 frontend/src/renderer/protocol.ts 的 CMD 表逐项对齐（测试会断言双向相等）。",
   "protocolVersion": "2.0.0",
   "generatedFrom": {
     "python": [
@@ -379,6 +379,12 @@
         },
         "detail": {
           "type": "string"
+        },
+        "suggestion": {
+          "type": "string"
+        },
+        "impact": {
+          "type": "string"
         }
       }
     },
@@ -398,6 +404,12 @@
           "type": "string"
         },
         "message": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "session_id": {
           "type": "string"
         }
       }
@@ -1651,8 +1663,8 @@
       "handleSpecial": false,
       "needsPipeline": false,
       "returnsNone": false,
-      "summary": "跑一遍自检项。",
-      "source": "ipc_server.py:847",
+      "summary": "只读快速检查当前配置，不加载模型、不采集音频。导出复用最后快照。",
+      "source": "handlers/diagnostics.py::_cmd_run_self_check",
       "args": {
         "type": [
           "object",
@@ -1679,6 +1691,13 @@
             "items": {
               "$ref": "#/$defs/SelfCheckItem"
             }
+          },
+          "scope": {
+            "type": "string",
+            "const": "quick_read_only"
+          },
+          "checked_at": {
+            "type": "number"
           }
         }
       },
@@ -1693,7 +1712,7 @@
       "handleSpecial": false,
       "needsPipeline": false,
       "returnsNone": false,
-      "summary": "导出诊断报告。给了 path 就写盘并回 {path,bytes}，否则回 {text}。log_text 会被拼在报告之后（日志导出复用同一入口）。",
+      "summary": "导出最后检查快照与脱敏元数据。普通日志正文默认省略，只保留 allowlist MODEL_TRACE 字段；不重新自检。",
       "source": "ipc_server.py:859",
       "args": {
         "type": [
@@ -1716,6 +1735,10 @@
             "type": "boolean",
             "default": false,
             "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          },
+          "environment": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
@@ -1773,7 +1796,8 @@
           "limit": {
             "type": "integer",
             "default": 200,
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 2000
           },
           "source": {
             "enum": [
@@ -1807,6 +1831,9 @@
               },
               "source": {
                 "const": "memory"
+              },
+              "run_id": {
+                "type": "string"
               }
             }
           },
@@ -1827,6 +1854,9 @@
               },
               "lines": {
                 "type": "integer"
+              },
+              "run_id": {
+                "type": "string"
               }
             }
           }
@@ -3452,6 +3482,229 @@
       ],
       "controlCommand": false,
       "source": "frontend/backend/handlers/session.py:_cmd_language_capabilities"
+    },
+    "developer_mode": {
+      "implementedBy": "_cmd_developer_mode",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": true,
+      "summary": "本进程开发者模式开关；关闭时结束详细日志，不持久化。",
+      "source": "handlers/diagnostics.py::_cmd_developer_mode",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "errors": [
+        "ValueError"
+      ]
+    },
+    "diagnostic_session": {
+      "implementedBy": "_cmd_diagnostic_session",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": true,
+      "summary": "开发者模式内开启/结束/读取有界详细日志；不是权限或安全绕过。",
+      "source": "handlers/diagnostics.py::_cmd_diagnostic_session",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "start",
+              "stop",
+              "status"
+            ]
+          },
+          "seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 1200,
+            "default": 300
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "session_id",
+              "started_at",
+              "expires_at",
+              "remaining_seconds"
+            ],
+            "properties": {
+              "session_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "remaining_seconds": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "errors": [
+        "PermissionError",
+        "ValueError"
+      ]
+    },
+    "diagnostic_snapshot": {
+      "implementedBy": "_cmd_diagnostic_snapshot",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": false,
+      "summary": "开发者模式只读运行与环境快照；不加载模型或采集音频、不含正文及标识符。",
+      "source": "handlers/diagnostics.py::_cmd_diagnostic_snapshot",
+      "args": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "type": "boolean",
+            "default": false
+          },
+          "async": {
+            "type": "boolean",
+            "default": false,
+            "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "version",
+          "checked_at",
+          "boundary",
+          "configuration",
+          "pipeline",
+          "trace",
+          "verbose_session",
+          "available_memory_mb",
+          "process_rss_mb",
+          "language_detection_boundary"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "checked_at": {
+            "type": "string"
+          },
+          "boundary": {
+            "type": "string"
+          },
+          "configuration": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "pipeline": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "trace": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "verbose_session": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "session_id",
+              "started_at",
+              "expires_at",
+              "remaining_seconds"
+            ],
+            "properties": {
+              "session_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string"
+              },
+              "remaining_seconds": {
+                "type": "integer"
+              }
+            }
+          },
+          "environment": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "process_rss_mb": {
+            "type": "integer"
+          },
+          "available_memory_mb": {
+            "type": "integer"
+          },
+          "language_detection_boundary": {
+            "type": "string"
+          }
+        }
+      },
+      "errors": [
+        "PermissionError",
+        "OSError"
+      ]
     }
   }
 }

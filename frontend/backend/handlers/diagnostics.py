@@ -16,38 +16,81 @@ from typing import Any
 from ipc_protocol import _event
 
 
+def _check_signature(config: dict[str, Any]) -> tuple:
+    keys = ("mode", "lang_pair", "stt_provider", "asr_model_id", "translate_tier", "translate_model_id",
+            "models_root", "mic_device_id", "loopback_device_id", "capture_process_id", "record_with_translation")
+    return tuple((key, config.get(key)) for key in keys)
+
+
 class DiagnosticsHandlers:
     """诊断：自检、导出、日志、更新日志、设备与硬件档案。"""
 
     def _cmd_run_self_check(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.diagnostics import run_self_check  # noqa: PLC0415
-
-        results = []
-        for item in run_self_check():
-            results.append({
-                "check": str(item.get("check", "")),
-                "status": str(item.get("status", "")),
-                "detail": str(item.get("detail", "")),
-            })
-        return {"results": results}
+        from voxsub.config_store import ConfigStore
+        from voxsub.diagnostic_runtime import quick_checks
+        config = dict(ConfigStore().load())
+        results = quick_checks(config, self._pipeline)
+        self._diagnostic_configuration = _check_signature(config)
+        self._diagnostic_results = results
+        self._diagnostic_checked_at = time.time()
+        return {"results": results, "scope": "quick_read_only", "checked_at": time.time()}
 
     def _cmd_export_diagnostics(self, args: dict[str, Any]) -> dict[str, Any]:
-        """导出诊断报告；可附带日志文本（诊断页「导出日志」）。"""
-        from voxsub.diagnostics import export_report  # noqa: PLC0415
-
+        """Export latest check snapshot, never rerun smoke tests or include raw content."""
+        from voxsub.config_store import ConfigStore
+        from voxsub.diagnostics import export_report
+        from voxsub.diagnostic_privacy import export_logs, redact
+        from voxsub.diagnostic_runtime import diagnostic_snapshot
         path = Path(str(args.get("path", "")))
-        text = export_report()
-
-        # 日志导出复用同一入口：把日志附在报告之后，而不是另建命令
+        config = dict(ConfigStore().load())
+        cached_current = getattr(self, "_diagnostic_configuration", None) == _check_signature(config)
+        results = getattr(self, "_diagnostic_results", []) if cached_current else []
+        snapshot = diagnostic_snapshot(config, self._pipeline,
+                                       environment=bool(args.get("environment")) and getattr(self, "_developer_enabled", False))
+        snapshot["self_check_at_unix"] = getattr(self, "_diagnostic_checked_at", None) if cached_current else None
+        snapshot["self_check_scope"] = "cached_current_configuration" if cached_current else "not_run_or_configuration_changed"
+        text = redact(export_report(results)) + "\n" + json.dumps(snapshot, ensure_ascii=False, indent=2)
         log_text = str(args.get("log_text") or "")
         if log_text:
-            text = f"{text}\n\n{'=' * 60}\n日志快照\n{'=' * 60}\n{log_text}\n"
-
+            text += "\nLOG_METADATA\n" + export_logs(log_text) + "\n"
         if path.parent and str(path) != ".":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
             return {"path": str(path), "bytes": len(text.encode("utf-8"))}
         return {"text": text}
+
+    def _cmd_developer_mode(self, args: dict[str, Any]) -> dict[str, Any]:
+        from voxsub.logging_setup import stop_diagnostic_session
+        enabled = args.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be boolean")
+        self._developer_enabled = enabled
+        if not enabled:
+            stop_diagnostic_session()
+        return {"enabled": enabled}
+
+    def _cmd_diagnostic_snapshot(self, args: dict[str, Any]) -> dict[str, Any]:
+        from voxsub.config_store import ConfigStore
+        from voxsub.diagnostic_runtime import diagnostic_snapshot
+        if not getattr(self, "_developer_enabled", False):
+            raise PermissionError("Developer mode is disabled")
+        return diagnostic_snapshot(ConfigStore().load(), self._pipeline,
+                                   environment=bool(args.get("environment")))
+
+    def _cmd_diagnostic_session(self, args: dict[str, Any]) -> dict[str, Any]:
+        from voxsub.logging_setup import start_diagnostic_session, stop_diagnostic_session, diagnostic_session_snapshot
+        if not getattr(self, "_developer_enabled", False):
+            raise PermissionError("Developer mode is disabled")
+        if args.get("action") == "start":
+            duration = args.get("seconds", 300)
+            if not isinstance(duration, int) or isinstance(duration, bool) or not 60 <= duration <= 1200:
+                raise ValueError("Duration must be 60..1200 seconds")
+            start_diagnostic_session(duration)
+        elif args.get("action") == "stop":
+            stop_diagnostic_session()
+        elif args.get("action") != "status":
+            raise ValueError("Unknown session action")
+        return {"session": diagnostic_session_snapshot()}
 
     def _cmd_recent_logs(self, args: dict[str, Any]) -> dict[str, Any]:
         """最近的日志。
@@ -56,16 +99,17 @@ class DiagnosticsHandlers:
         source="file" 读磁盘 voxsub.log 的尾部，能拿到历史运行记录——
         排障时用户要的通常是后者（崩溃发生在下次启动之前）。
         """
-        limit = int(args.get("limit", 200) or 200)
+        from voxsub.diagnostic_trace import RUN_ID
+        limit = max(1, min(2000, int(args.get("limit", 200) or 200)))
         source = str(args.get("source", "memory"))
 
         if source == "file":
             from voxsub.logging_setup import tail_log_file  # noqa: PLC0415
 
             text = tail_log_file(limit)
-            return {"text": text, "source": "file", "lines": len(text.splitlines())}
+            return {"text": text, "source": "file", "lines": len(text.splitlines()), "run_id": RUN_ID}
 
-        return {"logs": self._log_buffer[-limit:], "source": "memory"}
+        return {"logs": self._log_buffer[-limit:], "source": "memory", "run_id": RUN_ID}
 
     def _cmd_clear_logs(self, args: dict[str, Any]) -> dict[str, Any]:
         """清除本机日志文件（保留模型、配置、凭据、已导出报告）。

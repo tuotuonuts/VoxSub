@@ -16,6 +16,7 @@ import numpy as np
 from voxsub.audio import resample_16k
 from voxsub.language_guard import guard_text
 from voxsub.logging_setup import get_logger
+from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result
 from voxsub.subtitles import SubtitleLine
 
 logger = get_logger("file_transcriber")
@@ -424,13 +425,19 @@ class FileRecognizer:
         emitted = last_progress if last_progress is not None else [-1]
         total = max(1, len(lines))
         for index, line in enumerate(lines, start=1):
+            started = time.perf_counter()
+            trace_record("file_translation", "started", source=source_lang, target=target_lang, input_chars=len(line.text))
             try:
                 line.translation = translator.translate(
                     line.text, source_lang, target_lang)
+                model_result("file_translation", line.translation, expected=target_lang, source=source_lang, target=target_lang,
+                             duration_ms=round((time.perf_counter() - started) * 1000, 2))
                 if validate_translation:
                     line.translation = guard_text(
                         line.translation, target_lang, kind="translation")
             except Exception as exc:
+                trace_error("file_translation", exc, source=source_lang, target=target_lang,
+                            duration_ms=round((time.perf_counter() - started) * 1000, 2))
                 # Keep diagnostics actionable without writing subtitle/audio
                 # contents to logs or Sentry.
                 logger.warning(

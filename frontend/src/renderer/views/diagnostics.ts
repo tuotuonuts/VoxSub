@@ -1,3 +1,5 @@
+import { developerEnabled, checkSummary, matchesLog, pipelineSession } from "../../shared/diagnostic-controls";
+import { buildDeveloperTab } from "./developer";
 /**
  * 诊断页 —— 对应原 Qt 版 diagnostics_window.py（1038 行）。
  *
@@ -26,6 +28,23 @@ let resultsEl: HTMLElement | null = null;
 let logEl: HTMLElement | null = null;
 let deviceEl: HTMLElement | null = null;
 let logStateEl: HTMLElement | null = null;
+let checkRevision = 0;
+let fileRevision = 0;
+let logLevel = "all";
+let logQuery = "";
+let currentRunOnly = false;
+let currentRunId = "";
+let logPaused = false;
+let pipelineSessionOnly = false;
+let currentPipelineSession = "";
+let developerPage: PageHandle | null = null;
+
+function visibleLogs(): LogEntry[] {
+  const entries = logSource === "file" ? fileEntries : store.get().logs.slice(-300);
+  if (pipelineSessionOnly) currentPipelineSession = [...entries].reverse().map(e => pipelineSession(e.message)).find(Boolean) || "";
+  return entries.filter(entry => matchesLog(entry, logLevel, logQuery, currentRunOnly ? currentRunId || "unknown" : "") &&
+    (!pipelineSessionOnly || pipelineSession(entry.message) === (currentPipelineSession || "unknown")));
+}
 
 /**
  * 页面是否已失效。
@@ -45,6 +64,7 @@ let fileEntries: LogEntry[] = [];
 async function runCheck(): Promise<void> {
   if (!resultsEl) return;
   const target = resultsEl;
+  const revision = ++checkRevision;
   target.replaceChildren(h("p", { class: "hint", text: tr("正在检查…") }));
 
   const result = await call<{ results: SelfCheckItem[] }>(CMD.runSelfCheck);
@@ -53,7 +73,7 @@ async function runCheck(): Promise<void> {
   // 自检要跑 4-6 秒；期间用户可能切走分页或关掉诊断页，
   // 那时 resultsEl 已被置空、target 也已脱离文档。这里必须复查，
   // 不能再依赖函数开头那次判断（否则 await 之后会往 null 上写而抛错）。
-  if (detached || !resultsEl || resultsEl !== target) return;
+  if (detached || !resultsEl || resultsEl !== target || revision !== checkRevision) return;
 
   const list = h("div", { class: "check-list" });
   for (const item of items) {
@@ -61,22 +81,28 @@ async function runCheck(): Promise<void> {
     list.append(buildStatusRow({
       level: item.status,
       name: item.check,
-      detail: item.detail,
+      detail: [tr(item.status === "ok" ? "通过" : item.status === "fail" ? "异常" : item.status === "resource_limited" ? "资源不足" : item.status === "running" ? "检查中" : item.status === "not_run" ? "未检查" : "需要注意"), " · ", item.detail, item.impact ? " · " + tr("影响") + ": " + item.impact : "", item.suggestion ? " · " + tr("建议") + ": " + item.suggestion : ""],
     }));
   }
 
-  const summary = items.every((i) => i.status === "ok")
-    ? `全部 ${items.length} 项正常`
-    : `${items.filter((i) => i.status !== "ok").length} 项需要注意`;
+  const verdict = checkSummary(items);
+  const summary = verdict === "not_run" ? tr("未检查：没有有效结果，不能判定正常")
+    : verdict === "ok" ? tr("已执行的检查项通过；未检查的链路不作保证")
+    : tr("存在异常或未验证项目，请查看影响与建议");
   target.replaceChildren(
     h("p", { class: "check-summary", text: summary }),
     list,
   );
 }
 
+function confirmDiagnosticExport(): boolean {
+  return window.confirm(tr("导出包含版本、检查时间、检查范围和脱敏运行元数据；不含音频、识别/翻译正文及历史。普通日志正文默认省略。继续？"));
+}
+
 async function exportReport(): Promise<void> {
   const api = window.voxsub;
   if (!api) return;
+  if (!confirmDiagnosticExport()) return;
   const target = await api.dialog.saveReport();
   if (!target) return;
   await call(CMD.exportDiagnostics, { path: target });
@@ -87,7 +113,8 @@ function renderLog(): void {
 
   if (logSource === "file") return; // 文件模式由 renderFileLog 负责
 
-  const logs = store.get().logs;
+  if (logPaused) return;
+  const logs = visibleLogs();
   if (logs.length === 0) {
     logEl.replaceChildren(h("p", { class: "hint", text: tr("暂无日志") }));
     return;
@@ -107,44 +134,35 @@ function renderLog(): void {
     return row;
   });
   logEl.replaceChildren(...rows);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (!logPaused) logEl.scrollTop = logEl.scrollHeight;
 }
 
 /** 读磁盘日志（含历史运行记录）——排障时用户真正需要的那份。 */
 async function renderFileLog(): Promise<void> {
   if (!logEl) return;
-  logEl.replaceChildren(h("p", { class: "hint", text: tr("正在读取日志文件…") }));
+  const target = logEl;
+  const revision = ++fileRevision;
+  target.replaceChildren(h("p", { class: "hint", text: tr("正在读取日志文件…") }));
+  const result = await call<{ text: string; lines: number; run_id?: string }>(CMD.recentLogs, { limit: 500, source: "file" });
+  if (detached || logEl !== target || revision !== fileRevision || logSource !== "file") return;
+  if (result?.run_id) currentRunId = result.run_id;
+  fileEntries = parseFileLogs(result?.text ?? "");
+  renderFileEntries();
+}
 
-  const result = await call<{ text: string; lines: number }>(CMD.recentLogs, {
-    limit: 500,
-    source: "file",
-  });
-  const text = result?.text ?? "";
-
-  fileEntries = [];
-  if (!text.trim()) {
-    logEl.replaceChildren(h("p", { class: "hint", text: tr("日志文件为空或尚未生成") }));
-    if (logStateEl) logStateEl.textContent = tr("文件 · 空");
-    return;
-  }
-
-  // 文件日志是纯文本，按行渲染并识别级别。
-  // 用共享的 guessStderrLevel：此前这里是 /(ERROR|CRITICAL)/.test(line)，
-  // 匹配整行的话，正文里提到 "ERROR" 的 INFO 行也会被误标成错误级别。
-  fileEntries = parseFileLogs(text);
-  const rows = fileEntries.map((entry) => {
-    const level = entry.level;
-    const row = h("div", { class: `log-row log-row--${level.toLowerCase()}` });
-    row.append(
-      h("span", { class: "log-row__ts", text: formatLogTime(entry, tr), title: entry.raw ?? "" }),
-      h("span", { class: "log-row__level", text: level }),
-      h("span", { class: "log-row__msg", text: entry.message }),
-    );
+function renderFileEntries(): void {
+  if (!logEl || logSource !== "file" || logPaused) return;
+  const entries = visibleLogs();
+  const rows = entries.map(entry => {
+    const row = h("div", { class: "log-row log-row--" + entry.level.toLowerCase() });
+    row.append(h("span", { class: "log-row__ts", text: formatLogTime(entry, tr), title: entry.raw ?? "" }),
+                h("span", { class: "log-row__level", text: entry.level }),
+                h("span", { class: "log-row__msg", text: entry.message }));
     return row;
   });
-  logEl.replaceChildren(...rows);
+  logEl.replaceChildren(...(rows.length ? rows : [h("p", { class: "hint", text: tr("暂无匹配日志") })]));
   logEl.scrollTop = logEl.scrollHeight;
-  if (logStateEl) logStateEl.textContent = `${tr("文件")} · ${result?.lines ?? rows.length} ${tr("行")}`;
+  if (logStateEl) logStateEl.textContent = tr("文件") + " · " + rows.length + " " + tr("行");
 }
 
 export function refreshLogView(): void {
@@ -153,6 +171,7 @@ export function refreshLogView(): void {
 
 async function loadDevicesAndHardware(): Promise<void> {
   if (!deviceEl) return;
+  const target = deviceEl;
   const [devices, profile] = await Promise.all([
     call<{ devices: DeviceEntry[] }>(CMD.listDevices),
     call<HardwareProfile>(CMD.hardwareProfile),
@@ -160,7 +179,7 @@ async function loadDevicesAndHardware(): Promise<void> {
 
   // 页面可能在这两次请求期间被关掉/替换（deviceEl 已被置空）。
   // 原先这里直接 `deviceEl.replaceChildren(...)`，会往 null 上写而抛错。
-  if (detached || !deviceEl) return;
+  if (detached || !deviceEl || target !== deviceEl) return;
 
   const blocks: HTMLElement[] = [];
 
@@ -169,7 +188,7 @@ async function loadDevicesAndHardware(): Promise<void> {
       ["CPU", `${profile.cpu}（${profile.physicalCores}核 / ${profile.logicalCores}线程）`],
       ["内存", `${profile.ramGb.toFixed(1)} GB`],
       ["显卡", profile.gpu ? `${profile.gpu}（${profile.vramGb.toFixed(1)} GB）` : "未检测到独立显卡"],
-      ["推理后端", profile.gpuProvider || "CPU"],
+      [tr("可用推理后端（非实际运行设备）"), profile.gpuProvider || "CPU"],
       ["NPU", profile.npu || "未检测到"],
     ];
     const card = h("section", { class: "card" });
@@ -185,7 +204,7 @@ async function loadDevicesAndHardware(): Promise<void> {
   }
 
   const deviceCard = h("section", { class: "card" });
-  deviceCard.append(h("h3", { class: "card__title", text: tr("运行设备") }));
+  deviceCard.append(h("h3", { class: "card__title", text: tr("检测到的设备（运行未验证）") }));
   const deviceBody = h("div", { class: "card__body" });
   for (const device of devices?.devices ?? []) {
     const row = h("div", { class: "kv" });
@@ -212,6 +231,16 @@ export function buildDiagnostics(): PageHandle {
     { label: tr("自检结果"), build: buildCheckTab },
     { label: tr("实时日志"), build: buildLogTab },
     { label: tr("硬件"), build: buildDeviceTab },
+    ...(developerEnabled() ? [{ label: tr("开发者"), build: (): HTMLElement => {
+      developerPage = buildDeveloperTab(() => {
+        const last = nav.lastElementChild as HTMLElement | null;
+        if (last) last.hidden = true;
+        current = 0;
+        nav.querySelectorAll(".settings__tab").forEach((n, i) => n.classList.toggle("is-active", i === 0));
+        renderPane();
+      });
+      return developerPage.element;
+    } }] : []),
   ];
 
   const nav = h("nav", { class: "settings__nav", role: "tablist" });
@@ -220,6 +249,8 @@ export function buildDiagnostics(): PageHandle {
   let current = 0;
 
   const renderPane = (): void => {
+    developerPage?.dispose(); developerPage = null;
+    checkRevision++; fileRevision++;
     // 切换分页时把旧页的 DOM 引用置空：上一个分页的异步回调
     // （自检要跑 4-6 秒）如果继续往旧节点写，就会白做工。
     resultsEl = null;
@@ -263,6 +294,8 @@ export function detachDiagnostics(): void {
 
 function detach(): void {
   detached = true;
+  checkRevision++; fileRevision++;
+  developerPage?.dispose(); developerPage = null;
   resultsEl = null;
   logEl = null;
   deviceEl = null;
@@ -287,6 +320,30 @@ function buildCheckTab(): HTMLElement {
 
 function buildLogTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
+
+  const filters = h("div", { class: "tuning-actions diagnostic-actions" });
+  const level = h("select", { class: "select", "aria-label": tr("日志级别") });
+  for (const value of ["all", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]) level.append(h("option", { value, text: value === "all" ? tr("全部级别") : value }));
+  level.value = logLevel;
+  const query = h("input", { class: "input", placeholder: tr("搜索日志关键词"), value: logQuery, "aria-label": tr("搜索日志关键词") });
+  const session = h("button", { class: "btn btn--ghost", type: "button", text: tr("仅本次运行") });
+  session.setAttribute("aria-pressed", String(currentRunOnly));
+  const taskSession = h("button", { class: "btn btn--ghost", type: "button", text: tr("仅本次模型会话") });
+  taskSession.setAttribute("aria-pressed", String(pipelineSessionOnly));
+  on(taskSession, "click", () => {
+    pipelineSessionOnly = !pipelineSessionOnly;
+    const entries = logSource === "file" ? fileEntries : store.get().logs;
+    currentPipelineSession = [...entries].reverse().map(e => pipelineSession(e.message)).find(Boolean) || "";
+    taskSession.setAttribute("aria-pressed", String(pipelineSessionOnly)); redraw();
+  });
+  const pause = h("button", { class: "btn btn--ghost", type: "button", text: tr(logPaused ? "恢复滚动" : "暂停滚动") });
+  const redraw = (): void => { if (logSource === "file") renderFileEntries(); else renderLog(); };
+  on(level, "change", () => { logLevel = level.value; redraw(); });
+  on(query, "input", () => { logQuery = query.value; redraw(); });
+  on(session, "click", () => { currentRunOnly = !currentRunOnly; session.setAttribute("aria-pressed", String(currentRunOnly)); redraw(); });
+  on(pause, "click", () => { logPaused = !logPaused; pause.textContent = tr(logPaused ? "恢复滚动" : "暂停滚动"); if (!logPaused) redraw(); });
+  filters.append(level, query, session, taskSession, pause); page.append(filters);
+  void call<{ run_id: string }>(CMD.recentLogs, { limit: 1 }).then(result => { if (!detached && result?.run_id) { currentRunId = result.run_id; redraw(); } });
 
   // 来源切换：实时（本次运行） / 文件（含历史运行）
   const actions = h("div", { class: "tuning-actions" });
@@ -371,10 +428,11 @@ async function exportLog(): Promise<void> {
   const api = window.voxsub;
   if (!api) return;
 
+  if (!confirmDiagnosticExport()) return;
   const target = await api.dialog.saveReport();
   if (!target) return;
 
-  const text = exportLogEntries(logSource === "file" ? fileEntries : store.get().logs.slice(-300), tr);
+  const text = exportLogEntries(visibleLogs(), tr);
 
   const saved = await call<{ path: string }>(CMD.exportDiagnostics, {
     path: target,

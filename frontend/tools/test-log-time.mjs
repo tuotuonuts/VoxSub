@@ -5,6 +5,8 @@ process.env.TZ = "Asia/Kuala_Lumpur";
 const dom = installMiniDom();
 const mod = await importShared("tools/test-log-time-entry.ts", { bundle: true });
 const { store } = mod;
+// Explicit privacy-export consent; cancellation is covered by diagnostics-observability.
+dom.window.confirm = () => true;
 store.applyEvent({ type: "job", jobId: "fixture", command: "run_self_check", status: "running", sequence: 1, ts: "2026-09-26T17:25:20.775Z" });
 const job = store.get().logs.at(-1);
 assert.equal(job.ts, "2026-09-26T17:25:20.775Z", "job log retains producer event time, not renderer now");

@@ -175,9 +175,9 @@ console.log("\n=== 组件边界 ===\n");
     cleanupCall.arguments[0].text === "records"));
   check("迁移页：弹出的确认位于闸门 ask 回调", Boolean(confirmGate?.arguments[0] &&
     ts.isArrowFunction(confirmGate.arguments[0]) && hasWindowConfirm(confirmGate.arguments[0])));
-  // window.confirm 只应出现在这两个闸门的 ask 里
+  // 两个破坏性清理闸门 + 一个共享的隐私导出确认，不能重复问或漏问
   const confirms = [...diag.matchAll(/window\.confirm\(/g)].length + [...mig.matchAll(/window\.confirm\(/g)].length;
-  check("两处确认弹窗都只剩闸门里的一次调用", confirms === 2, `共 ${confirms} 处 window.confirm`);
+  check("两个清理闸门与共享隐私导出确认各仅一次", confirms === 3, `共 ${confirms} 处 window.confirm`);
 }
 
 finish();

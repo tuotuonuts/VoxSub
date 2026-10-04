@@ -117,6 +117,8 @@ _DEFAULTS: dict[str, Any] = {
     "capture_window_title": "",
     "last_input_file": "",
     "debug_mode": False,
+    "log_limit_mb": 50,  # total voxsub.log rotations; stored in binary MB
+    "log_limit_unit": "MB",
     # Optional Sentry settings.  The DSN is a public project identifier, but
     # it remains local-only and is never included in telemetry payloads.
     "sentry_dsn": "",
@@ -178,6 +180,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
     choices={
         "language": frozenset({"system", "zh", "en"}),
         "theme": frozenset({"system", "light", "dark"}),
+        "log_limit_unit": frozenset({"MB", "GB"}),
         "mode": frozenset({"a", "b", "c", "d"}),
         "lang_pair": frozenset({
             "zh-en", "en-zh", "zh-ja", "ja-zh", "zh-ko", "ko-zh",
@@ -209,6 +212,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "overlay_line_gap": (0, 40),
         "overlay_opacity": (0.2, 1.0),
         "ocr_cache_limit": (0, 10_000),
+        "log_limit_mb": (10, 10240),
     },
 )
 

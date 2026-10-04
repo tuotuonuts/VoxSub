@@ -655,6 +655,12 @@
           },
           "message": {
             "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
           }
         }
       }

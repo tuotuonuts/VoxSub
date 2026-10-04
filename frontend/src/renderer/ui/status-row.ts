@@ -49,12 +49,18 @@ const LEVEL_CLASS: Record<string, string> = {
   ok: "is-ok",
   warn: "is-warn",
   fail: "is-fail",
+  not_run: "",
+  running: "",
+  resource_limited: "is-warn",
 };
 
 const LEVEL_MARK: Record<string, string> = {
   ok: "✓",
   warn: "!",
   fail: "✕",
+  not_run: "—",
+  running: "…",
+  resource_limited: "!",
 };
 
 /** 状态 → 类名后缀；未知状态返回空串（与原先的 `?? ""` 一致）。 */

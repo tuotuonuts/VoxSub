@@ -1,3 +1,5 @@
+import { DeveloperGesture, developerEnabled, setDeveloperEnabled } from "../../shared/diagnostic-controls";
+import { buildLogCapacity } from "./log-capacity";
 /**
  * 设置页 —— 对应原 Qt 版 settings_window.py（1905 行，6 个分页）。
  *
@@ -738,12 +740,37 @@ function aboutTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
   const state = store.get();
 
+  const gesture = new DeveloperGesture();
+  const version = h("button", { class: "btn btn--ghost", type: "button", text: state.version || "—" });
+  const developerControl = h("div", { class: "tuning-actions" });
+  const refreshDeveloper = (): void => {
+    developerControl.replaceChildren();
+    if (!developerEnabled()) return;
+    developerControl.append(h("span", { class: "hint", text: tr("开发者模式已开启：请进入诊断页查看；重启后关闭") }));
+    const close = h("button", { type: "button", class: "btn btn--ghost", text: tr("关闭开发者模式") });
+    on(close, "click", async () => {
+      const result = await call<{ enabled: boolean }>(CMD.developerMode, { enabled: false });
+      if (result?.enabled === false) { setDeveloperEnabled(false); refreshDeveloper(); }
+    });
+    developerControl.append(close);
+  };
+  let enabling = false;
+  on(version, "click", async () => {
+    if (enabling || developerEnabled() || !gesture.hit(performance.now())) return;
+    if (!window.confirm(tr("开启开发者模式？仅本次启动有效，不自动录音、上传或解除保护。"))) return;
+    enabling = true;
+    try { const result = await call<{ enabled: boolean }>(CMD.developerMode, { enabled: true });
+      if (result?.enabled === true) { setDeveloperEnabled(true); refreshDeveloper(); }
+    } finally { enabling = false; }
+  });
+  refreshDeveloper();
+
   // 这里只放用户关心的事实（版本、来源）。
   // 不写"前端 Electron / 后端 Python"这类实现细节：对使用者没有意义，
   // 而且换技术栈就会过期，属于会腐烂的信息。
   page.append(
     card(tr("关于"), [
-      field("版本", h("span", { class: "readonly-value", text: state.version || "—" })),
+      field("版本", version),
       field("GitHub", h("a", {
         class: "link",
         href: "https://github.com/tuotuonuts/VoxSub",
@@ -753,6 +780,8 @@ function aboutTab(): HTMLElement {
       })),
     ]),
   );
+
+  page.append(developerControl);
 
   // 更新日志：默认只显示最近一版，可展开历史（与原 Qt 版一致）
   page.append(buildReleaseNotes());
@@ -767,6 +796,11 @@ function aboutTab(): HTMLElement {
  */
 function storageTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
+  page.append(buildLogCapacity(config, async updates => {
+    const result = await call<Config>(CMD.setConfig, { updates });
+    if (!result) throw new Error("Configuration save failed");
+    config = result;
+  }));
 
   const modelsRoot = String(config["models_root"] ?? "");
   const modelsMode = String(config["models_root_mode"] ?? "default");

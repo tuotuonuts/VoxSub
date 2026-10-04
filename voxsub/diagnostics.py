@@ -544,12 +544,16 @@ def export_report(results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ..
     items = [dict(item) for item in results] if results is not None else run_self_check()
     n_fail = sum(1 for i in items if i["status"] == "fail")
     n_warn = sum(1 for i in items if i["status"] == "warn")
-    if n_fail:
-        conclusion = f"存在 {n_fail} 项失败, 建议修复后再使用"
+    if not items:
+        conclusion = "未检查：尚无自检结果，不能判定正常"
+    elif n_fail:
+        conclusion = f"存在 {n_fail} 项失败, 建议修复后再使用；未检查项目不作保证"
+    elif any(i.get("status") not in {"ok", "warn", "fail"} for i in items):
+        conclusion = "检查范围有限：存在未检查、检查中或资源不足项目，不能判定全部通过"
     elif n_warn:
-        conclusion = f"基本可用, 存在 {n_warn} 项警告 (不影响核心字幕流程)"
+        conclusion = f"存在 {n_warn} 项警告，需确认对当前任务的影响"
     else:
-        conclusion = "全部通过, 可正常使用"
+        conclusion = "已执行的检查项全部通过（不代表未检查的硬件/模型链路通过）"
 
     lines = [
         "=" * 56,
@@ -560,12 +564,14 @@ def export_report(results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ..
         "-" * 56,
     ]
     for item in items:
-        icon = _STATUS_ICON.get(item["status"], "[??]  ")
+        icon = {"not_run": "[NOT_RUN] ", "running": "[RUNNING] ", "resource_limited": "[RESOURCE_LIMITED] "}.get(item["status"], _STATUS_ICON.get(item["status"], "[??]  "))
         lines.append(f"{icon} {item['check']}: {item['detail']}")
+        if item.get("impact"):
+            lines.append(f"       影响: {item['impact']}")
         if item.get("suggestion") and item["suggestion"] != "无需处理":
             lines.append(f"       建议: {item['suggestion']}")
     lines.append("-" * 56)
-    lines.append(f"共 {len(items)} 项: {len(items) - n_fail - n_warn} ok / {n_warn} warn / {n_fail} fail")
+    lines.append(f"共 {len(items)} 项: {sum(1 for i in items if i.get("status") == "ok")} ok / {n_warn} warn / {n_fail} fail")
     return "\n".join(lines) + "\n"
 
 

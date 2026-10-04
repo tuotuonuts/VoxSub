@@ -9,7 +9,7 @@ export function parseFileLogs(text: string, receivedAtMs = Date.now()): LogEntry
   return text.split(/\r?\n/).filter(line => line.trim() !== "").map((raw, index) => {
     const prefix = /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:\d{2})?|\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)/.exec(raw)?.[0] ?? "";
     const body = raw.slice(prefix.length).replace(/^\s*(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+/, "");
-    return normalizeLog({ ts: prefix, level: guessStderrLevel(raw), message: body, raw, source: "file" }, receivedAtMs, index + 1);
+    return normalizeLog({ ts: prefix, level: guessStderrLevel(raw), message: body, raw, source: "file", run_id: /\[run=([^\]]+)\]/.exec(raw)?.[1], session_id: /\[session=([^\]]+)\]/.exec(raw)?.[1] }, receivedAtMs, index + 1);
   });
 }
 

@@ -103,6 +103,11 @@
   },
 
   "commandSpecific": {
+    "developer_mode_disabled": {
+      "code": "PermissionError",
+      "detail": "Developer-only snapshot or verbose session refused while developer mode is disabled.",
+      "affects": ["diagnostic_snapshot", "diagnostic_session"]
+    },
     "active_migration_already_running": {
       "code": "active_job_exists",
       "detail": "IpcLoop._submit rejects a duplicate start_migration and returns the existing active jobId for safe renderer reattachment"

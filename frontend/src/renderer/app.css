@@ -1546,3 +1546,7 @@ body::before {
   min-height: 12.3077rem;
   max-height: 34vh;
 }
+
+/* Diagnostic controls wrap inside the embedded settings pane, including narrow layouts. */
+.diagnostic-actions { flex-wrap: wrap; }
+.diagnostic-actions .input { flex: 1 1 12rem; min-width: 0; max-width: 22rem; }

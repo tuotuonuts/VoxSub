@@ -29,6 +29,12 @@ def log_timestamp(created: float) -> str:
 
 
 class _AbsoluteTimeFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        from voxsub.diagnostic_trace import RUN_ID
+        if not hasattr(record, "run_id"):
+            record.run_id = RUN_ID
+        return super().format(record)
+
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         return log_timestamp(record.created)
 
@@ -44,6 +50,7 @@ _HANDLERS_INITIALIZED = False
 _INIT_LOCK = threading.Lock()
 _DIAGNOSTIC_SESSION_LOCK = threading.RLock()
 _DIAGNOSTIC_SESSION: "DiagnosticSession | None" = None
+_DIAGNOSTIC_SESSION_TIMER: "threading.Timer | None" = None
 _DIAGNOSTIC_SESSION_DEFAULT_SECONDS = 20 * 60
 
 
@@ -98,6 +105,8 @@ class _DiagnosticSessionFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         session = _active_diagnostic_session(announce_expiry=False)
+        from voxsub.diagnostic_trace import RUN_ID
+        record.run_id = RUN_ID
         record.diagnostic_session_id = session.session_id if session else "-"
         return True
 
@@ -141,10 +150,10 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_error: OSError | None = None
         try:
-            file_handler = logging.handlers.RotatingFileHandler(
-                str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8")
+            from voxsub.log_budget import BudgetLogHandler
+            file_handler = BudgetLogHandler(str(log_path))
             file_handler.setFormatter(_AbsoluteTimeFormatter(
-                "%(asctime)s %(levelname)-8s [%(name)s] [session=%(diagnostic_session_id)s] %(message)s",
+                "%(asctime)s %(levelname)-8s [%(name)s] [run=%(run_id)s] [session=%(diagnostic_session_id)s] %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"))
             file_handler.addFilter(_DiagnosticSessionFilter())
             root.addHandler(file_handler)
@@ -156,7 +165,7 @@ def setup_logging(level: str | None = None, log_to_console: bool = True) -> None
         if log_to_console:
             console = logging.StreamHandler()
             console.setFormatter(logging.Formatter(
-                "%(levelname)-8s [%(name)s] [session=%(diagnostic_session_id)s] %(message)s"))
+                "%(levelname)-8s [%(name)s] [run=%(run_id)s] [session=%(diagnostic_session_id)s] %(message)s"))
             console.addFilter(_DiagnosticSessionFilter())
             root.addHandler(console)
 
@@ -197,6 +206,18 @@ def is_debug_mode() -> bool:
     return logging.getLogger("voxsub").isEnabledFor(logging.DEBUG)
 
 
+def _expire_session_timer(session_id: str) -> None:
+    """A late timer must never end a newer diagnostic session."""
+    global _DIAGNOSTIC_SESSION, _DIAGNOSTIC_SESSION_TIMER
+    with _DIAGNOSTIC_SESSION_LOCK:
+        session = _DIAGNOSTIC_SESSION
+        if session is None or session.session_id != session_id:
+            return
+        logging.getLogger("voxsub").setLevel(session.previous_level)
+        _DIAGNOSTIC_SESSION = None
+        _DIAGNOSTIC_SESSION_TIMER = None
+
+
 def start_diagnostic_session(
     duration_seconds: int = _DIAGNOSTIC_SESSION_DEFAULT_SECONDS,
 ) -> dict[str, Any]:
@@ -207,7 +228,7 @@ def start_diagnostic_session(
     kept in the session metadata; the random ID only joins local logs, Sentry
     events, and explicit diagnostic uploads.
     """
-    global _DIAGNOSTIC_SESSION
+    global _DIAGNOSTIC_SESSION, _DIAGNOSTIC_SESSION_TIMER
     setup_logging()
     try:
         requested = int(duration_seconds)
@@ -226,6 +247,11 @@ def start_diagnostic_session(
             previous_level=previous_level,
         )
         root.setLevel(logging.DEBUG)
+        if _DIAGNOSTIC_SESSION_TIMER is not None:
+            _DIAGNOSTIC_SESSION_TIMER.cancel()
+        _DIAGNOSTIC_SESSION_TIMER = threading.Timer(duration, _expire_session_timer, args=(_DIAGNOSTIC_SESSION.session_id,))
+        _DIAGNOSTIC_SESSION_TIMER.daemon = True
+        _DIAGNOSTIC_SESSION_TIMER.start()
     metadata = diagnostic_session_snapshot()
     root.info("诊断调试会话已开启: id=%s duration_sec=%s",
               metadata["session_id"] if metadata else "-", duration)
@@ -234,9 +260,12 @@ def start_diagnostic_session(
 
 def stop_diagnostic_session() -> bool:
     """Stop the active diagnostic session and restore the previous log level."""
-    global _DIAGNOSTIC_SESSION
+    global _DIAGNOSTIC_SESSION, _DIAGNOSTIC_SESSION_TIMER
     setup_logging()
     with _DIAGNOSTIC_SESSION_LOCK:
+        if _DIAGNOSTIC_SESSION_TIMER is not None:
+            _DIAGNOSTIC_SESSION_TIMER.cancel()
+            _DIAGNOSTIC_SESSION_TIMER = None
         session = _expire_diagnostic_session_locked(_utc_now())
         if session is None:
             return False
@@ -288,8 +317,14 @@ def tail_log_file(lines: int = 200) -> str:
     if not p.exists():
         return ""
     try:
-        with p.open(encoding="utf-8", errors="replace") as f:
-            return "".join(f.readlines()[-lines:])
+        with p.open("rb") as f:
+            f.seek(0, 2)
+            start = max(0, f.tell() - 2 * 1024 * 1024)
+            f.seek(start)
+            text = f.read(2 * 1024 * 1024).decode("utf-8", errors="replace")
+            if start:
+                text = text.partition("\n")[2]
+            return "".join(text.splitlines(keepends=True)[-max(1, min(int(lines), 10000)):])
     except OSError as exc:
         return f"<读取日志失败: {exc}>"
 
@@ -416,3 +451,12 @@ __all__ = [
     "stop_diagnostic_session",
     "tail_log_file",
 ]
+
+
+def set_log_budget(limit_mb: int) -> None:
+    """Update rolling log limits without touching user config or unrelated files."""
+    from voxsub.log_budget import BudgetLogHandler
+    setup_logging()
+    for handler in logging.getLogger("voxsub").handlers:
+        if isinstance(handler, BudgetLogHandler):
+            handler.set_budget(limit_mb)
