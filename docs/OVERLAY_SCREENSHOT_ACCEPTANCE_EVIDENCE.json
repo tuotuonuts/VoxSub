@@ -1,0 +1,47 @@
+{
+  "recorded_at_utc": "2026-10-05T18:04:58.598851+00:00",
+  "base_revision": "fc6ff55",
+  "scope": "Allow subtitle window to appear in screenshots; OCR replacement overlay stays protected",
+  "before": {
+    "exit_code": 1,
+    "passed": 47,
+    "failed": 3
+  },
+  "after": {
+    "frontend_check": "PASS",
+    "frontend_build": "PASS",
+    "window_lifecycle_passed": 50,
+    "window_lifecycle_failed": 0,
+    "ocr_capture_fixture_passed": 5,
+    "python": {
+      "passed": 1216,
+      "skipped": 8,
+      "deselected": 7,
+      "xfailed": 1,
+      "seconds": 88.01,
+      "failed": 0
+    }
+  },
+  "boundary": "Production TS in VM/fake Electron; no native desktop capture or visible windows. Python excludes hardware_audio; real children hidden; config directories isolated.",
+  "not_run": [
+    "native Windows/third-party screenshot output",
+    "OBS/other screen recordings",
+    "native glass composition",
+    "packaged app",
+    "GitHub CI"
+  ],
+  "backup": ".backups/overlay-screenshot-20261006-020141",
+  "source_sha256": {
+    "frontend/src/main/main.ts": "1d204d9eb6e0a2efc54b5893d13352f17c3b5c433a2b966f1ae0becf5426b560",
+    "frontend/src/renderer/overlay.ts": "8768d374648e9e89f1afe528e06c31112492db19e72570cf8436e690253d5592",
+    "frontend/tools/test-window-lifecycle.mjs": "6471a30cbc075027e024661da0d2686035351f3dff09ebb738bb851e112eee94",
+    "frontend/src/main/capture.ts": "3f37fe7e4175c94d3fc2f3828cdb11085f482cad543d57d53f85609d9f0c1f05"
+  },
+  "log_root": "D:\\OneDrive\\app_dve\\overlay-screenshot-acceptance",
+  "log_sha256": {
+    "before.log": "534f47abe7f2d9d04f393ca9aae3c9ae043feca7ae2c3df62beace4f2ea91e79",
+    "frontend-check.log": "7cd44dcf56bbaec9b2c5c1d2712433433be5441301a59f55fe9e78dd578cf50a",
+    "frontend-build.log": "309a50c7715e2555eb322bd03b5f5faeb9d749df6e8a2ce2df2ea769425ef0ae",
+    "python.log": "1e144ab6da1f147017fb9c42451ee859dc1f393e6983e9ba82cb0954d1b683d2"
+  }
+}

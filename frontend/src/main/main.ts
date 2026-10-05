@@ -319,7 +319,7 @@ function createMainWindow(): BrowserWindow {
  * 字幕浮窗 —— 本项目技术风险最高的窗口。
  *
  * 对照原 Qt 实现：subtitle_overlay.py / screen_capture.py:74
- * 四项硬能力：半透明 / 点击穿透 / 置顶无边框 / 捕获排除
+ * 窗口特性：半透明 / 点击穿透 / 置顶无边框 / 允许用户截图
  */
 function createOverlayWindow(): BrowserWindow {
   const display = screen.getPrimaryDisplay();
@@ -350,18 +350,16 @@ function createOverlayWindow(): BrowserWindow {
   win.setAlwaysOnTop(true, "screen-saver");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  // 时序是关键：必须在窗口**已经显示**之后再设捕获排除。
-  // 实测（Electron 34 与 44 行为一致）：ready-to-show 阶段调用会返回成功
-  // 但 GetWindowDisplayAffinity 读回 WDA_NONE，窗口成为无保护的暴露面。
-  //
-  // 无头模式例外：窗口不显示，也就没有"暴露面"可言，跳过整个流程 ——
-  // 桌面上不该出现浮窗（它 alwaysOnTop，一旦显示就会压在用户所有窗口之上）。
+  // Subtitle content must remain available to user screenshots/recordings.
+  // Capture exclusion belongs only to the OCR replacement overlay (capture.ts),
+  // where it prevents OCR from reading its own translations. Never apply it here.
+  // Headless acceptance still must not show any window or change its native state.
   win.once("ready-to-show", () => {
     if (HEADLESS || quitting || overlayWindow !== win) return;
     ignoreDestroyed("overlay:ready", () => {
       if (win.isDestroyed()) return;
       win.showInactive();
-      win.setContentProtection(true);
+      win.setContentProtection(false);
     });
   });
 

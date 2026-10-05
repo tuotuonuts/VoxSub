@@ -187,5 +187,27 @@ test('stale main close cannot redirect a replacement with a busy owner', r => {
   assert.equal(prevented, true);
   assert.ok(current.messages.some(m => m[0] === 'app:blocking-task'));
 });
+test('subtitle overlay explicitly permits screenshots without taking focus', r => {
+  const w = r.api.createOverlay(); w.events.get('ready-to-show')();
+  assert.deepEqual(w.calls.filter(c => c[0] === 'setContentProtection'), [['setContentProtection', false]]);
+  assert.equal(w.visible, true);
+  assert.equal(w.options.focusable, false);
+  assert.equal(w.calls.some(c => c[0] === 'show' || c[0] === 'focus'), false);
+  assert.ok(w.calls.some(c => c[0] === 'setAlwaysOnTop' && c[1] === true));
+});
+test('hide show and click-through never re-enable subtitle screenshot exclusion', r => {
+  const w = r.api.createOverlay(); w.events.get('ready-to-show')();
+  r.ipc('overlay:hide'); r.ipc('overlay:show'); r.ipc('overlay:toggle-visible'); r.ipc('overlay:toggle-visible');
+  r.ipc('overlay:set-click-through', true); r.ipc('overlay:set-click-through', false);
+  assert.equal(w.visible, true);
+  assert.deepEqual(w.calls.filter(c => c[0] === 'setContentProtection'), [['setContentProtection', false]]);
+});
+test('recreated subtitle window keeps screenshots allowed and ignores stale readiness', r => {
+  const old = r.api.createOverlay(); old.events.get('ready-to-show')(); old.destroy();
+  const current = r.api.createOverlay(); current.events.get('ready-to-show')();
+  const calls = old.calls.length; old.events.get('ready-to-show')();
+  assert.equal(old.calls.length, calls);
+  assert.deepEqual(current.calls.filter(c => c[0] === 'setContentProtection'), [['setContentProtection', false]]);
+});
 console.log(`${checks} window lifecycle checks passed; ${failures} failed`);
 if (failures) process.exitCode = 1;

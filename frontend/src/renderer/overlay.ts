@@ -3,11 +3,11 @@ import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
 /**
  * 字幕浮窗渲染层。
  *
- * 四项硬能力（均由主进程配合）：
+ * 窗口特性（均由主进程配合）：
  *   1. 半透明        —— CSS 变量 --overlay-opacity（文字保持全不透明）
  *   2. 点击穿透      —— IPC 调 setIgnoreMouseEvents(forward:true)
  *   3. 置顶无边框    —— 主进程 alwaysOnTop: screen-saver
- *   4. 捕获排除      —— 主进程 setContentProtection(true)
+ *   4. 允许截图      —— 字幕可被截图；OCR 原位覆盖窗单独做捕获排除
  *
  * 功能面与原 Qt 版 subtitle_overlay.py 对齐：
  *   字号调整 / 显示模式（原文·译文·双语）/ 边距与行距 / 历史回溯 /

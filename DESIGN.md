@@ -396,3 +396,8 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 静态识别每次释放OCR引擎；实时复用一个引擎；ocr_release移除并关闭OCR/MT/cache，backend shutdown同样回收。图片导出使用ocr_layout.py独立tile，不越框，尊重ConfigStore缓存根/上限。精确帧缓存仅单条2秒、失败不缓存；行缓存使用既有512条有界服务，不借并行音频模型。禁翻译不加载MT。所有新增IPC字段与ocr_release登记contracts/commands.json；日志新增事件不存正文。
 
 语言源是当前OCR合同与MT方向的兼容子集，目标按MT能力，未知OCR不猜；v6 Tiny中英、Small/Medium中英日。当前跨屏仅裁到主要单屏，不是拼图；相交块保守跳过，不做复杂版式恢复。研究与验收边界见docs/OCR_RESEARCH_AND_DESIGN.md、OCR_DEEP_ACCEPTANCE.md。
+
+
+## 字幕窗与OCR覆盖窗的捕获策略
+
+字幕悬浮窗允许用户截图/录屏，createOverlayWindow明确setContentProtection(false)，保留showInactive/无focus、毛玻璃/置顶/穿透和生命周期守卫。只有OCR原位覆盖窗（capture.ts）维持setContentProtection(true)防止自采集译文；不要因共用preload或“悬浮窗”统称再次把两者策略混用。截图可用性原生实测与API参数测试须分开报告，见docs/OVERLAY_SCREENSHOT_ACCEPTANCE.md。

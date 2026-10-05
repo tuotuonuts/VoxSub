@@ -7,7 +7,7 @@
 web
 
 > 记录为 `web` 的依据：Electron 是 Chromium 渲染 + Web 技术栈，视觉与实现语言是 web；
-> 目标平台近期仅 Windows，浮窗依赖的 `WDA_EXCLUDEFROMCAPTURE` 为 Windows 10 2004+ 独有。
+> 目标平台近期仅 Windows；OCR 原位覆盖窗使用 `WDA_EXCLUDEFROMCAPTURE` 防止自识别，Windows 10 2004+ 才会从捕获中排除窗口。字幕悬浮窗不启用捕获排除，允许用户截图/录屏。
 > 跨 macOS 时该能力需改用 `CGWindowSetSharingType`，效果不等价 —— 已确认近期不做。
 
 ## Stack

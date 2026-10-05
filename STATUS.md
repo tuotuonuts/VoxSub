@@ -1,3 +1,9 @@
+## 字幕悬浮窗允许截图（2026-10-05 UTC）
+
+- 根因：字幕窗ready后启用setContentProtection(true)主动被系统捕获排除；改为false，OCR原位覆盖窗仍true防自识别。毛玻璃/置顶/穿透、OCR owner校验及用户数据不变。
+- 新3项生产main隔离窗口回归先失败后通过；生命周期50项/前端check与build通过，后端安全1216 passed/8 skipped/7 deselected/1既有xfail。
+- 不重启用户应用、不抓桌面/音频；实际系统/第三方截图录屏、原生毛玻璃合成、安装版与CI NOT_RUN。需自行启动新构建生效；报告docs/OVERLAY_SCREENSHOT_ACCEPTANCE.md，备份与本地commit，未push。
+
 ## OCR 前后端深度修复 / 研究与静默验收（2026-10-05 UTC）
 
 - 打通Electron实时OCR识别/翻译/覆盖链路，所选模型/置信度生效；单任务背压、epoch隔离、实时实例/精确帧缓存/有界翻译缓存、失败退避与stop释放。
