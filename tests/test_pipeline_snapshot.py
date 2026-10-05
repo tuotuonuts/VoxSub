@@ -178,6 +178,9 @@ def test_queued_audio_keeps_the_source_language_hint_of_its_enqueue_point() -> N
     p._recognition_loop()  # noqa: SLF001
 
     assert seen == ["zh"]
+    item = p._translation_queue.get_nowait()
+    assert item.text == "原文"
+    assert item.snapshot.pair == ("zh", "en")
 
 
 # ------------------------------------------------------------------- 需求 3

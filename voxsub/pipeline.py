@@ -37,6 +37,7 @@ from voxsub.asr import (
     UtteranceSegmenter,
     WindowVAD,
     create_asr,
+    create_asr_stream,
     models_dir,
     SAMPLE_RATE,
 )
@@ -44,7 +45,7 @@ from voxsub.bootstrap_models import ensure_bundled_vad
 from voxsub.cloud_stt import CloudSTT
 from voxsub.contextual_text import ContextualSegment, ContextualTextProcessor
 from voxsub.file_transcriber import FileAudioDecoder, FileRecognizer
-from voxsub.language_guard import guard_text, normalize_language, text_matches_language
+from voxsub.language_guard import guard_text, normalize_language, retain_source_text, text_matches_language
 from voxsub.live_draft import DraftTranslationRequest, DraftView, LiveDraftState
 from voxsub.logging_setup import get_logger
 from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result, traced_stage
@@ -516,6 +517,7 @@ class Pipeline:
         self._close_requested = False
         self._state = PipelineState.IDLE
         self._diagnostic_session_id = ""
+        self._source_language_notice_generation: int | None = None
         self._provider = provider
         self._diagnostic_capture = {"captured_chunks": 0, "paused_frames": 0, "queue_rejected_frames": 0}
         self._models_dir = Path(models) if models else models_dir()
@@ -1122,12 +1124,7 @@ class Pipeline:
                 logger.exception("字幕回调异常: %r", cb)
 
     def _emit_partial(self, text: str) -> None:
-        try:
-            text = guard_text(text, self._src_lang, kind="STT partial")
-        except ValueError:
-            logger.debug("临时 STT 结果被语言约束过滤: source=%s text=%r",
-                         self._src_lang, str(text)[:160])
-            return
+        text = retain_source_text(text)
         if not text:
             return
         for cb in self._cb_partial:
@@ -1157,12 +1154,8 @@ class Pipeline:
         text = str(text or "").strip()
         if not text:
             return
-        if self._src_lang != "auto" and not text_matches_language(text, self._src_lang, require_signal=False):
-            return
         processor = self._context_processor
         preview = processor.preview(text) if processor is not None else text
-        if self._src_lang != "auto" and not text_matches_language(preview, self._src_lang, require_signal=False):
-            return
         self._emit_partial(preview)
 
     # ---- 组件构造 ----
@@ -1423,23 +1416,22 @@ class Pipeline:
         )
 
     @traced_stage("recognition_result")
-    def _on_sentence(self, text: str) -> None:
-        """Recognition callback: validate and route an acoustic fragment."""
-        text = str(text or "").strip()
+    def _on_sentence(self, text: str, snapshot: _LangSnapshot | None = None) -> None:
+        """Retain and route recognized text, treating language evidence as advisory."""
+        text = retain_source_text(text)
         if not text:
             return
-        # **提交点快照**（缺陷 #9）：这句识别结果从这一刻起就固定用哪一对语言、
-        # 哪一代配置。用户之后再切语言只影响**新**的句子，不会回头改写这句。
-        snapshot = self._lang_snapshot()
+        # Queued audio carries its enqueue-time snapshot through recognition.
+        # Streaming callbacks without one bind their pair at this commit point.
+        snapshot = snapshot or self._lang_snapshot()
         model_result("recognition", text, expected=snapshot.src, source=snapshot.src,
                      target=snapshot.dst, generation=snapshot.generation, model=str(self._requested_asr_model_id))
-        try:
-            text = guard_text(text, snapshot.src, kind="STT")
-        except ValueError as exc:
-            logger.warning("STT 结果被语言约束拦截: source=%s chars=%d error_type=%s",
-                           snapshot.src, len(text), type(exc).__name__)
-            self._emit_status("识别到其他语言，已忽略当前片段")
-            return
+        if not text_matches_language(text, snapshot.src, require_signal=False):
+            logger.warning("识别语言可能不匹配，已保留原文并继续翻译: source=%s chars=%d generation=%d",
+                           snapshot.src, len(text), snapshot.generation)
+            if self._source_language_notice_generation != snapshot.generation:
+                self._source_language_notice_generation = snapshot.generation
+                self._emit_status("识别语言可能与设置不同，已保留内容并继续翻译")
         queued_at = time.monotonic()
         if self._context_processor is not None:
             logger.info(
@@ -1551,8 +1543,7 @@ class Pipeline:
         segments = processor.submit(item.text, now=item.queued_at)
         if (not segments and processor.pending_text and
                 self._live_draft_enabled()):
-            if snapshot.src == "auto" or text_matches_language(processor.pending_text, snapshot.src, require_signal=False):
-                self._emit_partial(processor.pending_text)
+            self._emit_partial(processor.pending_text)
         if not segments and not processor.pending_text:
             pending_since = None
         return segments, pending_since
@@ -1572,9 +1563,6 @@ class Pipeline:
             snapshot = self._lang_snapshot()
         for segment in segments:
             if not segment.text or not segment.text.strip():
-                continue
-            if snapshot.src != "auto" and not text_matches_language(segment.text, snapshot.src):
-                logger.warning("上下文稳定文本被语言约束拦截: source=%s chars=%d", snapshot.src, len(segment.text))
                 continue
             if segment.corrections or segment.fillers_removed:
                 logger.info(
@@ -1636,16 +1624,8 @@ class Pipeline:
         """
         if snapshot is None:
             snapshot = self._lang_snapshot()
-        # 源语言约束：如果指定了源语言，但文本不符合该语言，直接丢弃不予翻译
-        if snapshot.src != "auto" and not text_matches_language(text, snapshot.src):
-            logger.warning("翻译前拦截非指定源语言文本: expected=%s chars=%d",
-                           snapshot.src, len(text))
-            # This final was already counted at enqueue time. Rejection must
-            # release that slot or all later optional drafts remain blocked.
-            view = self._live_draft.finish_final()
-            if view is not None:
-                self._emit_draft(view)
-            return
+        # Source uncertainty is not permission to discard a committed subtitle.
+        # Keep the requested translation pair; target validation/failure fallback stays below.
         self._emit_status("翻译中…")
         started = time.perf_counter()
         queue_wait_ms = ((time.monotonic() - queued_at) * 1000.0
@@ -1767,8 +1747,6 @@ class Pipeline:
         """
         if snapshot is None:
             snapshot = self._lang_snapshot()
-        if snapshot.src != "auto" and not text_matches_language(request.source, snapshot.src):
-            return
         if request.sentence_id is not None and request.sentence_id != self._live_draft.sentence_id:
             return
         try:
@@ -1897,9 +1875,9 @@ class Pipeline:
                 self._latency.observe("recognition_decode", decode_ms)
                 if wait_ms is not None:
                     self._latency.observe("recognition_wait", max(0.0, wait_ms))
-                self._log_recognition(audio, text, wait_ms, decode_ms)
+                self._log_recognition(audio, text, wait_ms, decode_ms, snapshot)
                 if text:
-                    self._on_sentence(text)
+                    self._on_sentence(text, snapshot)
         except Exception as exc:
             logger.exception("生成式 ASR 解码线程失败")
             self._emit_status(f"识别处理错误: {exc}")
@@ -1946,15 +1924,13 @@ class Pipeline:
         if values.size and rms < 0.003:
             logger.warning("STT 片段音量很低: audio_ms=%.1f rms=%.5f peak=%.5f",
                            values.size * 1000.0 / SAMPLE_RATE, rms, peak)
+        # Both local and cloud decoding use the audio's enqueue-time language.
+        source_lang = snapshot.src if snapshot is not None else self._src_lang
         try:
             if self._is_cloud_stt:
-                # 云 STT 也吃语言提示：用音频**入队时**的快照，避免用户在排队
-                # 期间切语言导致这段音频被按新语言转写。
-                source_lang = (snapshot.src if snapshot is not None
-                               else self._src_lang)
                 return client.transcribe_samples(
                     audio, source_lang=source_lang).strip()
-            stream = client.create_stream()
+            stream = create_asr_stream(client, source_lang)
             client.feed(stream, audio)
             text = client.decode(stream).strip()
             client.reset(stream)
@@ -1972,7 +1948,8 @@ class Pipeline:
             return None
 
     def _log_recognition(self, audio: np.ndarray, text: str,
-                         wait_ms: float | None, decode_ms: float) -> None:
+                         wait_ms: float | None, decode_ms: float,
+                         snapshot: _LangSnapshot | None = None) -> None:
         runtime = ("cloud-stt" if self._is_cloud_stt else
                    getattr(self._asr, "runtime", "local-stt"))
         provider = ("cloud" if self._is_cloud_stt else
@@ -1982,7 +1959,7 @@ class Pipeline:
             "decode_ms=%.1f chars=%d source=%s",
             runtime, provider, audio.size * 1000.0 / SAMPLE_RATE,
             f"{wait_ms:.1f}" if wait_ms is not None else "na",
-            decode_ms, len(text), self._src_lang,
+            decode_ms, len(text), snapshot.src if snapshot else self._src_lang,
         )
 
     # ---- 启停 ----
@@ -2013,6 +1990,7 @@ class Pipeline:
         if not self._claim_start():
             return
         self._diagnostic_session_id = uuid.uuid4().hex[:12]
+        self._source_language_notice_generation = None
         # A newly admitted session must never advertise a previous session WAV.
         self._last_recording_path = None
         self._diagnostic_capture = {"captured_chunks": 0, "paused_frames": 0, "queue_rejected_frames": 0}

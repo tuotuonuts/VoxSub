@@ -391,21 +391,27 @@ def test_exit_protection_held_until_real_end(runner):
 # ------------------------------------------------------------------ 有界性
 
 def test_queue_is_bounded_and_refuses_clearly(runner):
-    """队列满了要明确拒绝，不能无限堆积（无界执行器会把积压藏起来）。"""
+    """MAX_PENDING counts waiting jobs, not the currently executing one."""
     release = threading.Event()
-    runner.set_executor(lambda command, args, job: release.wait(timeout=5.0))
+    entered = threading.Event()
+
+    def execute(command, args, job):
+        entered.set()
+        return release.wait(timeout=5.0)
+
+    runner.set_executor(execute)
     runner.start()
-
     runner.submit("first", {})
-    assert _wait_until(lambda: runner.has_active_jobs())
-
-    for _ in range(job_runner.MAX_PENDING - 1):
-        runner.submit("filler", {})
-
-    with pytest.raises(job_runner.QueueFull):
-        runner.submit("overflow", {})
-
-    release.set()
+    try:
+        assert entered.wait(timeout=5.0)
+        # has_active_jobs() also includes queued jobs: it cannot synchronize
+        # this boundary. Wait for execution before filling all pending slots.
+        for _ in range(job_runner.MAX_PENDING):
+            runner.submit("filler", {})
+        with pytest.raises(job_runner.QueueFull):
+            runner.submit("overflow", {})
+    finally:
+        release.set()
     assert runner.wait_for_idle(5.0) is True
 
 

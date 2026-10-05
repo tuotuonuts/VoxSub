@@ -1,3 +1,11 @@
+## 识别语言提示与源文保留（2026-10-05 UTC）
+
+- 用户日志当前run：Qwen3-ASR 0.6B INT8、en→zh，92条结果中23次语言门禁丢弃。实际stream漏传语言；旧英语词表误拒短词且放过含i的非英语。上述“源语种拦截”旧策略已被用户最新要求取代。
+- Qwen每stream接通language英文名；本地/云音频快照贯通到识别提交；partial/上下文/终句/文件不再因源语种猜测丢内容。译文目标检查与失败保留原文仍在，无二次识别/切云/改配置。
+- 诊断记录hint_applied/auto/hint_unavailable及language_uncertain/source_retained，不记录正文；用户提示有界。修复前新增30项28失败，修复后扩展34通过；安全全量1251 passed/8 skipped/7 deselected/1既有xfail，前端check/build通过。
+- 真实Qwen CPU五组公开音频，native language读回/非空/单次推理PASS；非准确率、非用户原音、非前台/完整真实翻译端到端。旧队列测试竞态仅稳定测试，不改生产队列；复杂度门禁未放宽。
+- 报告docs/SOURCE_LANGUAGE_ACCEPTANCE.md及EVIDENCE；备份、本地commit，不push、不重启用户应用，需自行重启新构建生效。
+
 ## 字幕悬浮窗毛玻璃方形外圈修复（2026-10-05 UTC）
 
 - 根因：整窗原生acrylic未受CSS圆角/留白约束。共享几何+独立OverlaySurface，先裁剪后材质、关闭反序，WeakMap owner缓存、resize/zoom/跨屏scale更新与部分失败安全清理。

@@ -18,9 +18,9 @@ def test_language_aliases_are_normalized() -> None:
     assert normalize_language("Hindi") == "auto"
 
 
-def test_strict_language_gate_rejects_ambiguous_or_unknown_inputs() -> None:
-    assert not text_matches_language("Hola mundo", "en")
-    assert not text_matches_language("Guten Morgen", "en")
+def test_script_plausibility_does_not_claim_to_identify_latin_languages() -> None:
+    assert text_matches_language("Hola mundo", "en")  # Latin, not proof of English
+    assert text_matches_language("Guten Morgen", "en")
     assert not text_matches_language("你好", "ja")
     with pytest.raises(ValueError, match="unsupported language"):
         normalize_language("xx", strict=True)

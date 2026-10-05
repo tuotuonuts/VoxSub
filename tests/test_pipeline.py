@@ -1151,7 +1151,7 @@ def test_translation_backpressure_stops_instead_of_growing_unbounded() -> None:
     assert "新的字幕" not in p._translation_times  # noqa: SLF001
 
 
-def test_pipeline_rejects_stt_text_in_the_wrong_language() -> None:
+def test_pipeline_preserves_stt_text_when_source_language_is_uncertain() -> None:
     p = Pipeline()
     p.set_langs("zh", "en")
     statuses: list[str] = []
@@ -1159,9 +1159,11 @@ def test_pipeline_rejects_stt_text_in_the_wrong_language() -> None:
 
     p._on_sentence("यह एक हिन्दी वाक्य है")  # noqa: SLF001
 
-    with pytest.raises(queue.Empty):
-        p._translation_queue.get_nowait()  # noqa: SLF001
-    assert any("其他语言" in status for status in statuses)
+    entry = p._translation_queue.get_nowait()  # noqa: SLF001
+    assert entry.text == "यह एक हिन्दी वाक्य है"
+    assert entry.snapshot.pair == ("zh", "en")
+    assert any("保留内容" in status for status in statuses)
+    assert not any("忽略" in status for status in statuses)
 
 
 def test_pipeline_rejects_translation_in_the_wrong_language() -> None:

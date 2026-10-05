@@ -13,8 +13,9 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 
+from voxsub.asr import create_asr_stream
 from voxsub.audio import resample_16k
-from voxsub.language_guard import guard_text
+from voxsub.language_guard import guard_text, retain_source_text
 from voxsub.logging_setup import get_logger
 from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result
 from voxsub.subtitles import SubtitleLine
@@ -189,7 +190,7 @@ class FileRecognizer:
         last_progress: list[int],
     ) -> None:
         """Feed VAD chunks into ASR and flush bounded subtitle segments."""
-        stream = asr.create_stream()
+        stream = create_asr_stream(asr, source_lang)
         window = vad.window_size
         segment_start: int | None = None
         silence = utterance_samples = segment_no = 0
@@ -315,12 +316,9 @@ class FileRecognizer:
                 segment_no, reason, audio_ms, peak, rms,
             )
             return
-        try:
-            text = guard_text(text, source_lang, kind="STT")
-        except ValueError as exc:
-            logger.warning("文件 STT 结果被语言约束拦截: source=%s text=%r reason=%s",
-                           source_lang, text[:160], exc)
-            return
+        text = retain_source_text(text)
+        model_result("file_recognition", text, expected=source_lang, source=source_lang,
+                     sentence_id=segment_no)
         lines.append(SubtitleLine(
             text=text,
             ts_ms=int(segment_start * 1000 / SAMPLE_RATE),
@@ -390,7 +388,8 @@ class FileRecognizer:
             try:
                 text = cloud_stt.transcribe_samples(
                     audio, source_lang=source_lang).strip()
-                text = guard_text(text, source_lang, kind="cloud STT")
+                text = retain_source_text(text)
+                model_result("file_recognition", text, expected=source_lang, source=source_lang, sentence_id=index)
             except Exception as exc:
                 logger.error("云 STT 文件片段失败: %s", exc, exc_info=True)
                 continue

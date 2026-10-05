@@ -28,6 +28,7 @@ import numpy as np
 import sherpa_onnx
 
 from voxsub.language_guard import language_name, normalize_language
+from voxsub.diagnostic_trace import record as trace_record
 from voxsub.logging_setup import get_logger
 from voxsub.model_storage import resolve_models_root
 from voxsub.text_cleaning import strip_model_control_tokens
@@ -172,9 +173,10 @@ class StreamingASR:
 class _OfflineBuffer:
     """Small adapter object matching the stream methods used by the segmenter."""
 
-    def __init__(self) -> None:
+    def __init__(self, source_lang: str = "auto") -> None:
         self.chunks: list[np.ndarray] = []
         self.result = ""
+        self.source_lang = source_lang
 
 
 class OfflineGenerativeASR:
@@ -303,7 +305,29 @@ class OfflineGenerativeASR:
             raise FileNotFoundError("生成式 ASR 模型不完整: " + ", ".join(missing))
 
     def create_stream(self) -> _OfflineBuffer:
-        return _OfflineBuffer()
+        return self.create_stream_for_language(self.source_lang)
+
+    def create_stream_for_language(self, source_lang: str) -> _OfflineBuffer:
+        # Per-utterance state: queued work must not read mutable UI settings.
+        return _OfflineBuffer(normalize_language(source_lang))
+
+    def _configure_language_hint(self, native, source_lang: str) -> None:
+        if self.runtime != "sherpa-qwen3-asr":
+            return
+        if source_lang == "auto":
+            trace_record("recognition_language", "auto", runtime=self.runtime, source=source_lang)
+            return
+        try:
+            # sherpa 1.13.5 reads this stream option, not a constructor keyword.
+            # It prefills language {Name}<asr_text>; hotwords are not instructions.
+            native.set_option("language", language_name(source_lang))
+        except Exception as exc:
+            trace_record("recognition_language", "hint_unavailable", runtime=self.runtime,
+                         source=source_lang, error_type=type(exc).__name__, fallback="unconstrained_decode")
+            logger.warning("ASR 语言提示不可用，继续识别并保留结果: runtime=%s source=%s error_type=%s",
+                           self.runtime, source_lang, type(exc).__name__)
+        else:
+            trace_record("recognition_language", "hint_applied", runtime=self.runtime, source=source_lang)
 
     def feed(self, stream: _OfflineBuffer, samples: np.ndarray) -> None:
         wav = np.asarray(samples, dtype=np.float32).reshape(-1)
@@ -325,6 +349,7 @@ class OfflineGenerativeASR:
             float(np.sqrt(np.mean(np.square(wav)))) if wav.size else 0.0,
         )
         native = self._recognizer.create_stream()
+        self._configure_language_hint(native, stream.source_lang)
         native.accept_waveform(SAMPLE_RATE, wav)
         self._recognizer.decode_stream(native)
         result = native.result
@@ -351,6 +376,12 @@ class OfflineGenerativeASR:
     def reset(stream: _OfflineBuffer) -> None:
         stream.chunks.clear()
         stream.result = ""
+
+
+def create_asr_stream(asr, source_lang: str):
+    """Use per-stream language capability when available; preserve streaming plugins."""
+    factory = getattr(asr, "create_stream_for_language", None)
+    return factory(source_lang) if callable(factory) else asr.create_stream()
 
 
 def create_asr(model_id: str, models_root: Path, provider: str = "cpu",

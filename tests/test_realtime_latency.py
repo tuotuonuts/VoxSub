@@ -333,7 +333,7 @@ def test_connector_fragments_still_wait_for_context(text, language):
     assert looks_incomplete(text, language)
 
 
-def test_rejected_final_releases_pending_slot_without_translating_or_leaking_text(caplog):
+def test_uncertain_final_is_translated_and_releases_pending_slot_without_leaking_text(caplog):
     pipe = pipe_fixture()
     finals = []
     drafts = []
@@ -343,8 +343,8 @@ def test_rejected_final_releases_pending_slot_without_translating_or_leaking_tex
     pipe._live_draft.update_source("Hello world")
     assert pipe._live_draft.take_translation_request(now=time.monotonic() + 3) is None
     pipe._translate_queued_item(pipe._translation_queue.get_nowait())
-    assert not finals
-    assert not pipe._translator.calls
+    assert len(finals) == 1 and finals[0][0] == "不符合指定英语的正文"
+    assert len(pipe._translator.calls) == 1
     assert "不符合指定英语的正文" not in caplog.text
     assert drafts[-1][0] == "Hello world"
     assert pipe._live_draft.take_translation_request(now=time.monotonic() + 3) is not None

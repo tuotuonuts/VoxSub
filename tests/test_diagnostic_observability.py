@@ -220,3 +220,14 @@ def test_model_events_share_request_and_session_without_results():
     assert len({e["request_id"] for e in events}) == 1
     assert {e["pipeline_session_id"] for e in events} == {"abcdef123456"}
     assert "private sentence" not in json.dumps(events)
+
+
+def test_uncertain_recognition_is_retained_not_reported_as_translation_failure():
+    trace._EVENTS.clear()
+    trace.model_result("recognition", "混合语言正文", expected="en", source="en", target="zh")
+    result = trace.snapshot()
+    event = result["events"][-1]
+    assert event["outcome"] == "language_uncertain"
+    assert event["fallback"] == "source_retained"
+    assert result["failures"] == 0
+    assert "混合语言正文" not in json.dumps(result, ensure_ascii=False)

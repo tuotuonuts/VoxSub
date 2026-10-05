@@ -413,3 +413,12 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 shared/overlay-shape.ts是6px框内距/16px圆角的唯一代码常量，renderer通过CSS变量使用；main/overlay-surface.ts按窗口owner弱引用缓存材质与几何，先setShape再acrylic，禁用先none再setShape([])。失败保守保留区域，禁用/查询继续重试清理，不用全局active判断某个新HWND已配置。整数扫描行只遍历圆角带并合并，非法/极小几何返回null，绝不误用[]开放整窗。
 
 resize/move/zoom-changed/ready触发当前owner刷新；renderer zoom参与CSS→DIP换算，monitor scale仅使缓存失效，不再次乘DIP坐标。shape API实验性且限制区域外鼠标交互，检测/调用成功与可见DWM实测须分开；详见OVERLAY_SHAPE_ACCEPTANCE。字幕截图策略与OCR策略保持分离。
+
+
+## 源语言指令与非破坏性字幕保留（2026-10-05 UTC）
+
+源语言是解码指令，不是信息展示权限。Qwen3-ASR通过每个原生OfflineStream.set_option("language",英文语言名)接收指令，auto不设；create_asr_stream把音频入队快照交给支持per-stream的适配器，实时与文件共用，原生解码完成后的_on_sentence继续携带同一快照。不可用接口记录hint_unavailable/回退，不静默宣称已锁定语种。
+
+partial、上下文、终句与文件入口不再用字母/词表判断源文去留；retain_source_text只整理空白。源文不确定照常尝试用户指定模型/目标语言，目标校验失败保留原文和空译文，不冒充成功。脚本匹配只是启发式（无法区分拉丁语系），微型英语词表不能作为判定依据。明确更新并覆盖旧“语言拦截终句”的策略；草稿代次/句子ID过期淘汰和缓存背压不变。
+
+recognition_language记录hint_applied/auto/hint_unavailable，源结果language_uncertain附source_retained，翻译目标不匹配仍language_mismatch；不得写正文/音频入日志。用户提示每会话/配置代次至多一次。不引入每句重试/第二模型/云切换，准确率与参数交付实测分开报告。详见SOURCE_LANGUAGE_ACCEPTANCE。

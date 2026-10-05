@@ -1,3 +1,9 @@
+[本轮 识别语言提示与源文保留 2026-10-05 UTC]
+[x] 日志23次丢弃/92条结果定位；Qwen每stream语言参数、排队快照贯通、删除源语种硬门禁、保留目标校验与原文回退。
+[x] 英语词表不再作语言证明；元数据记录提示是否交付/不确定源文保留，提示有界、日志不写正文。
+[x] 34新增定向、195语言/架构等定向、68复核；最终Python1251 passed/8 skipped/7 deselected/1既有xfail，前端check/build；真实Qwen CPU5组原生hint读回/单次推理通过。
+[ ] 用户原音/准确率/可见UI/完整真实MT端到端/其它ASR实机/GPU/安装版/CI NOT_RUN。不重启应用、未push，报告SOURCE_LANGUAGE_ACCEPTANCE；旧源语言拦截策略已废止。
+
 [本轮 字幕悬浮窗毛玻璃方边修复 2026-10-05 UTC]
 [x] 原生shape与CSS共用圆角/留白；owner缓存、resize/zoom/monitor scale、可选材质安全降级；保持字幕允许截图/OCR排除。
 [x] 34新geometry/surface、51生命周期、14既有glass；真实隐藏原生14读回+离屏角alpha；前端check/build，Python安全1216 passed/8 skipped/7 deselected/1既有xfail。

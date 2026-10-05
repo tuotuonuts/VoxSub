@@ -1,0 +1,166 @@
+{
+  "recorded_at_utc": "2026-10-05T19:23:36.794937+00:00",
+  "base_commit": "bf7b52d",
+  "observation": {
+    "input": "%LOCALAPPDATA%/VoxSub/logs/voxsub.log",
+    "sha256": "b718c28dea06f12641c5fc6d0a52ade5be66b4b176ec2689f007081f2a2037fb",
+    "run_id": "9e6384de2365",
+    "start_utc": "2026-10-05T18:30:38.073+00:00",
+    "end_utc": "2026-10-05T18:54:20.311+00:00",
+    "recognition_results": 92,
+    "language_gate_rejections": 23,
+    "ignored_statuses": 23,
+    "outcomes": {
+      "language_mismatch": 23,
+      "ok": 69
+    },
+    "models": [
+      "asr-qwen3-0.6b-int8"
+    ],
+    "pairs": [
+      "en->zh"
+    ],
+    "low_volume_warnings": 2,
+    "raw_transcripts_saved": false
+  },
+  "regression": {
+    "before_original_30": {
+      "failed": 28,
+      "passed": 2
+    },
+    "after_expanded_34": {
+      "passed": 34
+    },
+    "targeted": {
+      "passed": 195,
+      "skipped": 2
+    },
+    "review": {
+      "passed": 68
+    },
+    "full": {
+      "passed": 1251,
+      "skipped": 8,
+      "deselected": 7,
+      "xfailed": 1,
+      "failed": 0,
+      "seconds": 77.36,
+      "marker": "not hardware_audio"
+    }
+  },
+  "frontend": {
+    "check": "PASS",
+    "build": "PASS"
+  },
+  "native": {
+    "status": "PASS",
+    "sherpa_onnx": "1.13.5",
+    "runtime": "sherpa-qwen3-asr",
+    "provider": "cpu",
+    "threads": 1,
+    "cases": [
+      {
+        "sample": "f1_noise.wav",
+        "sample_sha256": "7ae35f5d8f038e518f3abdeda5f78d71cb2f67c9ca29cb9a49a0b4d0702909bd",
+        "requested_source": "auto",
+        "native_language_option": null,
+        "gain": 1.0,
+        "audio_ms": 6000.0,
+        "decode_ms": 4046.92,
+        "output_chars": 83,
+        "latin_script_plausible": true,
+        "inferences": 1
+      },
+      {
+        "sample": "f1_noise.wav",
+        "sample_sha256": "7ae35f5d8f038e518f3abdeda5f78d71cb2f67c9ca29cb9a49a0b4d0702909bd",
+        "requested_source": "en",
+        "native_language_option": "English",
+        "gain": 1.0,
+        "audio_ms": 6000.0,
+        "decode_ms": 3500.03,
+        "output_chars": 77,
+        "latin_script_plausible": true,
+        "inferences": 1
+      },
+      {
+        "sample": "f1_noise.wav",
+        "sample_sha256": "7ae35f5d8f038e518f3abdeda5f78d71cb2f67c9ca29cb9a49a0b4d0702909bd",
+        "requested_source": "en",
+        "native_language_option": "English",
+        "gain": 0.15,
+        "audio_ms": 6000.0,
+        "decode_ms": 3684.42,
+        "output_chars": 77,
+        "latin_script_plausible": true,
+        "inferences": 1
+      },
+      {
+        "sample": "noise1-en.wav",
+        "sample_sha256": "3664ef02fa664da93d94a1afc271bda31c0f8d07a9f3c74ac6cd1e5aabe8572c",
+        "requested_source": "en",
+        "native_language_option": "English",
+        "gain": 1.0,
+        "audio_ms": 6000.0,
+        "decode_ms": 3185.49,
+        "output_chars": 42,
+        "latin_script_plausible": true,
+        "inferences": 1
+      },
+      {
+        "sample": "codeswitch.wav",
+        "sample_sha256": "2def7fa41004d0a7d148d4afbf4c467c9d112d8b373996123e9a4c43d94957c7",
+        "requested_source": "en",
+        "native_language_option": "English",
+        "gain": 1.0,
+        "audio_ms": 6000.0,
+        "decode_ms": 3719.93,
+        "output_chars": 65,
+        "latin_script_plausible": true,
+        "inferences": 1
+      }
+    ],
+    "boundaries": [
+      "Public bundled WAV excerpts, not the user's original video",
+      "No playback, capture, UI, cloud or config writes",
+      "Native hint readback and non-empty result verified, not word accuracy or perfect language exclusivity",
+      "Translation integration is separately unit-tested; no production translator/server used"
+    ]
+  },
+  "sources": [
+    "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.5/sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.cc",
+    "https://github.com/k2-fsa/sherpa-onnx/pull/3472"
+  ],
+  "not_run": [
+    "user_original_audio",
+    "word_error_rate",
+    "perfect_language_exclusivity",
+    "live_audio_capture",
+    "visible_GUI",
+    "real_translation_end_to_end",
+    "other_ASR_native",
+    "GPU",
+    "installer",
+    "GitHub_CI"
+  ],
+  "evidence_sha256": {
+    "before.log": "b84b9f1075c7d2d950bef934814c8098b3b0537c53f33bb6a866a838ca47b3d1",
+    "after-focused.log": "eab0c3a9938702eeb5cfaa114f09c26c7a8c3e71e5ee24e05f74c5a7f015e51a",
+    "targeted-final.log": "000c51d247c0df326c24dcadf384a9dd56b7b53be68e6e531e727be987f07c13",
+    "review-check.log": "74d1a66321ac2381516f22033cdaaea099517ea4fdee34277ba0b9a3750d438d",
+    "python-final.log": "4f3686238e38b9fe356b575aaa7888914bba24db5870efcfcf0d2ce74730df96",
+    "frontend-check.log": "1a44a620e68ae988c3c57fef9d26e1c9b6afb36776ef56622a506d7686291164",
+    "frontend-build.log": "89e29b2b7631798ccbe3731b637c21f84eb14cc0541885dc72da819a0bb71851",
+    "native-language.json": "456404c2339a2dd8f44dcf48e21bc90ad33bbf7471e972b8e07a8b66c241f2c5"
+  },
+  "source_sha256": {
+    "voxsub/asr.py": "b8eec4e759983f395d3b55094c8a0e628ec17c231cfc461c94d3381c8754701e",
+    "voxsub/pipeline.py": "296d85572525b793e5d7b38f43a2bcbc42871fd5aaced5c069d258091b9bd1db",
+    "voxsub/file_transcriber.py": "3ed949312c4b7664ef7412917c1e52768ed8f4bb1d2b933a1e6ee1c6137e365e",
+    "voxsub/language_guard.py": "6d417d467562a7e38fe31079add5c669f9eb4254431f3cccdaaca8bf8fd4bf10",
+    "voxsub/diagnostic_trace.py": "23ce1f294319c7d229f335001a27d8ce1447e4daf999281506daf21cd09dcb4f",
+    "tests/test_source_language_preservation.py": "c1638ad2786d80bf2115df0fc8c8872836a379e9a564ffbfa19e5ebf7d6600a3",
+    "tests/test_job_runner.py": "ecbde41ea4ba487c0e71b55bccc4d1976e2d236ac9a6b86b6d3096add1659434",
+    "scripts/verify_qwen_language_hint.py": "d22fbfa301363a37fb2a7279c31420eccd5fbdf671a49e2ef40159e69fca8936"
+  }
+}

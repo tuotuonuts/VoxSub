@@ -87,7 +87,11 @@ def model_result(stage: str, text: str | None, *, expected: str, **metadata: Any
     from voxsub.language_guard import text_matches_language
     outcome = "ok" if text else "empty"
     if text and expected != "auto" and not text_matches_language(text, expected):
-        outcome = "language_mismatch"  # heuristic, never claim language detection certainty
+        # Source script uncertainty is retained, not a failed or discarded request.
+        outcome = ("language_uncertain" if stage in {"recognition", "file_recognition"}
+                   else "language_mismatch")
+        if outcome == "language_uncertain":
+            metadata["fallback"] = "source_retained"
     record(stage, outcome, output_chars=len(text or ""), **metadata)
 
 

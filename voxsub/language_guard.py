@@ -1,20 +1,12 @@
-"""Language constraints shared by the speech and translation pipelines.
+"""Script plausibility for diagnostics and target validation, not source filtering.
 
-The ASR runtimes used by VoxSub are not all able to force a language at decode
-time. This module therefore provides a small dependency-free safety gate for
-the final text. It is intentionally conservative for different writing
-systems (for example Devanagari or Japanese kana), while allowing punctuation,
-numbers, and a modest amount of Latin text in Chinese proper names.
-
-This is not a full language detector: script checks cannot distinguish English
-from Spanish or German. Models still receive an explicit language hint where
-their runtime supports one, and this gate prevents the most damaging
-cross-script hallucinations from reaching subtitles or translation.
+Source language is a decoder instruction. A character/word heuristic cannot
+prove a spoken language and must never decide whether recognized information
+is retained. Latin script cannot distinguish English from Swedish or Spanish.
 """
 from __future__ import annotations
 
 import unicodedata
-import re
 
 
 LANGUAGE_NAMES: dict[str, str] = {
@@ -32,8 +24,8 @@ def normalize_language(value: object, *, strict: bool = False) -> str:
     """Return a supported short language code.
 
     UI/config parsing may keep the historical permissive ``auto`` fallback, but
-    pipeline entry points use ``strict=True`` so a typo cannot silently disable
-    language filtering.
+    pipeline entry points use ``strict=True`` so a typo cannot silently change
+    the requested decoding language.
     """
     original = str(value or "auto").strip().lower().replace("_", "-")
     value = original
@@ -120,12 +112,12 @@ def _matches_zh(counts: dict[str, int]) -> bool:
 
 
 def _matches_ja(counts: dict[str, int]) -> bool:
-    """日文：假名是可靠信号；纯汉字短标签（<=3字）与中文在字面上无法区分，也接受；长汉字句若无假名则视为中文。"""
+    """Kana is a Japanese-script signal; kanji alone leaves the language uncertain."""
     if counts["hangul"] or counts["other"]:
         return False
     if counts["kana"] > 0:
         return counts["latin"] <= max(12, (counts["cjk"] + counts["kana"]) * 2)
-    # 纯汉字无法可靠区分中日文；严格模式下拒绝，避免中文误入日文链路。
+    # No kana: insufficient target-script evidence, never grounds to discard source text.
     return False
 
 
@@ -134,23 +126,15 @@ def _matches_ko(counts: dict[str, int]) -> bool:
     return counts["hangul"] > 0 and not counts["other"]
 
 
-_COMMON_ENGLISH_WORDS = frozenset({
-    "a", "an", "and", "are", "be", "but", "can", "do", "for", "from",
-    "hello", "how", "i", "if", "in", "is", "it", "me", "my", "no",
-    "not", "of", "on", "or", "please", "that", "the", "this", "to",
-    "we", "what", "when", "where", "who", "why", "with", "world", "yes",
-    "you", "your",
-})
+def _matches_en(counts: dict[str, int]) -> bool:
+    """Latin text is plausible, not proven English; short words/names are valid."""
+    return counts["latin"] > 0 and not any(
+        counts[script] for script in ("cjk", "kana", "hangul", "other"))
 
 
-def _matches_en(counts: dict[str, int], text: str = "") -> bool:
-    """English: require an English lexical signal, not just Latin script."""
-    if counts["latin"] == 0:
-        return False
-    if counts["cjk"] or counts["kana"] or counts["hangul"] or counts["other"]:
-        return False
-    words = {word.casefold() for word in re.findall(r"[A-Za-z]+", text)}
-    return bool(words & _COMMON_ENGLISH_WORDS)
+def retain_source_text(text: object) -> str:
+    """Normalize whitespace without deleting uncertain/mixed-language content."""
+    return " ".join(str(text or "").split())
 
 
 # 语种 → 判定函数（查表取代 if 阶梯，新增语种只加一行）
@@ -176,7 +160,7 @@ def text_matches_language(text: str, language: str, *, require_signal: bool = Tr
     if sum(counts.values()) == 0:
         return not require_signal
     matcher = _LANGUAGE_MATCHERS.get(language)
-    return matcher(counts, text) if language == "en" else matcher(counts)
+    return matcher(counts)
 
 
 def guard_text(text: str, language: str, *, kind: str = "text") -> str:
@@ -190,6 +174,7 @@ def guard_text(text: str, language: str, *, kind: str = "text") -> str:
 __all__ = [
     "LANGUAGE_NAMES",
     "guard_text",
+    "retain_source_text",
     "detect_text_language",
     "language_name",
     "normalize_language",
