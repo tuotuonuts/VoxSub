@@ -21,6 +21,7 @@ import { tr, englishText } from "../i18n";
 import { describeOutcome, isTaskRunning } from "../../shared/request-outcome";
 import { type PageHandle } from "../../shared/page-lifecycle";
 import { buildProgressBar } from "../ui/progress";
+import { buildField } from "../ui/field";
 
 type TaskFilter = "all" | "asr" | "translate" | "tts" | "ocr";
 
@@ -165,7 +166,8 @@ function modelCell(model: ModelEntry): HTMLElement {
     bar.setLabel(`${label} ${percent(active.completed, active.total)}`);
     bar.setState(active.status === "paused" ? "paused" : "running");
     const box = h("div", { class: "cell__progress" }, [bar.track, bar.label]);
-    card.append(box);
+    card.append(active.status === "paused" && active.error
+      ? buildField({ label: tr("下载原因"), control: box, hint: active.error }) : box);
   }
 
   // 底部：官方仓库 + 清晰的已下载状态 + 原有操作

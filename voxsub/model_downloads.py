@@ -55,14 +55,49 @@ class ModelDownloads:
             self._path(rel + ".part.resume.json")
         return paths
 
-    def _bytes(self, model: Any) -> int:
+    def _source_paths(self, model: Any, source: Any) -> list[Path]:
+        if source is not None and source.files:
+            return [self._path(f"{model.id}/{name}")
+                    for name in dict.fromkeys(item.install_rel for item in source.files)]
+        return [self._path(model.asset_name)] if model.asset_name else []
+
+    @staticmethod
+    def _source_total(model: Any, source: Any) -> int:
+        return (sum(item.size for item in source.files) if source is not None and source.files
+                else model.download_bytes)
+
+    def _source_bytes(self, model: Any, source: Any) -> int:
         total = 0
-        for path in self._assets(model):
+        for path in self._source_paths(model, source):
             part = path.with_name(path.name + ".part")
             candidate = path if path.is_file() else part
             if candidate.is_file():
                 total += candidate.stat().st_size
-        return min(total, model.download_bytes) if model.download_bytes else total
+        limit = self._source_total(model, source)
+        return min(total, limit) if limit else total
+
+    def _progress_source(self, model: Any, source_id: str = "auto") -> Any:
+        chosen = next((source for source in model.sources if source.id == source_id), None)
+        if chosen is not None:
+            return chosen
+        return max(model.sources, key=lambda source: self._source_bytes(model, source), default=None)
+
+    def _bytes(self, model: Any) -> int:
+        return self._source_bytes(model, self._progress_source(model))
+
+    def _reset_progress(self, model: Any, state: dict) -> None:
+        source_id = state.get("_active_source") or "auto"
+        if source_id == "auto":
+            source_id = state["source"]
+        source = self._progress_source(model, source_id)
+        state["_active_source"] = source.id if source is not None else "auto"
+        state["total"] = self._source_total(model, source)
+        state["completed"] = self._source_bytes(model, source)
+
+    @staticmethod
+    def _public_state(state: dict) -> dict:
+        # Origin bookkeeping stays in our durable file; IPC contract is unchanged.
+        return {key: value for key, value in state.items() if key != "_active_source"}
 
     def _read(self, model: Any) -> dict | None:
         try:
@@ -85,7 +120,7 @@ class ModelDownloads:
     def _base(self, model: Any) -> dict:
         return {"modelId": model.id, "modelsRoot": str(self.root), "token": uuid.uuid4().hex,
                 "revision": 0, "completed": 0, "total": model.download_bytes,
-                "status": "paused", "stage": "已暂停", "source": "auto", "error": ""}
+                "status": "paused", "stage": "已暂停", "source": "auto", "error": "", "_active_source": "auto"}
 
     def _load(self, model: Any) -> dict | None:
         if model.id in self.states:
@@ -96,9 +131,9 @@ class ModelDownloads:
             return None
         state = self._base(model)
         if data:
-            for key in ("token", "revision", "source", "status", "error"):
+            for key in ("token", "revision", "source", "status", "error", "_active_source"):
                 state[key] = data.get(key, state[key])
-        state["completed"] = size
+        self._reset_progress(model, state)
         if state["status"] in ACTIVE:
             state.update(status="paused", stage="已暂停", error="")
         self.states[model.id] = state
@@ -109,14 +144,14 @@ class ModelDownloads:
             state = self._load(model)
             if not state or state["status"] in {"done", "deleted"}:
                 return None
-            return dict(state)
+            return self._public_state(state)
 
     def _save(self, model: Any, state: dict) -> dict:
         state["revision"] = int(state["revision"]) + 1
         path = self._record_path(model)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_text_atomically(path, json.dumps(state, ensure_ascii=False), encoding="utf-8")
-        snapshot = dict(state)
+        snapshot = self._public_state(state)
         self.emit(snapshot)
         return snapshot
 
@@ -130,7 +165,9 @@ class ModelDownloads:
             state = self._base(model)
             if old:
                 state["revision"] = old["revision"]
-            state.update(completed=self._bytes(model), source=source, status="queued", stage="等待下载")
+            state.update(source=source, status="queued", stage="等待下载")
+            state["_active_source"] = source if source != "auto" else (old or {}).get("_active_source", "auto")
+            self._reset_progress(model, state)
             self.states[model.id] = state
             return self._save(model, state)
 
@@ -153,6 +190,9 @@ class ModelDownloads:
             state = self.states[model.id]
             if state["token"] != token:
                 return
+            active = next((source for source in model.sources if source.label == stage), None)
+            if active is not None:
+                state["_active_source"] = active.id
             state.update(completed=done, total=total, stage=stage)
             if stage == "校验并安装" and state["status"] != "pausing":
                 state["status"] = "verifying"
@@ -197,7 +237,7 @@ class ModelDownloads:
             if status == "done":
                 state["completed"] = state["total"]
             else:
-                state["completed"] = self._bytes(model)
+                self._reset_progress(model, state)
             return self._save(model, state)
 
     def delete(self, model: Any, token: str) -> dict:

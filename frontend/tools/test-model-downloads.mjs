@@ -40,6 +40,13 @@ try{
  unsubscribe=catalog.store.subscribe(()=>catalog.refreshDownloads());
  test('list canonicalizes runtime root aliases without writing saved config',()=>{assert.equal(dom.document.documentElement.dataset.modelsRoot,'C:/fixture/models');assert.ok(commands.every(c=>c.command!==catalog.CMD.setConfig));});
  test('restored paused download shows progress and Continue/Delete, no automatic install',()=>{assert.deepEqual(labels(),['继续','删除']);assert.ok(handle.element.querySelector('.progress__track.is-paused'));assert.equal(installRequests.length,0);assert.match(handle.element.querySelector('.cell__progress-label').textContent,/已暂停.*50%/);});
+ const failureText='GitHub 全球源：HTTP 404：下载地址不存在。请更换下载源 <img src=x>';send({...live,revision:live.revision+1,error:failureText});await dom.flushAsync(4);
+ test('paused card shows actionable backend cause using the shared field without hiding Continue/Delete',()=>{assert.deepEqual(labels(),['继续','删除']);assert.equal(handle.element.querySelector('.field__label').textContent,'下载原因');assert.equal(handle.element.querySelector('.field__hint').textContent,failureText);assert.equal(handle.element.querySelector('.field__hint').children.length,0);assert.equal(handle.element.querySelector('img[src="x"]'),null);});
+ send({...live,revision:live.revision+1,error:''});await dom.flushAsync(4);
+ test('clearing a failure removes stale reason and preserves the visible shared progress track',()=>{assert.equal(handle.element.querySelector('.field__hint'),null);assert.equal(handle.element.querySelector('.progress__track').parentElement,handle.element.querySelector('.cell__progress'));});
+ send({...live,revision:live.revision+1,total:200,completed:100});await dom.flushAsync(4);
+ test('uncompressed source progress uses its transfer total rather than the model card archive size',()=>{assert.match(handle.element.querySelector('.cell__progress-label').textContent,/50%/);assert.equal(handle.element.querySelector('.progress__fill').style.width,'50%');});
+ send({...live,revision:live.revision+1,total:100,completed:50});await dom.flushAsync(4);
  delayPrepare=true;press('继续');press('暂停');await dom.flushAsync(5);
  test('preparation disables pause and repeated clicks do not submit duplicates',()=>{assert.equal(prepareRequests.length,1);assert.equal(buttons()[0].disabled,true);assert.equal(installRequests.length,0);});
  prepareRequests[0].resolve();await dom.flushAsync(8);delayPrepare=false;

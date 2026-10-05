@@ -1,0 +1,72 @@
+{
+  "results": [
+    {
+      "source": "global",
+      "status": "PASS",
+      "pause_bytes": 4848737,
+      "total": 163002883,
+      "restart_stayed_paused": true,
+      "recorded_source": "global",
+      "files": [
+        {
+          "file": "model.int8.onnx",
+          "bytes": 239233841,
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+        },
+        {
+          "file": "tokens.txt",
+          "bytes": 315894,
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+        }
+      ],
+      "elapsed_seconds": 82.09
+    },
+    {
+      "source": "china",
+      "status": "PASS",
+      "pause_bytes": 6011683,
+      "total": 239549735,
+      "restart_stayed_paused": true,
+      "recorded_source": "china",
+      "files": [
+        {
+          "file": "model.int8.onnx",
+          "bytes": 239233841,
+          "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+        },
+        {
+          "file": "tokens.txt",
+          "bytes": 315894,
+          "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+        }
+      ],
+      "elapsed_seconds": 98.47
+    }
+  ],
+  "requests": [
+    {
+      "host": "github.com",
+      "range": "bytes=4848737-",
+      "status": 206,
+      "content_range": "bytes 4848737-163002882/163002883"
+    },
+    {
+      "host": "modelscope.cn",
+      "range": null,
+      "status": 200,
+      "content_range": null
+    },
+    {
+      "host": "modelscope.cn",
+      "range": "bytes=6011683-",
+      "status": 206,
+      "content_range": "bytes 6011683-239233840/239233841"
+    },
+    {
+      "host": "modelscope.cn",
+      "range": null,
+      "status": 200,
+      "content_range": null
+    }
+  ]
+}

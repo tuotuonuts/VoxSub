@@ -12,6 +12,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from voxsub.file_io import replace_with_retry, write_text_atomically
+from voxsub.download_errors import DownloadError, describe_download_error, safe_source_url
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("downloader")
@@ -20,6 +21,7 @@ CHUNK = 1 << 20
 DOWNLOAD_ATTEMPTS_PER_SOURCE = 3
 _PERMANENT_HTTP_ERRORS = {400, 401, 403, 404, 410}
 _DOWNLOAD_ERRORS = (
+    DownloadError,
     urlerror.URLError,
     OSError,
     TimeoutError,
@@ -57,6 +59,7 @@ class _DownloadTarget:
     progress: Callable[[int, int, str], None] | None
     cancelled: Callable[[], bool] | None
     safe_resume: bool = False
+    failure: DownloadError | None = None
 
     def __post_init__(self) -> None:
         self.destination = Path(self.destination)
@@ -101,6 +104,7 @@ class _DownloadTarget:
 
     def commit(self) -> bool:
         if self.expected_size is not None and self.part.stat().st_size != self.expected_size:
+            self.failure = DownloadError("size_mismatch", "下载文件大小校验不一致", "已阻止安装，请更新模型清单或更换源")
             return False
         if self.expected_sha:
             actual = sha256_of(self.part, cancelled=self.cancelled)
@@ -108,6 +112,7 @@ class _DownloadTarget:
                 print(f"  [错误] SHA256 不匹配: 期望 {self.expected_sha}, 实际 {actual}")
                 logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
                              self.destination.name, self.expected_sha, actual)
+                self.failure = DownloadError("sha_mismatch", "下载文件 SHA-256 校验失败，文件可能损坏或被替换", "已阻止安装，请重新下载或更换源")
                 self.part.unlink(missing_ok=True)
                 return False
             print("  SHA256 校验通过")
@@ -126,13 +131,12 @@ class _DownloadTarget:
     ) -> None:
         actual_size = self.part.stat().st_size
         if layout.response_bytes and received < layout.response_bytes:
-            raise OSError(
-                f"CDN 提前断流: 本次收到 {received}/{layout.response_bytes} 字节")
+            raise DownloadError("interrupted", f"下载连接提前中断：收到 {received}/{layout.response_bytes} 字节", "断点已保留，请继续下载")
         if layout.total and actual_size < layout.total:
-            raise OSError(f"下载未完成: 当前 {actual_size}/{layout.total} 字节")
+            raise DownloadError("interrupted", f"下载未完成：当前 {actual_size}/{layout.total} 字节", "断点已保留，请继续下载")
         if layout.total and actual_size > layout.total:
             self.part.unlink(missing_ok=True)
-            raise OSError(f"下载大小超出预期: 当前 {actual_size}/{layout.total} 字节")
+            raise DownloadError("size_mismatch", f"下载大小超出预期：当前 {actual_size}/{layout.total} 字节", "已阻止安装，请更新模型清单或更换源")
 
 
 def _candidate_sources(
@@ -155,6 +159,17 @@ def _integer_header(headers, key: str) -> int:
         return 0
 
 
+def _validate_response_range(status: int, existing: int, response_bytes: int, content_range: str) -> None:
+    if status == 206:
+        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+        if not match or int(match[1]) != existing or int(match[2]) < existing:
+            raise DownloadError("invalid_range", "服务器续传范围与本地断点不一致", "已阻止拼接文件，请更换源或重新下载")
+        if response_bytes and response_bytes != int(match[2]) - existing + 1:
+            raise DownloadError("invalid_range", "服务器续传长度不一致", "已阻止拼接文件，请更换源或重新下载")
+    elif status != 200:
+        raise DownloadError("http", f"不支持的下载响应：HTTP {status}", "请更换下载源")
+
+
 def _response_layout(response, existing: int, expected_size: int | None) -> _ResponseLayout:
     status = int(getattr(response, "status", response.getcode()))
     resumed = existing if status == 206 else 0
@@ -166,18 +181,13 @@ def _response_layout(response, existing: int, expected_size: int | None) -> _Res
         except ValueError:
             pass
     response_bytes = _integer_header(response.headers, "Content-Length")
+    if status == 200:
+        reported_total = response_bytes
     total = expected_size or reported_total or (
         resumed + response_bytes if response_bytes else 0)
-    if status == 206:
-        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
-        if not match or int(match[1]) != existing or int(match[2]) < existing:
-            raise OSError("服务器续传范围与本地断点不一致")
-        if response_bytes and response_bytes != int(match[2]) - existing + 1:
-            raise OSError("服务器续传长度不一致")
-    elif status != 200:
-        raise OSError(f"不支持的下载响应: {status}")
+    _validate_response_range(status, existing, response_bytes, content_range)
     if expected_size is not None and reported_total and reported_total != expected_size:
-        raise OSError(f"服务器总大小异常: {reported_total}, 预期 {expected_size}")
+        raise DownloadError("size_mismatch", f"下载源文件大小与模型清单不一致：服务器 {reported_total} 字节，预期 {expected_size} 字节", "已阻止安装，请更新模型清单或更换源")
     return _ResponseLayout(status, resumed, response_bytes, total)
 
 
@@ -248,7 +258,7 @@ def _remember_response(target: _DownloadTarget, source: str, response, layout: _
     if layout.resumed and metadata.get("validator") and validator != metadata["validator"]:
         target.part.unlink(missing_ok=True)
         target.metadata.unlink(missing_ok=True)
-        raise OSError("远端文件已变化，安全重新下载")
+        raise DownloadError("remote_changed", "下载源文件已变化，不能拼接旧断点", "已安全重置，请继续下载")
     if layout.status == 200:
         # Truncate BEFORE publishing the new identity: a crash cannot bind old bytes to a new ETag.
         target.part.write_bytes(b"")
@@ -282,15 +292,20 @@ def _download_from_source(target: _DownloadTarget, source: str) -> bool:
             raise
         except _DOWNLOAD_ERRORS as exc:
             target.check_cancelled()
-            print(f"  源 {source} 第 {attempt}/{DOWNLOAD_ATTEMPTS_PER_SOURCE} 次失败: {exc}")
+            target.failure = describe_download_error(exc)
+            print(f"  源 {safe_source_url(source)} 第 {attempt}/{DOWNLOAD_ATTEMPTS_PER_SOURCE} 次失败: {target.failure}")
             logger.warning(
-                "下载源失败: 目标=%s 源=%s attempt=%d/%d 已有字节=%d 错误=%s",
-                target.destination.name, source, attempt,
+                "下载源失败: 目标=%s 源=%s attempt=%d/%d 已有字节=%d error_type=%s code=%s 错误=%s",
+                target.destination.name, safe_source_url(source), attempt,
                 DOWNLOAD_ATTEMPTS_PER_SOURCE,
                 target.part.stat().st_size if target.part.exists() else 0,
-                exc,
+                type(getattr(exc, "reason", exc)).__name__, target.failure.code,
+                target.failure,
             )
+            if isinstance(exc, DownloadError) and exc.code == "size_mismatch":
+                return False
             if isinstance(exc, urlerror.HTTPError):
+                exc.close()
                 if exc.code == 416:
                     target.part.unlink(missing_ok=True)
                 elif exc.code in _PERMANENT_HTTP_ERRORS:
@@ -309,6 +324,7 @@ def fetch_file(
     progress: Callable[[int, int, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     safe_resume: bool = False,
+    raise_on_error: bool = False,
 ) -> bool:
     """Download one file with resume, verification, retries, and mirrors."""
     normalized_size = expected_size if expected_size and expected_size > 0 else None
@@ -323,7 +339,9 @@ def fetch_file(
             return True
     print("  [错误] 所有源均失败")
     logger.error("所有下载源均失败: %s", target.destination.name)
+    if raise_on_error:
+        raise target.failure or DownloadError("unavailable", "所有下载源均失败", "请更换源并检查网络后继续下载")
     return False
 
 
-__all__ = ["CHUNK", "DownloadCancelled", "fetch_file", "sha256_of"]
+__all__ = ["CHUNK", "DownloadCancelled", "DownloadError", "fetch_file", "sha256_of"]

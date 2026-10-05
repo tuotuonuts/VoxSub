@@ -392,3 +392,14 @@ PARAKEET_FILES: tuple[tuple[str, int, str], ...] = (
     ('joiner.int8.onnx', 6355277, '3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3'),
     ('tokens.txt', 93939, 'd58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d'),
 )
+
+
+# Verified against the sherpa-onnx/Hugging Face export on 2026-10-05.
+# This China mirror's immutable ONNX export is not interchangeable with the
+# original iic/SenseVoiceSmall PyTorch repository.
+SENSEVOICE_CHINA_REPO = "fengge2024/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+SENSEVOICE_CHINA_REVISION = "9bd9398d89294cbf1964af126ff13e6890394cbc"
+SENSEVOICE_FILES: tuple[tuple[str, int, str], ...] = (
+    ("model.int8.onnx", 239_233_841, "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"),
+    ("tokens.txt", 315_894, "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"),
+)

@@ -1,3 +1,11 @@
+## SenseVoice 双源下载修复（2026-10-05）
+
+- 海外压缩包修正精确长度及SHA-256；大陆404改为固定revision的等价ONNX权重/词表，真实两源安装文件哈希一致；同步修正FunASR/Qwen3错误估算压缩包元数据（两款未实下载）。
+- 源级进度与实际回退源持久化，旧任务重读保持暂停、无自动下载；HTTP/TLS/超时/断流/校验错误保留具体原因与建议，公共Field显示暂停原因及继续/删除，日志URL脱敏。
+- 真实两源隔离下载/暂停/重建任务/HTTP206续传/安装通过；3.11/3.12各1161 passed/8 skipped/7 deselected/1既有xfail/0失败；完整前端check/build及下载UI23项通过。
+- 不清理用户原下载任务/模型，不重启应用、不录音、不发声；推理/可见Electron视觉/安装版/GitHubCI NOT_RUN；本轮本地commit，未push/打包。
+- 报告docs/SENSEVOICE_DOWNLOAD_FIX_ACCEPTANCE.md与docs/SENSEVOICE_DOWNLOAD_EVIDENCE.json；原始证据在仓库外sensevoice-download-fix-20261005目录。
+
 ## 诊断实时日志级别多选（2026-10-05）
 
 - 单选下拉改为公共MultiFilter独立多选按钮，默认全部、可选WARNING+ERROR、允许空选、一键全部恢复；关键词/运行/模型会话取交集，历史与导出一致，选择只留内存。

@@ -199,6 +199,7 @@ const EN: Dict = {
   "已执行的检查项通过；未检查的链路不作保证": "Executed checks passed; unchecked paths remain unverified.",
   "存在异常或未验证项目，请查看影响与建议": "Failed or unverified items exist. Review impact and next steps.",
   "导出包含版本、检查时间、检查范围和脱敏运行元数据；不含音频、识别/翻译正文及历史。普通日志正文默认省略。继续？": "Export version, check time, scope and redacted runtime metadata? No audio, transcript/translation bodies or history. General log message bodies are omitted.",
+  "下载原因": "Download issue",
   "日志级别": "Log level",
   "日志级别（可多选）": "Log levels (select multiple)",
   "全部级别": "All levels",

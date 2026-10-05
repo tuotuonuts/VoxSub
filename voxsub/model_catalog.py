@@ -23,6 +23,7 @@ from urllib.parse import quote
 from voxsub.catalog_assets import (
     KOKORO_FILES, KOKORO_REPO, KOKORO_REVISION,
     PARAKEET_FILES, PARAKEET_REPO, PARAKEET_REVISION,
+    SENSEVOICE_FILES, SENSEVOICE_CHINA_REPO, SENSEVOICE_CHINA_REVISION,
 )
 from voxsub.logging_setup import get_logger
 from voxsub.file_io import (
@@ -37,7 +38,7 @@ from voxsub.models import DownloadCancelled, fetch_file, sha256_of
 logger = get_logger("model_catalog")
 
 GIB = 1024 ** 3
-CATALOG_UPDATED = "2026-10-04"
+CATALOG_UPDATED = "2026-10-05"
 
 
 def default_models_dir() -> Path:
@@ -357,7 +358,7 @@ CATALOG: tuple[ModelSpec, ...] = (
         quality_score=98,
         languages="中文 / 英语 / 日语 · 7 种中文方言",
         license="Apache-2.0",
-        download_bytes=995_000_000,
+        download_bytes=841_730_611,
         installed_bytes=1_018_000_000,
         install_rel="stt/funasr-nano-2512-int8",
         legacy_install_rels=("marketplace/asr-funasr-nano-2512-int8",),
@@ -372,6 +373,7 @@ CATALOG: tuple[ModelSpec, ...] = (
                         "https://modelscope.cn/favicon.ico"),
         ),
         asset_name="sherpa-onnx-funasr-nano-int8-2025-12-30.tar.bz2",
+        sha256="eb43d7ccc2e86b243f6a03b7df361033dda66db9523d1a92bf6aca2b50c9476b",
         archive=True,
         min_ram_gb=8.0,
         working_ram_gb=2.2,
@@ -391,7 +393,7 @@ CATALOG: tuple[ModelSpec, ...] = (
         quality_score=96,
         languages="30 种语言 · 22 种中文方言",
         license="Apache-2.0",
-        download_bytes=960_000_000,
+        download_bytes=878_702_423,
         installed_bytes=1_005_000_000,
         install_rel="stt/qwen3-asr-0.6b-int8",
         legacy_install_rels=("marketplace/asr-qwen3-0.6b-int8",),
@@ -432,6 +434,7 @@ CATALOG: tuple[ModelSpec, ...] = (
                         )),
         ),
         asset_name="sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+        sha256="393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
         archive=True,
         min_ram_gb=8.0,
         working_ram_gb=2.0,
@@ -451,7 +454,7 @@ CATALOG: tuple[ModelSpec, ...] = (
         quality_score=88,
         languages="中文 / 粤语 / 英语 / 日语 / 韩语",
         license="Apache-2.0",
-        download_bytes=245_000_000,
+        download_bytes=163_002_883,
         installed_bytes=270_000_000,
         install_rel="stt/sensevoice-small-int8",
         legacy_install_rels=("marketplace/asr-sensevoice-small-int8",),
@@ -461,10 +464,14 @@ CATALOG: tuple[ModelSpec, ...] = (
                         f"{_GH_ASR}/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
                         "https://github.com/favicon.ico"),
             ModelSource("china", "ModelScope 中国源",
-                        f"{_MS_ASR}/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
-                        "https://modelscope.cn/favicon.ico"),
+                        f"{_MS}/models/{SENSEVOICE_CHINA_REPO}",
+                        f"{_MS}/models/{SENSEVOICE_CHINA_REPO}/resolve/{SENSEVOICE_CHINA_REVISION}/tokens.txt",
+                        files=tuple(RemoteFile(
+                            f"{_MS}/models/{SENSEVOICE_CHINA_REPO}/resolve/{SENSEVOICE_CHINA_REVISION}/{path}",
+                            path, size, digest) for path, size, digest in SENSEVOICE_FILES)),
         ),
         asset_name="sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+        sha256="7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e",
         archive=True,
         min_ram_gb=4.0,
         working_ram_gb=0.85,
@@ -1165,6 +1172,7 @@ class ModelMarketplace:
             if cancelled and cancelled():
                 raise DownloadCancelled("下载已暂停")
             try:
+                self._notify_source(model, source, progress)
                 target = self._install_from_source(
                     model, source, progress=progress, cancelled=cancelled,
                     force=force)
@@ -1186,6 +1194,13 @@ class ModelMarketplace:
         fallback = "；请通过最新安装包修复或查看日志" if model.builtin else ""
         raise RuntimeError(prefix + detail + "。" + "；".join(errors) + fallback)
 
+    @staticmethod
+    def _notify_source(model: ModelSpec, source: ModelSource,
+                       progress: Callable[[int, int, str], None] | None) -> None:
+        if progress:
+            total = sum(item.size for item in source.files) or model.download_bytes
+            progress(0, total, source.label)
+
     def _install_from_source(self, model: ModelSpec, source: ModelSource,
                              progress: Callable[[int, int, str], None] | None,
                              cancelled: Callable[[], bool] | None,
@@ -1202,7 +1217,7 @@ class ModelMarketplace:
 
         ok = fetch_file(source.url, download, expected_sha=model.sha256 or None,
                         expected_size=model.download_bytes or None,
-                        progress=_progress, cancelled=cancelled, safe_resume=True)
+                        progress=_progress, cancelled=cancelled, safe_resume=True, raise_on_error=True)
         if not ok:
             raise RuntimeError("下载失败")
         if cancelled and cancelled():
@@ -1274,7 +1289,7 @@ class ModelMarketplace:
 
         ok = fetch_file(
             item.url, destination, expected_sha=item.sha256 or None,
-            expected_size=item.size or None, progress=report, cancelled=cancelled, safe_resume=True,
+            expected_size=item.size or None, progress=report, cancelled=cancelled, safe_resume=True, raise_on_error=True,
         )
         if not ok:
             raise RuntimeError(f"文件下载失败: {item.install_rel}")
