@@ -10,6 +10,23 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "自动（优先 NVIDIA GPU）": "Automatic (prefer NVIDIA GPU)",
+  "NVIDIA GPU（CUDA）": "NVIDIA GPU (CUDA)",
+  "仅译文": "Translation only",
+  "语音翻译设备": "Speech translation device",
+  "字幕内容": "Subtitle content",
+  "官方运行说明": "Official setup guide",
+  "NVIDIA 显卡加速": "NVIDIA GPU acceleration",
+  "Linux／WSL 外部运行": "External Linux / WSL runtime",
+  "仅非商业使用": "Non-commercial use only",
+  "流式翻译": "Streaming translation",
+  "多语言语音 → 多语言文字": "Multilingual speech to text",
+  "英语 ↔ 法德西葡日；英语 → 中意": "English \u2194 French/German/Spanish/Portuguese/Japanese; English \u2192 Chinese/Italian",
+  "把音视频直接翻译成文字。支持 NVIDIA 显卡或处理器；可选仅译文或双语字幕，双语模式分两次生成。": "Translate media directly to text on NVIDIA GPU or CPU. Choose translation only or bilingual subtitles; bilingual uses two generations.",
+  "把中文音视频生成双语字幕和句子时间戳。支持 NVIDIA 显卡或处理器；官方提示 BF16 约需 10GB 显存并留有余量。": "Generate bilingual subtitles and sentence timestamps from Chinese media on NVIDIA GPU or CPU. Upstream estimates about 10 GB VRAM for BF16, plus headroom.",
+  "面向多语言实时翻译的模型。官方运行环境为 Linux／WSL；本应用提供权重下载和官方说明，不在 Windows 内直接启动。仅限非商业用途。": "Multilingual streaming translation. The official runtime requires Linux / WSL. VoxSub provides weights and setup instructions, not native Windows execution. Non-commercial use only.",
+  "仅用于文件字幕，不启动独立翻译器。自动模式优先 CUDA，缺少可用 CUDA 时使用 CPU；指定 GPU 失败不会偷偷切回 CPU。Granite 双语分两次生成，仅译文为一次。Index 官方建议约 10GB 显存并留余量。实际效果由你试用，实时和 OCR 配置不受影响。": "Files only, without a separate translator. Auto prefers CUDA and uses CPU if CUDA is unavailable; explicit GPU failures never silently fall back. Granite uses two generations for bilingual subtitles, one for translation only. Index recommends about 10 GB VRAM plus headroom. Evaluate quality yourself; live and OCR settings are unchanged.",
+
   "输入语言名称或代码": "Type a language name or code",
   "当前模型没有匹配的语言": "No matching language supported by the current model",
   "展开或收起语言列表": "Expand or collapse language list",
@@ -583,6 +600,7 @@ const EN: Dict = {
   "系统输出": "System output",
   "应用声音隔离": "App audio isolation",
   "主题": "Theme",
+  "更新悬浮窗诊断": "Update overlay diagnostics",
   "悬浮窗毛玻璃": "Overlay frosted glass",
   "启用悬浮窗毛玻璃": "Enable frosted glass on the overlay",
   "毛玻璃百分比": "Frosted glass percentage",

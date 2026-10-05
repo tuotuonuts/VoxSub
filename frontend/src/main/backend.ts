@@ -80,7 +80,7 @@ export class BackendBridge {
     for (const listener of this.listeners) listener(event, this.instance);
   }
 
-  private resolvePython(): { command: string; args: string[] } {
+  resolvePython(): { command: string; args: string[] } {
     // 两种运行形态，解析方式完全不同：
     //
     // **源码运行**（开发期）

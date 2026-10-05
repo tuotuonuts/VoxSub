@@ -174,13 +174,19 @@ function modelCell(model: ModelEntry): HTMLElement {
 
   // 底部：官方仓库 + 清晰的已下载状态 + 原有操作
   const foot = h("footer", { class: "cell__foot" });
-  const repository = buildRepositoryLink(model.officialRepo ?? "", tr("模型官方仓库"), url => {
+  const openRepository = (url: string): void => {
     const warn = (): void => {
       store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message: tr("无法打开模型官方仓库") });
     };
     void window.voxsub?.dialog.openExternal(url).then(opened => { if (!opened) warn(); }).catch(warn);
-  });
+  };
+  const repository = buildRepositoryLink(model.officialRepo ?? "", tr("模型官方仓库"), openRepository);
   if (repository) foot.append(repository);
+  if (model.externalRuntime && model.usageUrl) {
+    const guide = buildButton(tr("官方运行说明"), { small: true });
+    on(guide, "click", () => openRepository(model.usageUrl!));
+    foot.append(guide);
+  }
   if (model.installed) {
     const installed = buildBadge(`✓ ${tr("已下载")}`, "positive", tr("模型文件已在本机"));
     installed.classList.add("cell__installed");
@@ -204,7 +210,8 @@ function modelCell(model: ModelEntry): HTMLElement {
     on(use, "click", () => void selectModel(model));
     const del = h("button", { class: "cell__action is-quiet", type: "button", text: tr("卸载") });
     on(del, "click", () => void uninstallModel(model));
-    foot.append(use, del);
+    if (!model.externalRuntime) foot.append(use);
+    foot.append(del);
   } else {
     const owner = activePageId;
     const dl = buildButton(tr("下载"), { small: true });
@@ -275,6 +282,7 @@ function renderFilterBar(): HTMLElement {
 }
 
 async function selectModel(model: ModelEntry): Promise<void> {
+  if (model.externalRuntime) return;
   const command =
     model.task === "asr" ? CMD.setAsrModel
     : model.task === "translate" ? null

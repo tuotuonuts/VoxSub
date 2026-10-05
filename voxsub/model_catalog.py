@@ -96,6 +96,8 @@ class ModelSpec:
     tts_languages: tuple[str, ...] = ()
     tts_speaker_ids: tuple[tuple[str, int], ...] = ()
     official_repo: str = ""
+    external_runtime: str = ""
+    usage_url: str = ""
 
     @property
     def task_label(self) -> str:

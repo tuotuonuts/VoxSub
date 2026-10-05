@@ -91,12 +91,13 @@ _GGUF_1_8B_VERIFIED = NpuCompatibility(
 
 # Hardware-probe results are promoted from pending only after both the explicit
 # NPU probe and VoxSub's automatic application route pass for the exact file.
-_SPEECH_CPU_ONLY = NpuCompatibility(NPU_STATUS_UNSUPPORTED, "NPU 不可用", "NPU unavailable",
-    "文件语音翻译使用独立 CPU 运行组件。", "File speech translation uses an isolated CPU runtime.")
+_SPEECH_NO_NPU = NpuCompatibility(NPU_STATUS_UNSUPPORTED, "NPU 不可用", "NPU unavailable",
+    "语音翻译使用 CUDA／CPU 或官方外部运行组件，不支持 NPU。", "Speech translation uses CUDA/CPU or an official external runtime, not NPU.")
 
 NPU_COMPATIBILITY: dict[str, NpuCompatibility] = {
-    "speech-granite-4-1b": _SPEECH_CPU_ONLY,
-    "speech-index-echo-2b": _SPEECH_CPU_ONLY,
+    "speech-granite-4-1b": _SPEECH_NO_NPU,
+    "speech-index-echo-2b": _SPEECH_NO_NPU,
+    "speech-seamless-streaming": _SPEECH_NO_NPU,
     "asr-moonshine-tiny-en-v2": _ASR_UNSUPPORTED,
     "asr-parakeet-tdt-0.6b-v3-int8": _ASR_UNSUPPORTED,
     "asr-funasr-nano-2512-int8": _ASR_UNSUPPORTED,

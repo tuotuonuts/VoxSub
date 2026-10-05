@@ -27,6 +27,16 @@ try {
   check('in-flight/running task disables both selectors',()=>assert.ok([...form.element.querySelectorAll('select')].every(s=>s.disabled)));
   form.update({file_translation_mode:'single',speech_model_id:'g'},[{...choices[0],runtimeAvailable:false}],false);
   check('missing runtime is disclosed rather than claiming the downloaded model can run',()=>assert.match(form.element.textContent,/缺少语音翻译运行组件/));
+  form.update({file_translation_mode:'single',speech_model_id:'g',speech_device:'cuda',speech_output:'translation'},[...choices,{id:'external',name:'Seamless',installed:true,externalRuntime:'WSL'}],false);
+  check('GPU and translation-only choices save only their fields; external runtime cannot be selected',()=>{
+    const selects=form.element.querySelectorAll('select');
+    assert.equal(selects[2].value,'cuda');assert.equal(selects[3].value,'translation');
+    assert.ok(!selects[1].textContent.includes('Seamless'));
+    selects[2].value='cpu';selects[2].dispatchEvent(new Event('change'));
+    assert.deepEqual(writes.at(-1),{speech_device:'cpu'});
+    selects[3].value='bilingual';selects[3].dispatchEvent(new Event('change'));
+    assert.deepEqual(writes.at(-1),{speech_output:'bilingual'});
+  });
   api.setLanguage('en');const english=api.buildFileTranslationForm(()=>{});english.update({file_translation_mode:'single',speech_model_id:'g'},choices,false);
   check('shared control has English UI without translating model names',()=>{assert.match(english.element.textContent,/one model/);assert.match(english.element.textContent,/Granite/);});
   api.setLanguage('zh');

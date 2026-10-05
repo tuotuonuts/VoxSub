@@ -17,13 +17,24 @@ from ipc_protocol import _event
 
 
 def _check_signature(config: dict[str, Any]) -> tuple:
-    keys = ("file_translation_mode", "speech_model_id", "mode", "lang_pair", "stt_provider", "asr_model_id", "translate_tier", "translate_model_id",
+    keys = ("file_translation_mode", "speech_model_id", "speech_device", "speech_output", "mode", "lang_pair", "stt_provider", "asr_model_id", "translate_tier", "translate_model_id",
             "models_root", "mic_device_id", "loopback_device_id", "capture_process_id", "record_with_translation")
     return tuple((key, config.get(key)) for key in keys)
 
 
 class DiagnosticsHandlers:
     """诊断：自检、导出、日志、更新日志、设备与硬件档案。"""
+
+    def _cmd_record_overlay_diagnostic(self, args: dict[str, Any]) -> dict[str, Any]:
+        from voxsub.logging_setup import get_logger
+        states = {key: args.get(key) for key in ("clippingCheck", "materialCheck")}
+        if any(value not in ("not_run", "checking", "pass", "fail") for value in states.values()):
+            raise ValueError("Invalid native diagnostic state")
+        states.update(active=args.get("active") is True, desktopCheck="not_run",
+                      fallbackReason=args.get("fallbackReason") if args.get("fallbackReason") in
+                      ("native_verification_failed", "native_apply_failed") else None)
+        get_logger("overlay_surface").info("OVERLAY_SURFACE %s", json.dumps(states))
+        return {"recorded": True}
 
     def _cmd_run_self_check(self, args: dict[str, Any]) -> dict[str, Any]:
         from voxsub.config_store import ConfigStore

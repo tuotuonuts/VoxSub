@@ -24,7 +24,9 @@ import * as path from "node:path";
 import { initialMainWindowBounds } from "../shared/window-layout";
 import type { OverlayGlassState } from "../shared/overlay-glass";
 
-import { OverlaySurface } from "./overlay-surface";
+import { VerifiedOverlaySurface } from "./overlay-verification";
+import { probeNativeOverlay } from "./overlay-native";
+import { validOverlayFrame, type OverlayFrame } from "../shared/overlay-frame";
 import { LiveOcrSession } from "./ocr-live";
 import { BackendBridge, type BackendEvent } from "./backend";
 import { createShortcutService } from "./shortcuts";
@@ -89,34 +91,51 @@ function showWindow(win: BrowserWindow | null): void {
 
 let overlayClickThrough = false;
 let overlayOpacity = 0.92;
-const overlaySurface = new OverlaySurface();
+let overlaySurface: VerifiedOverlaySurface | null = null;
+const overlayFrames = new WeakMap<BrowserWindow, OverlayFrame>();
+let overlayPlainFallback = false;
+let overlayEvidenceLog = "";
 let overlayGlassEnabled = false;
 let overlayGlassStrength = 50;
 let overlayGlassState: OverlayGlassState | null = null;
 
-function applyOverlayGlass(): OverlayGlassState {
-  // Electron's documented DWM material requires Windows 11 build 22621+.
-  const supported = process.platform === "win32" &&
-    Number(process.getSystemVersion().split(".")[2]) >= 22621;
-  const requested = overlayGlassEnabled && overlayGlassStrength > 0;
-  let active = false;
-  let reason: OverlayGlassState["reason"] = supported ? null : "unsupported";
-  if (supported) {
-    try {
-      const applied = useWindow(overlayWindow, "overlay:glass", win => {
-        active = overlaySurface.apply(win, requested, requested ? screen.getDisplayMatching(win.getBounds()).scaleFactor : 1);
-      });
-      active = active && applied;
-      if (requested && !applied) reason = "unavailable";
-    } catch (error) {
-      // Material is optional; the surface controller safely removes failed material.
-      console.warn("[overlay:glass] native material request failed", error);
-      reason = "unavailable";
-    }
+function publishOverlayGlass(): OverlayGlassState {
+  const supported = process.platform === "win32" && Number(process.getSystemVersion().split(".")[2]) >= 22621;
+  const evidence=overlaySurface?.evidence ?? {active:false,clippingCheck:"not_run" as const,materialCheck:"not_run" as const,desktopCheck:"not_run" as const};
+  overlayGlassState={enabled:overlayGlassEnabled,strength:overlayGlassStrength,supported,...evidence,
+    reason:!supported?"unsupported":overlayPlainFallback||evidence.fallbackReason?"unavailable":null};
+  sendToWindow(overlayWindow,"overlay:glass",overlayGlassState);
+  const signature=JSON.stringify([evidence.active,evidence.clippingCheck,evidence.materialCheck,evidence.fallbackReason]);
+  if(signature!==overlayEvidenceLog){
+    overlayEvidenceLog=signature;
+    const message="[overlay:surface] "+JSON.stringify({...evidence,desktopCheck:"not_run"});
+    sendToWindow(mainWindow,"backend:event",{type:"log",ts:new Date().toISOString(),level:evidence.fallbackReason?"WARNING":"INFO",message});
+    if(bridge?.isRunning())void bridge.command("record_overlay_diagnostic",evidence).catch(()=>{ /* Diagnostics must not interrupt the surface fallback. */ });
   }
-  overlayGlassState = { enabled: overlayGlassEnabled, strength: overlayGlassStrength, supported, active, reason };
-  sendToWindow(overlayWindow, "overlay:glass", overlayGlassState);
   return overlayGlassState;
+}
+function applyOverlayGlass(force=false): OverlayGlassState {
+  const supported=process.platform==="win32"&&Number(process.getSystemVersion().split(".")[2])>=22621;
+  useWindow(overlayWindow,"overlay:glass",win=>{
+    overlaySurface?.update(supported&&overlayGlassEnabled&&overlayGlassStrength>0&&!overlayPlainFallback,
+      overlayFrames.get(win)??null,screen.getDisplayMatching(win.getBounds()).scaleFactor,force);
+  });
+  return publishOverlayGlass();
+}
+function replaceUnsafeOverlay(owner:BrowserWindow): void {
+  if(quitting||overlayWindow!==owner||owner.isDestroyed()||overlayPlainFallback)return;
+  const bounds=owner.getBounds(),wasVisible=owner.isVisible();
+  overlayPlainFallback=true;overlaySurface?.dispose();
+  const replacement=createOverlayWindow(wasVisible);overlayWindow=replacement;
+  owner.destroy();replacement.setBounds(bounds);
+  replacement.setIgnoreMouseEvents(overlayClickThrough, { forward: overlayClickThrough });
+  replacement.webContents.once("did-finish-load",()=>{
+    if(overlayWindow!==replacement||replacement.isDestroyed())return;
+    sendToWindow(replacement,"overlay:click-through",overlayClickThrough);
+    sendToWindow(replacement,"overlay:font-size",overlayFontSize);
+    sendToWindow(replacement,"overlay:opacity",overlayOpacity);
+    sendToWindow(replacement,"overlay:display-mode",overlayDisplayMode);
+  });
 }
 
 let overlayFontSize = 20;
@@ -318,7 +337,7 @@ function createMainWindow(): BrowserWindow {
  * 对照原 Qt 实现：subtitle_overlay.py / screen_capture.py:74
  * 窗口特性：半透明 / 点击穿透 / 置顶无边框 / 允许用户截图
  */
-function createOverlayWindow(): BrowserWindow {
+function createOverlayWindow(showWhenReady=true): BrowserWindow {
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.workAreaSize;
 
@@ -344,6 +363,14 @@ function createOverlayWindow(): BrowserWindow {
     },
   });
 
+  // Prevent the main window's same-origin zoom from changing native/CSS alignment.
+  win.webContents.setZoomMode("isolated");
+  win.webContents.setZoomFactor(1);
+  const monitor=new VerifiedOverlaySurface(win,
+    (shape,material)=>{if(!bridge) return Promise.reject(Error("backend_unavailable"));return probeNativeOverlay(bridge.resolvePython(),win.getNativeWindowHandle(),shape,material);},
+    ()=>{if(overlayWindow===win)publishOverlayGlass();},()=>replaceUnsafeOverlay(win));
+  overlaySurface=monitor;
+  win.on("show",()=>{if(overlayWindow===win)applyOverlayGlass(true);});
   win.setAlwaysOnTop(true, "screen-saver");
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
@@ -352,7 +379,7 @@ function createOverlayWindow(): BrowserWindow {
   // where it prevents OCR from reading its own translations. Never apply it here.
   // Headless acceptance still must not show any window or change its native state.
   win.once("ready-to-show", () => {
-    if (HEADLESS || quitting || overlayWindow !== win) return;
+    if (HEADLESS || quitting || overlayWindow !== win || !showWhenReady) return;
     ignoreDestroyed("overlay:ready", () => {
       if (win.isDestroyed()) return;
       applyOverlayGlass();
@@ -367,7 +394,7 @@ function createOverlayWindow(): BrowserWindow {
   win.on("resize", refreshSurface);
   win.on("move", refreshSurface); // Includes crossing monitors with different scale factors.
   win.webContents.on("zoom-changed", refreshSurface);
-  win.on("closed", () => { if (overlayWindow === win) overlayWindow = null; });
+  win.on("closed", () => { monitor.dispose(); if (overlayWindow === win) { overlayWindow = null; overlaySurface=null; } });
   void win.loadFile(path.join(RENDERER_DIR, "overlay.html"));
   return win;
 }
@@ -513,8 +540,13 @@ function registerIpc(): void {
 
   ipcMain.handle("overlay:is-click-through", () => overlayClickThrough);
 
+  ipcMain.handle("overlay:frame", (event, frame: unknown) => {
+    if (!overlayWindow || event.sender !== overlayWindow.webContents || !validOverlayFrame(frame)) return;
+    overlayFrames.set(overlayWindow, frame); applyOverlayGlass();
+  });
   ipcMain.handle("overlay:get-glass", () => overlayGlassState ?? applyOverlayGlass());
   ipcMain.handle("overlay:set-glass", (_e, enabled: unknown, strength: unknown) => {
+    if (overlayGlassEnabled !== (enabled === true)) { overlayPlainFallback=false;overlaySurface?.reset(); }
     overlayGlassEnabled = enabled === true;
     overlayGlassStrength = typeof strength === "number" && Number.isFinite(strength)
       ? Math.round(Math.min(100, Math.max(0, strength))) : 50;

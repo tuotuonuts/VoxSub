@@ -1,3 +1,4 @@
+import { observeOverlayFrame } from "./overlay-frame";
 import { OVERLAY_FRAME_INSET, OVERLAY_FRAME_RADIUS } from "../shared/overlay-shape";
 import { mergePartialDraft } from "../shared/subtitle-draft";
 import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
@@ -587,4 +588,10 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", boot);
 } else {
   boot();
+}
+
+const surfaceCard = document.querySelector<HTMLElement>(".shell");
+if (surfaceCard && window.voxsub?.overlay.reportFrame) {
+  const stopGeometry = observeOverlayFrame(surfaceCard, frame => { void window.voxsub?.overlay.reportFrame(frame).catch(() => {}); });
+  window.addEventListener("unload", stopGeometry, { once: true });
 }

@@ -33,7 +33,7 @@ def wav_file(path, samples=8000, rate=16000):
 @pytest.mark.parametrize('model_id', SPEECH_PAIRS)
 def test_speech_catalog_sources_and_integrity(model_id):
     model = get_model(model_id)
-    assert model.task == 'speech' and not model.gpu_supported and not model.npu_supported
+    assert model.task == 'speech' and model.gpu_supported and not model.npu_supported
     assert {s.id for s in model.sources} == {'china', 'global'}
     for source in model.sources:
         assert {f.install_rel for f in source.files} == set(model.required_paths)
@@ -98,7 +98,8 @@ def test_single_pipeline_never_builds_dual_and_preserves_subtitle(tmp_path, monk
     pipeline.set_langs('en','zh'); pipeline.set_input_file(wav)
     pipeline._ensure_translator = Mock(side_effect=AssertionError('must not load MT'))
     pipeline._build_real_time = Mock(side_effect=AssertionError('must not load ASR'))
-    def transcribe(path, model, source, target, stop, progress, present, root, observe):
+    def transcribe(path, model, source, target, stop, progress, present, root, observe, *, device, output):
+        assert device == "auto" and output == "bilingual"
         assert root == tmp_path and (source,target)==('en','zh')
         cue = SubtitleLine('Hi','你好',100,end_ms=500);present(cue);return [cue]
     monkeypatch.setattr(runtime,'run_speech_file',transcribe)
@@ -114,7 +115,7 @@ def test_cancel_does_not_export_success(tmp_path,monkeypatch):
     from voxsub.pipeline import Pipeline, PipelineState
     pipeline=Pipeline(models=tmp_path);pipeline.set_mode('c')
     pipeline.set_file_translation({'file_translation_mode':'single'});pipeline.set_input_file(wav_file(tmp_path/'clip.wav'))
-    def cancel(*args):raise runtime.SpeechCancelled()
+    def cancel(*args, **kwargs):raise runtime.SpeechCancelled()
     monkeypatch.setattr(runtime,'run_speech_file',cancel)
     status=[];pipeline.on_status(status.append);pipeline._run_file_mode()
     assert pipeline.state == PipelineState.IDLE and not list(tmp_path.glob('*.srt'))

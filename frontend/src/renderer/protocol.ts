@@ -9,6 +9,7 @@ import type { ModelDownloadState, ModelDownloadStatus } from "../shared/model-do
 
 export const CMD = {
   ping: "ping",
+  recordOverlayDiagnostic: "record_overlay_diagnostic",
   shutdown: "shutdown",
 
   // 会话
@@ -120,6 +121,8 @@ export interface ModelEntry {
   builtin: boolean;
   runtime: string;
   runtimeAvailable?: boolean;
+  externalRuntime?: string;
+  usageUrl?: string;
   license: string;
   languages: string;
   description: string;

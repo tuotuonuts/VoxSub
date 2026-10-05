@@ -29,18 +29,19 @@ def verify_weights(root, label):
 
 
 class Granite:
-    def __init__(self, root, torch):
+    def __init__(self, root, torch, device="cpu", source="en", output="bilingual"):
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
         self.torch = torch
+        self.device, self.source, self.output = device, source, output
         self.processor = AutoProcessor.from_pretrained(root, local_files_only=True)
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            root, dtype=torch.bfloat16, local_files_only=True).eval().to('cpu')
+            root, dtype=torch.bfloat16, local_files_only=True).eval().to(device)
 
     def generate(self, pcm, instruction):
         p = self.processor
         prompt = p.tokenizer.apply_chat_template([dict(role='user', content='<|audio|>'+instruction)],
                                                  tokenize=False, add_generation_prompt=True)
-        inputs = p(prompt, self.torch.from_numpy(pcm.copy()).unsqueeze(0), device='cpu', return_tensors='pt').to('cpu')
+        inputs = p(prompt, self.torch.from_numpy(pcm.copy()).unsqueeze(0), device=self.device, return_tensors='pt').to(self.device)
         with self.torch.inference_mode():
             out = self.model.generate(**inputs, max_new_tokens=512, do_sample=False, num_beams=1)
         generated = out[0, inputs['input_ids'].shape[-1]:]
@@ -53,15 +54,16 @@ class Granite:
 
     def infer(self, pcm, wav, target, history):
         # Same weights, two sequential generations; never load an independent MT.
-        text = self.generate(pcm, 'Transcribe the English speech into a written format.')
-        translation = self.generate(pcm, 'Translate the speech to Chinese.')
+        from voxsub.language_registry import LANGUAGE_NAMES
+        text = '' if self.output == 'translation' else self.generate(pcm, f'Transcribe the {LANGUAGE_NAMES[self.source]} speech into a written format.')
+        translation = self.generate(pcm, f'Translate the speech to {LANGUAGE_NAMES[target]}.')
         return [dict(text=text, translation=translation, start=0., end=len(pcm)/16000)]
 
 
 class Index:
-    def __init__(self, root, torch):
+    def __init__(self, root, torch, device="cpu", source="en", output="bilingual"):
         from voxsub.speech_index import AudioTransModel
-        self.model = AudioTransModel(str(root), device='cpu', dtype=torch.bfloat16)
+        self.model = AudioTransModel(str(root), device=device, dtype=torch.bfloat16)
 
     def infer(self, pcm, wav, target, history):
         import soundfile as sf
@@ -70,39 +72,63 @@ class Index:
         return parse_index(raw, len(pcm)/16000)
 
 
+def select_device(torch, requested):
+    if requested not in ("auto", "cpu", "cuda"):
+        raise ValueError("无效推理设备")
+    available = torch.cuda.is_available()
+    if requested == "cuda" and not available:
+        raise ValueError("CUDA 不可用：请运行 setup-speech-runtime.ps1 -Device cuda 并检查 NVIDIA 驱动；未自动切换 CPU")
+    device = "cuda:0" if requested != "cpu" and available else "cpu"
+    if device != "cpu" and not torch.cuda.is_bf16_supported():
+        raise ValueError("当前 GPU 不支持官方 BF16 调用方式；请选择 CPU")
+    return device
+
+
+def load_model(job):
+    import psutil
+    import torch
+    device = select_device(torch, job.get("device", "auto"))
+    minimum = (8 if job['label'] == 'granite' else 10) if device == 'cpu' else 2
+    if psutil.virtual_memory().available < minimum * 2**30:
+        raise MemoryError("系统可用内存不足，请关闭高内存程序后重试")
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(1)
+    model = (Granite if job['label'] == 'granite' else Index)(Path(job['weights']), torch, device,
+                         job['source'], job.get('output', 'bilingual'))
+    return model, device
+
+
 def run(job):
     import psutil
-    available = psutil.virtual_memory().available / 2**30
-    if available < (8 if job['label'] == 'granite' else 10):
-        raise MemoryError("可用内存不足，请关闭其他高内存程序后重试")
     try:
         psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
     except (AttributeError, OSError, psutil.Error):
         pass
     emit('stage', stage='正在校验语音翻译模型')
     verify_weights(Path(job['weights']), job['label'])
-    emit('stage', stage='正在加载语音翻译模型（CPU）')
+    emit('stage', stage='正在加载语音翻译模型并确认推理设备')
     with contextlib.redirect_stdout(sys.stderr):
-        import torch
-        torch.set_num_threads(2)
-        torch.set_num_interop_threads(1)
-        model = (Granite if job['label'] == 'granite' else Index)(Path(job['weights']), torch)
-    emit('loaded', device='cpu', dtype='bfloat16')
+        model, device = load_model(job)
+    fallback = '当前运行组件未提供可用 CUDA，自动使用 CPU' if device == 'cpu' and job.get('device', 'auto') == 'auto' else ''
+    emit('loaded', device=device, dtype='bfloat16', fallback=fallback)
     history = []
     for offset, pcm, total in pcm_windows(job['audio']):
         started = time.monotonic()
-        emit('stage', stage='正在生成双语字幕（CPU，文件专用）')
+        emit('stage', stage=f'正在生成字幕（{device}，文件专用）')
         if not pcm.any():
-            emit('segment', cues=[], elapsed_ms=0, completed=min(total, offset+len(pcm)/16000), total=total)
+            emit('segment', cues=[], device=device, elapsed_ms=0, completed=min(total, offset+len(pcm)/16000), total=total)
             continue
         with contextlib.redirect_stdout(sys.stderr):
             cues = model.infer(pcm, Path(job['chunk']), job['target'], history[-2:])
+        context = '\n'.join(c['text']+'\n'+c['translation'] for c in cues)[-2000:]
         for cue in cues:
+            if job.get('output') == 'translation':
+                cue['text'] = ''
             cue['start'] += offset
             cue['end'] += offset
-        emit('segment', cues=cues, elapsed_ms=round((time.monotonic()-started)*1000),
+        emit('segment', cues=cues, device=device, elapsed_ms=round((time.monotonic()-started)*1000),
              completed=min(total, offset+len(pcm)/16000), total=total)
-        history.append('\n'.join(c['text']+'\n'+c['translation'] for c in cues)[-2000:])
+        history.append(context)
         history = history[-2:]
     emit('done')
 
@@ -115,7 +141,7 @@ def main():
         run(job)
     except Exception as exc:
         # No audio, prompts, recognized text, credentials or filesystem paths in logs.
-        safe = str(exc) if isinstance(exc, (MemoryError, ValueError)) else '语音翻译运行失败，请查看错误类型并检查模型运行组件'
+        safe = str(exc) if isinstance(exc, (MemoryError, ValueError)) else ('GPU 显存不足；未自动改用 CPU，请选择更小模型或手动切换 CPU' if type(exc).__name__ == 'OutOfMemoryError' else '语音翻译运行失败，请查看错误类型并检查模型运行组件')
         frames = traceback.extract_tb(exc.__traceback__)
         origin = ':'.join((Path(frames[-1].filename).stem, frames[-1].name, str(frames[-1].lineno))) if frames else ''
         emit('error', error_type=type(exc).__name__, message=safe, error_code=origin)

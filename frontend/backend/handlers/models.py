@@ -54,6 +54,8 @@ def _catalog_item(model: Any, size: int, installed: bool, installed_bytes: int,
         "description": getattr(model, "description", "") or "",
         "tags": list(getattr(model, "tags", ()) or ()),
         "officialRepo": getattr(model, "official_repo", "") or "",
+        "externalRuntime": getattr(model, "external_runtime", ""),
+        "usageUrl": getattr(model, "usage_url", ""),
         "recommendation": recommendation,
         # 硬件支持必须如实呈现，禁止把"未验证"显示成"可用"
         "gpuSupported": bool(getattr(model, "gpu_supported", False)),
@@ -109,7 +111,7 @@ class ModelsHandlers:
             item = _catalog_item(model, size, installed, installed_bytes, recommendation)
             if model.task == "speech":
                 from voxsub.speech_runtime import runtime_status
-                item["runtimeAvailable"] = runtime_status()["status"] != "fail"
+                item["runtimeAvailable"] = not model.external_runtime and runtime_status()["status"] != "fail"
             item["download"] = _download_for_card(downloads, model, installed, failures)
             items.append(item)
 

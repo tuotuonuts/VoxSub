@@ -10,9 +10,10 @@ function makeRuntime({headless=false}={}) {
   let ready;
   class Window {
     constructor(options){ this.options=options; this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
-      this.webContents={getZoomFactor:()=>1,on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
+      this.webContents={once:()=>{},setZoomMode:mode=>this.calls.push(["setZoomMode",mode]),setZoomFactor:factor=>this.calls.push(["setZoomFactor",factor]),getZoomFactor:()=>1,on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
     getBounds(){return {x:0,y:0,width:860,height:140};}
     getContentSize(){ return this.size ?? [860,140]; }
+    setBounds(bounds){this.call('setBounds',bounds);}
     setShape(rects){ this.call("setShape",rects); }
     setBackgroundMaterial(m){ this.call("setBackgroundMaterial",m); }
     assertLive(){if(this.dead)throw new TypeError('Object has been destroyed');}
@@ -60,7 +61,7 @@ function makeRuntime({headless=false}={}) {
       if(name.startsWith('.'))return load(path.relative(ROOT,path.resolve(path.dirname(full),name+'.ts')));
       if(name==='node:path')return path;
       if(name==='node:fs')return {existsSync:()=>false};
-      if(name==='node:child_process')return {spawn:()=>{throw Error('Real spawn forbidden');}};
+      if(name==='node:child_process')return {execFile:(_c,_a,_o,cb)=>cb(Error('fixture unavailable')),spawn:()=>{throw Error('Real spawn forbidden');}};
       if(name==='node:readline')return {};
       throw Error(name);
     };
@@ -68,11 +69,11 @@ function makeRuntime({headless=false}={}) {
   };
   context=vm.createContext({console:{...console,log(){},warn:(...a)=>warnings.push(a)},process:{env:{VOXSUB_HEADLESS:headless?'1':'0'},platform:'win32',getSystemVersion:()=> '10.0.26300'},setTimeout,clearTimeout,setInterval,clearInterval});
   const mainFile=path.join(ROOT,'src/main/main.ts');
-  const suffix=`\nglobalThis.api={createMain:()=>mainWindow=createMainWindow(),createOverlay:()=>overlayWindow=createOverlayWindow(),createTray,getMain:()=>mainWindow,getOverlay:()=>overlayWindow,quit:requestQuit,bridge:()=>{const b=new BackendBridge();wireBackendEvents(b);return b;}};registerIpc();`;
+  const suffix=`\nglobalThis.api={createMain:()=>mainWindow=createMainWindow(),createOverlay:()=>overlayWindow=createOverlayWindow(),replaceOverlay:()=>replaceUnsafeOverlay(overlayWindow),createTray,getMain:()=>mainWindow,getOverlay:()=>overlayWindow,quit:requestQuit,bridge:()=>{const b=new BackendBridge();wireBackendEvents(b);return b;}};registerIpc();`;
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
     if(name==='electron')return electron;if(name==='./capture')return {cancelScreenSelection(){}};if(name==='node:path')return path;if(name==='node:fs')return {};
-    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');if(name==='./overlay-surface')return load('src/main/overlay-surface.ts');throw Error(name);
+    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');if(name.startsWith('.'))return load(path.relative(ROOT,path.resolve(path.dirname(mainFile),name+'.ts')));throw Error(name);
   };
   vm.runInContext(code,context);
   return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};
@@ -213,20 +214,31 @@ test('recreated subtitle window keeps screenshots allowed and ignores stale read
   assert.equal(old.calls.length, calls);
   assert.deepEqual(current.calls.filter(c => c[0] === 'setContentProtection'), [['setContentProtection', false]]);
 });
-test('glass owner recreation and stale geometry callbacks use real main wiring', r => {
+test('native fallback replacement preserves hidden state without a transient show', r => {
+  const old=r.api.createOverlay();r.ipc("overlay:set-click-through",true);r.api.replaceOverlay();
+  const replacement=r.api.getOverlay();assert.notEqual(old,replacement);assert.equal(old.isDestroyed(),true);
+  assert.ok(replacement.calls.some(c=>c[0]==="setIgnoreMouseEvents"&&c[1]===true));
+  replacement.events.get('ready-to-show')();
+  assert.equal(replacement.calls.some(c=>c[0]==='showInactive'||c[0]==='show'),false);
+  replacement.destroy();
+});
+test('glass waits for actual owner geometry and isolates zoom', r => {
   const old=r.api.createOverlay();
-  assert.equal(r.ipc('overlay:set-glass',true,70).active,true);
+  assert.ok(old.calls.some(c=>c[0]==='setZoomMode'&&c[1]==='isolated'));
+  assert.equal(r.ipc('overlay:set-glass',true,70).active,false);
   old.events.get('ready-to-show')();
-  assert.equal(old.calls.filter(c=>c[0]==='setBackgroundMaterial').length,1);
-  old.size=[640,100];old.events.get('resize')();
-  assert.equal(old.calls.filter(c=>c[0]==='setShape').length,2);
+  assert.equal(old.calls.filter(c=>c[0]==='setBackgroundMaterial').length,0);
+  const frame={x:6,y:6,width:848,height:128,radius:16,viewportWidth:860,viewportHeight:140};
+  r.handlers.get('overlay:frame')({sender:{}},frame);
+  assert.equal(old.calls.filter(c=>c[0]==='setShape').length,0);
+  r.handlers.get('overlay:frame')({sender:old.webContents},frame);
+  assert.ok(old.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='acrylic'));
   old.destroy();const current=r.api.createOverlay();current.events.get('ready-to-show')();
-  assert.ok(current.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='acrylic'));
   const oldCount=old.calls.length;old.events.get('resize')();old.events.get('move')();
   assert.equal(old.calls.length,oldCount);
+  assert.equal(current.calls.filter(c=>c[0]==='setBackgroundMaterial').length,0);
   assert.deepEqual(current.calls.filter(c=>c[0]==='setContentProtection'),[['setContentProtection',false]]);
-  r.ipc('overlay:set-glass',false,70);
-  assert.equal(current.calls.filter(c=>c[0]==='setShape').at(-1)[1].length,0);
+  current.destroy();
 });
 console.log(`${checks} window lifecycle checks passed; ${failures} failed`);
 if (failures) process.exitCode = 1;

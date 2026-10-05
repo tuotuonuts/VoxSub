@@ -192,13 +192,19 @@ Validation checks app duplicates, known reserved combinations and OS registratio
 
 Audio/video file mode offers **Recognition + translation (two models)** and **Direct speech translation (one model)**. Two-model operation remains the default. The file workspace and settings reuse the same selection component.
 
-- **Granite 4.0 1B Speech**: English → Chinese is admitted in this release. The same weights generate transcript and translation in two passes. Timing is window-level, not forced word alignment.
+- **Granite 4.0 1B Speech**: English → Chinese, French, German, Spanish, Portuguese, Japanese or Italian; French/German/Spanish/Portuguese/Japanese → English. Bilingual output uses two generations with the same weights; translation-only uses one. Timing is window-level, not forced word alignment.
 - **Index-Echo S2TT 2B**: Chinese → English, Japanese or Spanish, with source text, translation and sentence timestamps.
-- **Files only, currently isolated CPU inference.** This is not a live-translation speedup or a promise of lower memory use. Microphone, system audio and OCR retain their existing configuration and routes.
+- **Files only, isolated CPU/CUDA inference.** Choose Auto, NVIDIA CUDA or CPU, and bilingual or translation-only output. Auto prefers CUDA and records CPU fallback; explicit CUDA errors never silently switch to CPU. Index upstream recommends approximately 10GB VRAM plus headroom. This is not a live-translation speedup or a promise of lower memory use. Microphone, system audio and OCR retain their existing configuration and routes.
 - No separate translator, audio capture or playback is started. Models and languages are locked during a file job. Cancel terminates this job's isolated process; completed cues remain available for manual export without automatically saving an incomplete file.
 - Automatic output uses `.voxsub.srt` and avoids replacing an existing file. Manual SRT/VTT/TXT export preserves media timestamps.
 - The catalog provides pinned Hugging Face global and HF Mirror mainland mirror sources with per-file SHA256 verification and the existing pause/resume/delete and restart-paused download workflow. The mirror is third-party; reachability is network-dependent.
 
-Source builds additionally run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-speech-runtime.ps1` to provision `.venv-speech`; `-China` selects a dependency index mirror. This environment is separate from the light backend and is never silently installed when a user starts a job. Full release builds package `VoxSubSpeechWorker` separately and fail if that component cannot be built.
+Source builds additionally run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-speech-runtime.ps1` to provision CPU `.venv-speech`; add `-Device cuda` for official PyTorch CUDA 12.8 in `.venv-speech-cuda` (compatible NVIDIA driver and BF16 GPU required). `-China` selects a dependency index mirror. This environment is separate from the light backend and is never silently installed when a user starts a job. Full release builds package `VoxSubSpeechWorker` separately and fail if that component cannot be built.
 
 See `docs/SINGLE_MODEL_SPEECH_ACCEPTANCE.md` for evidence and limitations. This does not mean an installer has been published or an existing user instance has been updated.
+
+### SeamlessStreaming and overlay verification
+
+The catalog now includes **SeamlessStreaming**, pinned global/mainland-mirror downloads, resumable transfers and an official usage guide. Its upstream dependencies require Linux/WSL. This is a download-only external runtime entry, not a selectable Windows in-app model; WSL is never installed or started automatically. CC-BY-NC-4.0 permits non-commercial use only.
+
+Overlay zoom is isolated from the main window. Clipping follows rendered subtitle-card bounds and refreshes on show, zoom and resize, with native region/material readback. Failure restores the ordinary translucent background, replacing only the affected overlay when necessary and preserving hidden/click-through state. Diagnostics distinguish clipping, material and visible desktop verification; hidden-window checks do not count as desktop visual acceptance. See `docs/GPU_OVERLAY_DOWNLOAD_ACCEPTANCE.md` for the latest scope.

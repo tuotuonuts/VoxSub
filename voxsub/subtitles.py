@@ -38,9 +38,10 @@ class SubtitleExporter:
         body: list[str] = []
         for index, line in enumerate(lines, start=1):
             end = line.end_ms if line.end_ms is not None else line.ts_ms + (3000 if index == len(lines) else duration_ms)
+            content = "\n".join(text for text in (line.text, line.translation) if text)
             body.append(
                 f"{index}\n{cls.format_timestamp(line.ts_ms)} --> "
-                f"{cls.format_timestamp(end)}\n{line.text}\n{line.translation}\n"
+                f"{cls.format_timestamp(end)}\n{content}\n"
             )
         write_text_atomically(output, "\n".join(body), encoding="utf-8-sig")
 
@@ -50,7 +51,8 @@ class SubtitleExporter:
         for line in lines:
             start = cls.format_timestamp(line.ts_ms).replace(",", ".")
             end = cls.format_timestamp(line.end_ms if line.end_ms is not None else line.ts_ms + 3000).replace(",", ".")
-            body.append(f"{start} --> {end}\n{line.text}\n{line.translation}\n")
+            content = "\n".join(text for text in (line.text, line.translation) if text)
+            body.append(f"{start} --> {end}\n{content}\n")
         write_text_atomically(output, "\n".join(body), encoding="utf-8")
 
     @staticmethod

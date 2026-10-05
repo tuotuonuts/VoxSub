@@ -1,3 +1,9 @@
+[本轮完成] GPU 模型收录/调用、悬浮窗缩放隔离及下载链接 CI 修复
+- Granite / Index：CPU/CUDA/auto、双语/仅译文、公共控件、设备诊断；SeamlessStreaming 双源下载/官方外部指南，禁止误选为本机集成模型。
+- 实际卡片裁剪、原生读回、失败安全回退、独立桌面验证状态；下载缓存/进度前拒绝符号链接。
+- Python安全1370通过；其余门禁及真实隐藏/GPU边界见 docs/GPU_OVERLAY_DOWNLOAD_ACCEPTANCE.md。
+[人工待验收] 可见桌面毛玻璃/物理DPI、Index GPU长音频与质量、Seamless Linux/WSL、完整安装包；本地回归不等于远端CI结果。
+
 [本轮 模型语言全链路与实时更新 2026-10-05 UTC]
 [x] 模型广场ASR与Hy-MT2完整注册表、语言提示、方向性交集、配置/恢复/OCR/诊断/前端/RTL适配；去除多语自动透传误判。
 [x] 稳定词前缀、尾部有界释放、原文先显、140ms原生partial、重复事件/DOM去重；辅助预览显式选择默认关，不加默认第二ASR。

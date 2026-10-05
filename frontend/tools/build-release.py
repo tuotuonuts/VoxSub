@@ -549,9 +549,10 @@ def build_sidecar() -> None:
 
 
 def build_speech_runtime() -> None:
-    """Distribute the independently killable CPU worker alongside the light sidecar."""
+    """Distribute the independently killable CPU/CUDA worker alongside the light sidecar."""
     import shutil
-    python = REPO / ".venv-speech" / "Scripts" / "python.exe"
+    folder = ".venv-speech-cuda" if (REPO / ".venv-speech-cuda/Scripts/python.exe").is_file() else ".venv-speech"
+    python = REPO / folder / "Scripts" / "python.exe"
     if not python.is_file():
         die("缺少语音翻译运行环境，请先运行 scripts/setup-speech-runtime.ps1")
     result = run([str(python), "-m", "PyInstaller", str(FRONTEND / "backend" / "speech_worker.spec"),

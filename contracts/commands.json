@@ -260,6 +260,12 @@
               "type": "string"
             }
           }
+        },
+        "externalRuntime": {
+          "type": "string"
+        },
+        "usageUrl": {
+          "type": "string"
         }
       }
     },
@@ -4209,6 +4215,64 @@
       },
       "errors": [],
       "controlCommand": false
+    },
+    "record_overlay_diagnostic": {
+      "implementedBy": "_cmd_record_overlay_diagnostic",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "controlCommand": false,
+      "summary": "Record native overlay evidence, never claiming visible compositor verification.",
+      "source": "handlers/diagnostics.py::_cmd_record_overlay_diagnostic",
+      "args": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "clippingCheck": {
+            "enum": [
+              "not_run",
+              "checking",
+              "pass",
+              "fail"
+            ]
+          },
+          "materialCheck": {
+            "enum": [
+              "not_run",
+              "checking",
+              "pass",
+              "fail"
+            ]
+          },
+          "desktopCheck": {
+            "const": "not_run"
+          },
+          "fallbackReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "async": {
+            "type": "boolean"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "recorded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded"
+        ]
+      },
+      "errors": []
     }
   }
 }

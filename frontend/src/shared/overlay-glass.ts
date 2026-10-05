@@ -4,6 +4,10 @@ export interface OverlayGlassState {
   strength: number;
   supported: boolean;
   active: boolean;
+  clippingCheck?: "not_run" | "checking" | "pass" | "fail";
+  materialCheck?: "not_run" | "checking" | "pass" | "fail";
+  desktopCheck?: "not_run";
+  fallbackReason?: string | null;
   reason: "unsupported" | "unavailable" | null;
 }
 /** The OS owns the blur radius. Strength exposes more material by reducing the tint. */

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { transformSync } from 'esbuild';
 import { installMiniDom } from './mini-dom.mjs';
 import { importShared, cleanupShared } from './esbuild-ts.mjs';
-const { OverlaySurface } = await importShared("src/main/overlay-surface.ts", {bundle:true});
+const { VerifiedOverlaySurface } = await importShared("src/main/overlay-verification.ts", {bundle:true});
 const dom = installMiniDom();
 const [{ h, on }, { buildPercentageSlider }, { buildToggleSwitch }, { glassTint }] = await importShared([
   'src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/renderer/ui/controls.ts', 'src/shared/overlay-glass.ts',
@@ -36,31 +36,34 @@ try {
     assert.ok(!read('renderer/overlay.css').includes('filter: blur(') || !read('renderer/overlay.css').match(/\.shell\s*\{[^}]*filter:/));
   });
   const main=read('main/main.ts');
-  const native=main.slice(main.indexOf('const overlaySurface'),main.indexOf('let overlayFontSize'));
+  const native=main.slice(main.indexOf('let overlaySurface'),main.indexOf('let overlayFontSize'));
   const ipc=main.slice(main.indexOf('  ipcMain.handle("overlay:get-glass"'),main.indexOf('  ipcMain.handle("overlay:set-opacity"'));
   const makeNative=(platform='win32',version='10.0.26300',fail=false,alive=true) => {
     const handlers=new Map(),materials=[],states=[];
     const win={getBounds:()=>({x:0,y:0,width:860,height:140}),getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape(){},setBackgroundMaterial:m=>{materials.push(m);if(fail&&m==='acrylic')throw Error('DWM unavailable');}};
-    run(native+ipc,{ OverlaySurface, screen:{getDisplayMatching:()=>({scaleFactor:1})}, process:{ platform,getSystemVersion:()=>version },
-      overlayWindow:win,useWindow:(_win,_op,fn)=>{if(!alive)return false;fn(win);return true;},
+    const init=`overlaySurface=new VerifiedOverlaySurface(overlayWindow,async()=>({regionVerified:true,materialVerified:true,desktop:'not_run'}),()=>{},()=>{});
+      overlayFrames.set(overlayWindow,{x:6,y:6,width:848,height:128,radius:16,viewportWidth:860,viewportHeight:140});`;
+    let cleanup;
+    run(native+init+ipc+';registerCleanup(()=>overlaySurface.dispose());',{ VerifiedOverlaySurface, setTimeout, clearTimeout, screen:{getDisplayMatching:()=>({scaleFactor:1})}, process:{ platform,getSystemVersion:()=>version },
+      overlayWindow:win, mainWindow:null, bridge:null, registerCleanup:fn=>cleanup=fn,
+      useWindow:(_win,_op,fn)=>{if(!alive)return false;fn(win);return true;},
       sendToWindow:(_w,_c,s)=>states.push(s),console:{warn(){}},ipcMain:{handle:(n,f)=>handlers.set(n,f)} });
-    return { materials,states,get:()=>handlers.get('overlay:get-glass')(),set:(e,s)=>handlers.get('overlay:set-glass')({},e,s) };
+    return { cleanup, materials,states,get:()=>handlers.get('overlay:get-glass')(),set:(e,s)=>handlers.get('overlay:set-glass')({},e,s) };
   };
-  check('native toggle and strength validate input, avoid repeat DWM calls, retain strength on close',()=>{
+  check('native toggle validates input, waits for verification and retains saved strength',()=>{
     const n=makeNative();assert.equal(n.get().active,false);assert.deepEqual(n.materials,[]);
-    assert.equal(n.set(true,73).active,true);assert.deepEqual(n.materials,['acrylic']);
+    assert.equal(n.set(true,73).active,false);assert.deepEqual(n.materials,['acrylic']);
     n.set(true,84);assert.deepEqual(n.materials,['acrylic']);assert.equal(n.get().strength,84);
     assert.equal(n.set(false,84).active,false);assert.deepEqual(n.materials,['acrylic','none']);
     assert.equal(n.set(true,0).active,false);assert.equal(n.set(true,120).strength,100);
     for(const v of [NaN,Infinity,'50',null,true])assert.equal(n.set(true,v).strength,50);
-    assert.equal(n.set('true',50).enabled,false);
+    assert.equal(n.set('true',50).enabled,false);n.cleanup();
   });
-  check('unsupported OS and destroyed/native failure safely retain opaque background',()=>{
+  check('unsupported OS or destroyed window never applies native material',()=>{
     for(const [p,v] of [['linux',''],['win32','10.0.19045'],['win32','10.0.22000']]){
-      const n=makeNative(p,v);const state=n.set(true,70);assert.equal(state.active,false);assert.equal(state.reason,'unsupported');assert.deepEqual(n.materials,[]);
+      const n=makeNative(p,v);const state=n.set(true,70);assert.equal(state.active,false);assert.equal(state.reason,'unsupported');assert.deepEqual(n.materials,[]);n.cleanup();
     }
-    const failed=makeNative('win32','10.0.26300',true);assert.equal(failed.set(true,70).reason,'unavailable');assert.deepEqual(failed.materials,['acrylic','none']);
-    assert.equal(makeNative('win32','10.0.26300',false,false).set(true,70).active,false);
+    const n=makeNative('win32','10.0.26300',false,false);assert.equal(n.set(true,70).active,false);n.cleanup();
   });
   const overlaySource=read('renderer/overlay.ts');
   const receiver=overlaySource.slice(overlaySource.indexOf('  window.voxsub?.overlay.onGlassChanged'),overlaySource.indexOf('  window.voxsub?.overlay.onOpacityChanged'));

@@ -86,7 +86,7 @@ def quick_checks(config: Mapping[str, Any], pipeline: Any = None) -> list[dict[s
         from voxsub.speech_runtime import runtime_status
         results = [_selected_model_check("语音翻译模型", str(config.get("speech_model_id", "")), False),
                    _language_check(config, mode), {"check": "语音翻译运行组件", **runtime_status(),
-                   "impact": "文件专用，CPU；不启动独立翻译器，不采集和朗读音频", "suggestion": "缺失时请安装完整版本"}]
+                   "impact": "文件专用，设备以运行追踪为准；不启动独立翻译器，不采集和朗读音频", "suggestion": "缺失时请安装完整版本"}]
     results.append({"check": "音源与录音", "status": "not_run", "detail": json.dumps({"mode": mode,
                     "microphone": str(config.get("mic_device_id") or "default"), "output_device": str(config.get("loopback_device_id") or "default"),
                     "application_pid": int(config.get("capture_process_id") or 0), "save_audio": bool(config.get("record_with_translation"))}, ensure_ascii=False),
@@ -136,7 +136,7 @@ def diagnostic_snapshot(config: Mapping[str, Any], pipeline: Any, *, environment
               "language_detection_boundary": "Script heuristic only; code-switching, names and short utterances may cause false positives",
               "version": __version__, "checked_at": datetime.now(timezone.utc).isoformat(),
               "boundary": "Metadata only. No audio, transcript, translation body, history or credentials. Device execution may be unverified.",
-              "configuration": {key: config.get(key) for key in ("file_translation_mode", "speech_model_id", "mode", "lang_pair", "asr_model_id", "translate_model_id", "stt_provider", "translate_tier", "record_with_translation", "log_limit_mb")},
+              "configuration": {key: config.get(key) for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output", "mode", "lang_pair", "asr_model_id", "translate_model_id", "stt_provider", "translate_tier", "record_with_translation", "log_limit_mb")},
               "pipeline": pipeline_snapshot(pipeline), "trace": snapshot(), "verbose_session": diagnostic_session_snapshot()}
     if environment:
         result["environment"] = environment_snapshot()

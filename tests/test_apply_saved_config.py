@@ -377,3 +377,22 @@ class TestSetTranslatorHonorsSavedConfig:
 
         _, config = calls[-1]
         assert config.get("translate_model_id") == self.USER_MODEL
+
+@pytest.mark.parametrize('key,value',[('speech_device','cuda'),('speech_output','translation')])
+def test_speech_execution_options_apply_to_existing_pipeline(isolated_config,key,value):
+    from voxsub.config_store import ConfigStore
+    service=ipc_server.BackendService()
+    pipeline=Pipeline(models=isolated_config/'models');service._pipeline=pipeline
+    try:
+        result=service._cmd_set_config({'updates':{key:value}})
+        assert result[key]==value
+        assert pipeline._speech_config[key]==value
+        assert ConfigStore().load()[key]==value
+    finally:pipeline.close()
+
+@pytest.mark.parametrize('key,value',[('speech_device','npu'),('speech_output','unsupported')])
+def test_invalid_speech_execution_option_not_persisted(isolated_config,key,value):
+    from voxsub.config_store import ConfigStore
+    service=ipc_server.BackendService();before=ConfigStore().load()[key]
+    with pytest.raises(ValueError):service._cmd_set_config({'updates':{key:value}})
+    assert ConfigStore().load()[key]==before

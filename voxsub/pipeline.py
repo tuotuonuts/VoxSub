@@ -570,7 +570,7 @@ class Pipeline:
         self._threads: list[threading.Thread] = []
         self._source: AudioSource | None = None
 
-        self._speech_config = {"file_translation_mode": "dual", "speech_model_id": "speech-granite-4-1b"}
+        self._speech_config = {"file_translation_mode": "dual", "speech_model_id": "speech-granite-4-1b", "speech_device": "auto", "speech_output": "bilingual"}
         self._speech_runtime_state: dict = {"loaded": False, "phase": "not_loaded"}
         self._cb_file_subtitle: list[Callable[[SubtitleLine], None]] = []
         self._cb_utterance: list[Callable[[str, str], None]] = []
@@ -958,7 +958,9 @@ class Pipeline:
             raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
         validate_selection(config)
         selected = {"file_translation_mode": config.get("file_translation_mode", "dual"),
-                    "speech_model_id": config.get("speech_model_id", DEFAULT_SPEECH_MODEL)}
+                    "speech_model_id": config.get("speech_model_id", DEFAULT_SPEECH_MODEL),
+                    "speech_device": config.get("speech_device", "auto"),
+                    "speech_output": config.get("speech_output", "bilingual")}
         if selected == self._speech_config:
             return
         self._speech_config = selected
@@ -972,7 +974,7 @@ class Pipeline:
 
         if not self._may_replace_resources():
             raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
-        if "file_translation_mode" in updates or "speech_model_id" in updates:
+        if any(key in updates for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output")):
             self.set_file_translation(config)
         if "asr_model_id" in updates:
             self.set_asr_model(str(config["asr_model_id"]))
@@ -2681,7 +2683,9 @@ class Pipeline:
             self._emit_progress(0, 100, "正在准备单模型文件翻译")
             lines = run_speech_file(self._in_path, self._speech_config["speech_model_id"],
                                     self._src_lang, self._dst_lang, self._stop_evt,
-                                    self._emit_progress, self._emit_file_subtitle, self._models_dir, self._observe_speech_runtime)
+                                    self._emit_progress, self._emit_file_subtitle, self._models_dir, self._observe_speech_runtime,
+                                    device=self._speech_config.get("speech_device", "auto"),
+                                    output=self._speech_config.get("speech_output", "bilingual"))
             if self._stop_evt.is_set():
                 raise SpeechCancelled()
             # Never overwrite a pre-existing user subtitle as a side effect.

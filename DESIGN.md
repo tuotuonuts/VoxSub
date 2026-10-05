@@ -446,3 +446,9 @@ recognition_language记录hint_applied/auto/hint_unavailable，源结果language
 ### 主页可搜索语言控件（2026-10-05 UTC）
 
 `ui/searchable-select.ts` 为无 store/IPC 的受控公共组合框，复用输入框/按钮；输入仅匹配，显式选项提交，支持 IME、方向键、Escape/Tab、无结果和 disabled。弹出层由组件唯一拥有，使用 top layer 防裁切，关闭/dispose 清理临时 document/window 监听。`language-capabilities.ts` 提供后端矩阵内选项与中英文/代码别名，缓存选项避免字幕更新打断输入；不扩展语言能力，不绕过保存确认、方向验证与运行锁定。验收见 docs/LANGUAGE_SEARCH_ACCEPTANCE.md。
+
+### GPU 文件语音模型与原生悬浮窗证据
+
+单模型文件路径的配置现在包含 speech_device（auto/cpu/cuda）和 speech_output（bilingual/translation）。共享 file-translation-form 负责展示和字段变更，不直接写配置；服务端在修改已有 Pipeline 前校验，Pipeline 在文件任务期间锁定配置。speech_runtime 选择隔离的 CPU/CUDA worker，speech_worker 使用官方 BF16 调用，明确 CUDA 失败不自动改设备。SeamlessStreaming 只收录为 external_runtime，客户端与服务端均不允许当作已集成模型启动。
+
+悬浮窗链路：renderer/overlay-frame（实际卡片测量、帧合并）→ preload → 当前 owner IPC → VerifiedOverlaySurface（代次、去重、失败策略）→ OverlaySurface（裁剪/材质调用）→ overlay-native（隐藏子进程）→ voxsub/overlay_native（PID 验证、GDI/DWM 只读）。区域匹配与材质读回均通过才标记 active；桌面视觉状态独立且默认 not_run。原生诊断走无需 Pipeline 的 record_overlay_diagnostic，日志字段白名单，不存字幕。

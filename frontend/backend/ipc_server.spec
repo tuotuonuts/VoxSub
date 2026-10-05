@@ -36,6 +36,7 @@ datas += [
 hiddenimports = [
     "voxsub.pipeline",
     "voxsub.speech_runtime",
+    "voxsub.overlay_native",
     "voxsub.speech_contract",
     "voxsub.speech_catalog",
     "voxsub.translate.factory",

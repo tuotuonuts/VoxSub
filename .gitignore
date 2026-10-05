@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .venv-speech/
+.venv-speech-cuda/
 .venv.invalid-*/
 *.egg-info/
 .pytest_cache/

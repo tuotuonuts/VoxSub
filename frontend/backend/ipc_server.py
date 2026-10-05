@@ -71,6 +71,11 @@ def _install_backend_path() -> str:
 
 VOXSUB_ROOT = _install_backend_path()
 
+# Isolated read-only HWND helper; do not initialize config, Pipeline or IPC services.
+if __name__ == "__main__" and sys.argv[1:2] == ["--overlay-native"]:
+    from voxsub.overlay_native import main as _native_probe
+    raise SystemExit(_native_probe(sys.argv[2]))
+
 from voxsub.language_registry import split_language_pair
 FROZEN = bool(getattr(sys, "frozen", False))
 
@@ -504,11 +509,11 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
         updates = args.get("updates") or {}
         store = ConfigStore()
-        if "file_translation_mode" in updates or "speech_model_id" in updates:
+        if any(key in updates for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output")):
             from voxsub.speech_contract import validate_selection
             validate_selection({**dict(store.load()), **updates})
         if self._pipeline is not None and any(
-                key in ("asr_model_id", "file_translation_mode", "speech_model_id") or key.startswith(("stt_", "translate_"))
+                key in ("asr_model_id", "file_translation_mode", "speech_model_id", "speech_device", "speech_output") or key.startswith(("stt_", "translate_"))
                 for key in updates):
             config = {**dict(store.load()), **updates}
             self._pipeline.apply_language_model_config(config, updates)
@@ -668,7 +673,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 for _name in (
     "list_models", "install_model", "prepare_model_download", "pause_model_download",
     "delete_model_download", "uninstall_model", "model_dir", "get_config", "set_config",
-    "run_self_check", "export_diagnostics", "recent_logs",
+    "run_self_check", "export_diagnostics", "recent_logs", "record_overlay_diagnostic",
     "developer_mode", "diagnostic_snapshot", "diagnostic_session",
     "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir", "ocr_release",
     "detect_legacy", "plan_migration", "start_migration", "verify_copy",

@@ -21,7 +21,11 @@ export function buildDeveloperTab(onDisabled: () => void): PageHandle {
     const data = await call<Record<string, unknown>>(CMD.diagnosticSnapshot, { environment });
     if (disposed || !developerEnabled() || request !== generation) return;
     if (!data) { output.textContent = tr("诊断快照获取失败"); return; }
-    latest = { ...data, ipcRenderer: ipcSnapshot(), rendererEnvironment: { userAgent: navigator.userAgent, platform: navigator.platform } };
+    const overlaySurface = await window.voxsub?.overlay?.getGlass().catch(() => ({
+      active: false, clippingCheck: "not_run", materialCheck: "not_run", desktopCheck: "not_run", reason: "unavailable",
+    }));
+    if (disposed || request !== generation) return;
+    latest = { ...data, overlaySurface, ipcRenderer: ipcSnapshot(), rendererEnvironment: { userAgent: navigator.userAgent, platform: navigator.platform } };
     output.textContent = JSON.stringify(latest, null, 2);
     const session = data["verbose_session"] as { expires_at?: string } | null;
     expires = session?.expires_at ? Date.parse(session.expires_at) : 0;

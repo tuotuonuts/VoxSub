@@ -26,7 +26,7 @@
     "test:model-downloads": "node tools/test-model-downloads.mjs",
     "test:catalog-search": "node tools/test-catalog-search.mjs",
     "test:catalog-cards": "node tools/test-catalog-cards.mjs",
-    "test:overlay-glass": "node tools/test-overlay-surface.mjs && node tools/test-overlay-glass.mjs",
+    "test:overlay-glass": "node tools/test-overlay-surface.mjs && node tools/test-overlay-glass.mjs && node tools/test-overlay-verification.mjs",
     "test:overlay-opacity": "node tools/test-overlay-opacity.mjs",
     "test:acceptance-contracts": "node tools/test-acceptance-contracts.mjs && node tools/test-acceptance-contracts-self.mjs",
     "test:recording-control": "node tools/test-recording-control.mjs && node tools/test-mode-recording.mjs",

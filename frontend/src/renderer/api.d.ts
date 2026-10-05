@@ -68,6 +68,7 @@ export interface VoxSubApi {
     hide(): Promise<boolean>;
     setClickThrough(enabled: boolean): Promise<boolean>;
     isClickThrough(): Promise<boolean>;
+    reportFrame(frame: import("../shared/overlay-frame").OverlayFrame): Promise<void>;
     getGlass(): Promise<import("../shared/overlay-glass").OverlayGlassState>;
     setGlass(enabled: boolean, strength: number): Promise<import("../shared/overlay-glass").OverlayGlassState>;
     onGlassChanged(handler: (value: import("../shared/overlay-glass").OverlayGlassState) => void): () => void;

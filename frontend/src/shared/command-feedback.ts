@@ -3,6 +3,7 @@ import type { CommandName } from "../renderer/protocol";
 
 // Exhaustive: adding an IPC command requires choosing a human-readable name.
 const LABELS: Record<CommandName, string> = {
+  record_overlay_diagnostic: "更新悬浮窗诊断",
   ping: "检查应用连接",
   shutdown: "关闭应用",
   start: "启动会话",

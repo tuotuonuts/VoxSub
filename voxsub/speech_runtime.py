@@ -23,16 +23,18 @@ class SpeechCancelled(Exception):
     """User cancellation, not successful completion or model failure."""
 
 
-def worker_command():
+def worker_command(device="auto"):
     if getattr(sys, 'frozen', False):
         worker = Path(sys.executable).parent / 'speech-runtime' / 'VoxSubSpeechWorker.exe'
         if worker.is_file():
             return [str(worker)]
     else:
         root = Path(__file__).resolve().parent.parent
-        python = root / '.venv-speech' / 'Scripts' / 'python.exe'
-        if python.is_file():
-            return [str(python), '-m', 'voxsub.speech_worker']
+        folders = ('.venv-speech', '.venv-speech-cuda') if device == 'cpu' else ('.venv-speech-cuda', '.venv-speech')
+        for folder in folders:
+            python = root / folder / 'Scripts' / 'python.exe'
+            if python.is_file():
+                return [str(python), '-m', 'voxsub.speech_worker']
     raise RuntimeError('缺少语音翻译运行组件，请安装含文件语音翻译组件的完整版本；源码版先运行 scripts/setup-speech-runtime.ps1')
 
 
@@ -114,7 +116,7 @@ def _segment(event, lines, progress, present, model_id):
         lines.append(line)
         present(line)
     progress(10 + int(85*event['completed']/max(.001, event['total'])), 100, '正在生成双语字幕')
-    trace_record('speech_translation', 'segment_complete', model=model_id, provider='cpu',
+    trace_record('speech_translation', 'segment_complete', model=model_id, provider=event.get('device', 'unverified'),
                  duration_ms=event['elapsed_ms'], cue_count=len(event['cues']))
 
 
@@ -126,8 +128,8 @@ def _observe(observe, model_id, event):
         observe(dict(model=model_id, phase=event['stage']))
         return
     observe(dict(model=model_id, phase=kind, loaded=kind in ('loaded', 'segment'),
-                 declared_provider='cpu' if kind in ('loaded', 'segment') else 'unverified',
-                 inference_verified=kind == 'segment'))
+                 declared_provider=event.get('device', 'unverified'),
+                 inference_verified=kind == 'segment' and bool(event.get('cues')), **({'fallback_reason': event['fallback']} if 'fallback' in event else {})))
 
 
 def _guard_resources(stop, deadline, next_memory_check):
@@ -168,7 +170,7 @@ def _consume(process, events, reader, stop, progress, present, model_id, observe
         elif kind == 'stage':
             progress(completed, 100, event['stage'])
         elif kind == 'loaded':
-            trace_record('speech_translation', 'loaded', model=model_id, provider='cpu', runtime='torch-bf16')
+            trace_record('speech_translation', 'loaded', model=model_id, provider=event.get('device', 'unverified'), runtime='torch-bf16', fallback=event.get('fallback', ''))
         elif kind == 'done':
             done = True
     if stop.is_set():
@@ -180,11 +182,13 @@ def _consume(process, events, reader, stop, progress, present, model_id, observe
     return lines
 
 
-def run_speech_file(path, model_id, source, target, stop, progress, present, models_root=None, observe=None):
+def run_speech_file(path, model_id, source, target, stop, progress, present, models_root=None, observe=None, *, device="auto", output="bilingual"):
     from voxsub.model_catalog import get_model, ModelMarketplace
+    from voxsub.speech_contract import validate_selection
+    validate_selection({'speech_model_id': model_id, 'speech_device': device, 'speech_output': output})
     if (source, target) not in SPEECH_PAIRS.get(model_id, ()):
         raise ValueError('此语音翻译模型不支持所选语言方向')
-    command = worker_command()
+    command = worker_command() if device == "auto" else worker_command(device)
     spec = get_model(model_id)
     marketplace = ModelMarketplace(models_root)
     if not marketplace.is_installed(spec):
@@ -195,7 +199,7 @@ def run_speech_file(path, model_id, source, target, stop, progress, present, mod
         if stop.is_set():
             raise SpeechCancelled()
         job = dict(label=spec.runtime.removeprefix('speech-'), weights=str(marketplace.available_model_dir(spec)),
-                   audio=str(audio), chunk=str(directory/'chunk.wav'), source=source, target=target)
+                   audio=str(audio), chunk=str(directory/'chunk.wav'), source=source, target=target, device=device, output=output)
         write_text_atomically(directory/'job.json', json.dumps(job), encoding='utf8')
         env = {k:v for k,v in os.environ.items() if k not in ('PYTHONPATH', 'PYTHONHOME')}
         env.update(PYTHONIOENCODING='utf-8', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')

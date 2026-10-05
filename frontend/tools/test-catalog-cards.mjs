@@ -44,6 +44,11 @@ try{
  test('downloaded has whole-card state plus explicit downloaded badge; actions remain',()=>{assert.ok(cell().classList.contains('is-installed'));assert.equal(cell().querySelector('.cell__installed').textContent,'✓ 已下载');assert.deepEqual([...cell().querySelectorAll('.cell__action')].map(b=>b.textContent),['使用','卸载']);});
  document.documentElement.dataset.activeModels=moon.id;await catalog.loadModels();test('selected downloaded model still clearly reports downloaded and in-use',()=>{assert.equal(cell().querySelector('.cell__state').textContent,'使用中');assert.ok(cell().querySelector('.cell__installed'));});
  items=[{...moon,officialRepo:'https://hf-mirror.com/a/b',recommendation:undefined}];await catalog.loadModels();test('missing device evidence or invalid upstream never fabricates positive recommendations or links',()=>{assert.equal(cell().querySelector('.cell__recommendation').textContent,'待评估');assert.equal(cell().querySelector('.repository-link'),null);});
+ items=[{...moon,id:'speech-seamless-streaming',task:'speech',name:'SeamlessStreaming',installed:true,externalRuntime:'Linux / WSL',usageUrl:'https://github.com/facebookresearch/seamless_communication/blob/main/src/seamless_communication/cli/streaming/README.md'}];await catalog.loadModels();
+ test('external speech model remains downloadable but has guide instead of in-app use',()=>{
+   assert.deepEqual([...cell().querySelectorAll('.cell__action')].map(b=>b.textContent),['卸载']);
+   const guide=[...cell().querySelectorAll('button')].find(b=>b.textContent==='官方运行说明');assert.ok(guide);guide.click();assert.equal(opened.at(-1),items[0].usageUrl);
+ });
  const i18n=fs.readFileSync(ROOT+'/src/renderer/i18n.ts','utf8').replace(/^import .*;$/m,'');const tr=vm.runInNewContext(transformSync(i18n+'\ntr;',{loader:'ts',format:'cjs'}).code,{module:{exports:{}},store:{get:()=>({lang:'en',theme:'dark'})}});
  test('all new visible summary and tags resolve in English',()=>{for(const text of [moon.description,...moon.tags,...tiers.map(t=>t[1]),'能力','已下载','模型官方仓库','使用'])assert.notEqual(tr(text),text,text);});
  test('new public components have no store, business, translation or IPC dependencies',()=>{

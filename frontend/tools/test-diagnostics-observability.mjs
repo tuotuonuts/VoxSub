@@ -146,6 +146,14 @@ await test('developer gate is hidden by default and closes on request',async()=>
   mod.setDeveloperEnabled(true);const dev=buildDiagnostics();dom.mount(dev.element);[...dev.element.querySelectorAll('button')].find(b=>b.textContent==='开发者').click();await settle();
   [...dev.element.querySelectorAll('button')].find(b=>b.textContent==='关闭开发者模式').click();await settle();assert.equal(mod.developerEnabled(),false);assert.ok(commands.some(c=>c.command===CMD.developerMode&&c.args.enabled===false));dev.dispose();dev.element.remove();
 });
+await test('native overlay IPC failure retains diagnostic snapshot as unverified',async()=>{
+  const previous=window.voxsub.overlay;window.voxsub.overlay={getGlass:async()=>{throw Error('unavailable');}};
+  mod.setDeveloperEnabled(true);const page=mod.buildDeveloperTab(()=>{});dom.mount(page.element);await settle();
+  const snapshot=JSON.parse(page.element.querySelector('pre').textContent);
+  assert.equal(snapshot.overlaySurface.active,false);assert.equal(snapshot.overlaySurface.desktopCheck,'not_run');
+  assert.equal(snapshot.overlaySurface.clippingCheck,'not_run');
+  page.dispose();page.element.remove();window.voxsub.overlay=previous;mod.setDeveloperEnabled(false);
+});
 await test('developer timer is disposed with its page',async()=>{
   mod.setDeveloperEnabled(true);const before=dom.timers.created-dom.timers.cleared;const page=mod.buildDeveloperTab(()=>{});await settle();page.dispose();page.dispose();assert.equal(dom.timers.created-dom.timers.cleared,before);mod.setDeveloperEnabled(false);
 });

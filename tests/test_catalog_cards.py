@@ -91,4 +91,4 @@ def test_new_repository_metadata_preserves_existing_positional_fields():
     from dataclasses import fields
     from voxsub.model_catalog import ModelSpec
     names = [f.name for f in fields(ModelSpec)]
-    assert names[-3:] == ["tts_languages", "tts_speaker_ids", "official_repo"]
+    assert names[-5:] == ["tts_languages", "tts_speaker_ids", "official_repo", "external_runtime", "usage_url"]

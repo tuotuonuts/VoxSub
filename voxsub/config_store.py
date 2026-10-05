@@ -74,6 +74,8 @@ _DEFAULTS: dict[str, Any] = {
     "asr_model_id": "asr-zipformer-bilingual-fast",
     "file_translation_mode": "dual",
     "speech_model_id": "speech-granite-4-1b",
+    "speech_device": "auto",
+    "speech_output": "bilingual",
     # 默认档 = 智能上下文（context）。它开启上下文纠错，是当前主推的识别方式。
     # 下面的四个数值必须与 pipeline._effective_asr_tuning 里 context 预设一致，
     # 否则新装用户看到的"默认值"和实际生效值会对不上。
@@ -195,6 +197,8 @@ APP_CONFIG_SCHEMA = ConfigSchema(
             {"auto", "responsive", "balanced", "accuracy", "context", "custom"}),
         "asr_filler_mode": frozenset({"off", "light"}),
         "file_translation_mode": frozenset({"dual", "single"}),
+        "speech_device": frozenset({"auto", "cpu", "cuda"}),
+        "speech_output": frozenset({"bilingual", "translation"}),
         "download_source": frozenset({"auto", "global", "china"}),
         "sentry_environment": frozenset({"", "development", "testing", "production"}),
         "models_root_mode": frozenset({"", "legacy", "install", "custom"}),

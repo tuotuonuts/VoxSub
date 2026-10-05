@@ -1,3 +1,11 @@
+## GPU 文件模型、悬浮窗缩放隔离与下载 CI 防护
+
+- Granite/Index 增加 auto/CPU/CUDA 与双语/仅译文共用表单；官方语言方向、设备/输出即时配置、实际设备/回退日志贯通。独立 CUDA 环境，不改实时 A/B/OCR 路径；Granite RTX4060 短音频真实调用通过，非质量/实时性能基准；Index GPU NOT_RUN。
+- 新增 SeamlessStreaming 固定双区域下载与官方指南，明确 Linux/WSL 外部运行与非商业许可；不可作为 Windows 内已集成模型选择。两个源 10 个 HEAD 的状态/长度通过，完整下载及外部推理 NOT_RUN。
+- 悬浮窗 isolated zoom + 实际卡片几何 + 原生 GDI/DWM 读回；失败保留裁剪/普通背景，必要时安全替换 HWND，保持隐藏及穿透；裁剪/材质/桌面验证独立。隐藏窗口 10 组通过、测试窗 0 显示/聚焦违规，可见桌面 NOT_RUN。
+- 下载 prepare/snapshot 缓存前校验全部文件/分片/元数据/记录路径，补齐 CI 原案例与矩阵。安全全量 1370 passed/20 skipped/7 deselected/1既有xfail；13个真实符号链接案例因本机权限跳过，故障注入通过。前端与发布门禁结果见 docs/GPU_OVERLAY_DOWNLOAD_ACCEPTANCE.md。
+- 源码起点 c6861cd 已归档；用户实例未重启，不播放音频、不录音；Cache/和用户配置/模型/历史不改，CUDA为独立开发环境，不是安装包已发布。
+
 ## 模型语言全链路与实时更新（2026-10-05 UTC）
 
 - 新语言注册表取代全局四语上限；本地识别模型、Hy-MT2各量化档、配置保存/恢复、语种别名与繁体变体、OCR/诊断/前端标签/RTL贯通。Qwen+Hy为23源/38目标，OPUS仍中英，未知云端不扩张宣称。
