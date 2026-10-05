@@ -97,12 +97,13 @@ let overlayPlainFallback = false;
 let overlayEvidenceLog = "";
 let overlayGlassEnabled = false;
 let overlayGlassStrength = 50;
+let overlayGlassRevision = 0;
 let overlayGlassState: OverlayGlassState | null = null;
 
 function publishOverlayGlass(): OverlayGlassState {
   const supported = process.platform === "win32" && Number(process.getSystemVersion().split(".")[2]) >= 22621;
   const evidence=overlaySurface?.evidence ?? {active:false,clippingCheck:"not_run" as const,materialCheck:"not_run" as const,desktopCheck:"not_run" as const};
-  overlayGlassState={enabled:overlayGlassEnabled,strength:overlayGlassStrength,supported,...evidence,
+  overlayGlassState={enabled:overlayGlassEnabled,strength:overlayGlassStrength,settingsRevision:overlayGlassRevision,supported,...evidence,
     reason:!supported?"unsupported":overlayPlainFallback||evidence.fallbackReason?"unavailable":null};
   sendToWindow(overlayWindow,"overlay:glass",overlayGlassState);
   const signature=JSON.stringify([evidence.active,evidence.clippingCheck,evidence.materialCheck,evidence.fallbackReason]);
@@ -115,6 +116,7 @@ function publishOverlayGlass(): OverlayGlassState {
   return overlayGlassState;
 }
 function applyOverlayGlass(force=false): OverlayGlassState {
+  if(process.platform!=="win32")return publishOverlayGlass();
   const supported=process.platform==="win32"&&Number(process.getSystemVersion().split(".")[2])>=22621;
   useWindow(overlayWindow,"overlay:glass",win=>{
     overlaySurface?.update(supported&&overlayGlassEnabled&&overlayGlassStrength>0&&!overlayPlainFallback,
@@ -348,6 +350,7 @@ function createOverlayWindow(showWhenReady=true): BrowserWindow {
     y: height - 220,
     frame: false,
     transparent: true,
+    backgroundColor: "#00000000",
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: true,
@@ -389,7 +392,7 @@ function createOverlayWindow(showWhenReady=true): BrowserWindow {
   });
 
   const refreshSurface = () => {
-    if (!quitting && !HEADLESS && overlayWindow === win && overlayGlassEnabled) applyOverlayGlass();
+    if (!quitting && !HEADLESS && overlayWindow === win) applyOverlayGlass();
   };
   win.on("resize", refreshSurface);
   win.on("move", refreshSurface); // Includes crossing monitors with different scale factors.
@@ -546,6 +549,7 @@ function registerIpc(): void {
   });
   ipcMain.handle("overlay:get-glass", () => overlayGlassState ?? applyOverlayGlass());
   ipcMain.handle("overlay:set-glass", (_e, enabled: unknown, strength: unknown) => {
+    overlayGlassRevision++;
     if (overlayGlassEnabled !== (enabled === true)) { overlayPlainFallback=false;overlaySurface?.reset(); }
     overlayGlassEnabled = enabled === true;
     overlayGlassStrength = typeof strength === "number" && Number.isFinite(strength)

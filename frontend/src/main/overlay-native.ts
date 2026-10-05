@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import type { ShapeRect } from "../shared/overlay-shape";
-export interface NativeOverlayCheck { regionVerified: boolean; materialVerified: boolean; desktop: "not_run"; dpi?: number; backdrop?: number; error?: string }
+export interface NativeOverlayCheck { regionVerified: boolean; materialVerified: boolean; desktop: "not_run"; materialSupported?: boolean; dpi?: number; backdrop?: number; error?: string }
 export function probeNativeOverlay(launch: { command: string; args: string[] }, hwnd: Buffer, shape: ShapeRect[], material: boolean): Promise<NativeOverlayCheck> {
   const request=JSON.stringify({hwnd:hwnd.length===8?hwnd.readBigUInt64LE().toString():String(hwnd.readUInt32LE()),pid:process.pid,shape,material});
   return new Promise((resolve,reject)=>{

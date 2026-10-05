@@ -58,6 +58,7 @@
     "verify:packaged": "python tools/verify-packaged.py",
     "test:reported": "node tools/test-reported-fixes.mjs",
     "test:icon": "electron tools/test-icon.cjs",
+    "test:overlay-alpha": "node tools/run-overlay-alpha.mjs",
     "test:overlay-menus": "node tools/test-overlay-menus.mjs",
     "test:recorder": "node tools/test-recorder-controls.mjs",
     "test:launchers": "node tools/test-launchers.mjs",

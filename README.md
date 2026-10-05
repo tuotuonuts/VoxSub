@@ -16,6 +16,8 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 
 > **Intel NPU 支持仍有限。** `0.4.1-beta` 已在 Intel AI Boost 真机验证 Hy-MT2 1.8B Q4/Q6/Q8：VoxSub 自动调度和禁止 CPU 回退的强制 NPU 推理均通过。Hy-MT2 7B Q4/Q6/Q8 仅依据 llama.cpp OpenVINO 公开兼容资料列为“NPU 待验证”，启动真实翻译探针失败时会自动改用核显或 CPU；现有 sherpa-onnx ASR 和 OPUS 运行时不支持 NPU。
 
+> **悬浮窗兼容性说明（当前源码）**：背景不透明度已与毛玻璃设置解耦，并修复关闭系统材质后出现不透明底色的问题。透明圆角窗口暂使用普通半透明背景，保留毛玻璃设置但不冒充已恢复真实模糊。隐藏渲染回归已通过，实际桌面效果仍需验收。详见 [验收边界](docs/OVERLAY_ALPHA_ACCEPTANCE.md)。
+
 ## 下载
 
 - 最新预发布版本：[VoxSub v0.7.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.7.2-beta)。安装包 `VoxSub-Setup-0.7.2-beta.exe` 为 214,817,504 字节（204.87 MiB）；SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`。

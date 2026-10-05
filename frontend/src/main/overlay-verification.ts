@@ -11,14 +11,17 @@ export class VerifiedOverlaySurface {
   private generation=0;
   private disposed=false;
   private blocked=false;
-  private nativeApplied=false;
+  private materialRequested=false;
   private last="";
   private shape: ShapeRect[] | null=null;
   evidence: SurfaceEvidence={active:false,clippingCheck:"not_run",materialCheck:"not_run",desktopCheck:"not_run",fallbackReason:null};
   constructor(private readonly win:SurfaceWindow,
     private readonly probe:(shape:ShapeRect[],material:boolean)=>Promise<NativeOverlayCheck>,
     private readonly publish:(evidence:SurfaceEvidence)=>void,
-    private readonly unsafe:()=>void) {}
+    private readonly unsafe:()=>void,
+    // System backdrop paints outside per-pixel transparent cards on affected Windows builds.
+    // Native region readback is not visual evidence; production stays on the safe plain path.
+    private readonly allowMaterial=false) {}
   private report(patch:Partial<SurfaceEvidence>) { this.evidence={...this.evidence,...patch,desktopCheck:"not_run"};this.publish(this.evidence); }
   reset() {this.blocked=false;this.last="";}
   update(enabled:boolean, frame:OverlayFrame|null, scale=1, force=false) {
@@ -29,13 +32,16 @@ export class VerifiedOverlaySurface {
     this.last=key;const generation=++this.generation;
     if(this.timer)clearTimeout(this.timer);this.timer=null;
     if(force)this.surface.invalidate(this.win);
-    const wanted=enabled&&!this.blocked;
-    if(!wanted&&!this.nativeApplied){this.report({active:false,clippingCheck:"not_run",materialCheck:"not_run"});return;}
+    const wanted=enabled&&!this.blocked&&this.allowMaterial;
+    const compatibilityFallback=enabled&&!this.allowMaterial ? "transparent_material_incompatible" : null;
+    this.report({fallbackReason:this.blocked?(this.evidence.fallbackReason??null):compatibilityFallback});
     this.shape=frame?frameShape(width!,height!,zoom,frame):null;
-    if(wanted&&!this.shape){this.report({active:false,clippingCheck:"checking",materialCheck:"not_run"});return;}
-    try {this.surface.apply(this.win,wanted,scale,frame??undefined,true);if(wanted)this.nativeApplied=true;}
+    if(!this.shape){this.report({active:false,clippingCheck:"checking",materialCheck:"not_run"});return;}
+    try {
+      this.surface.apply(this.win,wanted,scale,frame??undefined,true);
+      this.materialRequested ||= wanted;
+    }
     catch {this.report({active:false,clippingCheck:"fail",materialCheck:"fail",fallbackReason:"native_apply_failed"});this.blocked=true;this.unsafe();return;}
-    if(!this.shape){this.report({active:false,clippingCheck:"not_run",materialCheck:"not_run"});return;}
     this.report({active:false,clippingCheck:"checking",materialCheck:"checking"});
     const shape=this.shape;
     this.timer=setTimeout(()=>{this.timer=null;void this.verify(generation,shape,wanted);},100);
@@ -45,8 +51,9 @@ export class VerifiedOverlaySurface {
     let result:NativeOverlayCheck;
     try {result=await this.probe(shape,wanted);}catch {result={regionVerified:false,materialVerified:false,desktop:"not_run"};}
     if(!this.current(generation))return;
-    if(result.regionVerified&&result.materialVerified){
-      this.report({active:wanted,clippingCheck:"pass",materialCheck:"pass",fallbackReason:this.blocked?(this.evidence.fallbackReason??null):null});return;
+    const materialNotApplicable=!wanted&&!this.materialRequested&&result.materialSupported===false;
+    if(result.regionVerified&&(result.materialVerified||materialNotApplicable)){
+      this.report({active:wanted,clippingCheck:"pass",materialCheck:materialNotApplicable?"not_run":"pass"});return;
     }
     this.blocked=true;
     this.report({active:false,clippingCheck:result.regionVerified?"pass":"fail",materialCheck:result.materialVerified?"pass":"fail",fallbackReason:"native_verification_failed"});

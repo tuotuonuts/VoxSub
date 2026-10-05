@@ -16,6 +16,7 @@ function makeRuntime({headless=false}={}) {
     setBounds(bounds){this.call('setBounds',bounds);}
     setShape(rects){ this.call("setShape",rects); }
     setBackgroundMaterial(m){ this.call("setBackgroundMaterial",m); }
+    setBackgroundColor(c){ this.call("setBackgroundColor",c); }
     assertLive(){if(this.dead)throw new TypeError('Object has been destroyed');}
     call(name,...args){if(this.raceMethod===name)this.dead=true;this.assertLive();if(this.errorMethod===name)throw this.methodError;this.calls.push([name,...args]);}
     isDestroyed(){return this.dead;} // Electron's safe liveness probe.
@@ -232,7 +233,10 @@ test('glass waits for actual owner geometry and isolates zoom', r => {
   r.handlers.get('overlay:frame')({sender:{}},frame);
   assert.equal(old.calls.filter(c=>c[0]==='setShape').length,0);
   r.handlers.get('overlay:frame')({sender:old.webContents},frame);
-  assert.ok(old.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='acrylic'));
+  assert.equal(old.options.backgroundColor,'#00000000');
+  assert.ok(old.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='none'));
+  assert.ok(old.calls.every(c=>c[0]!=='setBackgroundMaterial'||c[1]!=='acrylic'));
+  assert.equal(r.ipc('overlay:get-glass').active,false);
   old.destroy();const current=r.api.createOverlay();current.events.get('ready-to-show')();
   const oldCount=old.calls.length;old.events.get('resize')();old.events.get('move')();
   assert.equal(old.calls.length,oldCount);

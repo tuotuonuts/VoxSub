@@ -1,3 +1,4 @@
+[review-hardening] 已修复悬浮窗毛玻璃/透明度耦合与材质移除白底；实际桌面玻璃恢复仍待验收，见 docs/OVERLAY_ALPHA_ACCEPTANCE.md。全项目审查/最终推送仍进行中。
 [本轮完成] GPU 模型收录/调用、悬浮窗缩放隔离及下载链接 CI 修复
 - Granite / Index：CPU/CUDA/auto、双语/仅译文、公共控件、设备诊断；SeamlessStreaming 双源下载/官方外部指南，禁止误选为本机集成模型。
 - 实际卡片裁剪、原生读回、失败安全回退、独立桌面验证状态；下载缓存/进度前拒绝符号链接。

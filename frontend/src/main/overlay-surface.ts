@@ -6,6 +6,7 @@ export interface SurfaceWindow {
   webContents: { getZoomFactor(): number };
   setShape(rects: ShapeRect[]): void;
   setBackgroundMaterial(material: "acrylic" | "none"): void;
+  setBackgroundColor(color: string): void;
 }
 interface SurfaceState {
   material: "none" | "acrylic" | "unknown";
@@ -18,14 +19,21 @@ export class OverlaySurface {
   private readonly owners = new WeakMap<SurfaceWindow, SurfaceState>();
   invalidate(win: SurfaceWindow): void { const state=this.owners.get(win); if(state) { state.shape=""; state.material="unknown"; } }
   apply(win: SurfaceWindow, enabled: boolean, displayScale = 1, frame?: OverlayFrame, keepClip = false): boolean {
-    const state: SurfaceState = this.owners.get(win) ?? { material: "none", shape: "", clipping: false, applying: false };
+    const state: SurfaceState = this.owners.get(win) ?? { material: "unknown", shape: "", clipping: false, applying: false };
     this.owners.set(win, state);
     if (state.applying) return state.material === "acrylic";
     state.applying = true;
     const material = (value: "acrylic" | "none") => {
       // Throwing native calls may still change OS state; never cache them as success.
       state.material = "unknown";
-      win.setBackgroundMaterial(value); state.material = value;
+      try { win.setBackgroundMaterial(value); }
+      finally {
+        // Electron resets the WebContentsView background to opaque white on "none".
+        // Restore per-pixel transparency after EVERY material call, including failure.
+        // CSS alone cannot make an opaque WebContentsView transparent.
+        win.setBackgroundColor("#00000000");
+      }
+      state.material = value;
     };
     const unclip = () => {
       if (!state.clipping) return;

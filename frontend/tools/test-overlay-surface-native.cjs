@@ -47,7 +47,7 @@ app.whenReady().then(async()=>{
    }
    assert.equal(surface.apply(current,false),false);await pause();const disabled=probe(current,[[0,0]]);assert.equal(disabled.kind,0);records.push({owner,phase:'disabled',...disabled});current.destroy();current=null;
   }
-  const output={status:'PASS',records,visibleDwm:'NOT_RUN',desktopScreenshot:'NOT_RUN',interactiveResize:'NOT_RUN',boundary:'Hidden native HWND region + offscreen Chromium only; no audio, backend, desktop capture or focus.'};
+  const output={status:'PASS',rendererMode:'software-offscreen',records,visibleDwm:'NOT_RUN',desktopScreenshot:'NOT_RUN',interactiveResize:'NOT_RUN',boundary:'Hidden native HWND region + offscreen Chromium only; no audio, backend, desktop capture or focus.'};
   if(process.env.VOXSUB_TEST_REPORT)fs.writeFileSync(process.env.VOXSUB_TEST_REPORT,JSON.stringify(output,null,2));console.log(JSON.stringify(output));app.exit(0);
  }catch(error){console.error(error);if(process.env.VOXSUB_TEST_REPORT)fs.writeFileSync(process.env.VOXSUB_TEST_REPORT,JSON.stringify({status:'FAIL',error:String(error),records},null,2));app.exit(1);}
  finally{if(current&&!current.isDestroyed())current.destroy();}

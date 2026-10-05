@@ -1,7 +1,7 @@
 import { observeOverlayFrame } from "./overlay-frame";
 import { OVERLAY_FRAME_INSET, OVERLAY_FRAME_RADIUS } from "../shared/overlay-shape";
 import { mergePartialDraft } from "../shared/subtitle-draft";
-import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
+import { overlayBackgroundOpacity } from "../shared/overlay-glass";
 /**
  * 字幕浮窗渲染层。
  *
@@ -29,7 +29,6 @@ interface HistoryItem {
 let locked = false;
 let opacity = 0.92;
 let glassRevision = 0;
-let glassState: OverlayGlassState = { enabled: false, strength: 50, active: false, supported: false, reason: null };
 let opacityRevision = 0;
 let fontSize = 20;
 let contentPadding = 18;
@@ -87,8 +86,7 @@ function applyTextColors(): void {
 
 function applyVisuals(): void {
   const root = document.documentElement.style;
-  root.setProperty("--overlay-opacity", String(opacity));
-  root.setProperty("--overlay-glass-opacity", String(glassTint(opacity, glassState)));
+  root.setProperty("--overlay-opacity", String(overlayBackgroundOpacity(opacity)));
   root.setProperty("--font-size", `${fontSize}px`);
   root.setProperty("--content-padding", `${contentPadding}px`);
   root.setProperty("--line-gap", `${lineGap}px`);
@@ -459,9 +457,9 @@ function wireMainProcess(): void {
   });
 
   window.voxsub?.overlay.onGlassChanged(value => {
-    glassRevision++;
-    glassState = value;
-    applyVisuals();
+    // Native checks also publish here. Only user/config requests cancel a pending restore.
+    glassRevision = Math.max(glassRevision, value.settingsRevision ?? 0);
+    // Material notifications never modify CSS opacity or subtitle content.
   });
 
   window.voxsub?.overlay.onOpacityChanged((value) => {

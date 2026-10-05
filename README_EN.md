@@ -15,6 +15,8 @@ Current source candidate: `0.9.0-beta`; the current public GitHub download remai
 
 > **Intel NPU support remains limited.** `0.4.1-beta` has verified Hy-MT2 1.8B Q4/Q6/Q8 on Intel AI Boost hardware: both VoxSub's automatic route and forced-NPU inference with CPU fallback disabled passed. Hy-MT2 7B Q4/Q6/Q8 are marked “NPU pending” only from public llama.cpp OpenVINO compatibility information. If the real startup translation probe fails, VoxSub automatically switches to the integrated GPU or CPU. The current sherpa-onnx ASR and OPUS runtimes do not support the NPU.
 
+> **Overlay compatibility (current source)**: background opacity is independent of glass settings, and removing a system material restores a transparent window background. Transparent rounded overlays currently use a plain translucent fallback; glass preferences are retained, but real desktop blur is not claimed to be restored. Hidden-renderer regressions pass; visible desktop acceptance is still pending. See [acceptance boundaries](docs/OVERLAY_ALPHA_ACCEPTANCE.md).
+
 ## Downloads
 
 - Latest prerelease: [VoxSub v0.7.2-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.7.2-beta). `VoxSub-Setup-0.7.2-beta.exe` is 214,817,504 bytes (204.87 MiB); SHA256 `313714AE3C9557B88EDBCEBBFCB768A15BBDD65915A5266E0B3EB1D82CAF2211`.

@@ -635,11 +635,15 @@ function appearanceTab(): HTMLElement {
   let glassEnabled = config["overlay_glass_enabled"] === true;
   let glassStrength = Number(config["overlay_glass_strength"] ?? 50);
   let glassUpdate = 0;
+  let glassAvailable = false;
   const glassHint = h("p", { class: "hint", text: tr("正在检查毛玻璃支持情况…") });
   const showGlassState = (state: import("../../shared/overlay-glass").OverlayGlassState): void => {
-    glassHint.textContent = state.reason === "unsupported" ? tr("当前系统不支持原生毛玻璃，需要 Windows 11 22H2 或更新版本；保留原有背景。")
+    glassAvailable = state.supported && !state.reason && !state.fallbackReason;
+    glassSlider.setDisabled(!glassEnabled || !glassAvailable);
+    glassHint.textContent = state.fallbackReason === "transparent_material_incompatible" ? tr("当前透明圆角悬浮窗与系统毛玻璃不兼容，已使用普通半透明背景。毛玻璃设置已保留，背景透明度仍可调节。")
+      : state.reason === "unsupported" ? tr("当前系统不支持原生毛玻璃，需要 Windows 11 22H2 或更新版本；保留原有背景。")
       : state.reason === "unavailable" ? tr("毛玻璃暂时不可用，已保留原有背景。")
-      : tr("百分比调节毛玻璃的可见程度，系统模糊半径固定；0% 无毛玻璃。字幕文字不受影响，松开后自动保存。系统透明效果设置可能影响实际效果。");
+      : tr("背景不透明度独立控制，不随毛玻璃改变。毛玻璃不可用时，百分比仅保留设置、不生效；不会用降低不透明度来模拟模糊。");
   };
   const previewGlass = (): void => {
     const revision = ++glassUpdate;
@@ -653,9 +657,9 @@ function appearanceTab(): HTMLElement {
     onInput: value => { glassStrength = value; previewGlass(); },
     onChange: value => { glassStrength = value; previewGlass(); void saveConfig({ overlay_glass_strength: value }); },
   });
-  glassSlider.setDisabled(!glassEnabled);
+  glassSlider.setDisabled(true);
   const glassToggle = toggleSwitch(glassEnabled, tr("启用悬浮窗毛玻璃"), enabled => {
-    glassEnabled = enabled; glassSlider.setDisabled(!enabled); previewGlass();
+    glassEnabled = enabled; glassSlider.setDisabled(!enabled || !glassAvailable); previewGlass();
     void saveConfig({ overlay_glass_enabled: enabled });
   });
   void window.voxsub?.overlay.getGlass().then(state => {

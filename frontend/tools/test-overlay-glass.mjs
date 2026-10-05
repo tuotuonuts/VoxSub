@@ -8,7 +8,7 @@ import { installMiniDom } from './mini-dom.mjs';
 import { importShared, cleanupShared } from './esbuild-ts.mjs';
 const { VerifiedOverlaySurface } = await importShared("src/main/overlay-verification.ts", {bundle:true});
 const dom = installMiniDom();
-const [{ h, on }, { buildPercentageSlider }, { buildToggleSwitch }, { glassTint }] = await importShared([
+const [{ h, on }, { buildPercentageSlider }, { buildToggleSwitch }, { overlayBackgroundOpacity }] = await importShared([
   'src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/renderer/ui/controls.ts', 'src/shared/overlay-glass.ts',
 ], { bundle: true });
 const read = p => fs.readFileSync(new URL('../src/'+p, import.meta.url), 'utf8');
@@ -29,10 +29,11 @@ try {
     assert.equal(c.input.getAttribute('aria-valuetext'),'100%');
     assert.equal(buildPercentageSlider(NaN,'Opacity',{min:20}).input.value,'20');
   });
-  check('tint only exposes native material; no text/window opacity or fake CSS blur', () => {
-    assert.equal(glassTint(.92,{active:false,strength:100}),.92);
-    assert.equal(glassTint(.92,{active:true,strength:0}),.92);
-    assert.ok(Math.abs(glassTint(.92,{active:true,strength:100})-.276)<1e-8);
+  check('opacity has one owner; never fake blur strength with transparency', () => {
+    assert.equal(overlayBackgroundOpacity(.92),.92);
+    assert.equal(overlayBackgroundOpacity(NaN),.92);
+    assert.equal(overlayBackgroundOpacity(-1),.2);
+    assert.equal(overlayBackgroundOpacity(2),1);
     assert.ok(!read('renderer/overlay.css').includes('filter: blur(') || !read('renderer/overlay.css').match(/\.shell\s*\{[^}]*filter:/));
   });
   const main=read('main/main.ts');
@@ -40,8 +41,8 @@ try {
   const ipc=main.slice(main.indexOf('  ipcMain.handle("overlay:get-glass"'),main.indexOf('  ipcMain.handle("overlay:set-opacity"'));
   const makeNative=(platform='win32',version='10.0.26300',fail=false,alive=true) => {
     const handlers=new Map(),materials=[],states=[];
-    const win={getBounds:()=>({x:0,y:0,width:860,height:140}),getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape(){},setBackgroundMaterial:m=>{materials.push(m);if(fail&&m==='acrylic')throw Error('DWM unavailable');}};
-    const init=`overlaySurface=new VerifiedOverlaySurface(overlayWindow,async()=>({regionVerified:true,materialVerified:true,desktop:'not_run'}),()=>{},()=>{});
+    const win={getBounds:()=>({x:0,y:0,width:860,height:140}),getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape(){},setBackgroundColor(){},setBackgroundMaterial:m=>{materials.push(m);if(fail&&m==='acrylic')throw Error('DWM unavailable');}};
+    const init=`overlaySurface=new VerifiedOverlaySurface(overlayWindow,async()=>({regionVerified:true,materialVerified:true,desktop:'not_run'}),()=>{},()=>{},true);
       overlayFrames.set(overlayWindow,{x:6,y:6,width:848,height:128,radius:16,viewportWidth:860,viewportHeight:140});`;
     let cleanup;
     run(native+init+ipc+';registerCleanup(()=>overlaySurface.dispose());',{ VerifiedOverlaySurface, setTimeout, clearTimeout, screen:{getDisplayMatching:()=>({scaleFactor:1})}, process:{ platform,getSystemVersion:()=>version },
@@ -51,17 +52,17 @@ try {
     return { cleanup, materials,states,get:()=>handlers.get('overlay:get-glass')(),set:(e,s)=>handlers.get('overlay:set-glass')({},e,s) };
   };
   check('native toggle validates input, waits for verification and retains saved strength',()=>{
-    const n=makeNative();assert.equal(n.get().active,false);assert.deepEqual(n.materials,[]);
-    assert.equal(n.set(true,73).active,false);assert.deepEqual(n.materials,['acrylic']);
-    n.set(true,84);assert.deepEqual(n.materials,['acrylic']);assert.equal(n.get().strength,84);
-    assert.equal(n.set(false,84).active,false);assert.deepEqual(n.materials,['acrylic','none']);
+    const n=makeNative();assert.equal(n.get().active,false);assert.deepEqual(n.materials,['none']);
+    assert.equal(n.set(true,73).active,false);assert.deepEqual(n.materials,['none','acrylic']);
+    n.set(true,84);assert.deepEqual(n.materials,['none','acrylic']);assert.equal(n.get().strength,84);
+    assert.equal(n.set(false,84).active,false);assert.deepEqual(n.materials,['none','acrylic','none']);
     assert.equal(n.set(true,0).active,false);assert.equal(n.set(true,120).strength,100);
     for(const v of [NaN,Infinity,'50',null,true])assert.equal(n.set(true,v).strength,50);
     assert.equal(n.set('true',50).enabled,false);n.cleanup();
   });
   check('unsupported OS or destroyed window never applies native material',()=>{
     for(const [p,v] of [['linux',''],['win32','10.0.19045'],['win32','10.0.22000']]){
-      const n=makeNative(p,v);const state=n.set(true,70);assert.equal(state.active,false);assert.equal(state.reason,'unsupported');assert.deepEqual(n.materials,[]);n.cleanup();
+      const n=makeNative(p,v);const state=n.set(true,70);assert.equal(state.active,false);assert.equal(state.reason,'unsupported');assert.ok(n.materials.every(m=>m==='none'));n.cleanup();
     }
     const n=makeNative('win32','10.0.26300',false,false);assert.equal(n.set(true,70).active,false);n.cleanup();
   });
@@ -69,13 +70,16 @@ try {
   const receiver=overlaySource.slice(overlaySource.indexOf('  window.voxsub?.overlay.onGlassChanged'),overlaySource.indexOf('  window.voxsub?.overlay.onOpacityChanged'));
   const visual=overlaySource.slice(overlaySource.indexOf('function applyVisuals()'),overlaySource.indexOf('const MODE_LABEL'));
   const styles=new Map();let receive;
-  run('let glassRevision=0, glassState={active:false,strength:50},opacity=.92,fontSize=20,contentPadding=18,lineGap=6;'+visual+receiver,
-    {glassTint,document:{documentElement:{style:{setProperty:(k,v)=>styles.set(k,v)}}},window:{voxsub:{overlay:{onGlassChanged:fn=>receive=fn}}},
+  run('let glassRevision=0, glassState={active:false,strength:50},opacity=.92,fontSize=20,contentPadding=18,lineGap=6;'+visual+receiver+';applyVisuals();',
+    {overlayBackgroundOpacity,document:{documentElement:{style:{setProperty:(k,v)=>styles.set(k,v)}}},window:{voxsub:{overlay:{onGlassChanged:fn=>receive=fn}}},
       fontValueEl:null,paddingValueEl:null,gapValueEl:null,applyTextColors(){}});
-  check('real glass receiver updates only background tint, off restores saved opacity',()=>{
-    receive({active:true,strength:100});assert.ok(Math.abs(Number(styles.get('--overlay-glass-opacity'))-.276)<1e-8);
-    assert.equal(styles.get('--overlay-opacity'),'0.92');
-    receive({active:false,strength:100});assert.equal(styles.get('--overlay-glass-opacity'),'0.92');
+  check('real glass receiver cannot change opacity or repaint the subtitle',()=>{
+    for(const active of [true,false])for(const strength of [0,25,50,100]){
+      const before=JSON.stringify([...styles]);receive({active,strength});
+      assert.equal(JSON.stringify([...styles]),before);
+      assert.equal(styles.get('--overlay-opacity'),'0.92');
+    }
+    assert.equal(styles.has('--overlay-glass-opacity'),false);
     assert.equal(styles.get('--font-size'),'20px');
   });
   const i18n=read('renderer/i18n.ts').replace(/^import .*;$/m,'');
@@ -86,12 +90,12 @@ try {
   const settings=read('renderer/views/settings.ts');
   const appearance=settings.slice(settings.indexOf('function appearanceTab()'),settings.indexOf('function aboutTab()'));
   const saved=[],requests=[];
-  let resolveSupport;
+  let resolveSupport;let unavailable=false;
   const page=run(appearance+'\nappearanceTab();',{ h,on,buildPercentageSlider,toggleSwitch:buildToggleSwitch,
     config:{overlay_glass_strength:67},tr:x=>x,radioGroup:()=>h('div'),field:(_l,c)=>c,card:(_l,c)=>h('section',{},c),
     currentLanguage:()=> 'zh',applyThemeChoice(){},setLanguage(){},
     saveConfig:async s=>saved.push(JSON.parse(JSON.stringify(s))),window:{voxsub:{overlay:{setOpacity:async()=>{},getGlass:()=>new Promise(r=>resolveSupport=r),
-      setGlass:async(enabled,strength)=>{requests.push({enabled,strength});return {enabled,strength,active:enabled&&strength>0,supported:true,reason:null};}}}} });
+      setGlass:async(enabled,strength)=>{requests.push({enabled,strength});return {enabled,strength,active:!unavailable&&enabled&&strength>0,supported:true,reason:unavailable?'unavailable':null,...(unavailable?{fallbackReason:'transparent_material_incompatible'}:{})};}}}} });
   const checkbox=page.querySelector('input[type="checkbox"]');const slider=page.querySelectorAll('input[type="range"]')[1];
   check('settings defaults disabled and remembers strength',()=>{assert.equal(checkbox.checked,false);assert.equal(slider.disabled,true);assert.equal(slider.value,'67');});
   checkbox.checked=true;checkbox.dispatchEvent(dom.makeEvent('change'));await tick();
@@ -102,6 +106,12 @@ try {
   check('release saves percentage; toggle off retains the percentage',()=>{assert.deepEqual(saved[1],{overlay_glass_strength:81});assert.deepEqual(requests.at(-1),{enabled:false,strength:81});assert.equal(slider.disabled,true);});
   resolveSupport({supported:false,reason:'unsupported'});await tick();
   check('stale support response cannot replace live state hint',()=>{assert.ok(!page.textContent.includes('当前系统不支持'));});
+  unavailable=true;checkbox.checked=true;checkbox.dispatchEvent(dom.makeEvent('change'));await tick();
+  check('unavailable glass disables no-op slider without altering saved strength or opacity',()=>{
+    assert.equal(slider.disabled,true);assert.equal(slider.value,'81');
+    const count=requests.length;slider.dispatchEvent(dom.makeEvent('input'));assert.equal(requests.length,count);
+    assert.ok(page.textContent.includes('普通半透明背景'));assert.ok(saved.every(v=>!('overlay_opacity' in v)));
+  });
   const overlay=read('renderer/overlay.ts');
   const restore=overlay.slice(overlay.indexOf('async function restoreGlass()'),overlay.indexOf('/** 把显示模式写回配置'));
   for(const when of ['untouched','before','during']){
@@ -110,6 +120,15 @@ try {
     const pending=run(`let glassRevision=${when==='before'?1:0};\n`+restore+`\nconst pending=restoreGlass();${when==='during'?'glassRevision++;':''}pending;`,ctx);
     if(resolve)resolve({ok:true,data:{overlay_glass_enabled:true,overlay_glass_strength:63}});await pending;
     assert.deepEqual(calls,when==='untouched'?[[true,63]]:[]);count++;console.log('PASS restore '+when);
+  }
+  for(const revision of [0,1]){
+    let notify,resolve;const calls=[];
+    const pending=run('let glassRevision=0;'+receiver+restore+';restoreGlass();',{
+      window:{voxsub:{backend:{command:()=>new Promise(r=>resolve=r)},overlay:{onGlassChanged:fn=>notify=fn,setGlass:async(...a)=>calls.push(a)}}}
+    });
+    notify({settingsRevision:revision,clippingCheck:'checking'});
+    resolve({ok:true,data:{overlay_glass_enabled:true,overlay_glass_strength:67}});await pending;
+    check('native status cannot cancel restore; actual settings revision '+revision+' is authoritative',()=>assert.deepEqual(calls,revision===0?[[true,67]]:[]));
   }
   check('boot and backend-ready both restore; opacity independent revision',()=>{
     assert.match(overlay.slice(overlay.indexOf('function boot()')),/void restoreGlass\(\)/);

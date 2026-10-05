@@ -1,6 +1,8 @@
 /** Native material state is evidence of an API request, not compositor verification. */
 export interface OverlayGlassState {
   enabled: boolean;
+  /** Changes only for settings requests, never for native geometry/status probes. */
+  settingsRevision?: number;
   strength: number;
   supported: boolean;
   active: boolean;
@@ -10,7 +12,7 @@ export interface OverlayGlassState {
   fallbackReason?: string | null;
   reason: "unsupported" | "unavailable" | null;
 }
-/** The OS owns the blur radius. Strength exposes more material by reducing the tint. */
-export function glassTint(opacity: number, glass: Pick<OverlayGlassState, "active" | "strength">): number {
-  return glass.active ? opacity * (1 - glass.strength / 100 * 0.7) : opacity;
+/** Background opacity has one owner. Never simulate blur strength by reducing it. */
+export function overlayBackgroundOpacity(opacity: number): number {
+  return Number.isFinite(opacity) ? Math.min(1, Math.max(0.2, opacity)) : 0.92;
 }

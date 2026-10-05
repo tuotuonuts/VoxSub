@@ -6,14 +6,26 @@ const {validOverlayFrame}=await importShared('src/shared/overlay-frame.ts',{bund
 const frame={x:6,y:6,width:848,height:128,radius:16,viewportWidth:860,viewportHeight:140};
 const wait=()=>new Promise(r=>setTimeout(r,140));
 let count=0;
-function fixture(probe=async()=>({regionVerified:true,materialVerified:true,desktop:'not_run'})){
+function fixture(probe=async()=>({regionVerified:true,materialVerified:true,desktop:'not_run'}),allowMaterial=true){
  const calls=[],states=[];let unsafe=0;
- const win={getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape:s=>calls.push(['shape',s]),setBackgroundMaterial:m=>calls.push(['material',m])};
- const monitor=new VerifiedOverlaySurface(win,probe,s=>states.push(s),()=>unsafe++);
+ const win={getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape:s=>calls.push(['shape',s]),setBackgroundColor:c=>calls.push(['color',c]),setBackgroundMaterial:m=>calls.push(['material',m])};
+ const monitor=new VerifiedOverlaySurface(win,probe,s=>states.push(s),()=>unsafe++,allowMaterial);
  return {win,monitor,calls,states,get unsafe(){return unsafe;}};
 }
 async function check(name,fn){await fn();count++;console.log('PASS '+name);}
 try{
+ await check('production-compatible mode never enables acrylic despite successful native readback',async()=>{
+  const f=fixture(undefined,false);f.monitor.update(true,frame);await wait();
+  assert.equal(f.monitor.evidence.active,false);assert.equal(f.monitor.evidence.clippingCheck,'pass');
+  assert.equal(f.monitor.evidence.fallbackReason,'transparent_material_incompatible');
+  assert.ok(f.calls.every(c=>c[0]!=='material'||c[1]==='none'));
+  f.monitor.update(false,frame);await wait();assert.equal(f.monitor.evidence.fallbackReason,null);f.monitor.dispose();
+ });
+ await check('older Windows can verify plain clipping without a backdrop attribute',async()=>{
+  const f=fixture(async()=>({regionVerified:true,materialVerified:false,materialSupported:false}),false);
+  f.monitor.update(true,frame);await wait();assert.equal(f.unsafe,0);assert.equal(f.monitor.evidence.clippingCheck,'pass');
+  assert.equal(f.monitor.evidence.materialCheck,'not_run');assert.equal(f.monitor.evidence.active,false);f.monitor.dispose();
+ });
  await check('actual bounds, zoom and malformed geometry',()=>{
   assert.equal(validOverlayFrame({...frame,width:Infinity}),false);
   assert.equal(validOverlayFrame({...frame,x:900}),false);
@@ -24,7 +36,7 @@ try{
  await check('wait for geometry, then readback; desktop remains unverified',async()=>{
   const f=fixture();f.monitor.update(true,null);assert.equal(f.calls.length,0);
   f.monitor.update(true,frame);assert.equal(f.monitor.evidence.active,false);
-  assert.deepEqual(f.calls.map(c=>c[0]),['shape','material']);
+  assert.deepEqual(f.calls.map(c=>c[0]),['shape','material','color']);
   await wait();assert.equal(f.monitor.evidence.active,true);assert.equal(f.monitor.evidence.desktopCheck,'not_run');
   const count=f.calls.length;f.monitor.update(true,frame);assert.equal(f.calls.length,count);f.monitor.dispose();
  });

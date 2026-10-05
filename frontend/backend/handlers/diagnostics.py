@@ -32,7 +32,7 @@ class DiagnosticsHandlers:
             raise ValueError("Invalid native diagnostic state")
         states.update(active=args.get("active") is True, desktopCheck="not_run",
                       fallbackReason=args.get("fallbackReason") if args.get("fallbackReason") in
-                      ("native_verification_failed", "native_apply_failed") else None)
+                      ("native_verification_failed", "native_apply_failed", "transparent_material_incompatible") else None)
         get_logger("overlay_surface").info("OVERLAY_SURFACE %s", json.dumps(states))
         return {"recorded": True}
 

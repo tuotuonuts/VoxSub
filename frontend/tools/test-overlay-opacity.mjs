@@ -7,7 +7,7 @@ import { transformSync } from 'esbuild';
 import { installMiniDom } from './mini-dom.mjs';
 import { importShared } from './esbuild-ts.mjs';
 const dom = installMiniDom();
-const [{ h, on }, { buildPercentageSlider }, { glassTint }] = await importShared(['src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/shared/overlay-glass.ts'], { bundle: true });
+const [{ h, on }, { buildPercentageSlider }, { overlayBackgroundOpacity }] = await importShared(['src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/shared/overlay-glass.ts'], { bundle: true });
 const read = (p) => fs.readFileSync(new URL('../src/' + p, import.meta.url), 'utf8');
 const run = (source, context) => vm.runInNewContext(transformSync(source, { loader: 'ts', format: 'cjs' }).code, context);
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -75,7 +75,7 @@ const visual = overlay.slice(overlay.indexOf('function applyVisuals()'), overlay
 const receiver = overlay.slice(overlay.indexOf('  window.voxsub?.overlay.onOpacityChanged'), overlay.indexOf('  window.voxsub?.overlay.onFontSizeChanged'));
 let receive;
 const styles = new Map();
-const renderContext = { glassTint, document: { documentElement: { style: { setProperty: (k, v) => styles.set(k, v) } } },
+const renderContext = { overlayBackgroundOpacity, document: { documentElement: { style: { setProperty: (k, v) => styles.set(k, v) } } },
   window: { voxsub: { overlay: { onOpacityChanged: fn => { receive = fn; } } } },
   applyTextColors() {}, fontValueEl: null, paddingValueEl: null, gapValueEl: null,
 };
@@ -103,7 +103,7 @@ for (const timing of ['before-read', 'during-read', 'after-save']) {
   let stored = 0.22;
   const setOpacity = async value => { syncs.push(value); receiveOpacity(value); return value; };
   const renderer = vm.createContext({
-    glassTint, document: { documentElement: { style: { setProperty: (k, v) => css.set(k, v) } } },
+    overlayBackgroundOpacity, document: { documentElement: { style: { setProperty: (k, v) => css.set(k, v) } } },
     window: { voxsub: {
       backend: { command: () => new Promise(resolve => reads.push(resolve)) },
       overlay: { setOpacity, onOpacityChanged: fn => { receiveOpacity = fn; } },

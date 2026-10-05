@@ -79,7 +79,7 @@ def inspect_surface(request):
         result = d.DwmGetWindowAttribute(hwnd, 38, c.byref(backdrop), c.sizeof(backdrop))
         wanted = 3 if request.get('material') else 1  # TRANSIENTWINDOW / NONE
         return dict(regionVerified=region, materialVerified=result >= 0 and backdrop.value == wanted,
-                    dpi=dpi, backdrop=backdrop.value if result >= 0 else None, desktop='not_run')
+                    materialSupported=result >= 0, dpi=dpi, backdrop=backdrop.value if result >= 0 else None, desktop='not_run')
     finally:
         if actual:
             g.DeleteObject(actual)
