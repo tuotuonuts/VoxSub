@@ -11,6 +11,7 @@ import * as readline from 'node:readline';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 import ts from 'typescript';
+import {securityContents,loadFixturePage,senderEvent} from './electron-security-fixture.mjs';
 import { installMiniDom } from './mini-dom.mjs';
 import { ROOT } from './esbuild-ts.mjs';
 
@@ -33,14 +34,14 @@ function harness() {
   const handlers = new Map(), appEvents = new Map(), children = [], renderers = [];
   let currentRenderer, quitCalls = 0;
   const checkpoints = [];
-  const sender = { on() {}, isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) };
+  const sender = securityContents({ on() {}, isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) });
   const electron = {
     screen: {getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},
     app: { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}),
       on: (n, f) => appEvents.set(n, f), quit: () => quitCalls++, getAppPath: () => ROOT },
     BrowserWindow: class { constructor() { this.webContents = sender; this.events = new Map(); }
       isDestroyed() { return false; }
-      loadFile() { return Promise.resolve(); } on(n, f) { this.events.set(n, f); } once(n, f) { this.events.set(n, f); } show() {} },
+      loadFile(file) { loadFixturePage(this,file); return Promise.resolve(); } on(n, f) { this.events.set(n, f); } once(n, f) { this.events.set(n, f); } show() {} },
     nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
     ipcMain: { handle: (n, f) => handlers.set(n, f), on() {} },
   };
@@ -77,7 +78,7 @@ function harness() {
     if (modules.has(file)) return modules.get(file);
     const exports = {}; modules.set(file, exports);
     const context = vm.createContext({ exports, __dirname: path.dirname(file), console, setTimeout, clearTimeout,
-      setInterval, clearInterval, process: { env: {}, platform: 'win32', resourcesPath: 'fixture:/resources' },
+      setInterval, clearInterval, Buffer, process: { env: {}, platform: 'win32', resourcesPath: 'fixture:/resources' },
       require: name => {
         if (name === 'electron') return electron;
         if (name === 'node:fs') return { existsSync: p => p.endsWith('VoxSubBackend.exe') };
@@ -104,8 +105,8 @@ function harness() {
       require: name => {
         assert.equal(name, 'electron');
         return { contextBridge: { exposeInMainWorld: (_n, api) => { win.voxsub = api; } }, ipcRenderer: {
-          invoke: async (n, ...args) => { const result = await handlers.get(n)({ sender }, ...args);
-            checkpoints.push({ n, guarded: Boolean(await handlers.get('app:busy-reason')()) }); return result; },
+          invoke: async (n, ...args) => { const result = await handlers.get(n)(senderEvent(sender), ...args);
+            checkpoints.push({ n, guarded: Boolean(await handlers.get('app:busy-reason')(senderEvent(sender))) }); return result; },
           on: (n, f) => { if (!listeners.has(n)) listeners.set(n, new Set()); listeners.get(n).add(f); },
           removeListener: (n, f) => listeners.get(n)?.delete(f),
         } };
@@ -126,8 +127,8 @@ function harness() {
     return r;
   }
   return { renderer, children, checkpoints, main,
-    guarded: async () => Boolean(await handlers.get('app:busy-reason')()),
-    quit: () => handlers.get('app:request-quit')(),
+    guarded: async () => Boolean(await handlers.get('app:busy-reason')(senderEvent(sender))),
+    quit: () => handlers.get('app:request-quit')(senderEvent(sender)),
     closeBlocked: () => { const e = { prevented: false, preventDefault() { this.prevented = true; } };
       main.getWindow().events.get('close')(e); return e.prevented; },
     cleanup: () => { for (const r of renderers.reverse()) r.destroy(); main.getBridge().dispose(); },
@@ -189,11 +190,11 @@ function harness() {
   try {
     const a = await h.renderer(); await a.submit(); const old = h.children[0];
     const ownerA = old.job.clientMigrationId;
-    old.emit('exit', 1); await flush();
+    old.emit('close', 1); await flush();
     check('disconnect without task terminal remains guarded', await h.guarded() && await h.quit() === false);
     a.destroy(); const b = await h.renderer(); await b.submit(); const fresh = h.children[1];
     check('restarted bridge has same jobId but distinct protection', old.job.jobId === fresh.job.jobId && h.main.ownerKeys().length === 2);
-    old.terminal(); old.emit('exit', 1); await flush();
+    old.terminal(); old.emit('close', 1); await flush();
     check('old-process late events cannot release new-process guard', h.main.ownerKeys().length === 2 && h.main.getBridge().isRunning());
     fresh.terminal(); await flush();
     check('new-process terminal does not release old unknown task', h.main.ownerKeys().length === 1 && h.main.ownerKeys()[0] === ownerA && await h.quit() === false);

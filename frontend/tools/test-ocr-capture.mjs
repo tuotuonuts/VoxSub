@@ -4,23 +4,25 @@ import vm from "node:vm";
 import {readFileSync} from "node:fs";
 import path from "node:path";
 import ts from "typescript";
+import {securityContents,loadFixturePage} from "./electron-security-fixture.mjs";
 import {ROOT, importShared, cleanupShared} from "./esbuild-ts.mjs";
 const geometry=await importShared("src/shared/ocr-geometry.ts");
+const security=await importShared("src/main/window-security.ts",{bundle:true});
 const windows=[], writes=[];
 let rejectLoad=false, sources=[];
 class Window {
- constructor(){this.dead=false;this.events=new Map();this.calls=[];windows.push(this);}
+ constructor(){this.webContents=securityContents();this.dead=false;this.events=new Map();this.calls=[];windows.push(this);}
  once(name,fn){this.events.set(name,fn);}
  isDestroyed(){return this.dead;}
  destroy(){this.dead=true;this.calls.push("destroy");this.events.get("closed")?.();}
  setAlwaysOnTop(){} setIgnoreMouseEvents(){} setVisibleOnAllWorkspaces(){}
  showInactive(){this.calls.push("showInactive");} setContentProtection(){this.calls.push("protect");}
- loadFile(){return rejectLoad?Promise.reject(new Error("missing renderer")):Promise.resolve();}
+ loadFile(file){loadFixturePage(this,file);return rejectLoad?Promise.reject(new Error("missing renderer")):Promise.resolve();}
 }
 const display={id:7,bounds:{x:-100,y:0,width:100,height:100},scaleFactor:2};
 const electron={BrowserWindow:Window,screen:{getAllDisplays:()=>[display]},desktopCapturer:{getSources:async()=>sources}};
 const context=vm.createContext({exports:{},__dirname:path.join(ROOT,"src/main"),setTimeout,console,
- require(name){if(name==="electron")return electron;if(name==="../shared/ocr-geometry")return geometry;
+ require(name){if(name==="./window-security")return security;if(name==="electron")return electron;if(name==="../shared/ocr-geometry")return geometry;
  if(name==="node:fs")return {mkdirSync(){},writeFileSync(file,bytes){writes.push({file,bytes});}};
  if(name==="node:os")return {tmpdir:()=>"D:/synthetic-temp"};if(name==="node:path")return path;
  if(name==="node:crypto")return {randomUUID:()=>"synthetic-id"};throw Error("Unexpected import "+name);}});

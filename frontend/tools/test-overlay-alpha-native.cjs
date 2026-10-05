@@ -16,6 +16,15 @@ app.on('window-all-closed', () => {});
 let current, violations = 0;
 const records = [];
 const pause = () => new Promise(resolve => setTimeout(resolve, 120));
+async function captureReady(contents) {
+  let failure;
+  for (let attempt=0; attempt<10; attempt++) {
+    try { return await contents.capturePage(); }
+    catch (error) { if (!String(error).includes('UnknownVizError')) throw error; failure=error; await pause(); }
+  }
+  throw failure; // A compositor that never produces pixels is a test failure, not a pass.
+}
+
 setTimeout(() => { console.error('overlay alpha fixture timed out'); app.exit(1); }, 45000).unref();
 app.whenReady().then(async () => {
   try {
@@ -33,7 +42,7 @@ app.whenReady().then(async () => {
           surface.invalidate(current);
           surface.apply(current, enabled);
           await pause();
-          const image = await current.webContents.capturePage(), size = image.getSize(), pixels = image.toBitmap();
+          const image = await captureReady(current.webContents), size = image.getSize(), pixels = image.toBitmap();
           const alpha = (x,y) => pixels[(y*size.width+x)*4+3];
           const center = alpha(Math.floor(size.width/2), Math.floor(size.height/2));
           const dom = await current.webContents.executeJavaScript(`({shell:getComputedStyle(document.querySelector('.shell')).backgroundColor, body:getComputedStyle(document.body).backgroundColor, textOpacity:getComputedStyle(document.querySelector('#src')).opacity})`);
@@ -47,7 +56,7 @@ app.whenReady().then(async () => {
       current.destroy(); current = null;
     }
     assert.equal(violations, 0);
-    const result = {status:'PASS', rendererMode:software?'software':'default-GPU', records, violations, visibleDesktop:'NOT_RUN',
+    const result = {status:'PASS', rendererMode:software?'software':'default-acceleration', gpuFeatures:app.getGPUFeatureStatus(), records, violations, visibleDesktop:'NOT_RUN',
       boundary:'Hidden Chromium RGBA only. Native acrylic desktop composition, multi-monitor DPI and interactive resize are NOT_RUN.'};
     if (process.env.VOXSUB_ALPHA_REPORT) writeFileSync(process.env.VOXSUB_ALPHA_REPORT, JSON.stringify(result, null, 2));
     console.log(JSON.stringify({status:result.status, rendererMode:result.rendererMode, checks:records.length, violations, visibleDesktop:result.visibleDesktop}));

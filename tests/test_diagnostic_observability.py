@@ -231,3 +231,30 @@ def test_uncertain_recognition_is_retained_not_reported_as_translation_failure()
     assert event["fallback"] == "source_retained"
     assert result["failures"] == 0
     assert "混合语言正文" not in json.dumps(result, ensure_ascii=False)
+
+@pytest.mark.parametrize("path", [r"\\private-server\private-share\models\weights.bin", "/mnt/private-user/models/weights.bin", "/home/private-user/private-weights.bin"])
+def test_private_network_and_portable_paths_are_redacted(path):
+    assert "private" not in redact(path)
+    assert "[PATH]" in redact(path)
+
+
+def test_snapshot_redacts_credential_key_aliases_but_retains_counts():
+    value = safe_snapshot({"apiKey": "private-key", "access_token": "private-access", "Authorization": "private-bearer",
+                           "token": "private-token", "token_count": 37, "nested": [{"refreshToken": "private-refresh", "model": "public-model"}]})
+    assert "private" not in json.dumps(value)
+    assert value["token_count"] == 37 and value["nested"][0]["model"] == "public-model"
+
+
+def test_diagnostic_export_uses_atomic_writer_without_destroying_previous_report(service, tmp_path, monkeypatch):
+    from handlers import diagnostics
+    report = tmp_path / "existing-report.txt"
+    report.write_text("previous complete report", encoding="utf-8")
+    calls = []
+    def denied(path, text, **kwargs):
+        calls.append((path, text))
+        raise PermissionError("synthetic atomic commit failure")
+    monkeypatch.setattr(diagnostics, "write_text_atomically", denied)
+    with pytest.raises(PermissionError):
+        service._cmd_export_diagnostics({"path": str(report)})
+    assert len(calls) == 1 and "checked_at" in calls[0][1]
+    assert report.read_text(encoding="utf-8") == "previous complete report"

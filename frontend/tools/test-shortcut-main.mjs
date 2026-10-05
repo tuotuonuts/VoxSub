@@ -5,6 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
+import {securityContents,loadFixturePage,senderEvent} from "./electron-security-fixture.mjs";
+const security = await importShared("src/main/window-security.ts", {bundle:true});
 import { importShared, cleanupShared, ROOT } from "./esbuild-ts.mjs";
 const { createShortcutService } = await importShared("src/main/shortcuts.ts", { bundle: true });
 const ocrLive = await importShared("src/main/ocr-live.ts", { bundle: true });
@@ -16,10 +18,10 @@ assert.ok(path.resolve(directory).startsWith(path.join(path.resolve(os.tmpdir())
 const handlers = new Map(), appEvents = new Map(), registered = new Map(), windows = [];
 let ready, service, disposed = 0, count = 0;
 class Window {
-  constructor() { this.visible = false; this.minimized = false; this.events = new Map(); this.calls = []; this.webContents = { setZoomMode() {}, setZoomFactor() {}, on() {}, isDestroyed: () => false, send() {} }; windows.push(this); }
+  constructor() { this.visible = false; this.minimized = false; this.events = new Map(); this.calls = []; this.webContents = securityContents({ setZoomMode() {}, setZoomFactor() {}, on() {}, isDestroyed: () => false, send() {} }); windows.push(this); }
   isDestroyed() { return false; } isVisible() { return this.visible; } isMinimized() { return this.minimized; }
   on(name, callback) { this.events.set(name, callback); } once(name, callback) { this.events.set(name, callback); }
-  loadFile() { return Promise.resolve(); } setAlwaysOnTop() {} setVisibleOnAllWorkspaces() {} setContentProtection() {} setIgnoreMouseEvents() {}
+  loadFile(file) { loadFixturePage(this,file); return Promise.resolve(); } setAlwaysOnTop() {} setVisibleOnAllWorkspaces() {} setContentProtection() {} setIgnoreMouseEvents() {}
   show() { this.visible = true; this.calls.push("show"); } hide() { this.visible = false; this.calls.push("hide"); }
   restore() { this.minimized = false; this.calls.push("restore"); } focus() { this.calls.push("focus"); }
 }
@@ -34,6 +36,7 @@ const electron = {
 const context = vm.createContext({ exports: {}, __dirname: path.join(ROOT, "src/main"), process: { env: { VOXSUB_HEADLESS: "0" }, platform: "win32" }, console: { ...console, log() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
   require(name) {
     if (name === "electron") return electron;
+    if (name === "./window-security") return security;
     if (name === "./overlay-verification") return verification;
     if (name === "../shared/overlay-frame") return frame;
     if (name === "./overlay-native") return {probeNativeOverlay:()=>{throw Error("native probe forbidden");}};
@@ -54,8 +57,8 @@ try {
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, context); ready();
   const main = windows[0];
   check("app readiness initializes an empty service without OS registrations", service && registered.size === 0);
-  check("overlay/foreign renderer cannot configure shortcuts", handlers.get("shortcuts:save")({ sender: windows[1].webContents }, {}) === null);
-  const result = handlers.get("shortcuts:save")({ sender: main.webContents }, { toggle_window: "Ctrl+Alt+T" });
+  check("overlay/foreign renderer cannot configure shortcuts", handlers.get("shortcuts:save")(senderEvent(windows[1].webContents), {}) === null);
+  const result = handlers.get("shortcuts:save")(senderEvent(main.webContents), { toggle_window: "Ctrl+Alt+T" });
   check("main renderer saves through real manager and registration service", result.ok && registered.has("Ctrl+Alt+T"));
   main.visible = true; main.minimized = true; registered.get("Ctrl+Alt+T")();
   check("global callback restores a minimized window without renderer participation", main.calls.includes("restore") && main.calls.includes("show") && main.calls.includes("focus"));
@@ -63,7 +66,7 @@ try {
   await delay(); registered.get("Ctrl+Alt+T")(); check("hidden/tray-style window is brought back by main callback", main.visible && registered.size === 1);
   main.events.get("closed")(); await delay(); registered.get("Ctrl+Alt+T")();
   const replacement = windows[2]; check("tray shortcut recreates a closed main window", replacement?.visible && registered.size === 1);
-  const token = "fixture-capture"; assert.equal(handlers.get("shortcuts:capture-start")({ sender: replacement.webContents }, token), true);
+  const token = "fixture-capture"; assert.equal(handlers.get("shortcuts:capture-start")(senderEvent(replacement.webContents), token), true);
   main.events.get("blur")(); check("stale window blur cannot release replacement capture", service.snapshot.capturing);
   replacement.events.get("minimize")(); check("minimizing cancels capture suspension and restores registration", !service.snapshot.capturing && registered.size === 1);
   appEvents.get("before-quit")({ preventDefault() { throw Error("unexpected exit guard"); } });

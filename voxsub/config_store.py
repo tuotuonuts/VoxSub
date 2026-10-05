@@ -353,13 +353,13 @@ class ConfigStore:
             data[key] = normalized
             self._save_unlocked(data)
 
-    def update(self, pairs: dict[str, Any]) -> None:
+    def update(self, pairs: dict[str, Any]) -> dict[str, Any]:
         normalized = {key: APP_CONFIG_SCHEMA.normalize(key, value)
                       for key, value in pairs.items()}
         with _CONFIG_LOCK:
             data = self._load_unlocked()
             data.update(normalized)
-            self._save_unlocked(data)
+            return self._save_unlocked(data)
 
     def save(self, data: dict[str, Any]) -> None:
         """Persist a complete configuration without exposing a partial JSON file.
@@ -373,7 +373,7 @@ class ConfigStore:
             self._load_unlocked()  # 探测版本与未知字段，必要时进入只读保护
             self._save_unlocked(data)
 
-    def _save_unlocked(self, data: dict[str, Any]) -> None:
+    def _save_unlocked(self, data: dict[str, Any]) -> dict[str, Any]:
         # 只读保护：磁盘上的配置比程序新时，任何写入都拒绝。
         # 先前这里会照写不误 —— 结果是把新版本的字段悄悄抹掉（降级写坏）。
         if self._locked_reason:
@@ -396,6 +396,7 @@ class ConfigStore:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        return clean
 
 
 __all__ = ["APP_CONFIG_SCHEMA", "CONFIG_VERSION", "ConfigSchema", "ConfigStore",

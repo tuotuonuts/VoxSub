@@ -11,10 +11,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as readline from "node:readline";
+import { BoundedLineStream } from "./line-stream";
 import { app } from "electron";
 
-import { guessStderrLevel, localIsoNow, splitStderrLines } from "../shared/log-levels";
+import { guessStderrLevel, localIsoNow } from "../shared/log-levels";
 import { REQUEST_HARD_DEADLINE_MS, SLOW_REQUEST_NOTICE_MS } from "../shared/request-outcome";
 
 export type BackendEvent =
@@ -42,6 +42,9 @@ export interface CommandResult {
   /** 命令是否确定未发送、收到回复或仍处于不确定状态。 */
   delivery?: "not_sent" | "unknown" | "response";
 }
+
+const MAX_PENDING_REQUESTS = 256;
+const MAX_MESSAGE_BYTES = 32 * 1024 * 1024; // Same bound as ipc_loop.py input framing.
 
 type Listener = (event: BackendEvent, instance: object) => void;
 
@@ -187,64 +190,65 @@ export class BackendBridge {
     child.stdout.setEncoding("utf-8");
     child.stderr.setEncoding("utf-8");
 
-    const reader = readline.createInterface({ input: child.stdout });
-    reader.on("line", (line) => {
-      if (this.child === child) this.handleLine(line);
-    });
-    child.stderr.on("data", (chunk: string) => {
-      // 后端的 stderr 转发到界面日志区。
-      //
-      // 注意：**不能一律标成 error**。原先就是那么写的，而 Python 侧会把
-      // 整个日志流也写到 stderr，于是界面上每条 INFO 都显示成 ERROR
-      // （用户报的就是这个）。这里按行拆分并识别真实级别。
-      for (const line of splitStderrLines(chunk)) {
-        this.emit({
-          type: "log",
-          ts: localIsoNow(),
-          level: guessStderrLevel(line),
-          message: line,
-        });
-      }
-    });
+    const output = new BoundedLineStream(MAX_MESSAGE_BYTES,
+      line => { if (this.child === child) this.handleLine(line); },
+      () => this.lostChild(child, "后端消息超过安全大小限制，连接已关闭"));
+    const errors = new BoundedLineStream(256 * 1024,
+      line => { if (this.child === child) this.emit({type:"log", ts:localIsoNow(), level:guessStderrLevel(line), message:line}); },
+      () => { if (this.child === child) this.emit({type:"log", ts:localIsoNow(), level:"WARNING", message:"已省略过大的后端日志行"}); });
+    child.stdout.on("data", (chunk: string) => { if (this.child === child) output.push(chunk); });
+    child.stderr.on("data", (chunk: string) => { if (this.child === child) errors.push(chunk); });
+    child.stdout.on("end", () => output.flush());
+    child.stderr.on("end", () => errors.flush());
 
-    child.on("exit", (code) => {
-      if (this.child !== child) return;
-      this.child = null;
-      // 独立事件：后端**退出了**，不是"启动失败"，也不是一句提示文案。
-      // 渲染层据此进入 disconnected 状态，把"运行中"收回去（缺陷 #11）。
-      this.emit({ type: "disconnected", reason: `code=${code ?? "null"}` });
-      this.emit({ type: "log", ts: localIsoNow(), level: "WARNING", message: `后端已退出（code=${code ?? "null"}）` });
-      for (const [id, request] of this.pending) {
-        this.settle(id, request, {
-          ok: false,
-          unavailable: true,
-          error: "后端已退出",
-          delivery: "unknown",
-        });
-      }
-      this.pending.clear();
+    child.on("error", (error) => {
+      this.lostChild(child, `后端进程无法启动或继续运行：${error.message}`);
     });
+    child.stdin.on("error", (error) => this.lostChild(child, `后端连接已断开：${error.message}`));
+    // close follows stream EOF; late final replies must be consumed before disconnect.
+    child.on("close", (code) => this.lostChild(child, `后端已退出（code=${code ?? "null"}）`, code === 0 ? "INFO" : "ERROR"));
 
     return { ok: true };
+  }
+
+  private lostChild(child: ChildProcessWithoutNullStreams, reason: string, level = "ERROR"): void {
+    if (this.child !== child) return;
+    this.child = null;
+    try { child.kill(); } catch { /* Do not leave an owned sidecar alive after a broken pipe. */ }
+    this.emit({ type: "disconnected", reason });
+    this.emit({ type: "log", ts: localIsoNow(), level, message: reason });
+    for (const [id, request] of this.pending) {
+      this.settle(id, request, {ok:false, unavailable:true, error:reason, delivery:"unknown"});
+    }
   }
 
   private handleLine(line: string): void {
     const trimmed = line.trim();
     if (!trimmed) return;
-    let payload: Record<string, unknown>;
+    let decoded: unknown;
     try {
-      payload = JSON.parse(trimmed) as Record<string, unknown>;
+      decoded = JSON.parse(trimmed);
     } catch {
       // 非 JSON 行按日志处理，避免后端调试输出造成的噪声中断协议
-      this.emit({ type: "log", ts: localIsoNow(), level: "INFO", message: trimmed });
+      this.emit({ type: "log", ts: localIsoNow(), level: "INFO", message: trimmed.slice(0, 8192) });
       return;
     }
 
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+      this.emit({type:"log", ts:localIsoNow(), level:"WARNING", message:"已忽略格式异常的后端消息"});
+      return;
+    }
+    const payload = decoded as Record<string, unknown>;
     const id = payload["id"];
-    if (typeof id === "number") {
+    if (typeof id === "number" && Number.isSafeInteger(id) && id > 0) {
       const request = this.pending.get(id);
       if (request) {
-        const ok = payload["ok"] !== false;
+        if (typeof payload["ok"] !== "boolean") {
+          this.settle(id, request, {ok:false, code:"invalid_backend_response", delivery:"unknown",
+            error:"后端返回的结果格式异常，暂时无法确认操作结果"});
+          return;
+        }
+        const ok = payload["ok"];
         this.settle(id, request, {
           ok,
           delivery: "response",
@@ -268,8 +272,16 @@ export class BackendBridge {
       // 请求根本没发出去 —— 与"后端报错"分开，界面能据此说清是哪种情况。
       return Promise.resolve({ ok: false, unavailable: true, error: "后端未运行", delivery: "not_sent" });
     }
+    if (this.pending.size >= MAX_PENDING_REQUESTS) {
+      return Promise.resolve({ok:false, code:"too_many_requests", delivery:"not_sent", error:"等待中的请求过多，请稍后重试"});
+    }
     const id = this.nextId++;
-    const payload = JSON.stringify({ id, command: name, args }) + "\n";
+    let payload: string;
+    try { payload = JSON.stringify({ id, command: name, args }) + "\n"; }
+    catch { return Promise.resolve({ok:false, delivery:"not_sent", error:"请求参数无法序列化"}); }
+    if (Buffer.byteLength(payload, "utf8") > MAX_MESSAGE_BYTES) {
+      return Promise.resolve({ok:false, delivery:"not_sent", error:"请求内容超过安全大小限制"});
+    }
     return new Promise<CommandResult>((resolve) => {
       // ---- 超时处理（缺陷 #4）----
       //

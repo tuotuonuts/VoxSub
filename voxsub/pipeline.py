@@ -968,13 +968,24 @@ class Pipeline:
         self._bump_config_generation("file_translation")
 
     @_state_locked
-    def apply_language_model_config(self, config: dict, updates: dict) -> None:
-        """Apply saved model selection atomically, before acknowledging persistence."""
+    def apply_language_model_config(self, config: dict, updates: dict,
+                                    *, persist: Callable[[], dict] | None = None) -> None:
+        """Preflight, persist, then adopt while stopped under the same state lock.
+
+        A failed/readonly write must not close the old model or change live selection.
+        The returned normalized snapshot is the sole source for runtime adoption.
+        """
         from voxsub.translate.factory import kind_for_tier
 
         if not self._may_replace_resources():
             raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
-        if any(key in updates for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output")):
+        speech_changed = any(key in updates for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output"))
+        if speech_changed:
+            from voxsub.speech_contract import validate_selection
+            validate_selection(config)
+        if persist is not None:
+            config = persist()
+        if speech_changed:
             self.set_file_translation(config)
         if "asr_model_id" in updates:
             self.set_asr_model(str(config["asr_model_id"]))

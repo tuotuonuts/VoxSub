@@ -9,7 +9,7 @@ import tempfile
 import time
 import wave
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import numpy as np
 
@@ -25,6 +25,14 @@ logger = get_logger("file_transcriber")
 SAMPLE_RATE = 16_000
 ProgressCallback = Callable[[int, int, str], None]
 _LOW_ENERGY_RMS = 0.003
+
+
+def _vad_frames(pcm: np.ndarray, window: int) -> Iterator[tuple[int, np.ndarray, np.ndarray]]:
+    """Pad only VAD input; recognition keeps the original final partial frame."""
+    for index in range(0, pcm.size, window):
+        chunk = pcm[index:index + window]
+        frame = chunk if len(chunk) == window else np.pad(chunk, (0, window - len(chunk)))
+        yield index, chunk, frame
 
 
 class FileAudioDecoder:
@@ -195,9 +203,8 @@ class FileRecognizer:
         segment_start: int | None = None
         silence = utterance_samples = segment_no = 0
         segment_chunks: list[np.ndarray] = []
-        for index in range(0, pcm.size - window + 1, window):
-            chunk = pcm[index:index + window]
-            is_speech = vad.is_speech(chunk)
+        for index, chunk, frame in _vad_frames(pcm, window):
+            is_speech = vad.is_speech(frame)
             if is_speech and segment_start is None:
                 segment_start, utterance_samples, segment_chunks = index, 0, []
             if is_speech:
@@ -208,8 +215,8 @@ class FileRecognizer:
                 continue
             asr.feed(stream, chunk)
             segment_chunks.append(chunk)
-            silence += 0 if is_speech else window
-            utterance_samples += window
+            silence += 0 if is_speech else len(chunk)
+            utterance_samples += len(chunk)
             pause_boundary = silence >= minimum_silence
             limit_boundary = utterance_samples >= maximum_utterance
             if pause_boundary or limit_boundary:
@@ -359,9 +366,8 @@ class FileRecognizer:
             silence = 0
             vad.reset()
 
-        for index in range(0, pcm.size - window + 1, window):
-            chunk = pcm[index:index + window]
-            if vad.is_speech(chunk):
+        for index, chunk, frame in _vad_frames(pcm, window):
+            if vad.is_speech(frame):
                 if start_sample is None:
                     start_sample = index
                 current.append(chunk.copy())
@@ -370,9 +376,10 @@ class FileRecognizer:
             elif start_sample is not None:
                 current.append(chunk.copy())
                 current_samples += len(chunk)
-                silence += window
-                if silence >= minimum_silence or current_samples >= maximum_utterance:
-                    finish()
+                silence += len(chunk)
+            # The duration cap also applies while speech remains continuous.
+            if start_sample is not None and (silence >= minimum_silence or current_samples >= maximum_utterance):
+                finish()
             FileRecognizer._progress(
                 progress,
                 10 + int(25 * min(index + window, pcm.size) / max(1, pcm.size)),
@@ -391,8 +398,11 @@ class FileRecognizer:
                 text = retain_source_text(text)
                 model_result("file_recognition", text, expected=source_lang, source=source_lang, sentence_id=index)
             except Exception as exc:
-                logger.error("云 STT 文件片段失败: %s", exc, exc_info=True)
-                continue
+                trace_error("file_recognition", exc, source=source_lang, target=target_lang, sentence_id=index)
+                logger.error("云 STT 文件片段失败: segment=%d error_type=%s", index, type(exc).__name__)
+                raise RuntimeError(
+                    f"云端识别未完成：第 {index} 个片段识别失败，未生成完整字幕。请检查服务后重试"
+                ) from exc
             if text:
                 lines.append(SubtitleLine(
                     text=text,

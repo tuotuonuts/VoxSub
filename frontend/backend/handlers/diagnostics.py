@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ipc_protocol import _event
+from voxsub.file_io import write_text_atomically
 
 
 def _check_signature(config: dict[str, Any]) -> tuple:
@@ -66,7 +67,7 @@ class DiagnosticsHandlers:
             text += "\nLOG_METADATA\n" + export_logs(log_text) + "\n"
         if path.parent and str(path) != ".":
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
+            write_text_atomically(path, text, encoding="utf-8")
             return {"path": str(path), "bytes": len(text.encode("utf-8"))}
         return {"text": text}
 

@@ -36,3 +36,7 @@
 - 未重启或关闭用户应用，不播放/录制音频，不改用户配置、模型、正文或历史。
 
 回滚：本轮更改有对应 Git commit；源码修改前备份位于 `.backups/review-hardening-20261006-064325/source-before.zip`，透明度排查前的增量快照位于 `.backups/review-overlay-alpha-20261006-070258/`。不要用这些快照覆盖用户数据目录。
+
+## 全项目审查收尾复验
+
+最终源码重新完成默认渲染/软件渲染各24组透明度回归和生产隔离应用10组冒烟，测试应用正常退出。默认模式记录gpu_compositing=enabled；这仍不是可见桌面合成验收。最终窗口生命周期增加至57项；完整1390项Python及其skip/xfail边界见 `docs/REVIEW_HARDENING_ACCEPTANCE.md`，最终证据位于 `review-hardening-7ee65e1/final-20261006-074327/`。

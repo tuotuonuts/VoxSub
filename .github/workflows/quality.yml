@@ -202,6 +202,9 @@ jobs:
       - name: Frontend build
         run: npm run build
 
+      - name: Hidden overlay transparency regression (no desktop or audio)
+        run: npm run test:overlay-alpha
+
       - name: Build must not rewrite the working tree
         working-directory: .
         shell: bash

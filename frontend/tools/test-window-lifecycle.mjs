@@ -3,14 +3,17 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
+import * as url from 'node:url';
+import {securityContents,loadFixturePage,senderEvent} from './electron-security-fixture.mjs';
 import { ROOT } from './esbuild-ts.mjs';
 let checks=0, failures=0;
-function makeRuntime({headless=false}={}) {
+function makeRuntime({headless=false,profile,existingPaths=[]}={}) {
+  const appPaths={}, shellPaths=[];
   const handlers=new Map(), appEvents=new Map(), warnings=[], windows=[];
   let ready;
   class Window {
     constructor(options){ this.options=options; this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
-      this.webContents={once:()=>{},setZoomMode:mode=>this.calls.push(["setZoomMode",mode]),setZoomFactor:factor=>this.calls.push(["setZoomFactor",factor]),getZoomFactor:()=>1,on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
+      this.webContents=securityContents({once:()=>{},setZoomMode:mode=>this.calls.push(["setZoomMode",mode]),setZoomFactor:factor=>this.calls.push(["setZoomFactor",factor]),getZoomFactor:()=>1,on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}});windows.push(this); }
     getBounds(){return {x:0,y:0,width:860,height:140};}
     getContentSize(){ return this.size ?? [860,140]; }
     setBounds(bounds){this.call('setBounds',bounds);}
@@ -22,7 +25,7 @@ function makeRuntime({headless=false}={}) {
     isDestroyed(){return this.dead;} // Electron's safe liveness probe.
     on(n,f){this.call('on',n);this.events.set(n,f);return this;}
     once(n,f){return this.on(n,f);}
-    loadFile(){this.call('loadFile');return Promise.resolve();}
+    loadFile(file){loadFixturePage(this,file);this.call('loadFile');return Promise.resolve();}
     show(){this.call('show');this.visible=true;}
     showInactive(){this.call('showInactive');this.visible=true;}
     hide(){this.call('hide');this.visible=false;}
@@ -46,8 +49,8 @@ function makeRuntime({headless=false}={}) {
     on(n,f){this.events.set(n,f);}
     destroy(){}
   }
-  const electron={BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},
-    app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){},getPath:()=>"fixture:/userData"},
+  const electron={BrowserWindow:Window,Tray,shell:{openPath:async target=>{shellPaths.push(target);return "";}},Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},
+    app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){},getPath:()=>"fixture:/userData",setPath:(key,value)=>appPaths[key]=value},
     screen:{getDisplayMatching:()=>({scaleFactor:1}),getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}}),getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
     ipcMain:{handle:(n,f)=>handlers.set(n,f),on:()=>{}}};
   const cache=new Map();let context;
@@ -60,7 +63,7 @@ function makeRuntime({headless=false}={}) {
       if(name==='electron')return electron;
       if(name==='./capture')return {cancelScreenSelection(){}};
       if(name.startsWith('.'))return load(path.relative(ROOT,path.resolve(path.dirname(full),name+'.ts')));
-      if(name==='node:path')return path;
+      if(name==='node:url')return url;if(name==='node:path')return path;
       if(name==='node:fs')return {existsSync:()=>false};
       if(name==='node:child_process')return {execFile:(_c,_a,_o,cb)=>cb(Error('fixture unavailable')),spawn:()=>{throw Error('Real spawn forbidden');}};
       if(name==='node:readline')return {};
@@ -68,19 +71,22 @@ function makeRuntime({headless=false}={}) {
     };
     vm.runInContext('(function(require,module,exports,__dirname){'+code+'\n})',context)(req,mod,mod.exports,path.dirname(full));return mod.exports;
   };
-  context=vm.createContext({console:{...console,log(){},warn:(...a)=>warnings.push(a)},process:{env:{VOXSUB_HEADLESS:headless?'1':'0'},platform:'win32',getSystemVersion:()=> '10.0.26300'},setTimeout,clearTimeout,setInterval,clearInterval});
+  context=vm.createContext({console:{...console,log(){},warn:(...a)=>warnings.push(a)},process:{env:{VOXSUB_HEADLESS:headless?'1':'0',VOXSUB_HEADLESS_PROFILE:profile},platform:'win32',getSystemVersion:()=> '10.0.26300'},setTimeout,clearTimeout,setInterval,clearInterval,Buffer});
   const mainFile=path.join(ROOT,'src/main/main.ts');
   const suffix=`\nglobalThis.api={createMain:()=>mainWindow=createMainWindow(),createOverlay:()=>overlayWindow=createOverlayWindow(),replaceOverlay:()=>replaceUnsafeOverlay(overlayWindow),createTray,getMain:()=>mainWindow,getOverlay:()=>overlayWindow,quit:requestQuit,bridge:()=>{const b=new BackendBridge();wireBackendEvents(b);return b;}};registerIpc();`;
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
-    if(name==='electron')return electron;if(name==='./capture')return {cancelScreenSelection(){}};if(name==='node:path')return path;if(name==='node:fs')return {};
+    if(name==='electron')return electron;if(name==='./capture')return {cancelScreenSelection(){}};if(name==='node:url')return url;if(name==='node:path')return path;if(name==='node:fs')return {existsSync:target=>existingPaths.includes(target)};
     if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');if(name.startsWith('.'))return load(path.relative(ROOT,path.resolve(path.dirname(mainFile),name+'.ts')));throw Error(name);
   };
   vm.runInContext(code,context);
-  return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};
+  return {api:context.api,appPaths,shellPaths,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>{let caller=context.api.getMain();if(!caller||caller.isDestroyed())caller=context.api.createMain();return handlers.get(name)(senderEvent(caller.webContents),...args);}};
 }
 function test(name,fn,options){try{const r=makeRuntime(options);fn(r);checks++;console.log('PASS '+name);}catch(error){failures++;console.error('FAIL '+name,error);}}
 test('native main window uses fitted monitor DIP bounds and remains initially hidden',({api})=>{const w=api.createMain();assert.equal(w.options.width,1240);assert.equal(w.options.height,820);assert.equal(w.options.x,20);assert.equal(w.options.y,40);assert.equal(w.options.minWidth,640);assert.equal(w.options.minHeight,420);assert.equal(w.options.show,false);});
+test('silent acceptance uses a private profile before acquiring the instance lock',({appPaths})=>assert.equal(appPaths.userData,path.resolve('isolated-profile')),{headless:true,profile:path.resolve('isolated-profile')});
+test('normal launches ignore the test-only profile override',({appPaths})=>assert.equal(appPaths.userData,undefined),{profile:path.resolve('isolated-profile')});
+test('relative silent profile is rejected rather than reusing user data',()=>assert.throws(()=>makeRuntime({headless:true,profile:'relative-profile'}),/absolute path/));
 const message=(bridge)=>bridge.handleLine(JSON.stringify({event:'status',text:'late backend message'}));
 test('live windows receive real BackendBridge.handleLine events',({api})=>{const a=api.createMain(),b=api.createOverlay();message(api.bridge());assert.equal(a.messages.length,1);assert.equal(b.messages.length,1);});
 test('main closed before late backend event',({api})=>{const a=api.createMain(),b=api.createOverlay();a.destroy();assert.doesNotThrow(()=>message(api.bridge()));assert.equal(b.messages.length,1);assert.equal(api.getMain(),null);});
@@ -230,9 +236,9 @@ test('glass waits for actual owner geometry and isolates zoom', r => {
   old.events.get('ready-to-show')();
   assert.equal(old.calls.filter(c=>c[0]==='setBackgroundMaterial').length,0);
   const frame={x:6,y:6,width:848,height:128,radius:16,viewportWidth:860,viewportHeight:140};
-  r.handlers.get('overlay:frame')({sender:{}},frame);
+  assert.throws(()=>r.handlers.get('overlay:frame')({sender:{isDestroyed:()=>false}},frame),/Untrusted/);
   assert.equal(old.calls.filter(c=>c[0]==='setShape').length,0);
-  r.handlers.get('overlay:frame')({sender:old.webContents},frame);
+  r.handlers.get('overlay:frame')(senderEvent(old.webContents),frame);
   assert.equal(old.options.backgroundColor,'#00000000');
   assert.ok(old.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='none'));
   assert.ok(old.calls.every(c=>c[0]!=='setBackgroundMaterial'||c[1]!=='acrylic'));
@@ -244,5 +250,25 @@ test('glass waits for actual owner geometry and isolates zoom', r => {
   assert.deepEqual(current.calls.filter(c=>c[0]==='setContentProtection'),[['setContentProtection',false]]);
   current.destroy();
 });
+try {
+  const report=path.resolve('fixture-report.txt');
+  const r=makeRuntime({existingPaths:[report]});
+  for(const target of ['fixture-report.txt','./fixture-report.txt','',null]) {
+    assert.equal(await r.ipc('dialog:open-path',target),false,'reject non-absolute original input');
+  }
+  assert.deepEqual(r.shellPaths,[]);
+  assert.equal(await r.ipc('dialog:open-path',report),true);
+  assert.deepEqual(r.shellPaths,[report]);
+  checks++;console.log('PASS local open-path rejects relative input before resolution and allows existing absolute paths');
+} catch(error) {failures++;console.error('FAIL local open-path boundary',error);}
+try {
+  const r=makeRuntime({headless:true}); const overlay=r.api.createOverlay();
+  assert.equal(r.ipc('overlay:show'),false);assert.equal(r.ipc('overlay:toggle-visible'),false);
+  for(const channel of ['dialog:pick-media','dialog:pick-image','dialog:pick-directory','dialog:save-image','dialog:save-report','dialog:save-session','ocr:select-area','ocr:start-live-region']) {
+    assert.equal(await r.ipc(channel),null,channel);
+  }
+  for(const channel of ['dialog:reveal-in-folder','dialog:open-path','dialog:open-external'])assert.equal(await r.ipc(channel,'https://example.invalid/'),false);
+  assert.equal(overlay.visible,false);checks++;console.log('PASS headless IPC cannot show windows, pick a desktop region, open dialogs or launch external apps');
+} catch(error) {failures++;console.error('FAIL headless native IPC guard',error);}
 console.log(`${checks} window lifecycle checks passed; ${failures} failed`);
 if (failures) process.exitCode = 1;

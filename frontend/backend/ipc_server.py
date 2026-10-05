@@ -505,19 +505,23 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         return config
 
     def _cmd_set_config(self, args: dict[str, Any]) -> dict[str, Any]:
-        from voxsub.config_store import ConfigStore  # noqa: PLC0415
+        from voxsub.config_store import APP_CONFIG_SCHEMA, ConfigStore  # noqa: PLC0415
 
-        updates = args.get("updates") or {}
+        updates = args.get("updates", {})
+        if not isinstance(updates, dict):
+            raise ValueError("设置更新必须是键值对象")
         store = ConfigStore()
         if any(key in updates for key in ("file_translation_mode", "speech_model_id", "speech_device", "speech_output")):
             from voxsub.speech_contract import validate_selection
             validate_selection({**dict(store.load()), **updates})
+        updates = {str(key): APP_CONFIG_SCHEMA.normalize(str(key), value) for key, value in updates.items()}
         if self._pipeline is not None and any(
                 key in ("asr_model_id", "file_translation_mode", "speech_model_id", "speech_device", "speech_output") or key.startswith(("stt_", "translate_"))
                 for key in updates):
             config = {**dict(store.load()), **updates}
-            self._pipeline.apply_language_model_config(config, updates)
-        store.update({str(k): v for k, v in updates.items()})
+            self._pipeline.apply_language_model_config(config, updates, persist=lambda: store.update(updates))
+        else:
+            store.update(updates)
         self._diagnostic_results = []
         self._diagnostic_checked_at = None
         config = dict(store.load())

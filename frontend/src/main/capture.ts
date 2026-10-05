@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { bestDisplay, intersect, thumbnailRect, virtualBounds } from "../shared/ocr-geometry";
 import { randomUUID } from "node:crypto";
+import { protectWindow, isTrustedDocument } from "./window-security";
 
 export interface SelectionArea {
   x: number;
@@ -101,6 +102,7 @@ export async function pickScreenArea(parent: BrowserWindow | null): Promise<Sele
     },
   });
 
+  protectWindow(selector, path.join(__dirname, "..", "renderer", "selector.html"), false);
   activeSelector = selector;
   selector.setAlwaysOnTop(true, "screen-saver");
 
@@ -110,7 +112,9 @@ export async function pickScreenArea(parent: BrowserWindow | null): Promise<Sele
     if (selector.isDestroyed()) return null;
     // Register before showing/loading: fast cancellation must not be lost.
     const result = new Promise<SelectionArea | null>(resolve => {
-      selector.webContents.ipc.once("selector:result", (_event, payload: SelectionArea | null) => resolve(payload));
+      selector.webContents.ipc.on("selector:result", (event, payload: SelectionArea | null) => {
+        if (isTrustedDocument(event, selector.webContents)) resolve(payload);
+      });
       selector.once("closed", () => resolve(null));
     });
     await selector.loadFile(path.join(__dirname, "..", "renderer", "selector.html"));
@@ -161,6 +165,7 @@ export function createOverlayForArea(area: SelectionArea): BrowserWindow {
     },
   });
 
+  protectWindow(win, path.join(__dirname, "..", "renderer", "ocr-overlay.html"), false);
   win.setAlwaysOnTop(true, "screen-saver");
   win.setIgnoreMouseEvents(true, { forward: true });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });

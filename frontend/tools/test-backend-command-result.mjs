@@ -66,7 +66,26 @@ try {
   check("收到 IPC error response 后保留稳定拒绝码", conflict.code === "active_job_exists", JSON.stringify(conflict));
   check("收到 IPC error response 后保留原活动 jobId", conflict.jobId === "migration-owner-42", JSON.stringify(conflict));
   check("明确收到后端响应时标记 delivery=response", conflict.delivery === "response", JSON.stringify(conflict));
-  bridge.dispose();
+  for (const line of ['null','[]','true','5','"text"']) {
+    let threw=false;try {bridge.handleLine(line);}catch{threw=true;}
+    check(`non-object JSON ${line} cannot crash the bridge`,!threw);
+  }
+  for (const invalid of [undefined,null,"false",1]) {
+    child.stdin.write=(serialized,callback)=>{const {id}=JSON.parse(serialized);queueMicrotask(()=>bridge.handleLine(JSON.stringify({id,ok:invalid})));callback?.(null);return true;};
+    const result=await bridge.command("get_config",null);
+    check(`invalid ok=${invalid} never becomes success`,!result.ok&&result.code==="invalid_backend_response"&&result.delivery==="unknown",JSON.stringify(result));
+  }
+  const circular={};circular.self=circular;
+  check("unserializable input is explicitly not sent",(await bridge.command("get_config",circular)).delivery==="not_sent");
+  child.stdin.write=()=>true;
+  const pending=Array.from({length:256},()=>bridge.command("get_config",null));
+  check("outstanding requests are bounded without sending overflow",(await bridge.command("get_config",null)).code==="too_many_requests");
+  bridge.dispose();await Promise.all(pending);
+  check("dispose clears outstanding timers/requests",bridge.pending.size===0);
+  const broken=new BackendBridge();broken.resolvePython=()=>({command:join(scratch,"missing-python-executable"),args:[]});
+  const disconnected=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error("missing spawn failure event")),3000);broken.onEvent(event=>{if(event.type==="disconnected"){clearTimeout(timer);resolve(event);}});});
+  broken.start();await disconnected;
+  check("asynchronous spawn errors are reported without crashing main",!broken.isRunning());broken.dispose();
 
   const noBackend = await new BackendBridge().command("start_migration", { async: true });
   check("后端未启动时准确标记请求 not_sent", noBackend.delivery === "not_sent", JSON.stringify(noBackend));

@@ -12,6 +12,9 @@ def redact(text: str) -> str:
     text = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[REDACTED]", text)
     text = re.sub(r"https?://[^\s]+", "[URL]", text)
     text = re.sub(r"[A-Za-z]:[\\/][^\n,;\"]+", "[PATH]", text)
+    # Model/report roots may be network shares or portable Unix paths, not only C:\Users.
+    text = re.sub(r"\\\\[^\\/\s]+[\\/][^\n,;\"']+", "[PATH]", text)
+    text = re.sub(r"(?<!\w)/(?:home|Users|tmp|var|opt|mnt|media|Volumes|private)/[^\n,;\"']+", "[PATH]", text)
     for value in (os.environ.get("USERPROFILE"), os.environ.get("HOME")):
         if value:
             text = text.replace(value, "[HOME]")
@@ -42,12 +45,19 @@ def export_logs(text: str) -> str:
     return "\n".join(output)
 
 
+def _private_key(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+    return normalized == "token" or any(token in normalized for token in (
+        "secret", "password", "apikey", "serial", "username", "hostname",
+        "authorization", "accesstoken", "refreshtoken", "bearertoken"))
+
+
 def safe_snapshot(value: Any) -> Any:
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
         return {k: safe_snapshot(v) for k, v in value.items()
-                if not any(token in k.lower() for token in ("secret", "password", "api_key", "serial", "username", "hostname"))}
+                if not _private_key(k)}
     if isinstance(value, (list, tuple)):
         return [safe_snapshot(v) for v in value]
     return value

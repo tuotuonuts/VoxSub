@@ -4,8 +4,10 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {securityContents,loadFixturePage,senderEvent} from './electron-security-fixture.mjs';
 import { ROOT, createReporter, importShared } from './esbuild-ts.mjs';
 const { check, finish } = createReporter('Main quit owner isolation (fake Electron)');
+const security = await importShared('src/main/window-security.ts', {bundle:true});
 const verification = await importShared("src/main/overlay-verification.ts", {bundle:true});
 const frame = await importShared("src/shared/overlay-frame.ts", {bundle:true});
 const layout = await importShared('src/shared/window-layout.ts');
@@ -17,9 +19,9 @@ let quitCalls = 0;
 let disposals = 0;
 const messages = [];
 class FakeWindow {
-  constructor() { this.events = new Map(); this.webContents = { on() {}, isDestroyed: () => false, send: (...args) => messages.push(args) }; windows.push(this); }
+  constructor() { this.events = new Map(); this.webContents = securityContents({ on() {}, isDestroyed: () => false, send: (...args) => messages.push(args) }); windows.push(this); }
   isDestroyed() { return false; }
-  loadFile() { return Promise.resolve(); }
+  loadFile(file) { loadFixturePage(this,file); return Promise.resolve(); }
   on(name, fn) { this.events.set(name, fn); }
   once(name, fn) { this.events.set(name, fn); }
   show() {}
@@ -44,6 +46,7 @@ const context = vm.createContext({
   process: { env: {}, platform: 'win32' }, console,
   require: (name) => {
     if (name === 'electron') return electron;
+    if (name === './window-security') return security;
     if (name === './overlay-verification') return verification;
     if (name === '../shared/overlay-frame') return frame;
     if (name === './overlay-native') return {probeNativeOverlay:()=>{throw Error('native probe forbidden');}};
@@ -58,8 +61,8 @@ const context = vm.createContext({
   fakeBridge: { isRunning: () => false, dispose: () => { disposals++; } },
 });
 vm.runInContext(compile('src/main/main.ts') + '\nregisterIpc(); mainWindow = createMainWindow(); bridge = fakeBridge;', context);
-const setBusy = (...args) => handlers.get('app:set-busy')({}, ...args);
-const quit = () => handlers.get('app:request-quit')({});
+const setBusy = (...args) => handlers.get('app:set-busy')(senderEvent(windows[0].webContents), ...args);
+const quit = () => handlers.get('app:request-quit')(senderEvent(windows[0].webContents));
 const closeEvent = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 setBusy(true, 'migration A', 'migration-A');
 setBusy(true, 'import B', 'import-B');

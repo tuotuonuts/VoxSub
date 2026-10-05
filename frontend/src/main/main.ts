@@ -12,7 +12,7 @@ import {
   BrowserWindow,
   dialog,
   globalShortcut,
-  ipcMain,
+  ipcMain as electronIpcMain,
   Menu,
   nativeImage,
   screen,
@@ -22,6 +22,7 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { initialMainWindowBounds } from "../shared/window-layout";
+import { guardedIpc, protectWindow } from "./window-security";
 import type { OverlayGlassState } from "../shared/overlay-glass";
 
 import { VerifiedOverlaySurface } from "./overlay-verification";
@@ -30,8 +31,10 @@ import { validOverlayFrame, type OverlayFrame } from "../shared/overlay-frame";
 import { LiveOcrSession } from "./ocr-live";
 import { BackendBridge, type BackendEvent } from "./backend";
 import { createShortcutService } from "./shortcuts";
-let shortcuts: ReturnType<typeof createShortcutService> | null = null;
 import { cancelScreenSelection, captureRegion, createOverlayForArea, pickScreenArea, type SelectionArea } from "./capture";
+
+const ipcMain = guardedIpc(electronIpcMain);
+let shortcuts: ReturnType<typeof createShortcutService> | null = null;
 
 const RENDERER_DIR = path.join(__dirname, "..", "renderer");
 
@@ -246,6 +249,14 @@ function requestQuit(): boolean {
  *   · 不建托盘 —— 托盘图标本身也是"出现在用户屏幕上"的东西
  */
 const HEADLESS = process.env["VOXSUB_HEADLESS"] === "1";
+// Explicit isolated acceptance profile, applied before the single-instance lock.
+// Without this, a silent second instance could activate the user's visible instance.
+const silentProfile = process.env["VOXSUB_HEADLESS_PROFILE"];
+if (HEADLESS && silentProfile) {
+  if (!path.isAbsolute(silentProfile)) throw new Error("Silent profile must be an absolute path");
+  app.setPath("userData", silentProfile);
+}
+
 
 /* ------------------------------------------------------------------ 图标 */
 
@@ -296,12 +307,13 @@ function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       // 隐藏窗口下 Chromium 会节流后台渲染；测布局时那会让读数失真
       backgroundThrottling: false,
     },
   });
 
+  protectWindow(win, path.join(RENDERER_DIR, "index.html"));
   void win.loadFile(path.join(RENDERER_DIR, "index.html"));
 
   // 无头模式绝不 show()：窗口始终不可见，但渲染与 CDP 都正常
@@ -361,11 +373,12 @@ function createOverlayWindow(showWhenReady=true): BrowserWindow {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
       backgroundThrottling: false,
     },
   });
 
+  protectWindow(win, path.join(RENDERER_DIR, "overlay.html"));
   // Prevent the main window's same-origin zoom from changing native/CSS alignment.
   win.webContents.setZoomMode("isolated");
   win.webContents.setZoomFactor(1);
@@ -453,6 +466,7 @@ function openPage(page: string): void {
 }
 
 function toggleOverlay(): boolean {
+  if (HEADLESS) return false;
   let visible = false;
   const applied = useWindow(overlayWindow, "overlay:toggle-visible", win => {
     if (win.isVisible()) win.hide();
@@ -532,7 +546,7 @@ function registerIpc(): void {
   /* ---- 浮窗 ---- */
   ipcMain.handle("overlay:toggle-visible", () => toggleOverlay());
 
-  ipcMain.handle("overlay:show", () => useWindow(overlayWindow, "overlay:show", win => win.showInactive()));
+  ipcMain.handle("overlay:show", () => !HEADLESS && useWindow(overlayWindow, "overlay:show", win => win.showInactive()));
 
   ipcMain.handle("overlay:hide", () => useWindow(overlayWindow, "overlay:hide", win => win.hide()));
 
@@ -586,6 +600,7 @@ function registerIpc(): void {
 
   /* ---- 对话框 ---- */
   ipcMain.handle("dialog:pick-media", async () => {
+    if (HEADLESS) return null;
     const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
       title: "选择音频或视频文件",
       properties: ["openFile"],
@@ -598,6 +613,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:pick-image", async () => {
+    if (HEADLESS) return null;
     const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
       title: "选择要翻译的图片",
       properties: ["openFile"],
@@ -610,6 +626,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:pick-directory", async () => {
+    if (HEADLESS) return null;
     const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
       title: "选择模型存储位置",
       properties: ["openDirectory", "createDirectory"],
@@ -618,6 +635,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:save-image", async () => {
+    if (HEADLESS) return null;
     const result = await dialog.showSaveDialog(mainWindow ?? undefined!, {
       title: "导出译后图片",
       defaultPath: `voxsub-ocr-${stamp()}.png`,
@@ -630,6 +648,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:save-report", async () => {
+    if (HEADLESS) return null;
     const result = await dialog.showSaveDialog(mainWindow ?? undefined!, {
       title: "导出诊断报告",
       defaultPath: `voxsub-diagnostics-${stamp()}.txt`,
@@ -639,6 +658,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:save-session", async (_e, payload: { lines: unknown[] }) => {
+    if (HEADLESS) return null;
     const chosen = await dialog.showSaveDialog(mainWindow ?? undefined!, {
       title: "导出会话字幕",
       defaultPath: `voxsub-session-${stamp()}.srt`,
@@ -658,6 +678,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:reveal-in-folder", (_e, target: string) => {
+    if (HEADLESS) return false;
     // 在资源管理器里定位文件：用户刚保存完录音/图片，最想做的就是找到它
     if (typeof target === "string" && target) {
       try {
@@ -681,9 +702,9 @@ function registerIpc(): void {
    * 交给 shell（相对路径会被解释成相对于当前工作目录，容易打开意外位置）。
    */
   ipcMain.handle("dialog:open-path", async (_e, target: string) => {
-    if (typeof target !== "string" || !target.trim()) return false;
+    if (HEADLESS) return false;
+    if (typeof target !== "string" || !path.isAbsolute(target)) return false;
     const resolved = path.resolve(target);
-    if (!path.isAbsolute(resolved)) return false;
     if (!fs.existsSync(resolved)) return false;
     // openPath 返回空字符串表示成功，非空是错误描述
     const error = await shell.openPath(resolved);
@@ -691,6 +712,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("dialog:open-external", async (_e, url: string) => {
+    if (HEADLESS) return false;
     if (typeof url === "string" && /^https?:\/\//i.test(url)) {
       await shell.openExternal(url);
       return true;
@@ -700,6 +722,7 @@ function registerIpc(): void {
 
   /* ---- OCR ---- */
   ipcMain.handle("ocr:select-area", async (event) => {
+    if (HEADLESS) return null;
     if (!owned(event)) return null;
     const area = await pickScreenArea(mainWindow);
     if (!area) return null;
@@ -716,6 +739,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("ocr:start-live-region", async (event, languages: {source: string; target: string}) => {
+    if (HEADLESS) return null;
     if (!owned(event) || !validOcrLanguages(languages)) return null;
     stopLiveOcr();
     const selection = liveOcrSelection;

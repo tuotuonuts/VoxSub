@@ -1,4 +1,8 @@
-[review-hardening] 已修复悬浮窗毛玻璃/透明度耦合与材质移除白底；实际桌面玻璃恢复仍待验收，见 docs/OVERLAY_ALPHA_ACCEPTANCE.md。全项目审查/最终推送仍进行中。
+[review-hardening 本轮完成] 风险审查与修复闭环；版本仍0.9.0-beta，非正式版声明。
+[x] 毛玻璃/透明度解耦、原生底色恢复、设置revision竞态；真实桌面玻璃明确半透明兼容降级，未宣称恢复。
+[x] 沙箱/IPC/导航/权限与静默入口、有界stdio/异步错误、配置事务、文件缺段/尾帧、诊断脱敏/原子导出、依赖已知告警清理。
+[x] Python1390/20skip/7deselect/1既有xfail，前端check/build、静态发布门禁、隐藏alpha48组与生产隔离冒烟10组；证据和回滚见docs/REVIEW_HARDENING_ACCEPTANCE.md。
+[ ] NOT_RUN：可见桌面、物理DPI/多屏、全部真实模型/云服务/长时压力、安装版；GitHub CI以推送后远端结果为准。
 [本轮完成] GPU 模型收录/调用、悬浮窗缩放隔离及下载链接 CI 修复
 - Granite / Index：CPU/CUDA/auto、双语/仅译文、公共控件、设备诊断；SeamlessStreaming 双源下载/官方外部指南，禁止误选为本机集成模型。
 - 实际卡片裁剪、原生读回、失败安全回退、独立桌面验证状态；下载缓存/进度前拒绝符号链接。

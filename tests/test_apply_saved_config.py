@@ -396,3 +396,63 @@ def test_invalid_speech_execution_option_not_persisted(isolated_config,key,value
     service=ipc_server.BackendService();before=ConfigStore().load()[key]
     with pytest.raises(ValueError):service._cmd_set_config({'updates':{key:value}})
     assert ConfigStore().load()[key]==before
+
+def _model_selection_snapshot(pipeline):
+    return (pipeline._requested_asr_model_id, pipeline._requested_stt_provider,
+            pipeline._requested_trans_kind, dict(pipeline._speech_config),
+            pipeline._stt_config, pipeline._translator_config)
+
+
+@pytest.mark.parametrize("failure", ["disk", "future_version"])
+def test_config_write_failure_does_not_change_running_selection(isolated_config, monkeypatch, failure):
+    import json
+    from voxsub import config_store
+    store = config_store.ConfigStore()
+    store.save({})
+    if failure == "future_version":
+        payload = store.load()
+        payload["config_version"] = config_store.CONFIG_VERSION + 1
+        store.path.write_text(json.dumps(payload), encoding="utf-8")
+    before_file = store.path.read_bytes()
+    pipeline = Pipeline(models=isolated_config / "models")
+    service = ipc_server.BackendService()
+    service._pipeline = pipeline
+    before = _model_selection_snapshot(pipeline)
+    if failure == "disk":
+        def denied(*args, **kwargs):
+            raise PermissionError("synthetic full/read-only disk")
+        monkeypatch.setattr(config_store, "write_text_atomically", denied)
+    try:
+        with pytest.raises((PermissionError, config_store.ConfigVersionTooNew)):
+            service._cmd_set_config({"updates": {"asr_model_id": "asr-moonshine-tiny-en-v2", "translate_tier": "cloud", "speech_device": "cuda"}})
+        assert _model_selection_snapshot(pipeline) == before
+        assert store.path.read_bytes() == before_file
+    finally:
+        pipeline.close()
+
+
+def test_config_normalized_selection_matches_disk_and_pipeline(isolated_config):
+    from voxsub.config_store import ConfigStore
+    pipeline = Pipeline(models=isolated_config / "models")
+    service = ipc_server.BackendService()
+    service._pipeline = pipeline
+    try:
+        result = service._cmd_set_config({"updates": {"asr_model_id": None}})
+        assert pipeline._requested_asr_model_id == result["asr_model_id"] == ConfigStore().get("asr_model_id")
+    finally:
+        pipeline.close()
+
+
+def test_config_busy_pipeline_rejects_before_persisting(isolated_config):
+    from voxsub.config_store import ConfigStore
+    store = ConfigStore(); store.save({}); before = store.path.read_bytes()
+    pipeline = Pipeline(models=isolated_config / "models")
+    service = ipc_server.BackendService(); service._pipeline = pipeline
+    pipeline._running = True
+    try:
+        with pytest.raises(RuntimeError, match="会话"):
+            service._cmd_set_config({"updates": {"translate_tier": "cloud"}})
+        assert store.path.read_bytes() == before
+    finally:
+        pipeline._running = False
+        pipeline.close()
