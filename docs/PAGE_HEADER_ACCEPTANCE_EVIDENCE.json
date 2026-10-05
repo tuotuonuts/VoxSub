@@ -1,0 +1,79 @@
+{
+  "recorded_at_utc": "2026-10-05T18:23:05.107969+00:00",
+  "base_revision": "aa031c4",
+  "before": {
+    "checks": 440,
+    "failures": 172,
+    "samples": 974,
+    "visibilityOrFocusViolations": 0,
+    "rendererErrors": 0
+  },
+  "after": {
+    "checks": 440,
+    "failures": 0,
+    "samples": 963,
+    "visibilityOrFocusViolations": 0,
+    "rendererErrors": 0
+  },
+  "before_boundary": "Same new layout constraints applied to read-only backup router/CSS; missing independent scroll body is a constraint failure, not an independent user bug count",
+  "frontend": {
+    "check": "PASS",
+    "build": "PASS",
+    "page_frame_component_checks": 4
+  },
+  "python": {
+    "passed": 1216,
+    "skipped": 8,
+    "deselected": 7,
+    "xfailed": 1,
+    "failed": 0,
+    "seconds": 87.59,
+    "marker": "not hardware_audio"
+  },
+  "default_geometry": {
+    "headerTop": 34,
+    "headerBottom": 70.953125,
+    "headerHeight": 36.953125,
+    "bodyTop": 70.953125,
+    "firstTop": 80.9375,
+    "bodyHeight": 736.0625,
+    "scrollTop": 0
+  },
+  "boundary": "Real production renderer/CSS in isolated Electron offscreen windows; IPC/model/device data fixtures, not production main/backend or user desktop",
+  "not_run": [
+    "user running app/current configuration",
+    "physical monitor DPI switching",
+    "native titlebar interaction",
+    "manual accessibility",
+    "visible migration wizard",
+    "packaged release",
+    "GitHub CI"
+  ],
+  "backup": ".backups/page-header-20261006-020935",
+  "external_evidence_root": "D:\\OneDrive\\app_dve\\page-header-acceptance",
+  "source_sha256": {
+    "frontend/src/renderer/ui/page-frame.ts": "25afcf7e7c11bc755a47b0c9e20adde1b2cf504c944317720118b71f6ab5ffc0",
+    "frontend/src/renderer/index.ts": "8bf48206d23802563a73448112cdd94f9eecf7f08f1e76aebe5270644f645179",
+    "frontend/src/renderer/app.css": "a61f9b55133e574499f9edae623e262f3292f81784937d95880b2ec799b2ae49",
+    "frontend/tools/test-page-frame.mjs": "e6f23e2a5c8cddb4849ea2ab26f94906ebc16035c2c6ef22fc8f555418cc79f8",
+    "frontend/tools/test-responsive-layout.cjs": "785a24554bfb5eaac24b084bcf45eeddd7b53daae64309f37184305d09b00a13",
+    "frontend/tools/test-responsive-layout.mjs": "7af4a7244792485d08335881306ccdbc9e90e73904394d15fe750084a062c91f",
+    "frontend/package.json": "4d2b79b4368ce441738e0b767a6974c53617cecff4f0a5dabf9d4578578d06ea",
+    "frontend/tools/responsive-layout-entry.ts": "34be0795801b4fb0a4b250cce587de57ae2ba805fca07c0f9b04241ca54c671c"
+  },
+  "logs_sha256": {
+    "before-run.log": "3c50390e2a94dd86310be04f98d23fee9bbe3c04908ae84f972870da05c467a2",
+    "after-run.log": "313255f97a31e66e893431e3f65002c76136162c3bc77deb2a28462493a4f8b6",
+    "frontend-check.log": "e1f66313cd33e86755ab712d630e2a9ae5057c4169dcdf0ba87af1dae905f96c",
+    "frontend-build.log": "048317e84740495eb1e43f690318160c24273f0ab5ebbed019d2651720c6e022",
+    "python.log": "376a32fa515282d632cf4bab340989d3fa26841adfd6410350f3459c286730d4",
+    "before/layout-results.json": "b780093b46109cea8d013e369fd3cd009f87bb468c9953f824c1807d24c87ebc",
+    "after/layout-results.json": "20fe4faaec9ab3f4cf462c1e56710fbdcb71cf2ea9d34a81164fd470e60a13a3"
+  },
+  "inspected_images_sha256": {
+    "before/settings-zh-dark.png": "3478b5589eb3b7bf2cfcbcc910621b3cb7f258a37078fa66c57f4267fd46c72a",
+    "after/settings-zh-dark.png": "b675ec8ff77612f9e267f846ec14c0aa79964001444e870f2b1f92837c21abd0",
+    "after/diagnostics-640.png": "0acf8c3542c7f92b6e30b630d17db6ebf8523599a59c8222e376b90814e65a02",
+    "after/catalog-640.png": "1964244ba7bf0187ff6cf111f5ddf131d33761d062b360049af2d51f6c92fae2"
+  }
+}

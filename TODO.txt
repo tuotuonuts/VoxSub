@@ -1,3 +1,8 @@
+[本轮 二级页面顶部遮挡与返回栏优化 2026-10-05 UTC]
+[x] 公共PageFrame+公共Button、紧凑固定header/独立body滚动，切页复位/focus不滚动，settings导航不重复叠加偏移，向导间距保留。
+[x] 组件4项；真实离屏Chromium440项/0失败、963静默采样0违规、三页PNG复核；前端check/build及Python安全1216 passed/8 skipped/7 deselected/1既有xfail。
+[ ] 用户实例/物理DPI/原生标题按钮/辅助技术人工/迁移向导/安装版/CI NOT_RUN；报告/备份/本地commit，未push，不重启应用。
+
 [本轮 字幕悬浮窗截图修复 2026-10-05 UTC]
 [x] 取消字幕窗捕获排除；OCR覆盖窗防自识别保持，字幕毛玻璃/穿透/置顶不改。
 [x] 修复前新3项失败→修复后生命周期50项通过；前端check/build，Python安全全量1216 passed/8 skipped/7 deselected/1既有xfail。

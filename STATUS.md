@@ -1,3 +1,9 @@
+## 二级页面顶部遮挡 / 紧凑返回栏（2026-10-05 UTC）
+
+- 设置/诊断/模型共用公共PageFrame，返回栏固定在独立内容滚动区外，修复sticky盖正文与切页滚动残留；默认返回栏约37px，保留标题按钮安全区，迁移向导原间距保持。
+- 公共Button复用/4项组件回归；真实离屏Electron440项布局/0失败，963采样0可见或焦点违规，设置/诊断/模型PNG人工检查；前端check/build、Python安全1216 passed/8 skipped/7 deselected/1既有xfail。
+- 真实用户实例/物理DPI/原生标题按钮/辅助技术人工/迁移向导/安装版/CI NOT_RUN；不改配置/正文、不重启用户应用，报告docs/PAGE_HEADER_ACCEPTANCE.md及EVIDENCE.json；备份与本地commit，未push。
+
 ## 字幕悬浮窗允许截图（2026-10-05 UTC）
 
 - 根因：字幕窗ready后启用setContentProtection(true)主动被系统捕获排除；改为false，OCR原位覆盖窗仍true防自识别。毛玻璃/置顶/穿透、OCR owner校验及用户数据不变。

@@ -8,11 +8,11 @@ const wait=(ms=50)=>new Promise(r=>setTimeout(r,ms));
 app.whenReady().then(async()=>{
  let win;
  try{
-  const css=pathToFileURL(path.join(root,'src/renderer/app.css')).href;
+  const css=pathToFileURL(process.env.VOXSUB_LAYOUT_CSS||path.join(root,'src/renderer/app.css')).href;
   const script=pathToFileURL(path.join(out,'responsive-entry.js')).href;
   const file=path.join(out,'responsive.html');
   fs.writeFileSync(file,`<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"><script defer src="${script}"></script></head><body><div id="app"></div></body></html>`);
-  const matrix=[[1240,820,1],[1366,768,1.25],[1280,720,1.5],[1280,720,2],[1920,1080,1],[2560,1440,1.5],[3440,1440,1.25],[1024,768,1],[540,960,1],[640,480,1],[360,640,1],[320,240,1]];
+  const matrix=[[1114,511,1],[1226,251,1],[1240,820,1],[1366,768,1.25],[1280,720,1.5],[1280,720,2],[1920,1080,1],[2560,1440,1.5],[3440,1440,1.25],[1024,768,1],[540,960,1],[640,480,1],[360,640,1],[320,240,1]];
   for(const lang of ['zh','en'])for(const theme of ['dark','light']){
    win=new BrowserWindow({width:1240,height:820,show:false,frame:false,webPreferences:{offscreen:true,backgroundThrottling:false,contextIsolation:true,nodeIntegration:false,sandbox:true}});
    win.webContents.on('console-message',(_event,_level,message)=>{if(message.includes('Uncaught'))errors.push(message);});
@@ -27,13 +27,29 @@ app.whenReady().then(async()=>{
       const overflow=host.scrollWidth>host.clientWidth+2;
       if('${page}'.startsWith('main-')&&window.layoutTest.store.get().mode!=='${page}'.slice(-1))throw Error('Wrong workspace mode ${page}');
       const offenders=[...host.querySelectorAll('*')].filter(el=>{const r=el.getBoundingClientRect();const style=getComputedStyle(el);return r.width>0&&style.position!=='fixed'&&(r.right>innerWidth+2||r.left< -2);}).slice(0,8).map(el=>el.className||el.tagName);
-      let headerClearOfChrome=true;
-      if(layer&&!layer.hidden){const original=layer.scrollTop;layer.scrollTop=layer.scrollHeight;const button=layer.querySelector('.page__back');const chrome=Math.max(34,parseFloat(getComputedStyle(document.body,'::before').height)||34);headerClearOfChrome=button.getBoundingClientRect().top>=chrome-1;layer.scrollTop=original;}
-      return {viewport:[innerWidth,innerHeight],hostWidth:host.clientWidth,scrollWidth:host.scrollWidth,overflow,offenders,headerClearOfChrome};
+      let headerClearOfChrome=true,headerSeparated=true,headerCompact=true,bodyScrolls=true,freshAtTop=true;
+      let pageRects=null;
+      if(layer&&!layer.hidden){
+       const bar=layer.querySelector('.page__bar'),body=layer.querySelector('.page__content'),button=layer.querySelector('.page__back');
+       const chrome=Math.max(34,parseFloat(getComputedStyle(document.body,'::before').height)||34);
+       headerClearOfChrome=button.getBoundingClientRect().top>=chrome-1;
+       const b=bar.getBoundingClientRect();headerCompact=b.height<=parseFloat(getComputedStyle(bar).fontSize)*3.5+1;
+       freshAtTop=layer.scrollTop===0&&(!body||body.scrollTop===0);
+       if(!body){headerSeparated=false;bodyScrolls=false;}
+       else{
+        const r=body.getBoundingClientRect(),first=body.firstElementChild.getBoundingClientRect();
+        headerSeparated=r.top>=b.bottom-1&&first.top>=b.bottom-1;
+        body.scrollTop=body.scrollHeight;const next=bar.getBoundingClientRect();
+        bodyScrolls=(body.scrollHeight<=body.clientHeight+1||body.scrollTop>0)&&Math.abs(next.top-b.top)<1&&layer.scrollTop===0;
+        const nav=body.querySelector('.settings__nav');if(nav&&getComputedStyle(nav).position==='sticky')headerSeparated=headerSeparated&&nav.getBoundingClientRect().top>=b.bottom-1;
+        pageRects={headerTop:b.top,headerBottom:b.bottom,headerHeight:b.height,bodyTop:r.top,firstTop:first.top,bodyHeight:r.height,scrollTop:body.scrollTop};body.scrollTop=0;
+       }
+      }
+      return {viewport:[innerWidth,innerHeight],hostWidth:host.clientWidth,scrollWidth:host.scrollWidth,overflow,offenders,headerClearOfChrome,headerSeparated,headerCompact,bodyScrolls,freshAtTop,pageRects};
      })()`);
      results.push({lang,theme,width,height,zoom,page,...measurement});
-     if(measurement.overflow||measurement.offenders.length||!measurement.headerClearOfChrome)console.log('FAIL '+JSON.stringify(results.at(-1)));
-     if(lang==='zh'&&theme==='dark'&&[[640,480],[3440,1440]].some(([w,h])=>w===width&&h===height)&&['main-a','main-d','catalog'].includes(page))fs.writeFileSync(path.join(out,page+'-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+     if(measurement.overflow||measurement.offenders.length||!measurement.headerClearOfChrome||!measurement.headerSeparated||!measurement.headerCompact||!measurement.bodyScrolls||!measurement.freshAtTop)console.log('FAIL '+JSON.stringify(results.at(-1)));
+     if(lang==='zh'&&theme==='dark'&&[[640,480],[3440,1440]].some(([w,h])=>w===width&&h===height)&&['main-a','main-d','catalog','settings','diagnostics'].includes(page))fs.writeFileSync(path.join(out,page+'-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
     }
    }
    win.setSize(640,480);win.webContents.setZoomFactor(1);await win.webContents.executeJavaScript(`window.layoutTest.open('settings')`);await wait();
@@ -47,6 +63,8 @@ app.whenReady().then(async()=>{
     if(tab===1)await win.webContents.executeJavaScript(`window.layoutTest.store.pushLog({ts:'2026-10-05T00:00:00+00:00',level:'ERROR',message:'Long diagnostic error: '+ 'X'.repeat(300)});window.layoutTest.refreshLogView()`);
     const m=await win.webContents.executeJavaScript(`(()=>{const h=document.querySelector('.page-layer');return {overflow:h.scrollWidth>h.clientWidth+2,offenders:[],viewport:[innerWidth,innerHeight]};})()`);results.push({lang,theme,width:640,height:480,zoom:1,page:'diagnostic-tab-'+tab,...m});
    }
+   const fresh=await win.webContents.executeJavaScript(`(()=>{window.layoutTest.open('catalog');document.querySelector('.page__content')?.scrollTo(0,500);window.layoutTest.open('settings');return {freshAtTop:document.querySelector('.page-layer').scrollTop===0&&document.querySelector('.page__content')?.scrollTop===0};})()`);
+   results.push({lang,theme,page:'route-scroll-reset',overflow:false,offenders:[],...fresh});
    // Actual Chromium settings control: failure-free list updates must preserve unrelated drafts/focus.
    const picker=await win.webContents.executeJavaScript(`(async()=>{window.layoutTest.open('settings');await new Promise(r=>setTimeout(r,80));const select=document.querySelector('[data-model-task="asr"] select');window.layoutTest.setInstalled(false);await new Promise(r=>setTimeout(r,80));const disabled=select.disabled;window.layoutTest.setInstalled(true);await new Promise(r=>setTimeout(r,80));return {sameNode:select===document.querySelector('[data-model-task="asr"] select'),disabledWhenUninstalled:disabled,selectedWhenRestored:select.value,found:select.textContent.includes('SenseVoice')};})()`);
    if(!picker.sameNode||!picker.disabledWhenUninstalled||!picker.found||picker.selectedWhenRestored!=='asr-sensevoice-small-int8')throw Error('Chromium model picker '+JSON.stringify(picker));
@@ -58,7 +76,7 @@ app.whenReady().then(async()=>{
 
    fs.writeFileSync(path.join(out,'settings-'+lang+'-'+theme+'.png'),(await win.webContents.capturePage()).toPNG());win.destroy();win=null;
   }
-  const failed=results.filter(r=>r.overflow||r.offenders.length||r.headerClearOfChrome===false);clearInterval(monitor);
+  const failed=results.filter(r=>r.overflow||r.offenders.length||r.headerClearOfChrome===false||r.headerSeparated===false||r.headerCompact===false||r.bodyScrolls===false||r.freshAtTop===false);clearInterval(monitor);
   const summary={checks:results.length,failures:failed.length,samples,visibilityOrFocusViolations:violations,rendererErrors:errors.length};
   fs.writeFileSync(path.join(out,'layout-results.json'),JSON.stringify({summary,results,errors},null,2));
   console.log(JSON.stringify(summary));app.exit(failed.length||violations||errors.length?1:0);

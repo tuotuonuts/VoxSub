@@ -401,3 +401,8 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 ## 字幕窗与OCR覆盖窗的捕获策略
 
 字幕悬浮窗允许用户截图/录屏，createOverlayWindow明确setContentProtection(false)，保留showInactive/无focus、毛玻璃/置顶/穿透和生命周期守卫。只有OCR原位覆盖窗（capture.ts）维持setContentProtection(true)防止自采集译文；不要因共用preload或“悬浮窗”统称再次把两者策略混用。截图可用性原生实测与API参数测试须分开报告，见docs/OVERLAY_SCREENSHOT_ACCEPTANCE.md。
+
+
+## 二级页面公共外壳 / 滚动边界
+
+设置、诊断、模型通过ui/page-frame.ts统一构建：返回栏与page__content是同级节点，header占固定布局空间，不用sticky覆盖正文；page__content唯一负责内容滚动，settings导航sticky只相对此scrollport。PageFrame复用公共Button，router拥有标题翻译/返回/dispose/初始焦点；openPage复位layer滚动并preventScroll焦点。caption安全高度使用共同CSS变量，紧凑frame样式用结构选择器限定，不改变迁移向导直接挂载布局。不要逐页增加padding-top补遮挡。回归含真实离屏Chromium，见docs/PAGE_HEADER_ACCEPTANCE.md。

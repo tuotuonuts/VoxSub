@@ -41,6 +41,7 @@ body {
  * 上限压到 17px 是刻意的：再大就会让 2560 宽的屏幕上信息密度过低，
  * 反而比现在更难用。 */
 html {
+  --window-caption-height: max(34px, 2.6154rem);
   font-size: clamp(12.5px, 0.265vw + 9.71px, 17px);
 }
 
@@ -72,7 +73,7 @@ body::before {
   top: 0;
   left: 0;
   right: 0;
-  height: 2.6154rem;
+  height: var(--window-caption-height);
   -webkit-app-region: drag;
   z-index: 60;
 }
@@ -964,29 +965,49 @@ body::before {
   z-index: 40;
   background: var(--ground);
   overflow-y: auto;
-  /* 顶部让开自绘标题栏的拖拽区 */
+  /* Direct children such as the migration wizard retain their existing spacing. */
   padding: 3.3846rem 1.8462rem 1.8462rem;
+  scrollbar-gutter: stable;
+}
+
+.page-layer:has(> .page) {
+  /* Caption clearance only once; the shared frame owns header and body spacing. */
+  padding: var(--window-caption-height) 1.8462rem 1rem;
+  scrollbar-gutter: auto;
 }
 
 /* ------------------------------------------------- 二级页面外壳（返回栏） */
 .page {
   display: flex;
   flex-direction: column;
-  gap: 1.2308rem;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
 }
 
 .page__bar {
   display: flex;
   align-items: center;
-  gap: 0.9231rem;
-  padding-bottom: 0.9231rem;
+  gap: 0.7692rem;
+  flex: 0 0 auto;
+  min-height: 2.7692rem;
+  padding: 0.2308rem 0;
   border-bottom: 1px solid var(--rule);
-  /* 滚动时返回按钮保持可见：页面很长时不该为了返回而滚回顶部 */
-  position: sticky;
-  top: 0;
   background: var(--ground);
-  z-index: 2;
+  /* Outside the body's scrollport: never paint over cards or navigation. */
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+.page__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-top: 0.7692rem;
+  scroll-padding-top: 0.7692rem;
+  scrollbar-gutter: stable;
 }
 
 .page__back {
@@ -1359,6 +1380,7 @@ body::before {
 .log-view::-webkit-scrollbar,
 .mode-index::-webkit-scrollbar,
 .page-layer::-webkit-scrollbar,
+.page__content::-webkit-scrollbar,
 .ocr__text::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -1369,6 +1391,7 @@ body::before {
 .log-view::-webkit-scrollbar-thumb,
 .mode-index::-webkit-scrollbar-thumb,
 .page-layer::-webkit-scrollbar-thumb,
+.page__content::-webkit-scrollbar-thumb,
 .ocr__text::-webkit-scrollbar-thumb {
   background: var(--rule);
   border: 3px solid var(--ground);
@@ -1380,6 +1403,7 @@ body::before {
 .log-view::-webkit-scrollbar-thumb:hover,
 .mode-index::-webkit-scrollbar-thumb:hover,
 .page-layer::-webkit-scrollbar-thumb:hover,
+.page__content::-webkit-scrollbar-thumb:hover,
 .ocr__text::-webkit-scrollbar-thumb:hover {
   background: var(--ink2);
 }
@@ -1588,10 +1612,9 @@ body::before {
 .catalog-page__bar { flex-wrap: wrap; }
 
 /* Responsive shell: preserve readable type and controls; scroll instead of clipping. */
-/* Sticky navigation must stay below both native caption buttons and the draggable strip. */
-.page__bar { top: max(34px, 2.6154rem); }
-.settings__nav { top: calc(max(34px, 2.6154rem) + 4rem); }
-.shell, .page-layer { scrollbar-gutter: stable; }
+/* Tab navigation sticks within the body, not over the separate header. */
+.settings__nav { top: 0; }
+.shell { scrollbar-gutter: stable; }
 .topbar, .topbar__actions, .workspace__head, .catalog-page__head, .catalog-page__bar,
 .tuning-actions, .cell__foot, .shortcut-field__control { flex-wrap: wrap; }
 .topbar > *, .workspace__head > *, .catalog-page__head > *, .catalog-page__bar > *,

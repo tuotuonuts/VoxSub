@@ -1,3 +1,4 @@
+import { buildPageFrame } from "./ui/page-frame";
 import { buildButton } from "./ui/button";
 /**
  * 主窗渲染入口。
@@ -87,33 +88,6 @@ const PAGE_TITLE: Record<PageName, string> = {
   diagnostics: "诊断",
 };
 
-/**
- * 二级页面外壳：统一的返回栏 + 内容区。
- *
- * 之前每页直接把自己塞进 pageLayer，返回只能按 Esc —— 不知道这个快捷键的
- * 用户会被困在页面里。返回按钮放在外壳上，三页长得一致、行为一致。
- */
-function wrapPage(page: PageName, content: HTMLElement): HTMLElement {
-  const frame = h("div", { class: "page" });
-
-  const bar = h("header", { class: "page__bar" });
-  const back = h("button", {
-    class: "page__back",
-    type: "button",
-    title: tr("返回（Esc）"),
-    "aria-label": tr("返回"),
-  });
-  back.append(
-    h("span", { class: "page__back-icon", text: "←" }),
-    h("span", { class: "page__back-text", text: tr("返回") }),
-  );
-  on(back, "click", () => closePage());
-
-  bar.append(back, h("span", { class: "page__title", text: tr(PAGE_TITLE[page]) }));
-  frame.append(bar, content);
-  return frame;
-}
-
 function openPage(page: PageName): void {
   if (!pageLayer) return;
   // 换页前先释放上一页：监听器、定时器、订阅、在途回调都在这里收掉
@@ -137,9 +111,11 @@ function openPage(page: PageName): void {
   };
   const handle = builders[page]();
   pageDispose = handle.dispose;
-  pageLayer.replaceChildren(wrapPage(page, handle.element));
+  pageLayer.replaceChildren(buildPageFrame(tr(PAGE_TITLE[page]), handle.element, closePage));
+  // A new page must not inherit the old layer/wizard scroll offset.
+  pageLayer.scrollTop = 0;
   // 打开后焦点给返回按钮：键盘用户一按 Enter 就能回去
-  pageLayer.querySelector<HTMLButtonElement>(".page__back")?.focus();
+  pageLayer.querySelector<HTMLButtonElement>(".page__back")?.focus({ preventScroll: true });
 }
 
 function closePage(): void {
