@@ -56,7 +56,15 @@ try {
   const slot = dom.document.createElement('div'); dom.mount(slot); mountModeWorkspace(slot);
   const input = () => slot.querySelector('input[type="checkbox"]');
   const hint = () => slot.querySelector('.rec-hint').textContent;
-  assert.equal(input().disabled, true, 'C completion snapshot starts unsupported');
+  assert.equal(input(), null, 'file translation must not create a recording switch');
+  assert.equal(slot.querySelector('.rec-dot'), null, 'file translation has no recording indicator');
+  assert.equal(slot.querySelector('.rec-hint'), null, 'file translation has no irrelevant recording hint');
+  assert.ok(slot.querySelector('.file-panel'), 'file controls remain present');
+  for (const label of ['开始', '选择文件', '导出会话', '清空']) {
+    assert.ok([...slot.querySelectorAll('button')].some(button => button.textContent === label), label + ' remains available');
+  }
+  assert.equal(commands.some(command => command.name === 'set_recording'), false);
+  console.log('PASS file workspace omits recording controls without losing file/session/export controls');
   commands.length = 0;
   await switchMode('a');
   assert.deepEqual(commands.filter(c => ['set_mode', 'state'].includes(c.name)).map(c => c.name), ['set_mode', 'state']);
@@ -72,8 +80,15 @@ try {
   for (const mode of ['b', 'a', 'c', 'a']) {
     await switchMode(mode);
     assert.equal(store.get().mode, mode);
-    assert.equal(input().disabled, !['a', 'b'].includes(mode));
-    assert.equal(input().checked, true, 'mode refresh preserves backend recording preference');
+    if (mode === 'c') {
+      assert.equal(input(), null, 'returning to file translation removes the recording switch');
+      assert.equal(slot.querySelector('.rec-hint'), null);
+      assert.equal(slot.querySelector('.rec-dot'), null);
+      assert.equal(store.get().recordingState.recordingEnabled, true, 'hiding controls must not change recording preference');
+    } else {
+      assert.equal(input().disabled, false);
+      assert.equal(input().checked, true, 'mode refresh preserves backend recording preference');
+    }
   }
   await switchMode('b');
   input().checked = false; input().dispatchEvent(new Event('change')); await settle();
@@ -124,7 +139,7 @@ try {
   await switchMode('a');
   assert.equal(input().disabled, true); assert.equal(input().indeterminate, true);
   console.log('PASS missing authority remains unknown rather than optimistic enabled');
-  console.log('7 mode recording regression scenarios passed');
+  console.log('8 mode recording regression scenarios passed');
 } finally {
   off?.(); dom.restore();
   rmSync(scratch, { recursive: true, force: true });

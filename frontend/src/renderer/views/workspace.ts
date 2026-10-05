@@ -385,16 +385,6 @@ export function buildWorkspace(): PageHandle {
   const clearBtn = buildButton(tr("清空"));
   on(clearBtn, "click", () => store.patch({ subtitles: [], draft: null }));
 
-  const recSwitch = buildToggleSwitch(state.recording, tr("同时录音"));
-  recInputEl = recSwitch.querySelector<HTMLInputElement>("input")!;
-  lifecycle.listen(recInputEl, "change", () => {
-    void recordingControl?.toggle();
-    syncControls();
-  });
-  // 录音指示：红点比文字更接近"正在录"的直觉，也不占宽度
-  recDotEl = h("span", { class: "rec-dot", hidden: true });
-  recSwitch.append(recDotEl);
-
   actions.append(
     ctaEl,
     pauseBtnEl,
@@ -402,13 +392,24 @@ export function buildWorkspace(): PageHandle {
     h("span", { class: "catalog__spacer" }),
     exportBtn,
     clearBtn,
-    recSwitch,
   );
   pane.append(actions);
 
-  // 录音说明行：只讲音频去哪，不讲操作步骤
-  recordHintEl = h("p", { class: "field__hint rec-hint" });
-  pane.append(recordHintEl);
+  // Only live audio modes offer recording; file translation already has its source media.
+  if (state.mode === "a" || state.mode === "b") {
+    const recSwitch = buildToggleSwitch(state.recording, tr("同时录音"));
+    recInputEl = recSwitch.querySelector<HTMLInputElement>("input")!;
+    lifecycle.listen(recInputEl, "change", () => {
+      void recordingControl?.toggle();
+      syncControls();
+    });
+    recDotEl = h("span", { class: "rec-dot", hidden: true });
+    recSwitch.append(recDotEl);
+    actions.append(recSwitch);
+
+    recordHintEl = h("p", { class: "field__hint rec-hint" });
+    pane.append(recordHintEl);
+  }
 
   // ---- C 模式文件区
   const filePanel = h("div", { class: "file-panel" });
