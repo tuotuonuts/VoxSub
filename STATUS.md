@@ -364,3 +364,9 @@ Granite 4.0 1B Speech / Index-Echo S2TT 2B 固定版本官方完整下载与 SHA
 - loopback 兼容性（本机虚拟声卡多）→ 已源码级确认 isloopback 属性，M2 真机闭环通过
 - onnxruntime-directml 与 sherpa-onnx 版本兼容 → 已通过（DirectML 生效）
 - 模型下载源中国大陆可达性 → 2026-08-18 已逐一 HEAD 验证目录内 GitHub/HF/ModelScope 地址均返回 200
+
+## 单模型文件语音翻译（2026-10-05 UTC）
+
+Granite 英→中、Index-Echo 中→英/日/西已接入文件生产路线和模型广场。单/双模型公共控件、语言矩阵、双源固定权重下载、独立进程、取消/异常释放、媒体时间戳、导出、诊断、打包门禁已适配。A/B/D 保持原路线，不把受限 CPU 单模型当成实时加速。
+
+真实源码 Pipeline、IPC、冻结组件（含 Index 两窗）通过；Python 1347 passed，前端 check 通过，24 项离屏布局/0 聚焦违规。完整安装包、GPU/NPU、统计质量与长达数小时文件仍 NOT_RUN。详见 docs/SINGLE_MODEL_SPEECH_ACCEPTANCE.md 及同名 EVIDENCE.json。未重启用户实例、未修改用户配置历史；本轮未自行 push。

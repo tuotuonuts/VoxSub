@@ -431,3 +431,14 @@ recognition_language记录hint_applied/auto/hint_unavailable，源结果language
 - `LiveDraftState` 管一致前缀/完整词与300ms尾部释放，仍保留终句优先、配置/句号隔离、精确缓存；已识别源文可先显示，较旧终句不得覆盖后续草稿。
 - `asr_live_draft_enabled` 只控制展示/已有原生partial的草稿翻译；额外Zipformer预览通过 `asr_auxiliary_preview_enabled` 显式启用，默认False，且仅zh/en源可用。整段模型不因此被宣称为token streaming。
 - 模型注册表变化时须补能力矩阵、保存重启、prompt参数和原生/双桩边界测试；禁止把完整语言名归一化失败静默变成auto，禁止用拉丁文字推断英语直通多语翻译。
+
+### 文件专用单模型语音翻译（2026-10-05 UTC）
+
+- 配置：`file_translation_mode=dual|single`（旧配置默认 dual），独立 `speech_model_id`；不重写既有 ASR/MT/云端/TTS 配置。
+- 路由：仅 C 模式读取 single。A/B 和 D 仍走既有路线。当前开放语言方向由 `speech_contract.py` 定义，前后端共用能力矩阵。
+- 生命周期：Pipeline 单一 owner → `speech_runtime.py` → 独立 CPU worker。切换前释放停止状态下的双模型资源；worker/提取进程均隐藏、stdin=DEVNULL、Windows kill-on-close Job 归属，停止/异常退出不遗留推理进程。
+- 分工：`speech_assets` 固定文件清单；`speech_catalog` 上架描述；`speech_segments` 有界连续分窗与严格时间戳解析；`speech_worker` 本地校验/推理；`speech_index` 审阅后纳入源码的上游模型适配器。不执行下载目录中的 Python 文件，不使用 trust_remote_code。
+- 流程：读取或提取 PCM16/16kHz 单声道 → 逐窗处理（上限 15 秒，尽量在低能量边界切割，不丢音频帧）→ 保留媒体时间戳 → 推送已完成字幕 → 成功时原子导出。Index 上下文最多前两窗、每窗 2000 字符；Granite 分两次生成原文与译文，不伪称一次解码返回双语。
+- 错误：不足内存、超时、模型文件不完整、截断/错误时间戳、worker 异常退出均不得落成功。取消保留已完成字幕，完整输入文件仍由用户持有。不自动切到云端或另一模型。
+- UI：`ui/file-translation-form.ts` 为无 IPC 公共组件；workspace 的连接层与 settings 既有模型目录 owner 分别承接数据，避免多重监听。`utterance` 新增可选 startMs/endMs；重复文字在不同媒体时间不得去重。旧实时事件保持兼容。
+- 分发：轻量 ONNX backend 与 `.venv-speech` / frozen `VoxSubSpeechWorker` 分离；发布构建必须包含 `backend/speech-runtime`，不运行时下载依赖。

@@ -1,3 +1,4 @@
+import { buildFileTranslationPicker } from "../file-translation";
 import { buildToggleSwitch } from "../ui/controls";
 import { buildButton } from "../ui/button";
 /**
@@ -265,7 +266,7 @@ async function exportSession(): Promise<void> {
     const startMs = line.tsMs;
     const next = all[index + 1];
     // 结束时间取下一句的开始；最后一句给 3 秒收尾
-    const endMs = next ? Math.max(startMs + 400, next.tsMs) : startMs + 3000;
+    const endMs = line.endMs ?? (next ? Math.max(startMs + 400, next.tsMs) : startMs + 3000);
     return {
       source: line.source,
       translation: line.translation,
@@ -434,6 +435,9 @@ export function buildWorkspace(): PageHandle {
   filePanel.append(progressWrap);
   // 文件区只在 C 模式出现
   filePanel.hidden = state.mode !== "c";
+  const fileTranslation = buildFileTranslationPicker();
+  lifecycle.add(fileTranslation.dispose);
+  filePanel.append(fileTranslation.element);
   pane.append(filePanel);
 
   // ---- 字幕流
@@ -486,6 +490,7 @@ export function buildWorkspace(): PageHandle {
       else recordingControl?.observe(observedRecording);
     }
     filePanel.hidden = current.mode !== "c";
+    fileTranslation.sync();
     syncControls();
   }));
 

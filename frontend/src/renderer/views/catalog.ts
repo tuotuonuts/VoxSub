@@ -23,10 +23,11 @@ import { type PageHandle } from "../../shared/page-lifecycle";
 import { buildProgressBar } from "../ui/progress";
 import { buildField } from "../ui/field";
 
-type TaskFilter = "all" | "asr" | "translate" | "tts" | "ocr";
+type TaskFilter = "speech" | "all" | "asr" | "translate" | "tts" | "ocr";
 
 const TASK_LABEL: Record<string, string> = {
   asr: "识别",
+  speech: "语音翻译",
   translate: "翻译",
   tts: "朗读",
   ocr: "OCR",
@@ -76,6 +77,7 @@ export async function loadModels(pageId = activePageId): Promise<void> {
   if ((document.documentElement.dataset["modelsRoot"] ?? "") !== modelsRoot) return;
   document.documentElement.dataset["modelsRoot"] = result.modelsRoot;
   models = result.models;
+  if (Array.isArray(result.selectedModelIds)) document.documentElement.dataset["activeModels"] = result.selectedModelIds.join(",");
   let downloads = downloadsForRoot(store.get().downloads, result.modelsRoot);
   for (const model of models) {
     if (model.download) downloads = mergeDownload(downloads, model.id, model.download, result.modelsRoot);
@@ -254,6 +256,7 @@ function renderFilterBar(): HTMLElement {
     ["all", tr("全部")],
     ["translate", tr("翻译")],
     ["asr", tr("识别")],
+    ["speech", tr("语音翻译")],
     ["tts", tr("朗读")],
     ["ocr", "OCR"],
   ];
@@ -280,6 +283,10 @@ async function selectModel(model: ModelEntry): Promise<void> {
   if (command === CMD.setAsrModel) {
     const result = await callWithOutcome(CMD.setAsrModel, { model_id: model.id });
     if (result.outcome !== "ok") return;
+  } else if (model.task === "speech") {
+    const result = await callWithOutcome(CMD.setConfig, { updates: { speech_model_id: model.id, file_translation_mode: "single" } });
+    if (result.outcome !== "ok") return;
+    store.patch({ statusText: tr("已选为文件语音翻译模型；请切换到音视频文件模式") });
   } else if (model.task === "translate") {
     const tier = model.runtime === "opus-onnx" ? "fast" : "quality";
     const result = await callWithOutcome(CMD.setConfig, { updates: { translate_model_id: model.id, translate_tier: tier } });

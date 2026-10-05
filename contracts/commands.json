@@ -230,6 +230,36 @@
               "type": "null"
             }
           ]
+        },
+        "runtimeAvailable": {
+          "type": "boolean"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "officialRepo": {
+          "type": "string"
+        },
+        "recommendation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "type": "string"
+            },
+            "loadPercent": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -264,6 +294,12 @@
             "type": "string"
           },
           "description": "非致命诊断行。**非空不表示失败**，而是表示部分模型的安装状态确实算不出来（契约禁止把失败吞成 installed:false 还不留痕）。"
+        },
+        "selectedModelIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
@@ -513,6 +549,10 @@
         },
         "isFinal": {
           "type": "boolean"
+        },
+        "endMs": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

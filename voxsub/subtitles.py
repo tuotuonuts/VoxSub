@@ -15,6 +15,7 @@ class SubtitleLine:
     translation: str = ""
     ts_ms: int = 0
     is_final: bool = True
+    end_ms: int | None = None
 
 
 class SubtitleExporter:
@@ -36,7 +37,7 @@ class SubtitleExporter:
     ) -> None:
         body: list[str] = []
         for index, line in enumerate(lines, start=1):
-            end = line.ts_ms + (3000 if index == len(lines) else duration_ms)
+            end = line.end_ms if line.end_ms is not None else line.ts_ms + (3000 if index == len(lines) else duration_ms)
             body.append(
                 f"{index}\n{cls.format_timestamp(line.ts_ms)} --> "
                 f"{cls.format_timestamp(end)}\n{line.text}\n{line.translation}\n"
@@ -48,7 +49,7 @@ class SubtitleExporter:
         body = ["WEBVTT\n"]
         for line in lines:
             start = cls.format_timestamp(line.ts_ms).replace(",", ".")
-            end = cls.format_timestamp(line.ts_ms + 3000).replace(",", ".")
+            end = cls.format_timestamp(line.end_ms if line.end_ms is not None else line.ts_ms + 3000).replace(",", ".")
             body.append(f"{start} --> {end}\n{line.text}\n{line.translation}\n")
         write_text_atomically(output, "\n".join(body), encoding="utf-8")
 

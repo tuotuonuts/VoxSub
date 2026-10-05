@@ -1,0 +1,13 @@
+VoxSub single-model speech runtime
+
+voxsub/speech_index.py is derived from the model-only portions of infer.py in
+IndexTeam/Index-Echo-S2TT-2B, revision bc45ecb31f3fcd78ec0340851fe21c71458d4a75.
+Upstream: https://huggingface.co/IndexTeam/Index-Echo-S2TT-2B
+License: Apache-2.0. See Index-Echo-Apache-2.0.txt.
+Changes: removed CLI, downloads, upstream segmentation and shell execution;
+required local-only model access; bounded generation; explicit file ownership.
+
+Granite weights are provided separately by IBM under Apache-2.0.
+Upstream: https://huggingface.co/ibm-granite/granite-4.0-1b-speech
+Fixed revision: bd87ab862416353633ea431fe49b1614003623c5.
+Weights are not included in the application installer.

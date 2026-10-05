@@ -101,6 +101,7 @@ class ModelSpec:
     def task_label(self) -> str:
         return {
             "asr": "语音识别",
+            "speech": "语音翻译",
             "translate": "字幕翻译",
             "tts": "语音朗读",
             "ocr": "图片文字识别",
@@ -871,6 +872,11 @@ CATALOG: tuple[ModelSpec, ...] = (
 )
 
 
+from voxsub.speech_catalog import speech_catalog
+
+CATALOG += speech_catalog()
+
+
 def get_model(model_id: str) -> ModelSpec | None:
     return next((model for model in CATALOG if model.id == model_id), None)
 
@@ -1058,9 +1064,12 @@ class ModelMarketplace:
 
     def _missing_paths_at(self, base: Path, model: ModelSpec) -> tuple[str, ...]:
         missing: list[str] = []
+        sizes = {item.install_rel: item.size for source in model.sources[:1] for item in source.files}
         for rel in model.required_paths:
             path = base / rel
             valid = path.is_file()
+            if valid and model.task == "speech":
+                valid = path.stat().st_size == sizes.get(rel, path.stat().st_size)
             if valid and not model.archive and len(model.required_paths) == 1:
                 valid = self._single_file_valid(path, model)
             if not valid:

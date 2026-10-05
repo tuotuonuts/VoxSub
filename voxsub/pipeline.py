@@ -570,6 +570,9 @@ class Pipeline:
         self._threads: list[threading.Thread] = []
         self._source: AudioSource | None = None
 
+        self._speech_config = {"file_translation_mode": "dual", "speech_model_id": "speech-granite-4-1b"}
+        self._speech_runtime_state: dict = {"loaded": False, "phase": "not_loaded"}
+        self._cb_file_subtitle: list[Callable[[SubtitleLine], None]] = []
         self._cb_utterance: list[Callable[[str, str], None]] = []
         self._cb_partial: list[Callable[[str], None]] = []
         self._cb_draft: list[Callable[[str, str], None]] = []
@@ -748,6 +751,8 @@ class Pipeline:
     def set_langs(self, src: str, dst: str) -> bool:
         if self._closed or self._start_in_progress:
             return False
+        if self._running and self._mode == "c":
+            raise RuntimeError("文件处理期间不能切换语言，请先结束任务")
         normalized = (normalize_language(src, strict=True),
                       normalize_language(dst, strict=True))
         from voxsub.language_registry import LOAD_TIME_LANGUAGE_RUNTIMES
@@ -947,12 +952,28 @@ class Pipeline:
         return True
 
     @_state_locked
+    def set_file_translation(self, config: dict) -> None:
+        from voxsub.speech_contract import validate_selection, DEFAULT_SPEECH_MODEL
+        if not self._may_replace_resources():
+            raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
+        validate_selection(config)
+        selected = {"file_translation_mode": config.get("file_translation_mode", "dual"),
+                    "speech_model_id": config.get("speech_model_id", DEFAULT_SPEECH_MODEL)}
+        if selected == self._speech_config:
+            return
+        self._speech_config = selected
+        self._speech_runtime_state = {"loaded": False, "phase": "not_loaded"}
+        self._bump_config_generation("file_translation")
+
+    @_state_locked
     def apply_language_model_config(self, config: dict, updates: dict) -> None:
         """Apply saved model selection atomically, before acknowledging persistence."""
         from voxsub.translate.factory import kind_for_tier
 
         if not self._may_replace_resources():
             raise RuntimeError("会话运行中或仍在收尾，请结束后再修改模型设置")
+        if "file_translation_mode" in updates or "speech_model_id" in updates:
+            self.set_file_translation(config)
         if "asr_model_id" in updates:
             self.set_asr_model(str(config["asr_model_id"]))
         if any(key.startswith("stt_") for key in updates):
@@ -1077,6 +1098,16 @@ class Pipeline:
     # ---- 回调 (UI 订阅) ----
     def on_utterance(self, cb: Callable[[str, str], None]) -> None:
         self._cb_utterance.append(cb)
+
+    def on_file_subtitle(self, cb: Callable[[SubtitleLine], None]) -> None:
+        self._cb_file_subtitle.append(cb)
+
+    def _emit_file_subtitle(self, line: SubtitleLine) -> None:
+        for cb in self._cb_file_subtitle:
+            try:
+                cb(line)
+            except Exception:
+                logger.exception("文件字幕回调失败")
 
     def on_status(self, cb: Callable[[str], None]) -> None:
         self._cb_status.append(cb)
@@ -2034,6 +2065,7 @@ class Pipeline:
         from voxsub.language_capabilities import language_capabilities
 
         config = dict(self._translator_config or {})
+        config.update(self._speech_config)
         config.update(asr_model_id=self._requested_asr_model_id,
                       stt_provider=self._requested_stt_provider)
         return language_capabilities(config, mode=self._mode,
@@ -2129,10 +2161,28 @@ class Pipeline:
 
     def _new_file_threads(self) -> list[threading.Thread]:
         self._translation_context.reset()
+        if self._speech_config["file_translation_mode"] == "single":
+            from voxsub.speech_runtime import worker_command
+            worker_command()
+            self._release_dual_for_speech()
         if self._in_path is None or not self._in_path.exists():
             raise FileNotFoundError("请先选择要处理的音频或视频文件")
         return [threading.Thread(
             target=self._run_file_mode, name="pipeline-file", daemon=True)]
+
+    def _release_dual_for_speech(self) -> None:
+        # Start admission guarantees no old workers own these objects.
+        self._stop_tts_worker()
+        _close_quietly(self._translator)
+        _close_quietly(self._cloud_stt)
+        self._translator = None
+        self._cloud_stt = None
+        self._asr = None
+        self._vad = None
+        self._seg = None
+        self._context_processor = None
+        self._trans_kind = None
+        self._trans_pair = None
 
     def _new_realtime_threads(self) -> list[threading.Thread]:
         self._translation_context.reset()
@@ -2591,6 +2641,9 @@ class Pipeline:
             self._emit_status("文件不存在")
             self._set_state(PipelineState.FAILED)
             return
+        if self._speech_config["file_translation_mode"] == "single":
+            self._run_speech_file()
+            return
         wav_path: Optional[Path] = None
         try:
             self._emit_progress(0, 100, "正在准备音视频")
@@ -2616,6 +2669,35 @@ class Pipeline:
                     wav_path.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("临时音频删除失败: %s", wav_path, exc_info=True)
+            if self.state is not PipelineState.FAILED:
+                self._set_state(PipelineState.IDLE)
+
+    def _observe_speech_runtime(self, state: dict) -> None:
+        self._speech_runtime_state = {**self._speech_runtime_state, **state}
+
+    def _run_speech_file(self) -> None:
+        from voxsub.speech_runtime import run_speech_file, SpeechCancelled
+        try:
+            self._emit_progress(0, 100, "正在准备单模型文件翻译")
+            lines = run_speech_file(self._in_path, self._speech_config["speech_model_id"],
+                                    self._src_lang, self._dst_lang, self._stop_evt,
+                                    self._emit_progress, self._emit_file_subtitle, self._models_dir, self._observe_speech_runtime)
+            if self._stop_evt.is_set():
+                raise SpeechCancelled()
+            # Never overwrite a pre-existing user subtitle as a side effect.
+            out = self._in_path.with_name(self._in_path.stem + ".voxsub.srt")
+            if out.exists():
+                out = out.with_name(out.stem + "." + uuid.uuid4().hex[:8] + out.suffix)
+            self.write_srt(lines, out)
+            self._emit_progress(100, 100, "音视频处理完成")
+            self._emit_status(f"完成 → {out}")
+        except SpeechCancelled:
+            self._emit_status("文件翻译已取消；已完成字幕可手动导出")
+        except Exception as exc:
+            trace_error("speech_translation", exc, model=self._speech_config["speech_model_id"])
+            self._emit_status(f"文件处理失败: {exc}")
+            self._set_state(PipelineState.FAILED)
+        finally:
             if self.state is not PipelineState.FAILED:
                 self._set_state(PipelineState.IDLE)
 

@@ -1,3 +1,4 @@
+import { buildFileTranslationForm } from "../ui/file-translation-form";
 import { splitLanguagePair } from "../language-selection";
 import { SettingsModelCatalog } from "./settings-models";
 import { buildPercentageSlider } from "../ui/percentage-slider";
@@ -226,6 +227,22 @@ function localModelField(label: string, task: string, currentId: string,
 
 function translationTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
+  const owner = settingsLifecycle;
+  let savingFile = false;
+  const file = buildFileTranslationForm(updates => {
+    if (savingFile || store.get().running || settingsLifecycle !== owner) return;
+    savingFile = true;
+    void saveConfig(updates).finally(() => {
+      savingFile = false;
+      if (settingsLifecycle === owner) window.dispatchEvent(new Event("voxsub:settings"));
+    });
+  }, () => { void settingsModels.refresh(() => settingsLifecycle === owner); });
+  settingsModels.bind((models, loading, failed) => {
+    if (settingsLifecycle === owner) file.update(config, models.filter(m => m.task === "speech"),
+                                                savingFile || loading || store.get().running, failed);
+  });
+  page.append(card(tr("文件语音翻译"), [file.element]));
+  if (store.get().mode === "c" && config["file_translation_mode"] === "single") return page;
 
   const sttProvider = String(config["stt_provider"] ?? "local");
   const tier = String(config["translate_tier"] ?? "fast");

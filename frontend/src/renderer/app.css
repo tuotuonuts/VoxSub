@@ -584,6 +584,17 @@ body::before {
   flex-wrap: wrap;
 }
 
+.file-translation-form {
+  flex: 1 1 100%;
+  min-width: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 0.6154rem 1rem;
+}
+.file-translation-form > .field__hint { grid-column: 1 / -1; margin: 0; }
+.file-translation-form .select { min-width: 0; width: 100%; }
+
 .file-panel__name {
   font-size: 0.8462rem;
   color: var(--ink2);

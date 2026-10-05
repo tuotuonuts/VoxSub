@@ -10,6 +10,25 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "文件翻译方式": "File translation method",
+  "识别＋翻译（双模型）": "Recognition + translation (two models)",
+  "语音直接翻译（单模型）": "Direct speech translation (one model)",
+  "语音翻译模型": "Speech translation model",
+  "文件语音翻译": "File speech translation",
+  "语音翻译": "Speech translation",
+  "文件专用": "Files only",
+  "单模型翻译": "Single-model translation",
+  "请先到模型广场下载语音翻译模型": "Download a speech translation model in the model catalog first",
+  "无法读取文件翻译设置，请稍后重试": "Could not read file translation settings. Please retry later.",
+  "沿用识别与翻译设置；实时和 OCR 配置不受影响。": "Uses recognition and translation settings. Live audio and OCR settings are preserved.",
+  "缺少语音翻译运行组件，请安装完整版本": "Speech runtime is missing. Install the full version.",
+  "仅用于文件字幕。不启动独立翻译器、不录音、不朗读。CPU 处理可能较慢；Granite 原文和译文分两次生成，时间轴为分段范围。切换到实时或 OCR 会恢复原来的双模型配置。": "File subtitles only. No separate translator, recording or speech playback. CPU processing may be slow. Granite generates transcripts and translations separately with window-level timing. Live audio and OCR keep your two-model setup.",
+  "已选为文件语音翻译模型；请切换到音视频文件模式": "Selected for file speech translation. Switch to audio/video file mode.",
+  "把英文音视频直接翻译成中文，可同时生成英文原文。文件专用；原文与译文分两次生成，处理速度较慢。": "Translate English media directly into Chinese with an English transcript. Files only; two generations using the same weights. CPU processing is slow.",
+  "把中文音视频直接生成双语字幕，并提供句子时间戳。文件专用；处理速度较慢。": "Generate bilingual subtitles and sentence timestamps directly from Chinese media. Files only; CPU processing is slow.",
+  "英语 → 中文": "English \u2192 Chinese",
+  "中文 → 英语 / 日语 / 西班牙语": "Chinese \u2192 English / Japanese / Spanish",
+
   "重新处理当前图片": "Retry current image",
   "识别后自动翻译": "Translate after recognition",
   "框选屏幕并识别": "Select screen area and recognize",

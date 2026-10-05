@@ -67,7 +67,10 @@ def _translation_pairs(config: Mapping, kind: str | None) -> tuple[tuple[str, st
 def language_capabilities(config: Mapping, *, mode: str = "a",
                           translation_kind: str | None = None) -> dict:
     from voxsub.model_catalog import get_model
+    from voxsub.speech_contract import single_model, speech_options
 
+    if single_model(config, mode):
+        return speech_options(config)
     model = None
     if mode == "d":
         model = get_model(str(config.get("ocr_model_id") or "ocr-rapidocr-v6-small-builtin"))

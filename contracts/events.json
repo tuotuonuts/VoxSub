@@ -212,6 +212,14 @@
           },
           "translation": {
             "type": "string"
+          },
+          "startMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endMs": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }

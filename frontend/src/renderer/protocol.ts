@@ -100,6 +100,7 @@ export type CommandName = (typeof CMD)[keyof typeof CMD];
 /* ---------------------------------------------------------------- 数据类型 */
 
 export interface ModelCatalogResult {
+  selectedModelIds?: string[];
   models: ModelEntry[];
   modelsRoot: string;
   lookupRoots: string[];
@@ -118,6 +119,7 @@ export interface ModelEntry {
   installed: boolean;
   builtin: boolean;
   runtime: string;
+  runtimeAvailable?: boolean;
   license: string;
   languages: string;
   description: string;
@@ -356,7 +358,7 @@ export type BackendEvent =
   | { type: "session"; action: "start" | "stop" }
   | { type: "state"; running: boolean; paused: boolean; mode: string; state: string; configGeneration?: number; recordingEnabled?: boolean; recordingActive?: boolean; recordingSupported?: boolean; recordingCanChange?: boolean; recordingReason?: string }
   | { type: "migration"; phase: string; key?: string; index?: number; total?: number; error?: string; target?: string }
-  | { type: "utterance"; source: string; translation: string }
+  | { type: "utterance"; source: string; translation: string; startMs?: number; endMs?: number }
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }
   | { type: "progress"; completed: number; total: number; stage: string }

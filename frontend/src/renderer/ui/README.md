@@ -35,6 +35,7 @@
 | `progress.ts` | `buildProgressBar` | 进度展示，含 running/paused/done/failed 状态；暂停/继续/删除复用公共按钮，由模型页面处理 IPC |
 | `key-value.ts` | `buildKeyValueRow` | 标签/值数据行，支持多行设备清单；文本安全，无业务/IPC |
 | `status-row.ts` | `buildStatusRow` | 统一检测结果行 |
+| `file-translation-form.ts` | `buildFileTranslationForm` | 文件单/双模型选择表单；只接收配置、模型列表和状态，保存/重试由调用方处理，无 store/IPC；设置和文件工作区共用 |
 
 ## 本轮收编范围
 

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-speech/
 .venv.invalid-*/
 *.egg-info/
 .pytest_cache/

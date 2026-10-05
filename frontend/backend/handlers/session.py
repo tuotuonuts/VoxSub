@@ -233,7 +233,7 @@ class SessionHandlers:
 
         mode = str(args.get("mode") or "a")
         pipeline = getattr(self, "_pipeline", None)
-        if pipeline is not None and mode != "d":
+        if pipeline is not None and mode != "d" and getattr(pipeline, "mode", mode) == mode:
             return pipeline.language_capabilities
         return language_capabilities(dict(ConfigStore().load()), mode=mode)
 
@@ -294,6 +294,7 @@ class SessionHandlers:
                     translation=str(item.get("translation", "")),
                     ts_ms=int(ts_ms),
                     is_final=bool(item.get("isFinal", True)),
+                    end_ms=int(item["endMs"]) if item.get("endMs") is not None else None,
                 )
             )
 

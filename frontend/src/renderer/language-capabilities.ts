@@ -55,6 +55,10 @@ function syncControls(): void {
   renderOptions(sourceSelect, matrix?.sources ?? [], state.sourceLang);
   renderOptions(targetSelect, matrix?.targets[state.sourceLang] ?? [], state.targetLang);
   if (sourceSelect && state.running && matrix?.sourceLanguageHint === "load_time") sourceSelect.disabled = true;
+  if (state.running && state.mode === "c") {
+    if (sourceSelect) sourceSelect.disabled = true;
+    if (targetSelect) targetSelect.disabled = true;
+  }
   if (hint) hint.textContent = state.languagePending ? tr("正在确认模型支持的语言…") : state.languageNotice ||
     (state.running && matrix?.sourceLanguageHint === "load_time" ? tr("此模型需停止会话后切换识别语言") :
       matrix?.sourceLanguageHint === "unavailable" ? tr("此模型自动判断语种，不支持强制指定识别语言") : "");

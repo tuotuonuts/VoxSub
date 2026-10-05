@@ -62,7 +62,7 @@ export interface AppState {
   targetLang: string;
   statusText: string;
   /** 字幕流（稳定终句）。tsMs 是相对会话开始的毫秒数（导出 SRT 用）。 */
-  subtitles: Array<{ source: string; translation: string; tsMs: number }>;
+  subtitles: Array<{ source: string; translation: string; tsMs: number; endMs?: number }>;
   /** 会话开始的单调时刻（performance.now()），用于计算每句相对时间 */
   sessionStartedAt: number | null;
   /** 当前句草稿（原位替换，不进入历史） */
@@ -146,9 +146,9 @@ class Store {
   }
 
   /** 追加字幕。同一句草稿转为终句时替换而非追加重复行。 */
-  commitSubtitle(source: string, translation: string): void {
+  commitSubtitle(source: string, translation: string, startMs?: number, endMs?: number): void {
     const last = this.state.subtitles[this.state.subtitles.length - 1];
-    if (last && last.source === source && last.translation === translation) {
+    if (startMs === undefined && last && last.source === source && last.translation === translation) {
       this.patch({ draft: null });
       return;
     }
@@ -156,8 +156,8 @@ class Store {
     // 每句带相对时间：SRT/VTT 导出需要真实时间轴，
     // 用序号乘固定间隔是假的（长句与停顿都会被拉平）。
     const startedAt = this.state.sessionStartedAt ?? performance.now();
-    const tsMs = Math.max(0, Math.round(performance.now() - startedAt));
-    const subtitles = [...this.state.subtitles, { source, translation, tsMs }];
+    const tsMs = startMs ?? Math.max(0, Math.round(performance.now() - startedAt));
+    const subtitles = [...this.state.subtitles, { source, translation, tsMs, ...(endMs === undefined ? {} : { endMs }) }];
     this.patch({ subtitles, draft: null, sessionStartedAt: startedAt });
   }
 
@@ -280,7 +280,7 @@ class Store {
 
         break;
       case "utterance":
-        this.commitSubtitle(event.source, event.translation);
+        this.commitSubtitle(event.source, event.translation, event.startMs, event.endMs);
         break;
       case "draft":
         this.updateDraft({ source: event.source, translation: event.translation });
@@ -427,7 +427,7 @@ function changesLanguageModels(command: CommandName, args: unknown): boolean {
   if ([CMD.setAsrModel, CMD.setStt, CMD.setTranslator].some(value => value === command)) return true;
   if (command !== CMD.setConfig || !args || typeof args !== "object") return false;
   const updates = (args as { updates?: Record<string, unknown> }).updates ?? {};
-  return ["asr_model_id", "ocr_model_id", "translate_model_id", "translate_tier", "stt_provider", "stt_model", "translate_model"]
+  return ["file_translation_mode", "speech_model_id", "asr_model_id", "ocr_model_id", "translate_model_id", "translate_tier", "stt_provider", "stt_model", "translate_model"]
     .some(key => key in updates);
 }
 

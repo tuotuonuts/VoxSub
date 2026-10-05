@@ -535,6 +535,7 @@ def build_sidecar() -> None:
         print((result.stderr or "")[-1500:])
         die("sidecar 打包失败")
 
+    build_speech_runtime()
     size = dir_size(BACKEND_DIST)
     ok(f"sidecar 就位：{human(size)}（耗时 {elapsed}s）")
 
@@ -545,6 +546,21 @@ def build_sidecar() -> None:
             fail(f"{name} 未被排除（{len(found)} 个文件）—— 检查 spec 的 EXCLUDES")
         else:
             ok(f"{name} 已排除")
+
+
+def build_speech_runtime() -> None:
+    """Distribute the independently killable CPU worker alongside the light sidecar."""
+    import shutil
+    python = REPO / ".venv-speech" / "Scripts" / "python.exe"
+    if not python.is_file():
+        die("缺少语音翻译运行环境，请先运行 scripts/setup-speech-runtime.ps1")
+    result = run([str(python), "-m", "PyInstaller", str(FRONTEND / "backend" / "speech_worker.spec"),
+                  "--noconfirm", "--distpath", str(FRONTEND / "backend" / "dist"),
+                  "--workpath", str(FRONTEND / "backend" / "build-speech")], REPO, timeout=2400)
+    source = FRONTEND / "backend" / "dist" / "VoxSubSpeechWorker"
+    if result.returncode or not (source / "VoxSubSpeechWorker.exe").is_file():
+        die("语音翻译组件打包失败；不发布缺少组件的模型入口")
+    shutil.copytree(source, BACKEND_DIST / "speech-runtime", dirs_exist_ok=True)
 
 
 def verify_sidecar() -> None:

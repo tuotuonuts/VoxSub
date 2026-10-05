@@ -107,13 +107,23 @@ class ModelsHandlers:
 
             recommendation = _rating_for_card(model, profile, failures)
             item = _catalog_item(model, size, installed, installed_bytes, recommendation)
+            if model.task == "speech":
+                from voxsub.speech_runtime import runtime_status
+                item["runtimeAvailable"] = runtime_status()["status"] != "fail"
             item["download"] = _download_for_card(downloads, model, installed, failures)
             items.append(item)
 
         for line in failures:
             print(f"[list_models] {line}", file=sys.stderr)
 
+        from voxsub.config_store import ConfigStore
+        config = ConfigStore().load()
+        selected = [str(config.get(key, "")) for key in
+                    ("asr_model_id", "translate_model_id", "ocr_model_id", "tts_model_id_zh", "tts_model_id_en")]
+        if config.get("file_translation_mode") == "single":
+            selected.append(str(config.get("speech_model_id", "")))
         return {
+            "selectedModelIds": selected,
             "models": items,
             "modelsRoot": str(marketplace.models_dir.resolve()),
             "lookupRoots": [str(p) for p in marketplace._lookup_roots],
@@ -175,6 +185,9 @@ class ModelsHandlers:
     def _cmd_uninstall_model(self, args: dict[str, Any]) -> dict[str, Any]:
         model_id = str(args.get("model_id", ""))
         marketplace = self._marketplace(args)
+        pipeline = getattr(self, "_pipeline", None)
+        if pipeline is not None and not pipeline._may_replace_resources():
+            raise RuntimeError("请先结束当前任务，再卸载模型")
         marketplace.uninstall(self._spec(model_id))
         return {"model_id": model_id}
 

@@ -1,0 +1,162 @@
+{
+  "checked_at_utc": "2026-10-05T21:23:21.080080+00:00",
+  "base_revision": "f847a78c3d4d4fafa302957acf082e57854b8275",
+  "scope": "File-only single-model CPU speech translation; source and frozen worker; not a released installer",
+  "source_native": [
+    {
+      "model": "granite",
+      "source": "en",
+      "target": "zh",
+      "status": "idle",
+      "seconds": 90.375,
+      "cues": 1,
+      "media_ranges_ms": [
+        [
+          0,
+          3246
+        ]
+      ]
+    },
+    {
+      "model": "index",
+      "source": "zh",
+      "target": "en",
+      "status": "idle",
+      "seconds": 90.875,
+      "cues": 1,
+      "media_ranges_ms": [
+        [
+          130,
+          3300
+        ]
+      ]
+    },
+    {
+      "model": "index",
+      "source": "zh",
+      "target": "ja",
+      "status": "idle",
+      "seconds": 84.859,
+      "cues": 1,
+      "media_ranges_ms": [
+        [
+          130,
+          3300
+        ]
+      ]
+    },
+    {
+      "model": "index",
+      "source": "zh",
+      "target": "es",
+      "status": "idle",
+      "seconds": 66.844,
+      "cues": 1,
+      "media_ranges_ms": [
+        [
+          130,
+          3300
+        ]
+      ]
+    }
+  ],
+  "frozen_native": [
+    {
+      "model": "granite",
+      "status": "PASS",
+      "seconds": 87.484,
+      "cues": 1,
+      "media_ranges_ms": [
+        [
+          0,
+          3246
+        ]
+      ]
+    },
+    {
+      "model": "index-long",
+      "status": "PASS",
+      "seconds": 203.797,
+      "cues": 2,
+      "media_ranges_ms": [
+        [
+          110,
+          3440
+        ],
+        [
+          16070,
+          19300
+        ]
+      ]
+    }
+  ],
+  "ipc": {
+    "status": "PASS",
+    "seconds": 85.0,
+    "timestamp_events": 1,
+    "final_state": "idle",
+    "shutdown_ack": true
+  },
+  "lifecycle": {
+    "video": {
+      "status": "PASS",
+      "rate": 16000,
+      "channels": 1,
+      "width": 2,
+      "frames": 52224
+    },
+    "native_cancel": {
+      "status": "PASS",
+      "seconds": 9.89100000000326,
+      "stop_latency": 0.046999999991385266,
+      "loaded": true
+    },
+    "remaining_children": [],
+    "abnormal_parent_exit": "pytest Windows Job ownership test passed"
+  },
+  "downloads": {
+    "passed": 58,
+    "checks": 58,
+    "kinds": {
+      "full_sha256": 44,
+      "range_prefix_compare_not_full_redownload": 14
+    },
+    "full_fresh_weight_download_both_regions": false,
+    "resume": "existing production persistent download controller; regression suite passed"
+  },
+  "layout": {
+    "checks": 24,
+    "failures": 0,
+    "samples": 157,
+    "visibilityOrFocusViolations": 0,
+    "rendererErrors": []
+  },
+  "regression": {
+    "python": {
+      "passed": 1347,
+      "skipped": 8,
+      "deselected_hardware_audio": 7,
+      "existing_xfail": 1
+    },
+    "frontend_check": "PASS",
+    "new_speech_ui_checks": 11,
+    "new_speech_python_cases": 24
+  },
+  "privacy": {
+    "played_audio": false,
+    "captured_audio": false,
+    "user_config_or_history_changed": false,
+    "user_app_restarted": false,
+    "audio_or_transcripts_in_this_report": false
+  },
+  "not_run": [
+    "GPU/NPU",
+    "statistical WER/BLEU quality evaluation",
+    "hours-long native files",
+    "published/installed Electron installer",
+    "network reachability from every mainland ISP",
+    "complete fresh multi-GB download on both sources"
+  ],
+  "evidence_directory": "D:\\OneDrive\\app_dve\\single-speech-20261006",
+  "backup_directory": "D:\\OneDrive\\app_dve\\VoxSub\\.backups\\single-speech-20261006-042346"
+}

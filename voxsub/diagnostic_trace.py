@@ -110,7 +110,14 @@ def traced_stage(stage: str):
                 error(stage, exc, duration_ms=round((time.perf_counter() - started) * 1000, 2))
                 raise
             else:
-                record(stage, "completed", duration_ms=round((time.perf_counter() - started) * 1000, 2))
+                outcome = "completed"
+                if stage == "file_session" and args:
+                    state = getattr(getattr(args[0], "state", None), "value", "")
+                    if state == "failed":
+                        outcome = "failed"
+                    elif getattr(args[0], "_stop_evt").is_set():
+                        outcome = "cancelled"
+                record(stage, outcome, duration_ms=round((time.perf_counter() - started) * 1000, 2))
                 return result
             finally:
                 _REQUEST_ID.reset(token)

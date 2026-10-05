@@ -27,6 +27,7 @@ export interface SubtitleLineRecord {
   translation: string;
   /** 相对会话开始的毫秒数（导出 SRT/VTT 的时间轴用）。 */
   tsMs: number;
+  endMs?: number;
 }
 
 export interface TimelineState {

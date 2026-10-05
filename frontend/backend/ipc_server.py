@@ -212,6 +212,9 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         pipeline.on_status(lambda text: _event("status", text=str(text)))
         pipeline.on_utterance(
             lambda src, dst: _event("utterance", source=src, translation=dst))
+        pipeline.on_file_subtitle(lambda line: _event("utterance", source=line.text,
+                                                     translation=line.translation,
+                                                     startMs=line.ts_ms, endMs=line.end_ms))
         pipeline.on_partial(lambda text: _event("partial", text=str(text)))
         pipeline.on_draft(
             lambda src, dst: _event("draft", source=src, translation=dst))
@@ -267,6 +270,8 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
                 _apply("lang_pair", lambda: pipeline.set_langs(src, dst))
 
         _apply("mode", lambda: pipeline.set_mode(str(config.get("mode") or "a")))
+
+        _apply("file_translation", lambda: pipeline.set_file_translation(config))
 
         # ---- 识别：provider / 模型 / 调优
         _apply("stt_provider",
@@ -499,8 +504,11 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
         updates = args.get("updates") or {}
         store = ConfigStore()
+        if "file_translation_mode" in updates or "speech_model_id" in updates:
+            from voxsub.speech_contract import validate_selection
+            validate_selection({**dict(store.load()), **updates})
         if self._pipeline is not None and any(
-                key == "asr_model_id" or key.startswith(("stt_", "translate_"))
+                key in ("asr_model_id", "file_translation_mode", "speech_model_id") or key.startswith(("stt_", "translate_"))
                 for key in updates):
             config = {**dict(store.load()), **updates}
             self._pipeline.apply_language_model_config(config, updates)

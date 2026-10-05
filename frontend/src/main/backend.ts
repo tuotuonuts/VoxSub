@@ -22,7 +22,7 @@ export type BackendEvent =
   | { type: "status"; text: string }
   | { type: "disconnected"; reason?: string }
   | { type: "request-timeout"; command: string; hint?: string }
-  | { type: "utterance"; source: string; translation: string }
+  | { type: "utterance"; source: string; translation: string; startMs?: number; endMs?: number }
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }
   | { type: "progress"; completed: number; total: number; stage: string }

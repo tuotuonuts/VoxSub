@@ -35,6 +35,9 @@ datas += [
 ]
 hiddenimports = [
     "voxsub.pipeline",
+    "voxsub.speech_runtime",
+    "voxsub.speech_contract",
+    "voxsub.speech_catalog",
     "voxsub.translate.factory",
     "rapidocr.main",
     # ipc_server 内部用函数级 import，静态分析看不到，必须显式声明

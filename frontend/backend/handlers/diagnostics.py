@@ -17,7 +17,7 @@ from ipc_protocol import _event
 
 
 def _check_signature(config: dict[str, Any]) -> tuple:
-    keys = ("mode", "lang_pair", "stt_provider", "asr_model_id", "translate_tier", "translate_model_id",
+    keys = ("file_translation_mode", "speech_model_id", "mode", "lang_pair", "stt_provider", "asr_model_id", "translate_tier", "translate_model_id",
             "models_root", "mic_device_id", "loopback_device_id", "capture_process_id", "record_with_translation")
     return tuple((key, config.get(key)) for key in keys)
 

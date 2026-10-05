@@ -187,3 +187,18 @@ Customize them in **Settings → Shortcuts**. Every binding is empty by default,
 Actions: show/hide the main window, start/end the current session, pause/resume, end the session, toggle save recording, show/hide the subtitle overlay, and toggle overlay click-through. Registered shortcuts continue to work while the running app is minimized or hidden in the tray; they stop when the app fully exits. Session actions use the current mode, source and models. They do not pick a file or operate OCR, and toggling recording respects session capabilities without starting audio capture on its own.
 
 Validation checks app duplicates, known reserved combinations and OS registration failures. Conflicts or failed saves preserve the old settings and registrations. Other apps' window-local shortcuts cannot be reliably detected; avoid common editing combinations. Global shortcuts are suspended during capture and restored on cancellation, loss of focus, minimization or page closure. Restoration failures are shown as inactive. On restart, bindings are registered again and conflicts are reported without silently assigning replacements.
+
+## Optional single-model file speech translation
+
+Audio/video file mode offers **Recognition + translation (two models)** and **Direct speech translation (one model)**. Two-model operation remains the default. The file workspace and settings reuse the same selection component.
+
+- **Granite 4.0 1B Speech**: English → Chinese is admitted in this release. The same weights generate transcript and translation in two passes. Timing is window-level, not forced word alignment.
+- **Index-Echo S2TT 2B**: Chinese → English, Japanese or Spanish, with source text, translation and sentence timestamps.
+- **Files only, currently isolated CPU inference.** This is not a live-translation speedup or a promise of lower memory use. Microphone, system audio and OCR retain their existing configuration and routes.
+- No separate translator, audio capture or playback is started. Models and languages are locked during a file job. Cancel terminates this job's isolated process; completed cues remain available for manual export without automatically saving an incomplete file.
+- Automatic output uses `.voxsub.srt` and avoids replacing an existing file. Manual SRT/VTT/TXT export preserves media timestamps.
+- The catalog provides pinned Hugging Face global and HF Mirror mainland mirror sources with per-file SHA256 verification and the existing pause/resume/delete and restart-paused download workflow. The mirror is third-party; reachability is network-dependent.
+
+Source builds additionally run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-speech-runtime.ps1` to provision `.venv-speech`; `-China` selects a dependency index mirror. This environment is separate from the light backend and is never silently installed when a user starts a job. Full release builds package `VoxSubSpeechWorker` separately and fail if that component cannot be built.
+
+See `docs/SINGLE_MODEL_SPEECH_ACCEPTANCE.md` for evidence and limitations. This does not mean an installer has been published or an existing user instance has been updated.

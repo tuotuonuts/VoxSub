@@ -19,6 +19,12 @@ export class SettingsModelCatalog {
 
   clearFields(): void { this.fields = []; }
 
+  bind(update: (models: ModelEntry[], loading: boolean, failed: boolean) => void): void {
+    const refresh = () => update(this.models, this.loading, this.failed);
+    this.fields.push(refresh);
+    refresh();
+  }
+
   async refresh(isCurrent: IsCurrent = () => true): Promise<void> {
     const request = ++this.revision;
     this.loading = true;

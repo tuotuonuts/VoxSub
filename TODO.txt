@@ -549,3 +549,8 @@
 [x] IPC/Pipeline/Frontend 三阶段本地提交：f50dd05 / 869be20 / 8af1258；安全 Python 909 passed，npm run check 通过；隔离逆序 revert 的 tree/clean 匹配。未推送。
 [!] GUI、真实迁移/音频/模型/硬件与打包仍 NOT_RUN；清理硬超时无自动恢复通道，保留退出保护，详见最终报告。
 [!] `scripts/run_tests.py` 曾有未诊断的 exit 1；本轮未复跑它（runner 会清理过期 `.pytest-run` 目录），改用显式 scratch、标记排除的直接 pytest 安全套件。
+
+[2026-10-05 UTC] 文件专用单模型语音翻译
+DONE: Granite/Index 实际产品路线、模型广场、固定双源/哈希、公共 UI、单/双模型配置隔离、语言方向、媒体时间戳/导出、取消/子进程生命周期、日志、源码隔离依赖与冻结 worker 打包门禁。
+DONE: 真实短样本四个方向、真实 IPC、冻结双模型（逐款运行）与 Index 跨两窗、MP4 静默提取、真实加载后取消及异常父进程退出；Python 1347 passed、前端 check、24 项离屏布局。
+NOT_RUN: GPU/NPU、数小时文件、统计语音/翻译质量、完整 Electron 安装包发布、双线路完整重新下载全部权重。保持文件专用，不开放实时同传。报告 docs/SINGLE_MODEL_SPEECH_ACCEPTANCE.md。
