@@ -225,6 +225,16 @@ export interface LogEntry {
   message: string;
 }
 
+export type HardwareCategory = "cpu" | "motherboard" | "memory" | "gpus" | "monitors" | "disks" | "sound" | "network" | "os" | "bios" | "drivers";
+export interface HardwareInventoryGroup {
+  status: "ok" | "not_detected" | "unavailable";
+  items: Array<Record<string, string | number | null>>;
+}
+export interface HardwareInventory {
+  checkedAt: string;
+  source: string;
+  categories: Record<HardwareCategory, HardwareInventoryGroup>;
+}
 export interface HardwareProfile {
   cpu: string;
   physicalCores: number;
@@ -234,6 +244,7 @@ export interface HardwareProfile {
   vramGb: number;
   gpuProvider: string;
   npu: string;
+  inventory?: HardwareInventory;
 }
 
 export interface SubtitleLine {

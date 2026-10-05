@@ -1,3 +1,11 @@
+## 详细硬件型号画像（2026-10-05）
+
+- CPU显示真实产品名，不再Family/Model架构代号；主板、每条内存/DDR/速率、所有显示适配器/显示器、磁盘、声卡、网卡、OS/BIOS/驱动，未知参数明确状态，不猜芯片组/显存/品牌。
+- 独立只读隐私白名单CIM采集器（隐藏/限时/分类隔离/60秒缓存），开发者环境快照复用；公共KeyValueRow收编现有kv并支持多行、中英文/加载/失败/迟到回复隔离，IPC契约同步。
+- 前端完整check/build与新UI13项通过；Python专项58 passed、新硬件19项，完整安全回归1122 passed/6 skipped/17 deselected/1 xfailed。
+- 最新真实Electron/IPC/本机硬件7项通过，实际i5-13600KF、MAG B760M、两根16GB DDR5 6000、RTX4060 8GB、显示器与各磁盘声网卡；最终213窗口采样0显示/聚焦违规/无残留，离屏宽窄布局验证。
+- 报告docs/HARDWARE_PROFILE_ACCEPTANCE.md，.backups/hardware-models-20261005-150032备份；仓库外hardware-profile-20261005/DELIVERY.json；本轮本地commit，未push/打包/改用户配置/模型/历史/日志。跨硬件/安装版/实际推理NOT_RUN；此前日志SenseVoice下载问题未混入本轮。
+
 ## 文件翻译页移除同时录音（2026-10-05）
 
 - C音视频文件页不再创建同时录音开关、录音红点与无关说明行；A麦克风/B系统声音保留既有开关与保存偏好，文件选择/开始/导出/清空不变。

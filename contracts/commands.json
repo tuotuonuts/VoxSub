@@ -488,6 +488,9 @@
         },
         "npu": {
           "type": "string"
+        },
+        "inventory": {
+          "$ref": "#/$defs/HardwareInventory"
         }
       }
     },
@@ -636,6 +639,107 @@
         },
         "error": {
           "type": "string"
+        }
+      }
+    },
+    "HardwareInventoryGroup": {
+      "type": "object",
+      "required": [
+        "status",
+        "items"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "not_detected",
+            "unavailable"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "HardwareInventory": {
+      "type": "object",
+      "required": [
+        "checkedAt",
+        "source",
+        "categories"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "checkedAt": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "categories": {
+          "type": "object",
+          "required": [
+            "cpu",
+            "motherboard",
+            "memory",
+            "gpus",
+            "monitors",
+            "disks",
+            "sound",
+            "network",
+            "os",
+            "bios",
+            "drivers"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "motherboard": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "memory": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "gpus": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "monitors": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "disks": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "sound": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "network": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "os": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "bios": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            },
+            "drivers": {
+              "$ref": "#/$defs/HardwareInventoryGroup"
+            }
+          }
         }
       }
     }
@@ -2205,7 +2309,7 @@
       "handleSpecial": false,
       "needsPipeline": false,
       "returnsNone": false,
-      "summary": "本机硬件画像（CPU/内存/GPU/NPU）。",
+      "summary": "本机硬件型号清单（CPU/主板/内存条/显卡/显示器/磁盘/声卡/网卡/系统与驱动），不证明实际推理设备。",
       "source": "ipc_server.py:973",
       "args": {
         "type": [

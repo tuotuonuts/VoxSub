@@ -1,3 +1,5 @@
+import { buildKeyValueRow } from "../ui/key-value";
+import { hardwareRows } from "../../shared/hardware-profile";
 import { buildTabNav } from "../ui/tab-nav";
 import { buildCardFrame } from "../ui/card";
 import { buildSelect, buildTextInput } from "../ui/controls";
@@ -188,33 +190,23 @@ async function loadDevicesAndHardware(): Promise<void> {
   const blocks: HTMLElement[] = [];
 
   if (profile) {
-    const rows: Array<[string, string]> = [
-      ["CPU", `${profile.cpu}（${profile.physicalCores}核 / ${profile.logicalCores}线程）`],
-      ["内存", `${profile.ramGb.toFixed(1)} GB`],
-      ["显卡", profile.gpu ? `${profile.gpu}（${profile.vramGb.toFixed(1)} GB）` : "未检测到独立显卡"],
-      [tr("可用推理后端（非实际运行设备）"), profile.gpuProvider || "CPU"],
-      ["NPU", profile.npu || "未检测到"],
-    ];
     const { element: card, body } = buildCardFrame(tr("硬件画像"));
-    for (const [key, value] of rows) {
-      const row = h("div", { class: "kv" });
-      row.append(h("span", { class: "kv__key", text: key }), h("span", { class: "kv__value", text: value }));
-      body.append(row);
-    }
+    body.append(h("p", { class: "hint", text: tr("仅展示系统报告的型号（可能包含虚拟设备）；未提供的参数不会推测。设备存在不代表模型正在使用它。") }));
+    for (const row of hardwareRows(profile, tr)) body.append(buildKeyValueRow(row.label, row.values));
+    if (profile.inventory?.checkedAt) body.append(buildKeyValueRow(tr("检查时间"), new Date(profile.inventory.checkedAt).toLocaleString()));
+    blocks.push(card);
+  } else {
+    const { element: card, body } = buildCardFrame(tr("硬件画像"));
+    body.append(h("p", { class: "hint", text: tr("硬件信息未能读取，请重新进入此页重试。") }));
     blocks.push(card);
   }
 
   const { element: deviceCard, body: deviceBody } = buildCardFrame(tr("检测到的设备（运行未验证）"));
   for (const device of devices?.devices ?? []) {
-    const row = h("div", { class: "kv" });
-    row.append(
-      h("span", { class: "kv__key", text: device.provider }),
-      h("span", { class: "kv__value", text: device.name + (device.scoreMs !== null ? ` · ${device.scoreMs.toFixed(1)} ms` : "") }),
-    );
-    deviceBody.append(row);
+    deviceBody.append(buildKeyValueRow(device.provider, device.name + (typeof device.scoreMs === "number" ? ` · ${device.scoreMs.toFixed(1)} ms` : "")));
   }
   if (!deviceBody.childElementCount) {
-    deviceBody.append(h("p", { class: "hint", text: "未枚举到可用设备" }));
+    deviceBody.append(h("p", { class: "hint", text: tr("未枚举到可用设备") }));
   }
   blocks.push(deviceCard);
 
@@ -432,7 +424,7 @@ async function exportLog(): Promise<void> {
 
 function buildDeviceTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
-  deviceEl = h("div", { class: "device-wrap" });
+  deviceEl = h("div", { class: "device-wrap" }, [h("p", { class: "hint", text: tr("正在读取硬件型号…") })]);
   page.append(deviceEl);
   void loadDevicesAndHardware();
   return page;

@@ -2,9 +2,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 import json
-import os
 import platform
-import subprocess
 from typing import Any, Mapping
 
 from voxsub.diagnostic_privacy import safe_snapshot
@@ -107,16 +105,14 @@ def environment_snapshot() -> dict[str, Any]:
             "python": platform.python_version(), "memory_total_mb": round(psutil.virtual_memory().total / 2**20),
             "memory_available_mb": round(psutil.virtual_memory().available / 2**20), "devices": [],
             "device_inventory_status": "not_run", "scope": "Device model/driver inventory, CPU, board, BIOS and OS versions; no serials/identifiers"}
-    if os.name == "nt":
-        script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $cpu=@(Get-CimInstance Win32_Processor | Select-Object Name); $drivers=@(Get-CimInstance Win32_PnPSignedDriver | Select-Object -First 256 DeviceName,DeviceClass,DriverVersion,DriverDate,Manufacturer); $board=@(Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer,Product); $bios=@(Get-CimInstance Win32_BIOS | Select-Object Manufacturer,SMBIOSBIOSVersion); $os=Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber; @{cpu=$cpu;drivers=$drivers;board=$board;bios=$bios;os=$os} | ConvertTo-Json -Depth 4 -Compress"
-        try:
-            result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-                                    capture_output=True, encoding="utf-8", errors="replace", timeout=12,
-                                    creationflags=subprocess.CREATE_NO_WINDOW, check=True)
-            data["devices"] = json.loads(result.stdout)
-            data["device_inventory_status"] = "ok"
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            data["device_inventory_status"] = type(exc).__name__
+    from voxsub.hardware_inventory import hardware_inventory
+    inventory = hardware_inventory()
+    data["hardware"] = inventory
+    groups = inventory["categories"]
+    data["devices"] = {key: groups[category]["items"] for key, category in
+                       (("cpu", "cpu"), ("board", "motherboard"), ("bios", "bios"), ("os", "os"), ("drivers", "drivers"))}
+    data["device_inventory_status"] = "ok" if all(group["status"] != "unavailable" for group in groups.values()) else "partial_or_unavailable"
+    data["scope"] = "System-reported hardware model/capacity and driver inventory; no serials, MAC, host or user IDs; inference unverified"
     return safe_snapshot(data)
 
 

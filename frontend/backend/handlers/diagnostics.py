@@ -172,9 +172,14 @@ class DiagnosticsHandlers:
     def _cmd_hardware_profile(self, args: dict[str, Any]) -> dict[str, Any]:
         from voxsub.hardware import detect_hardware  # noqa: PLC0415
 
+        from voxsub.hardware_inventory import hardware_inventory  # noqa: PLC0415
+
         profile = detect_hardware()
+        inventory = hardware_inventory()
+        cpus = inventory["categories"]["cpu"]["items"]
+        cpu = " / ".join(item["Name"] for item in cpus if item["Name"]) or str(profile.cpu_name)
         return {
-            "cpu": str(profile.cpu_name),
+            "cpu": cpu,
             "physicalCores": int(profile.physical_cores),
             "logicalCores": int(profile.logical_cores),
             "ramGb": float(profile.ram_gb),
@@ -182,4 +187,5 @@ class DiagnosticsHandlers:
             "vramGb": float(profile.vram_gb),
             "gpuProvider": str(profile.gpu_provider),
             "npu": str(profile.npu_name),
+            "inventory": inventory,
         }

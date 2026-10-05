@@ -380,7 +380,8 @@ def _system_resources() -> tuple[str, int, int, float]:
         # in diagnostics; the conservative fallback remains unchanged.
         logger.warning("psutil 硬件检测失败，使用保守资源默认值", exc_info=True)
         ram_gb = _windows_ram_gb() or ram_gb
-    cpu_name = platform.processor().strip() or platform.machine() or "未知 CPU"
+    from voxsub.hardware_inventory import processor_model
+    cpu_name = processor_model(platform.processor()) or "未知处理器型号"
     return cpu_name, physical, logical, ram_gb
 
 

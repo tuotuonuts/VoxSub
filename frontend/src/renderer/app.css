@@ -1288,6 +1288,14 @@ body::before {
   overflow-wrap: anywhere;
 }
 
+.kv__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3077rem;
+}
+
 /* ----------------------------------------------------------- OCR */
 .ocr__status {
   font-size: 0.8462rem;
