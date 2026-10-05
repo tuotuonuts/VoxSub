@@ -1,3 +1,10 @@
+export function splitLanguagePair(pair: string): [string, string] {
+  // Registry codes use ISO language + optional script (e.g. zh-hant), not a
+  // fixed list of languages. Keep both sides intact when restoring settings.
+  const match = /^((?:auto|[a-z]{2,3})(?:-[a-z]{4})?)-([a-z]{2,3}(?:-[a-z]{4})?)$/.exec(pair.toLowerCase());
+  return match ? [match[1]!, match[2]!] : ["", ""];
+}
+
 type Call = (command: string, args: Record<string, unknown>) => Promise<unknown>;
 let languageUpdateQueue: Promise<void> = Promise.resolve();
 

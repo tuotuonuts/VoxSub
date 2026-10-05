@@ -954,7 +954,7 @@ def test_context_qwen_uses_zipformer_sidecar_for_live_drafts(
 
     p = Pipeline(provider="cpu", models=tmp_path / "models")
     p.set_asr_model("asr-qwen3-0.6b-int8")
-    p.set_asr_tuning({"profile": "context"})
+    p.set_asr_tuning({"profile": "context", "auxiliary_preview_enabled": True})
     monkeypatch.setattr(p, "_ensure_translator", lambda: None)
     vad_path = tmp_path / "models" / "vad" / "silero_vad_v5.onnx"
     vad_path.parent.mkdir(parents=True)
@@ -1220,7 +1220,7 @@ def test_asr_tuning_presets_keep_generative_context_longer() -> None:
     assert auto_qwen["max_utterance_ms"] == 12_000
     assert auto_qwen["silence_ms"] == 700
     assert auto_zip["max_utterance_ms"] == 4_500
-    assert auto_zip["partial_interval_ms"] == 360
+    assert auto_zip["partial_interval_ms"] == 140
     p.set_asr_tuning({"profile": "context"})
     context_zip = p._effective_asr_tuning(generative=False)  # noqa: SLF001
     assert context_zip["partial_interval_ms"] == 140

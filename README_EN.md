@@ -21,6 +21,12 @@ Current source candidate: `0.9.0-beta`; the current public GitHub download remai
 - [Download the installer](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe) · [Download the SHA256 file](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe.sha256)
 - Previous public build: [VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta).
 
+## Language selection and live previews in the current source
+
+Language choices come from the selected model combination: source languages intersect the recognizer and translator inputs; targets follow the translator outputs. There is no global Chinese/English/Japanese/Korean cap. OPUS remains Chinese/English-only. The UI explains models without a forced-language API; changing FunASR's source language requires ending the session first.
+
+Native streaming models can publish revisable partial text; the current sentence-based adapters are not native token streams. Settings → Recognition tuning includes an **Auxiliary Chinese/English preview (uses extra resources)** switch, off by default. Opting in loads the bundled bilingual preview recognizer without downloading anything; other source languages are not supported by this helper. Audio segments are not rerun for correction by default. These are source changes, not a new public installer release.
+
 ## Available Features
 
 - **Electron overlay background opacity (source candidate, not repackaged):** Settings → Appearance → Overlay background opacity supports 20%–100% (default 92%). Drag to preview; release or finish a keyboard adjustment to save `overlay_opacity`. Text stays fully opaque. Hiding/showing retains the current value; restarting/reloading restores the saved value. Startup/backend-ready restoration never overwrites a newer preview or edit. Offline checks: `cd frontend && npm run test:overlay-opacity`; config checks: `python -m pytest tests/test_overlay_opacity.py`.

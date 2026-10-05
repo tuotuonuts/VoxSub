@@ -20,6 +20,13 @@ console.log('PASS shared partial merge: progression, correction, rollback, unrel
 const dom = installMiniDom();
 try {
  const {store} = await importShared('src/renderer/store.ts',{bundle:true});
+ let notices = 0; const unwatch = store.subscribe(() => notices++);
+ store.applyEvent({type:'partial',text:'Hello world'});
+ const beforeDuplicate = notices;
+ store.applyEvent({type:'draft',source:'Hello world',translation:''});
+ store.applyEvent({type:'partial',text:'Hello world'});
+ assert.equal(notices, beforeDuplicate, 'identical partial/draft pair cannot repaint subscribers');
+ unwatch();
  store.applyEvent({type:'draft',source:'Hello world',translation:'你好'});
  store.applyEvent({type:'partial',text:'Hello world again'});
  assert.equal(store.get().draft.translation,'你好');
@@ -43,6 +50,10 @@ vm.runInNewContext(js,state);
 state.feed({type:'draft',source:'Hello world',translation:'你好'});
 state.feed({type:'partial',text:'Hello world again'});
 assert.equal(state.draft.dst,'你好');
+const duplicatePaints=state.paintCount;
+state.feed({type:'draft',source:'Hello world again',translation:'你好'});
+state.feed({type:'partial',text:'Hello world again'});
+assert.equal(state.paintCount,duplicatePaints,'duplicate IPC events do not repaint the overlay');
 state.feed({type:'partial',text:'Another sentence'});
 assert.equal(state.draft.dst,'');
 state.feed({type:'draft',source:'Another sentence',translation:'另一句话'});

@@ -1,3 +1,4 @@
+import { splitLanguagePair } from "../language-selection";
 import { SettingsModelCatalog } from "./settings-models";
 import { buildPercentageSlider } from "../ui/percentage-slider";
 import { buildShortcutSettings } from "./shortcuts";
@@ -146,6 +147,7 @@ export async function loadConfig(): Promise<void> {
     asr_hotwords: config["asr_hotwords"] ?? "",
     asr_context_hold_ms: config["asr_context_hold_ms"] ?? 1800,
     asr_live_draft_enabled: config["asr_live_draft_enabled"] ?? true,
+    asr_auxiliary_preview_enabled: config["asr_auxiliary_preview_enabled"] ?? false,
     asr_context_correction: config["asr_context_correction"] ?? true,
     asr_filler_mode: config["asr_filler_mode"] ?? "light",
   };
@@ -156,7 +158,7 @@ export async function loadConfig(): Promise<void> {
   // 否则重启后界面显示 store 默认值（自动识别→中文），而后端按配置里的
   // lang_pair 跑，两边各说各话（用户看到"我设的是日文，界面却写着自动识别"）。
   const pair = String(config["lang_pair"] ?? "");
-  const [pairSource, pairTarget] = pair.split("-");
+  const [pairSource, pairTarget] = splitLanguagePair(pair);
   if (pairSource && pairTarget
       && (store.get().sourceLang !== pairSource || store.get().targetLang !== pairTarget)) {
     store.patch({ sourceLang: pairSource, targetLang: pairTarget });
@@ -568,6 +570,8 @@ function buildTuningContent(
     numField("asr_beam_paths", "识别候选数", 1, 12, 1, "越大越准，但更慢"),
     numField("asr_max_new_tokens", "单句最大文字量", 64, 4096, 64),
     boolField("asr_live_draft_enabled", "实时双语草稿"),
+    boolField("asr_auxiliary_preview_enabled", "中英辅助预览（额外占用资源）"),
+    h("p", { class: "field__hint", text: tr("默认关闭。为整段识别模型启用内置中英流式预览，会额外加载识别模型；不支持其他源语言，不自动下载。") }),
     h("p", { class: "field__hint", text: tr("实时模式下尽早显示原文和可修订译文；需要模型提供部分识别结果，文件翻译不使用草稿。") }),
     field(tr("常用词 / 专有名词"), textInput(String(displayValue("asr_hotwords") ?? ""), (v) => {
       tuningDraft["asr_hotwords"] = v;

@@ -167,6 +167,11 @@ class Store {
     this.patch({ logs });
   }
 
+  private updateDraft(draft: { source: string; translation: string }): void {
+    if (draft.source === this.state.draft?.source && draft.translation === this.state.draft?.translation) return;
+    this.patch({ draft });
+  }
+
   applyEvent(event: BackendEvent): void {
     switch (event.type) {
       case "ready": {
@@ -278,11 +283,11 @@ class Store {
         this.commitSubtitle(event.source, event.translation);
         break;
       case "draft":
-        this.patch({ draft: { source: event.source, translation: event.translation } });
+        this.updateDraft({ source: event.source, translation: event.translation });
         break;
       case "partial":
         // Preserve a compatible preview; unrelated source never borrows it.
-        this.patch({ draft: mergePartialDraft(this.state.draft, event.text) });
+        this.updateDraft(mergePartialDraft(this.state.draft, event.text));
         break;
       case "progress":
         this.patch({

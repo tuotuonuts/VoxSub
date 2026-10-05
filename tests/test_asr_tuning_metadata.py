@@ -43,7 +43,7 @@ CONTEXT_KEYS = {
 }
 
 # 与档位无关、任何档位都可改的键
-ALWAYS_KEYS = ("hotwords", "max_new_tokens", "live_draft_enabled")
+ALWAYS_KEYS = ("hotwords", "max_new_tokens", "live_draft_enabled", "auxiliary_preview_enabled")
 
 
 def _resolve(profile: str, overrides: dict) -> dict:
@@ -302,7 +302,7 @@ def test_effective_tuning_covers_every_ui_key() -> None:
     expected = {
         "asr_vad_threshold", "asr_silence_ms", "asr_max_utterance_ms",
         "asr_beam_paths", "asr_max_new_tokens", "asr_hotwords",
-        "asr_context_hold_ms", "asr_live_draft_enabled",
+        "asr_context_hold_ms", "asr_live_draft_enabled", "asr_auxiliary_preview_enabled",
         "asr_context_correction", "asr_filler_mode",
     }
     assert set(reported) == expected, f"缺少 {expected - set(reported)}"

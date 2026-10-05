@@ -162,6 +162,7 @@ function renderHistory(): void {
   for (const text of rows) {
     const row = document.createElement("p");
     row.className = "history__row";
+    row.dir = "auto";
     row.textContent = text;
     historyEl.append(row);
   }
@@ -503,6 +504,7 @@ function handleBackendEvent(event: {
 
   if (event.type === "draft") {
     // 实时草稿：更新原文与实时翻译
+    if (draft.src === (event.source ?? "") && draft.dst === (event.translation ?? "")) return;
     draft = { src: event.source ?? "", dst: event.translation ?? "" };
     if (!isBrowsing()) paint();
     return;
@@ -511,6 +513,7 @@ function handleBackendEvent(event: {
   if (event.type === "partial") {
     // Do not blank a readable translation for every word-level source update.
     const next = mergePartialDraft({ source: draft.src, translation: draft.dst }, event.text ?? "");
+    if (draft.src === next.source && draft.dst === next.translation) return;
     draft = { src: next.source, dst: next.translation };
     if (!isBrowsing()) paint();
     return;
@@ -537,6 +540,8 @@ function wireBackend(): void {
 /* -------------------------------------------------------------- 启动 */
 
 function boot(): void {
+  srcEl?.setAttribute("dir", "auto");
+  dstEl?.setAttribute("dir", "auto");
   document.documentElement.style.setProperty("--overlay-frame-inset", `${OVERLAY_FRAME_INSET}px`);
   document.documentElement.style.setProperty("--overlay-frame-radius", `${OVERLAY_FRAME_RADIUS}px`);
   applyVisuals();

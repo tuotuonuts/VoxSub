@@ -1,5 +1,7 @@
 """Read-only quick diagnostics and explicit environment snapshot. No model loading."""
 from __future__ import annotations
+
+from voxsub.language_registry import split_language_pair
 from datetime import datetime, timezone
 import json
 import platform
@@ -61,7 +63,7 @@ def _language_check(config: Mapping[str, Any], mode: str) -> dict[str, Any]:
     from voxsub.language_capabilities import language_capabilities
     try:
         capabilities = language_capabilities(config, mode=mode)
-        source, target = str(config.get("lang_pair", "zh-en")).split("-", 1)
+        source, target = split_language_pair(config.get("lang_pair", "zh-en"))
         valid = target in capabilities.get("targets", {}).get(source, ())
         return {"check": "语言兼容性", "status": "ok" if valid else "fail", "detail": source + " → " + target,
                 "impact": "识别与翻译是否支持当前语言组合", "suggestion": "无需处理" if valid else "选择两个模型共同支持的语言组合"}

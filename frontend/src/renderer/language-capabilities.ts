@@ -3,15 +3,24 @@ import { h, on } from "./dom";
 import { CMD } from "./protocol";
 import { callWithOutcome, setLanguageModelListener, store } from "./store";
 import { persistLanguagePair } from "./language-selection";
-import { tr } from "./i18n";
+import { tr, currentLanguage } from "./i18n";
 
 export interface LanguageCapabilities {
   sources: string[];
   targets: Record<string, string[]>;
   compatible: boolean;
   reason: string;
+  labels?: Record<string, { zh: string; en: string }>;
+  sourceLanguageHint?: string;
 }
-const LABELS: Record<string, string> = { auto: "自动识别", zh: "中文", en: "英文", ja: "日文", ko: "韩文" };
+export function languageLabel(code: string): string {
+  if (code === "auto") return tr("自动识别");
+  const locale = currentLanguage() === "en" ? "en" : "zh";
+  const label = matrix?.labels?.[code]?.[locale];
+  if (label) return label;
+  try { return new Intl.DisplayNames([locale], { type: "language" }).of(code) ?? code; }
+  catch { return code; }
+}
 let matrix: LanguageCapabilities | null = null;
 let generation = 0;
 let sourceSelect: HTMLSelectElement | null = null;
@@ -32,9 +41,9 @@ export function chooseLanguagePair(meta: LanguageCapabilities, source: string, t
 function renderOptions(select: HTMLSelectElement | null, codes: string[], selected: string): void {
   if (!select) return;
   // Keep DOM/focus untouched for irrelevant store updates (logs, subtitles, etc.).
-  const key = JSON.stringify(codes);
+  const key = JSON.stringify(codes.map(code => [code, languageLabel(code)]));
   if (select.dataset["languageOptions"] !== key) {
-    select.replaceChildren(...codes.map(code => h("option", { value: code, text: tr(LABELS[code] ?? code) })));
+    select.replaceChildren(...codes.map(code => h("option", { value: code, text: languageLabel(code) })));
     select.dataset["languageOptions"] = key;
   }
   select.value = selected;
@@ -45,7 +54,10 @@ function syncControls(): void {
   const state = store.get();
   renderOptions(sourceSelect, matrix?.sources ?? [], state.sourceLang);
   renderOptions(targetSelect, matrix?.targets[state.sourceLang] ?? [], state.targetLang);
-  if (hint) hint.textContent = state.languagePending ? tr("正在确认模型支持的语言…") : state.languageNotice;
+  if (sourceSelect && state.running && matrix?.sourceLanguageHint === "load_time") sourceSelect.disabled = true;
+  if (hint) hint.textContent = state.languagePending ? tr("正在确认模型支持的语言…") : state.languageNotice ||
+    (state.running && matrix?.sourceLanguageHint === "load_time" ? tr("此模型需停止会话后切换识别语言") :
+      matrix?.sourceLanguageHint === "unavailable" ? tr("此模型自动判断语种，不支持强制指定识别语言") : "");
 }
 
 async function savePair(source: string, target: string): Promise<void> {
@@ -75,7 +87,7 @@ function reconcile(notify: boolean): void {
     store.patch({ languageCompatible: false, languageNotice: tr(matrix.reason || "当前识别模型与翻译模型不兼容") });
   } else if (pair[0] !== state.sourceLang || pair[1] !== state.targetLang) {
     const message = tr("原语言组合不受当前模型支持，已调整为 {source} → {target}")
-      .replace("{source}", tr(LABELS[pair[0]] ?? pair[0])).replace("{target}", tr(LABELS[pair[1]] ?? pair[1]));
+      .replace("{source}", languageLabel(pair[0])).replace("{target}", languageLabel(pair[1]));
     store.patch({ sourceLang: pair[0], targetLang: pair[1], languageCompatible: false, languagePending: true, languageNotice: message });
     void savePair(pair[0], pair[1]);
     if (notify) store.pushLog({ ts: new Date().toISOString(), level: "WARNING", message });

@@ -41,3 +41,7 @@ await persistLanguagePair("en", "zh", async (name, args) => {
 assert.equal(calls.length, before + 1, "model change during set_langs must suppress stale config write");
 
 console.log("PASS language selection sequencing and failure semantics");
+const { splitLanguagePair } = module.exports;
+for (const [pair, expected] of [["fr-zh",["fr","zh"]], ["en-zh-hant",["en","zh-hant"]], ["zh-hant-fr",["zh-hant","fr"]], ["zh-hant-zh-hant",["zh-hant","zh-hant"]]]) {
+  if (JSON.stringify(splitLanguagePair(pair)) !== JSON.stringify(expected)) throw new Error(`Invalid pair restore: ${pair}`);
+}

@@ -1,24 +1,18 @@
 """Executable language contracts, not marketing language counts.
 
-Current normalization/translation adapters expose zh/en/ja/ko. Broader model
-claims do not silently expand that application contract. No weights are loaded.
+Model contracts, prompt routing and canonical configuration share a registry.
+No weights are loaded. Targets are directional, not intersected with ASR inputs.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping, Iterable
 from voxsub.language_guard import LANGUAGE_NAMES, normalize_language
 
-# (explicit selectable languages, safe automatic source languages).
-# Auto is withheld when unconstrained decoding can emit languages outside the
-# current translator contract (Qwen3, SenseVoice incl. Cantonese, Parakeet).
-_ASR_CONTRACTS = {
-    "sherpa-streaming-transducer": (("zh", "en"), ("zh", "en")),
-    "sherpa-funasr-nano": (("zh", "en", "ja"), ("zh", "en", "ja")),
-    "sherpa-qwen3-asr": (("zh", "en", "ja", "ko"), ()),
-    "sherpa-sense-voice": (("zh", "en", "ja", "ko"), ()),
-    "sherpa-moonshine-v2": (("en",), ()),
-    "sherpa-parakeet-tdt": (("en",), ()),
-}
+from voxsub.language_registry import ASR_LANGUAGES, LANGUAGE_HINT_MODES, LANGUAGE_LABELS
+
+# Auto is offered only if every possible decoded source has a translation path.
+_ASR_CONTRACTS = {runtime: (langs, langs if len(langs) > 1 else ())
+                  for runtime, langs in ASR_LANGUAGES.items()}
 
 
 # Declared per-weight contracts, not the framework's multilingual model family.
@@ -55,7 +49,7 @@ def build_options(asr_languages: Iterable[str], pairs: Iterable[tuple[str, str]]
 
 def _translation_pairs(config: Mapping, kind: str | None) -> tuple[tuple[str, str], ...]:
     from voxsub.model_catalog import get_model
-    from voxsub.translate.factory import kind_for_tier, _class_for_kind
+    from voxsub.translate.factory import kind_for_tier, kind_languages
 
     effective = kind or kind_for_tier(str(config.get("translate_tier") or "fast"), dict(config))
     if effective != "cloud":
@@ -66,8 +60,7 @@ def _translation_pairs(config: Mapping, kind: str | None) -> tuple[tuple[str, st
         # The fast tier always runs OPUS, even when a quality model is selected.
         if effective == "opus-fast" or (model is not None and model.runtime == "opus-onnx"):
             return tuple((src, dst) for src in ("zh", "en") for dst in ("zh", "en"))
-    cls = _class_for_kind(effective)
-    langs = tuple(getattr(cls, "langs", ()) or ())
+    langs = kind_languages(effective, config)
     return tuple((src, dst) for src in langs for dst in langs)
 
 
@@ -75,19 +68,25 @@ def language_capabilities(config: Mapping, *, mode: str = "a",
                           translation_kind: str | None = None) -> dict:
     from voxsub.model_catalog import get_model
 
+    model = None
     if mode == "d":
         model = get_model(str(config.get("ocr_model_id") or "ocr-rapidocr-v6-small-builtin"))
         explicit = _OCR_CONTRACTS.get(model.runtime if model is not None and model.task == "ocr" else "", ())
         automatic = ()  # OCR can recognize Latin languages outside current translation routing.
     elif str(config.get("stt_provider") or "local") == "cloud":
         # Cloud adapter exposes the application's four-language routing contract.
-        explicit = tuple(code for code in LANGUAGE_NAMES if code != "auto")
+        explicit = ("zh", "en", "ja", "ko")
         automatic = ()  # custom OpenAI-compatible APIs have no safe detection declaration
     else:
         model = get_model(str(config.get("asr_model_id") or "asr-zipformer-bilingual-fast"))
         explicit, automatic = _ASR_CONTRACTS.get(
             model.runtime if model is not None and model.task == "asr" else "", ((), ()))
-    return build_options(explicit, _translation_pairs(config, translation_kind), automatic)
+    result = build_options(explicit, _translation_pairs(config, translation_kind), automatic)
+    result["labels"] = {code: {"zh": LANGUAGE_LABELS[code], "en": LANGUAGE_NAMES[code]}
+                        for code in LANGUAGE_NAMES}
+    runtime = model.runtime if model is not None else "cloud"
+    result["sourceLanguageHint"] = LANGUAGE_HINT_MODES.get(runtime, "provider")
+    return result
 
 
 def validate_pair(capabilities: Mapping, source: str, target: str) -> None:

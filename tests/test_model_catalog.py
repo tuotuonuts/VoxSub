@@ -225,7 +225,7 @@ def test_funasr_runtime_receives_selected_language_and_prompt(tmp_path: Path, mo
         source_lang="en",
     )
 
-    assert captured["language"] == "en"
+    assert captured["language"] == "英语"
     assert "English" in str(captured["system_prompt"])
     assert "English" in str(captured["user_prompt"])
 

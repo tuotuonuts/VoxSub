@@ -163,32 +163,52 @@ class LiveDraftState:
                 self._finals_pending
                 or not self._source
                 or current < max(self._ready_at, self._last_translation_started + min_interval_seconds)
-                or self._translation_requested_revision == self._revision
             ):
                 return None
-            if self._stable_updates and not self._meaningful_update(current):
+            source = self._request_source(current)
+            if self._stable_updates and not self._meaningful_update(current, source):
                 return None
-            self._requested_source = self._source
+            if not source or source == self._requested_source:
+                return None
+            self._requested_source = source
             self._translation_requested_revision = self._revision
             self._last_translation_started = current
             self._ready_at = 0.0
-            return DraftTranslationRequest(self._revision, self._source, self._sentence_id)
+            return DraftTranslationRequest(self._revision, source, self._sentence_id)
+
+    def _request_source(self, current: float) -> str:
+        """Use agreed text during speech; release the full tail after a short pause."""
+        if not self._stable_updates or current - self._updated_at >= 0.30:
+            return self._source
+        prefix = self._stable_prefix
+        tail = self._source[len(prefix):]
+        # A changing Latin token is not a complete word. CJK can progress by character.
+        if prefix and tail and prefix[-1].isascii() and prefix[-1].isalnum() and tail[0].isalnum():
+            prefix = prefix.rsplit(" ", 1)[0] if " " in prefix else ""
+        return prefix.strip()
+
+    def pending_final_view(self, source: str, sentence_id: int | None) -> DraftView | None:
+        """Show a final's source only if it cannot cover newer recognized speech."""
+        with self._lock:
+            if self._source or sentence_id != self._sentence_id - 1:
+                return None
+            return DraftView(source)
 
     @property
     def sentence_id(self) -> int:
         with self._lock:
             return self._sentence_id
 
-    def _meaningful_update(self, current: float) -> bool:
+    def _meaningful_update(self, current: float, source: str) -> bool:
         # A brief quiet period always releases the latest hypothesis. Continued
         # speech can also release substantial growth without waiting forever.
         if current - self._updated_at >= 0.30:
             return True
         if not self._requested_source:
             return len(self._stable_prefix.strip()) >= 4
-        if not _source_progresses(self._requested_source, self._source):
+        if not _source_progresses(self._requested_source, source):
             return True  # genuine corrections must not be frozen
-        growth = self._source[len(self._requested_source):].strip()
+        growth = source[len(self._requested_source):].strip()
         return len(growth) >= 4 or len(growth.split()) >= 2
 
     def accept_translation(

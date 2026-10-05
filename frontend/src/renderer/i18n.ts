@@ -595,8 +595,8 @@ const EN: Dict = {
   "更擅长长句、专业术语和复杂上下文翻译，适合重视译文质量、配置较好的电脑。": "Better at long sentences, specialist terminology and complex context. For users who prioritize translation quality on capable computers.",
   "更擅长复杂语境和专业术语，保留更多细节，适合配置较好的电脑；占用比同系列轻量档更高。": "Better at complex context and specialist terminology while retaining more detail. For capable computers; heavier than the lighter option in this family.",
   "着重保留复杂句和术语的表达细节，适合对翻译质量要求较高、内存充裕的电脑。": "Prioritizes detail in complex sentences and terminology. For demanding translation work on computers with ample memory.",
-  "适合日常对话和字幕翻译，在译文质量与电脑负担之间取得平衡，支持 33 种语言。": "For everyday conversations and subtitle translation, balancing quality and computer load. Supports 33 languages.",
-  "适合日常翻译，也更注重表达细节；比同系列轻量档多占一些内存，支持 33 种语言。": "For everyday translation with more emphasis on detail. Uses more memory than the lighter option in this family; supports 33 languages.",
+  "适合日常对话和字幕翻译，在译文质量与电脑负担之间取得平衡，支持多种语言互译。": "For everyday conversations and subtitle translation, balancing quality and computer load. Supports multilingual translation.",
+  "适合日常翻译，也更注重表达细节；比同系列轻量档多占一些内存，支持多种语言互译。": "For everyday translation with more emphasis on detail. Uses more memory than the lighter option in this family; supports multilingual translation.",
   "在较小体积里尽量保留翻译细节，适合不想运行大型模型、但内存比较充裕的电脑。": "Preserves translation detail in a smaller model. For computers with ample memory when a large model is not desired.",
   "自然地读出中文、英文或中英混合译文，适合日常朗读；体积和电脑负担比轻量款更高。": "Naturally reads Chinese, English or mixed-language translations aloud. Heavier and larger than lightweight voice models.",
   "快速读出中文译文，占用少，适合实时朗读和配置较低的电脑。": "Quickly reads Chinese translations aloud with low resource use, for real-time reading on less powerful computers.",
@@ -645,7 +645,7 @@ const EN: Dict = {
   "中文 / 英语 / 日语 · 7 种中文方言": "Chinese / English / Japanese · 7 Chinese dialects",
   "30 种语言 · 22 种中文方言": "30 languages · 22 Chinese dialects",
   "中文 / 粤语 / 英语 / 日语 / 韩语": "Chinese / Cantonese / English / Japanese / Korean",
-  "33 种语言": "33 languages",
+  "多语互译 · 含粤语与繁体中文": "Multilingual translation, including Cantonese and Traditional Chinese",
   "中文 / 英语 / 中英混读": "Chinese / English / mixed reading",
   "英语（美国）": "English (US)",
   "使用": "Use",
@@ -723,6 +723,13 @@ const EN: Dict = {
 };
 
 /** English alias for curated catalog text; never translate user content for indexing. */
+EN["中英辅助预览（额外占用资源）"] = "Auxiliary Chinese/English preview (uses extra resources)";
+EN["默认关闭。为整段识别模型启用内置中英流式预览，会额外加载识别模型；不支持其他源语言，不自动下载。"] = "Off by default. Adds the built-in Chinese/English streaming recognizer alongside a sentence-based model. Uses extra resources, supports no other source languages, and does not download models.";
+
+// Language adapter limitations are informational, never a claim of hard enforcement.
+EN["此模型需停止会话后切换识别语言"] = "Stop the session to change this model's recognition language";
+EN["此模型自动判断语种，不支持强制指定识别语言"] = "This model detects the language automatically; forced recognition language is unavailable";
+
 export function englishText(zh: string): string { return EN[zh] ?? zh; }
 
 export function tr(zh: string): string {

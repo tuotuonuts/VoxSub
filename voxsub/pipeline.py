@@ -144,6 +144,7 @@ TUNING_KEY_MAP: dict[str, str] = {
     "asr_hotwords": "hotwords",
     "asr_context_hold_ms": "context_hold_ms",
     "asr_live_draft_enabled": "live_draft_enabled",
+    "asr_auxiliary_preview_enabled": "auxiliary_preview_enabled",
     "asr_context_correction": "context_correction",
     "asr_filler_mode": "filler_mode",
 }
@@ -152,7 +153,7 @@ TUNING_KEY_MAP: dict[str, str] = {
 _EFFECTIVE_UI_KEYS: tuple[str, ...] = (
     "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
     "max_new_tokens", "hotwords",
-    "context_hold_ms", "live_draft_enabled", "context_correction", "filler_mode",
+    "context_hold_ms", "live_draft_enabled", "auxiliary_preview_enabled", "context_correction", "filler_mode",
 )
 
 
@@ -198,10 +199,11 @@ def resolve_tuning_values(tuning: Mapping[str, Any], generative: bool) -> dict[s
         "hotwords": str(tuning.get("hotwords", "")).strip(),
         "context_enabled": profile == "context",
         "live_draft_enabled": bool(tuning.get("live_draft_enabled", True)),
+        "auxiliary_preview_enabled": bool(tuning.get("auxiliary_preview_enabled", False)),
         # Reading the already-decoded Zipformer hypothesis is cheap.  The
         # context profile samples it near word cadence; legacy profiles
         # retain their existing update frequency.
-        "partial_interval_ms": 140 if profile == "context" else 360,
+        "partial_interval_ms": 140 if bool(tuning.get("live_draft_enabled", True)) else 360,
         "context_hold_ms": max(200, min(4000, int(tuning.get("context_hold_ms", 1800)))),
         "context_correction": bool(tuning.get("context_correction", True)),
         "filler_mode": (
@@ -748,6 +750,10 @@ class Pipeline:
             return False
         normalized = (normalize_language(src, strict=True),
                       normalize_language(dst, strict=True))
+        from voxsub.language_registry import LOAD_TIME_LANGUAGE_RUNTIMES
+        runtime = getattr(self._asr, "runtime", "")
+        if self._running and normalized[0] != self._src_lang and runtime in LOAD_TIME_LANGUAGE_RUNTIMES:
+            raise RuntimeError("此识别模型需停止会话后切换识别语言；翻译语言仍可切换")
         # 语言对的写入与代次递增必须与 :meth:`_lang_snapshot` 互斥，否则取快照
         # 的线程可能读到"新语言 + 旧代次"这种半更新状态 —— 那种组合会让缓存键
         # 撒谎（同一代次下出现两种语言对）。
@@ -1001,6 +1007,7 @@ class Pipeline:
             "asr_hotwords": values["hotwords"],
             "asr_context_hold_ms": values["context_hold_ms"],
             "asr_live_draft_enabled": values["live_draft_enabled"],
+            "asr_auxiliary_preview_enabled": values["auxiliary_preview_enabled"],
             "asr_context_correction": values["context_correction"],
             "asr_filler_mode": values["filler_mode"],
         }
@@ -1151,6 +1158,10 @@ class Pipeline:
                 logger.exception("清理实时字幕草稿回调异常: %r", cb)
 
     def _on_asr_partial(self, text: str) -> None:
+        # A hot source-language change must not expose bilingual sidecar output
+        # as if it were a Japanese/French/etc. recognition result.
+        if self._is_generative and self._src_lang not in {"zh", "en"}:
+            return
         text = str(text or "").strip()
         if not text:
             return
@@ -1815,12 +1826,20 @@ class Pipeline:
                          sentence_id=getattr(item, "sentence_id", None), generation=snapshot.generation,
                          pipeline_session_id=self._diagnostic_session_id)
         self._active_translation_sentence_id = getattr(item, "sentence_id", None)
+        self._show_pending_final_source(text, snapshot)
         try:
             self._translate_sentence(text, queued_at, snapshot)
             if queued_at is not None:
                 self._latency.observe("final_ready", max(0.0, time.monotonic() - queued_at) * 1000)
         finally:
             self._active_translation_sentence_id = None
+
+    def _show_pending_final_source(self, text: str, snapshot: _LangSnapshot) -> None:
+        if not self._live_draft_enabled() or snapshot.generation != self.config_generation:
+            return
+        view = self._live_draft.pending_final_view(text, self._active_translation_sentence_id)
+        if view is not None:
+            self._emit_draft(view)
 
     def _translation_loop(self) -> None:
         """Prioritize final sentences, then translate only the latest live draft."""

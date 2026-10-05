@@ -1,0 +1,256 @@
+{
+  "checked_at_utc": "2026-10-05T20:13:08.139367+00:00",
+  "base_revision": "a950109",
+  "python": {
+    "passed": 1323,
+    "skipped": 8,
+    "deselected_hardware_audio": 7,
+    "existing_xfail": 1,
+    "exit_code": 0
+  },
+  "frontend": {
+    "check_exit_code": 0,
+    "build_exit_code": 0,
+    "fixture_type": "Production renderer bundled with MiniDOM/VM; additional real Chromium offscreen with fixture IPC"
+  },
+  "offscreen": {
+    "checks": 440,
+    "failures": 0,
+    "samples": 960,
+    "visibilityOrFocusViolations": 0,
+    "rendererErrors": 0
+  },
+  "native": {
+    "qwen": [
+      {
+        "fixture": "fr1.wav",
+        "language": "fr",
+        "hint": "French",
+        "audio_ms": 5996.0,
+        "decode_ms": 3713.51,
+        "output_chars": 86,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "de.wav",
+        "language": "de",
+        "hint": "German",
+        "audio_ms": 6000.0,
+        "decode_ms": 3751.2,
+        "output_chars": 105,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "ar1.wav",
+        "language": "ar",
+        "hint": "Arabic",
+        "audio_ms": 5250.0,
+        "decode_ms": 3398.05,
+        "output_chars": 70,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "ru1.wav",
+        "language": "ru",
+        "hint": "Russian",
+        "audio_ms": 4760.0,
+        "decode_ms": 2984.77,
+        "output_chars": 69,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "cantonese.wav",
+        "language": "yue",
+        "hint": "Cantonese",
+        "audio_ms": 6000.0,
+        "decode_ms": 3592.71,
+        "output_chars": 49,
+        "script_plausible": true,
+        "decoder_calls": 1
+      }
+    ],
+    "sensevoice": [
+      {
+        "fixture": "en.wav",
+        "language": "en",
+        "hint": "en",
+        "audio_ms": 6000.0,
+        "decode_ms": 486.76,
+        "output_chars": 76,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "ja.wav",
+        "language": "ja",
+        "hint": "ja",
+        "audio_ms": 6000.0,
+        "decode_ms": 536.22,
+        "output_chars": 56,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "ko.wav",
+        "language": "ko",
+        "hint": "ko",
+        "audio_ms": 4608.0,
+        "decode_ms": 480.42,
+        "output_chars": 28,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "yue.wav",
+        "language": "yue",
+        "hint": "yue",
+        "audio_ms": 5148.0,
+        "decode_ms": 533.19,
+        "output_chars": 16,
+        "script_plausible": true,
+        "decoder_calls": 1
+      },
+      {
+        "fixture": "zh.wav",
+        "language": "zh",
+        "hint": "zh",
+        "audio_ms": 5592.0,
+        "decode_ms": 644.63,
+        "output_chars": 14,
+        "script_plausible": true,
+        "decoder_calls": 1
+      }
+    ],
+    "streaming": [
+      {
+        "partial_interval_ms": 360,
+        "audio_ms": 8830.0,
+        "first_partial_audio_ms": 1660.0,
+        "partial_events": 9,
+        "final_count": 1,
+        "compute_ms": 215.06,
+        "partials": [
+          [
+            1660.0,
+            1
+          ],
+          [
+            2020.0,
+            7
+          ],
+          [
+            2740.0,
+            9
+          ],
+          [
+            3100.0,
+            12
+          ],
+          [
+            3460.0,
+            14
+          ],
+          [
+            3820.0,
+            15
+          ],
+          [
+            4180.0,
+            18
+          ],
+          [
+            4900.0,
+            23
+          ],
+          [
+            5260.0,
+            25
+          ]
+        ]
+      },
+      {
+        "partial_interval_ms": 140,
+        "audio_ms": 8830.0,
+        "first_partial_audio_ms": 1380.0,
+        "partial_events": 11,
+        "final_count": 1,
+        "compute_ms": 226.43,
+        "partials": [
+          [
+            1380.0,
+            1
+          ],
+          [
+            1800.0,
+            4
+          ],
+          [
+            2100.0,
+            7
+          ],
+          [
+            2680.0,
+            9
+          ],
+          [
+            2960.0,
+            12
+          ],
+          [
+            3400.0,
+            14
+          ],
+          [
+            3680.0,
+            15
+          ],
+          [
+            3960.0,
+            18
+          ],
+          [
+            4680.0,
+            22
+          ],
+          [
+            4980.0,
+            23
+          ],
+          [
+            5260.0,
+            25
+          ]
+        ]
+      }
+    ],
+    "boundary": "Public-fixture, accelerated replay, CPU only. SenseVoice verifies real SetConfig delivery, not a native readback API. No WER, translation model, wall-clock end-to-end latency, GUI, microphone or desktop capture verification."
+  },
+  "artifacts": {
+    "python-release.log": "add5c75fdd0fbf88c53a4ea4aa9460dbe11dc12a9bfcad1be72bb05a527542c7",
+    "frontend-delivery.log": "78d09c938a076fc38f6ddd19b3eb37f8f70332f23a58da92582be99922b91d68",
+    "native.json": "863a929ec43b7b716056605f376b871331a83f36e693fd73c012737415d82bff",
+    "native.log": "5ba6bd46290203673d96128e5bce6ee4e075dd48d9852aec233d51ad5abb2369",
+    "offscreen/layout-results.json": "d10b042c8ae0cf783a203b89f5b22635eb18bcc0a0e4f9501d5f297bd597a660",
+    "language-matrix.json": "b7c639718f7978814badac35c316718348f8ffd340871707fbc285e073f69797"
+  },
+  "not_run": [
+    "user video/audio",
+    "WER or semantic accuracy",
+    "real complete ASR+MT chain",
+    "visible GUI/physical DPI",
+    "GPU",
+    "other ASR weights native inference",
+    "installer",
+    "GitHub CI"
+  ],
+  "defaults": {
+    "extra_asr_model": false,
+    "second_pass_asr": false,
+    "auxiliary_preview_requires_explicit_opt_in": true
+  },
+  "rollback_backup": ".backups/language-streaming-20261006-034349"
+}

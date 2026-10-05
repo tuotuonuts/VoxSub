@@ -132,5 +132,21 @@ try {
   assert.equal(cta().disabled, true, 'disconnect invalidates cached permission to Start');
   store.patch({ backendPhase: 'ready' }); await settle(); updateStatus();
   assert.deepEqual(codes(src()), ['en']); assert.equal(cta().disabled, false);
+
+  const expanded = meta(['en', 'fr', 'de', 'yue'], Object.fromEntries(['en', 'fr', 'de', 'yue'].map(code => [code, ['zh', 'zh-hant', 'en', 'fr', 'de', 'yue']])));
+  expanded.labels = { fr: { zh: '法语', en: 'French' }, de: { zh: '德语', en: 'German' }, yue: { zh: '粤语', en: 'Cantonese' }, 'zh-hant': { zh: '繁体中文', en: 'Traditional Chinese' } };
+  read = async () => ({ ok: true, data: expanded });
+  await refreshLanguageCapabilities(); await settle();
+  assert.deepEqual(codes(src()), expanded.sources);
+  assert.ok(Array.from(src().children).some(o => o.value === 'fr' && o.textContent === '法语'));
+  change(src(), 'fr'); await settle(); change(dst(), 'zh-hant'); await settle();
+  assert.ok(calls.some(c => c.name === 'set_config' && c.args.updates.lang_pair === 'fr-zh-hant'));
+  await refreshLanguageCapabilities(); await settle();
+  assert.equal(store.get().sourceLang, 'fr'); assert.equal(store.get().targetLang, 'zh-hant');
+  expanded.sourceLanguageHint = 'load_time'; store.patch({ running: true });
+  await refreshLanguageCapabilities(); await settle();
+  assert.equal(src().disabled, true); assert.equal(dst().disabled, false);
+  assert.match(hint(), /停止/);
+  store.patch({ running: false }); await settle(); assert.equal(src().disabled, false);
   console.log('PASS production language controls: direction, preservation, adjustment, pending/failure, stale replies, OCR, reconnect, Start/Stop and focus');
 } finally { page?.dispose(); clean?.(); off?.(); dom.restore(); rmSync(scratch, { recursive: true, force: true }); }

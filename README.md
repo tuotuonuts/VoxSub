@@ -22,6 +22,12 @@ Windows 10/11 大众实时翻译软件：麦克风对话、会议/网课系统�
 - [直接下载安装包](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe) · [下载 SHA256 文件](https://github.com/tuotuonuts/VoxSub/releases/download/v0.7.2-beta/VoxSub-Setup-0.7.2-beta.exe.sha256)
 - 上一个公开版本：[VoxSub v0.5.0-beta](https://github.com/tuotuonuts/VoxSub/releases/tag/v0.5.0-beta)。
 
+## 当前源码的语言与实时预览
+
+语言选项由当前模型组合生成：识别语言取识别模型与翻译模型输入能力的交集，目标语言取翻译模型的输出能力，不再全局限定中英日韩。OPUS仍只支持中英；部分模型没有强制指定语种接口，界面会说明。FunASR切换识别语言需先结束会话。
+
+原生流式模型可显示并修订逐步识别结果；当前整段模型接入不等于原生逐词输出。设置 → 识别调优的「中英辅助预览（额外占用资源）」默认关闭，显式开启才额外加载内置中英预览识别器，不自动下载，不适用于其他源语言。默认不会为了纠错重跑每段音频。以上是源码改动，不代表已更新公开安装包。
+
 ## 当前可用功能
 
 - Electron 字幕浮窗透明度：设置 → 外观 →「浮窗背景不透明度」，20%–100%（默认 92%）；拖动即时预览，松开或键盘调整完成后自动保存到统一配置 `overlay_opacity`。仅改变背景，不降低字幕文字不透明度；隐藏后重新显示保持当前值，重启或重载浮窗恢复已保存值；启动或后端就绪时的旧配置恢复不会覆盖更新的预览或修改。此项源码已加入，尚未重新打包发布。离线验证：`cd frontend && npm run test:overlay-opacity`；配置校验：`python -m pytest tests/test_overlay_opacity.py`。

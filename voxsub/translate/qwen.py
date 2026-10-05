@@ -41,6 +41,7 @@ from voxsub.hardware import (
 )
 from voxsub.llama_runtime import ensure_openvino_runtime
 from voxsub.language_guard import detect_text_language, normalize_language
+from voxsub.language_registry import LANGUAGE_NAMES, HY_MT_LANGUAGES
 from voxsub.model_storage import resolve_models_root
 from voxsub.text_cleaning import strip_model_control_tokens
 
@@ -69,14 +70,14 @@ def _default_tools_dir() -> Path:
 #: 语言对 → 人类可读名称。质量档必须使用 chat system role 约束输出；旧版只有
 #: ``Translate to ...`` 一句用户提示，1.5B 模型很容易追加说明和自我评价。
 _AUTO_SOURCE_NAME = "the detected source language"
-_LANGUAGE_NAMES = {"zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean"}
+_LANGUAGE_NAMES = LANGUAGE_NAMES
 _LANG_NAMES = {
     (source, target): (
         _AUTO_SOURCE_NAME if source == "auto" else _LANGUAGE_NAMES[source],
         _LANGUAGE_NAMES[target],
     )
-    for source in ("zh", "en", "ja", "ko", "auto")
-    for target in ("zh", "en", "ja", "ko")
+    for source in LANGUAGE_NAMES
+    for target in LANGUAGE_NAMES if target != "auto"
     if source != target
 }
 
@@ -154,6 +155,7 @@ class QwenQualityTranslator(Translator):
         self._max_tokens = max_tokens
         self._fast_mode = fast_mode
         self._prompt_style = prompt_style
+        self.langs = HY_MT_LANGUAGES if prompt_style == "hy-mt2" else type(self).langs
         self._model_name = model_name
         self._n_gpu_layers = n_gpu_layers
         self._expected_size = int(expected_size or 0)
@@ -711,10 +713,8 @@ class QwenQualityTranslator(Translator):
         if src_lang == dst_lang:
             return text
         names = _LANG_NAMES.get((src_lang, dst_lang))
-        if names is None:
+        if names is None or not self.supports(src_lang, dst_lang):
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
-        if src_lang == "auto" and detect_text_language(text) == dst_lang:
-            return text
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
             endpoint, generation = self._ensure_instance()
@@ -771,7 +771,7 @@ class QwenQualityTranslator(Translator):
         if src == dst:
             return text
         names = _LANG_NAMES.get((src, dst))
-        if names is None:
+        if names is None or not self.supports(src, dst):
             raise DraftSkipped("Unsupported preview language pair")
         deadline = time.monotonic() + max(1, timeout_ms) / 1000
         if not self._lifecycle_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
@@ -819,7 +819,7 @@ class QwenQualityTranslator(Translator):
         if _can_passthrough_batch(sources, src_lang, dst_lang):
             return list(sources)
         names = _LANG_NAMES.get((src_lang, dst_lang))
-        if names is None:
+        if names is None or not self.supports(src_lang, dst_lang):
             raise TranslationError(f"质量档不支持语言对 {(src_lang, dst_lang)}")
         last_error: OpenAICompatError | None = None
         for _backend_attempt in range(4):
@@ -1130,10 +1130,10 @@ def _translation_invalid_reason(source: str, output: str,
     if "\n\n" in output:
         return "multiple_paragraphs"
     # 中译英字符通常会膨胀，但超过 5.5 倍基本已是解释/续写；英译中应更短。
-    limit = max(64, int(len(source) * (5.5 if dst_lang == "en" else 2.2)))
+    limit = max(64, int(len(source) * (2.2 if dst_lang in {"zh", "zh-hant", "yue", "ja"} else 5.5)))
     if len(output) > limit:
         return "length_limit"
-    if dst_lang in {"zh", "en", "ja", "ko"}:
+    if dst_lang in LANGUAGE_NAMES and dst_lang != "auto":
         from voxsub.language_guard import text_matches_language
         if not text_matches_language(output, dst_lang):
             return "language_mismatch"
@@ -1144,10 +1144,7 @@ def _can_passthrough_batch(sources: list[str], src_lang: str, dst_lang: str) -> 
     """Return whether a batch is already in its requested target language."""
     if src_lang == dst_lang:
         return True
-    if src_lang != "auto":
-        return False
-    detected = [detect_text_language(source) for source in sources]
-    return bool(detected) and all(item == dst_lang for item in detected)
+    return False  # Script identity cannot prove language identity.
 
 
 def _invalid_translation(source: str, output: str,

@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from voxsub.language_registry import split_language_pair
+
 import json
 import os
 import sys
@@ -256,7 +258,7 @@ class SessionHandlers:
         dst = str(args.get("target") or "")
         if not src or not dst:
             pair = str(config.get("lang_pair") or "zh-en")
-            head, _, tail = pair.partition("-")
+            head, tail = split_language_pair(pair)
             src = src or head or "zh"
             dst = dst or tail or "en"
         return tier_capabilities(src, dst, config)

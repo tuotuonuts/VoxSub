@@ -280,12 +280,17 @@ body::before {
 
 .lang-box {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.3846rem 0.6154rem;
   padding-top: 0.6154rem;
   margin-top: 0.3077rem;
   border-top: 1px solid var(--rule);
+}
+
+.lang-box > .field__hint {
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .lang-box__label {

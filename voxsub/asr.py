@@ -124,6 +124,7 @@ class StreamingASR:
             num_threads=num_threads,
         )
         self.source_lang = source_lang
+        trace_record("recognition_language", "unavailable", runtime=self.runtime, source=source_lang)
         logger.info(
             "ASR 模型加载成功 (provider=%s, threads=%d, decoding=%s, paths=%d, "
             "source_lang=%s, precision=int8/fp32/int8, 目录=%s)",
@@ -195,7 +196,10 @@ class OfflineGenerativeASR:
         self._model_dir = Path(model_dir)
         self.runtime = runtime
         self.provider = provider
-        source_lang = normalize_language(source_lang)
+        source_lang = normalize_language(source_lang, strict=True)
+        from voxsub.language_registry import ASR_LANGUAGES
+        if source_lang != "auto" and source_lang not in ASR_LANGUAGES.get(runtime, ()):
+            raise ValueError(f"识别模型不支持语言: {runtime} / {source_lang}")
         threads = max(1, int(num_threads))
         if runtime == "sherpa-qwen3-asr":
             tokenizer = self._model_dir / "tokenizer"
@@ -247,8 +251,7 @@ class OfflineGenerativeASR:
                 max_new_tokens=max(64, min(512, int(max_new_tokens))),
                 temperature=1e-6,
                 top_p=0.8,
-                language=(normalize_language(source_lang)
-                          if normalize_language(source_lang) != "auto" else ""),
+                language={"zh": "中文", "en": "英语", "ja": "日语"}.get(source_lang, ""),
                 itn=True,
                 hotwords=str(hotwords or ""),
             )
@@ -309,10 +312,36 @@ class OfflineGenerativeASR:
 
     def create_stream_for_language(self, source_lang: str) -> _OfflineBuffer:
         # Per-utterance state: queued work must not read mutable UI settings.
-        return _OfflineBuffer(normalize_language(source_lang))
+        from voxsub.language_registry import ASR_LANGUAGES
+        source = normalize_language(source_lang, strict=True)
+        if source != "auto" and source not in ASR_LANGUAGES[self.runtime]:
+            raise ValueError(f"识别模型不支持语言: {self.runtime} / {source}")
+        return _OfflineBuffer(source)
+
+    def _configure_sensevoice_language(self, source_lang: str) -> None:
+        # sherpa 1.13.5 SenseVoice reads the recognizer config (not stream options).
+        # The serial recognition worker applies each queued language snapshot before
+        # decode. SetConfig copies metadata only: no weights reload or second pass.
+        config = self._recognizer.config
+        config.model_config.sense_voice.language = "" if source_lang == "auto" else source_lang
+        self._recognizer.recognizer.set_config(config)
+        trace_record("recognition_language", "auto" if source_lang == "auto" else "hint_applied",
+                     runtime=self.runtime, source=source_lang, mechanism="decode_config")
 
     def _configure_language_hint(self, native, source_lang: str) -> None:
+        from voxsub.language_registry import LANGUAGE_HINT_MODES, LOAD_TIME_LANGUAGE_RUNTIMES
+        if self.runtime == "sherpa-sense-voice":
+            self._configure_sensevoice_language(source_lang)
+            return
+        if self.runtime in LOAD_TIME_LANGUAGE_RUNTIMES:
+            if source_lang != self.source_lang:
+                raise RuntimeError("此识别模型需停止会话后切换识别语言")
+            trace_record("recognition_language", "auto" if source_lang == "auto" else "hint_applied",
+                         runtime=self.runtime, source=source_lang, mechanism="load_time")
+            return
         if self.runtime != "sherpa-qwen3-asr":
+            trace_record("recognition_language", LANGUAGE_HINT_MODES.get(self.runtime, "unavailable"),
+                         runtime=self.runtime, source=source_lang)
             return
         if source_lang == "auto":
             trace_record("recognition_language", "auto", runtime=self.runtime, source=source_lang)

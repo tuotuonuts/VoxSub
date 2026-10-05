@@ -1,3 +1,12 @@
+## 模型语言全链路与实时更新（2026-10-05 UTC）
+
+- 新语言注册表取代全局四语上限；本地识别模型、Hy-MT2各量化档、配置保存/恢复、语种别名与繁体变体、OCR/诊断/前端标签/RTL贯通。Qwen+Hy为23源/38目标，OPUS仍中英，未知云端不扩张宣称。
+- Qwen逐stream全名提示；SenseVoice逐decode真实SetConfig无需重载；FunASR原生语言名纠正且会话中源语种禁止假热切；单语/无法强制提示的模型明确区分。
+- 稳定前缀/完整词翻译、静默尾部释放、整段原文先于译文显示、140ms partial与前后端去重；终句优先、不默认重识别。既有中英辅助ASR改为默认关闭的显式公共Toggle，所有档位可选，仅zh/en，不下载。
+- 安全全量1323 passed/8 skipped/7 deselected/1既有xfail；前端check/build、生产IPC与MiniDOM回归。真实CPU Qwen5语种+SenseVoice5语种/单段一次decode；Zipformer公开8.83s样本首partial音频位置1660→1380ms、9→11次更新，非普适性能承诺。
+- 真实离屏Chromium440项布局通过，960次采样0可见/聚焦违规（11源/38目标矩阵、长提示、多尺寸与缩放）。
+- 用户原音/WER/可见GUI/完整真实MT端到端/其它ASR实机/GPU/安装版/CI NOT_RUN；不重启用户应用、不改配置正文；本地commit未push，Cache/不动。报告docs/MODEL_LANGUAGE_STREAMING_ACCEPTANCE.md。
+
 ## 识别语言提示与源文保留（2026-10-05 UTC）
 
 - 用户日志当前run：Qwen3-ASR 0.6B INT8、en→zh，92条结果中23次语言门禁丢弃。实际stream漏传语言；旧英语词表误拒短词且放过含i的非英语。上述“源语种拦截”旧策略已被用户最新要求取代。

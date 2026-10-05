@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from voxsub.language_registry import LANGUAGE_PAIRS
 from voxsub.file_io import sanitize_for_json, write_text_atomically
 from voxsub.logging_setup import get_logger
 
@@ -83,6 +84,7 @@ _DEFAULTS: dict[str, Any] = {
     "asr_hotwords": "",
     "asr_context_hold_ms": 1800,
     "asr_live_draft_enabled": True,
+    "asr_auxiliary_preview_enabled": False,
     "asr_context_correction": True,
     "asr_filler_mode": "light",
     "translate_model_id": "mt-opus-fast-builtin",
@@ -184,11 +186,7 @@ APP_CONFIG_SCHEMA = ConfigSchema(
         "theme": frozenset({"system", "light", "dark"}),
         "log_limit_unit": frozenset({"MB", "GB"}),
         "mode": frozenset({"a", "b", "c", "d"}),
-        "lang_pair": frozenset({
-            "zh-en", "en-zh", "zh-ja", "ja-zh", "zh-ko", "ko-zh",
-            "en-ja", "ja-en", "en-ko", "ko-en", "ja-ko", "ko-ja",
-            "auto-zh", "auto-en", "auto-ja", "auto-ko",
-        }),
+        "lang_pair": frozenset(LANGUAGE_PAIRS),
         "translate_tier": frozenset({"fast", "quality", "cloud"}),
         "stt_provider": frozenset({"local", "cloud"}),
         "asr_tuning_profile": frozenset(

@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+
 import json
 import os
 import sys
@@ -69,6 +70,8 @@ def _install_backend_path() -> str:
 
 
 VOXSUB_ROOT = _install_backend_path()
+
+from voxsub.language_registry import split_language_pair
 FROZEN = bool(getattr(sys, "frozen", False))
 
 # ---- 保护协议通道 -----------------------------------------------------------
@@ -259,7 +262,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         # ---- 语言对：配置里存成 "zh-en" / "auto-zh" 这样的单串
         pair = str(config.get("lang_pair") or "")
         if "-" in pair:
-            src, _, dst = pair.partition("-")
+            src, dst = split_language_pair(pair)
             if src and dst:
                 _apply("lang_pair", lambda: pipeline.set_langs(src, dst))
 

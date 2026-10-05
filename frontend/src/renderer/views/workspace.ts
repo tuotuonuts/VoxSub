@@ -126,8 +126,8 @@ function stopClock(): void {
 function subtitleRow(source: string, translation: string, draft = false): HTMLElement {
   const row = h("div", { class: draft ? "sub-row is-draft" : "sub-row" });
   row.append(
-    h("p", { class: "sub-row__src", text: source || "…" }),
-    h("p", { class: "sub-row__dst", text: translation || "" }),
+    h("p", { class: "sub-row__src", dir: "auto", text: source || "…" }),
+    h("p", { class: "sub-row__dst", dir: "auto", text: translation || "" }),
   );
   return row;
 }
@@ -147,9 +147,11 @@ export function updateStream(): void {
     if (lastDraft) {
       const src = lastDraft.querySelector(".sub-row__src");
       const dst = lastDraft.querySelector(".sub-row__dst");
+      const source = state.draft.source || "…", translation = state.draft.translation || "";
+      if (src?.textContent === source && dst?.textContent === translation) return;
       mutateStream(() => {
-        if (src) src.textContent = state.draft!.source || "…";
-        if (dst) dst.textContent = state.draft!.translation || "";
+        if (src && src.textContent !== source) src.textContent = source;
+        if (dst && dst.textContent !== translation) dst.textContent = translation;
       });
       return;
     }

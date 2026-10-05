@@ -1,3 +1,4 @@
+declare const __ACCEPTANCE_LANGUAGES__: unknown;
 /** Real renderer with a read-only in-memory backend fixture, for offscreen layout checks. */
 import "../src/renderer/index";
 import { store } from "../src/renderer/store";
@@ -21,7 +22,7 @@ const api = {
   if(command===CMD.listModels){if(catalogDelay) return await new Promise(resolve=>{catalogDelay=resolve;});data=catalog();}
   if(command===CMD.getConfig)data={...config};
   if(command===CMD.state)data={running:false,paused:false,mode:store.get().mode};
-  if(command===CMD.languageCapabilities)data={sources:["auto","zh","en","ja","ko"],targets:{auto:["zh","en"],zh:["en","zh"],en:["zh","en"],ja:["zh","en"],ko:["zh","en"]},compatible:true,reason:""};
+  if(command===CMD.languageCapabilities)data=__ACCEPTANCE_LANGUAGES__??{sources:["auto","zh","en","ja","ko"],targets:{auto:["zh","en"],zh:["en","zh"],en:["zh","en"],ja:["zh","en"],ko:["zh","en"]},compatible:true,reason:""};
   if(command===CMD.translateTiers)data={source:"auto",target:"zh",selected:"fast",effective:"fast",tiers:[]};
   if(command===CMD.releaseNotes)data={notes:[]};
   if(command===CMD.listAudioDevices)data={microphones:[],loopbacks:[]};

@@ -422,3 +422,12 @@ resize/move/zoom-changed/ready触发当前owner刷新；renderer zoom参与CSS�
 partial、上下文、终句与文件入口不再用字母/词表判断源文去留；retain_source_text只整理空白。源文不确定照常尝试用户指定模型/目标语言，目标校验失败保留原文和空译文，不冒充成功。脚本匹配只是启发式（无法区分拉丁语系），微型英语词表不能作为判定依据。明确更新并覆盖旧“语言拦截终句”的策略；草稿代次/句子ID过期淘汰和缓存背压不变。
 
 recognition_language记录hint_applied/auto/hint_unavailable，源结果language_uncertain附source_retained，翻译目标不匹配仍language_mismatch；不得写正文/音频入日志。用户提示每会话/配置代次至多一次。不引入每句重试/第二模型/云切换，准确率与参数交付实测分开报告。详见SOURCE_LANGUAGE_ACCEPTANCE。
+
+
+## 模型语种与实时预览契约（2026-10-05 UTC）
+
+- `voxsub.language_registry` 为代码/英文prompt名/中英文标签/每runtime能力的唯一入口。配置语言对包含脚本变体，不得用无条件 split("-") 破坏 zh-hant。源选项 = ASR输入能力 ∩ 所选翻译器源能力；目标取方向性输出；自动识别要求所有可能输入都有翻译路径。
+- 模型能力与提示能力分开：Qwen逐流提示、SenseVoice在串行worker逐decode更新原生配置、FunASR加载时提示且运行中锁源、单语模型无需假提示、无强制接口的模型必须标明。提示不等于识别准确率保证。
+- `LiveDraftState` 管一致前缀/完整词与300ms尾部释放，仍保留终句优先、配置/句号隔离、精确缓存；已识别源文可先显示，较旧终句不得覆盖后续草稿。
+- `asr_live_draft_enabled` 只控制展示/已有原生partial的草稿翻译；额外Zipformer预览通过 `asr_auxiliary_preview_enabled` 显式启用，默认False，且仅zh/en源可用。整段模型不因此被宣称为token streaming。
+- 模型注册表变化时须补能力矩阵、保存重启、prompt参数和原生/双桩边界测试；禁止把完整语言名归一化失败静默变成auto，禁止用拉丁文字推断英语直通多语翻译。

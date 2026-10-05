@@ -8,6 +8,8 @@ screen overlay.
 """
 from __future__ import annotations
 
+from voxsub.language_registry import split_language_pair
+
 import hashlib
 import math
 import threading
@@ -163,7 +165,7 @@ def live_ocr_config(config: Mapping[str, Any]) -> dict[str, Any]:
         prepared["ocr_maximum_lines"] = 24
         prepared["ocr_maximum_characters"] = 2400
     prepared["ocr_live_batch_items"] = 10
-    source_lang = str(prepared.get("lang_pair", "zh-en")).split("-", 1)[0].lower()
+    source_lang = split_language_pair(prepared.get("lang_pair", "zh-en"))[0]
     # English source usually compresses into fewer target tokens; Chinese
     # source expands into English, so keep that batch smaller to avoid a
     # truncated JSON response from the local model.

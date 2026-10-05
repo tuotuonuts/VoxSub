@@ -63,10 +63,19 @@ def _class_for_kind(kind: str):
     return None
 
 
+def kind_languages(kind: str, config=None) -> tuple[str, ...]:
+    from voxsub.language_registry import HY_MT_LANGUAGES
+    from voxsub.model_catalog import get_model
+
+    model = get_model(str((config or {}).get("translate_model_id") or ""))
+    if kind == "qwen-quality" and model is not None and model.runtime == "llama-hy-mt2":
+        return HY_MT_LANGUAGES
+    return tuple(getattr(_class_for_kind(kind), "langs", ()) or ())
+
+
 def tier_langs(tier: str, config=None) -> tuple[str, ...]:
     """档位实际支持的源/目标语言代码。"""
-    cls = _class_for_kind(kind_for_tier(tier, config))
-    return tuple(getattr(cls, "langs", ()) or ())
+    return kind_languages(kind_for_tier(tier, config), config)
 
 
 def tier_supports(tier: str, src_lang: str, dst_lang: str, config=None) -> bool:

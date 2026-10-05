@@ -9,15 +9,7 @@ from __future__ import annotations
 import unicodedata
 
 
-LANGUAGE_NAMES: dict[str, str] = {
-    "zh": "Chinese",
-    "en": "English",
-    "ja": "Japanese",
-    "ko": "Korean",
-    # ``auto`` is used by N→1 translation: the recognizer/OCR may emit more
-    # than one source language while the target remains fixed.
-    "auto": "the detected source language",
-}
+from voxsub.language_registry import LANGUAGE_NAMES
 
 
 def normalize_language(value: object, *, strict: bool = False) -> str:
@@ -33,6 +25,7 @@ def normalize_language(value: object, *, strict: bool = False) -> str:
         "cn": "zh",
         "zh-cn": "zh",
         "zh-hans": "zh",
+        "zh-tw": "zh-hant", "zh-hk": "zh-hant", "tl": "fil",
         "eng": "en",
         "en-us": "en",
         "en-gb": "en",
@@ -146,6 +139,26 @@ _LANGUAGE_MATCHERS = {
 }
 
 
+# Script plausibility only; never a statistical language identity claim.
+_SCRIPT_NAMES = {
+    "ru": "CYRILLIC", "uk": "CYRILLIC", "bg": "CYRILLIC", "mk": "CYRILLIC",
+    "kk": "CYRILLIC", "mn": "CYRILLIC", "el": "GREEK",
+    "ar": "ARABIC", "fa": "ARABIC", "ur": "ARABIC", "ug": "ARABIC",
+    "hi": "DEVANAGARI", "mr": "DEVANAGARI", "th": "THAI",
+    "km": "KHMER", "my": "MYANMAR", "gu": "GUJARATI", "te": "TELUGU",
+    "he": "HEBREW", "bn": "BENGALI", "ta": "TAMIL", "bo": "TIBETAN",
+}
+
+
+def _matches_additional(text: str, language: str, counts: dict[str, int]) -> bool:
+    if language in {"zh-hant", "yue"}:
+        return _matches_zh(counts)
+    script = _SCRIPT_NAMES.get(language)
+    if script is None:
+        return _matches_en(counts)
+    return any(script in unicodedata.name(char, "") for char in text if char.isalpha())
+
+
 def text_matches_language(text: str, language: str, *, require_signal: bool = True) -> bool:
     """Return whether text is plausibly written in ``language``.
 
@@ -160,7 +173,7 @@ def text_matches_language(text: str, language: str, *, require_signal: bool = Tr
     if sum(counts.values()) == 0:
         return not require_signal
     matcher = _LANGUAGE_MATCHERS.get(language)
-    return matcher(counts)
+    return matcher(counts) if matcher is not None else _matches_additional(text, language, counts)
 
 
 def guard_text(text: str, language: str, *, kind: str = "text") -> str:

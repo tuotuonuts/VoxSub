@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from voxsub.language_registry import split_language_pair
+
 import os
 import sys
 from pathlib import Path
@@ -111,7 +113,7 @@ class OcrHandlers:
         from PIL import Image, ImageOps
         from voxsub.config_store import ConfigStore
         config = dict(ConfigStore().load())
-        pair = str(config.get("lang_pair") or "auto-zh").split("-", 1)
+        pair = split_language_pair(config.get("lang_pair") or "auto-zh")
         source = str(args.get("source") or pair[0])
         target = str(args.get("target") or (pair[1] if len(pair) > 1 else "zh"))
         image_path = Path(str(args.get("path", "")))

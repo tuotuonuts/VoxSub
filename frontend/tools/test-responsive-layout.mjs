@@ -10,10 +10,11 @@ const plugins=baseline?[{name:'baseline-page-router',setup(build){build.onLoad({
 import {ROOT} from './esbuild-ts.mjs';
 const out=process.env.VOXSUB_ACCEPTANCE_DIR?resolve(process.env.VOXSUB_ACCEPTANCE_DIR):mkdtempSync(join(tmpdir(),'voxsub-responsive-'));
 const bundle=join(out,'responsive-entry.js');
+const languageMatrix=process.env.VOXSUB_ACCEPTANCE_LANGUAGES?JSON.parse(readFileSync(process.env.VOXSUB_ACCEPTANCE_LANGUAGES,'utf8')):null;
 const realModel=process.env.VOXSUB_ACCEPTANCE_MODEL?JSON.parse(readFileSync(process.env.VOXSUB_ACCEPTANCE_MODEL,'utf8')):null;
 if(realModel&&(!realModel.installed||realModel.id!=='asr-sensevoice-small-int8'))throw Error('Acceptance model is not an installed SenseVoice');
 if(realModel)console.log('Using actual installed model-list row: '+realModel.id);
-await build({plugins,define:{__ACCEPTANCE_MODEL__:JSON.stringify(realModel)},entryPoints:[join(ROOT,'tools/responsive-layout-entry.ts')],bundle:true,format:'iife',platform:'browser',outfile:bundle});
+await build({plugins,define:{__ACCEPTANCE_MODEL__:JSON.stringify(realModel),__ACCEPTANCE_LANGUAGES__:JSON.stringify(languageMatrix)},entryPoints:[join(ROOT,'tools/responsive-layout-entry.ts')],bundle:true,format:'iife',platform:'browser',outfile:bundle});
 const require=createRequire(import.meta.url),env={...process.env,VOXSUB_LAYOUT_ROOT:ROOT,VOXSUB_LAYOUT_OUT:out};delete env.ELECTRON_RUN_AS_NODE;if(baseline)env.VOXSUB_LAYOUT_CSS=join(baseline,'frontend/src/renderer/app.css');
 const result=spawnSync(require('electron'),[join(ROOT,'tools/test-responsive-layout.cjs')],{env,windowsHide:true,encoding:'utf8',timeout:180000,maxBuffer:8*1024*1024});
 writeFileSync(join(out,'electron-layout.log'),(result.stdout??'')+(result.stderr??''));

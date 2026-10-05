@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+from voxsub.language_registry import split_language_pair
+
 from collections.abc import Callable
 import shutil
 import time
@@ -311,7 +313,7 @@ def _check_tts_smoke() -> dict:
     }
     marketplace = ModelMarketplace(root)
     pair = str(config.get("lang_pair", "zh-en"))
-    preferred = pair.split("-", 1)[-1] if "-" in pair else "en"
+    preferred = split_language_pair(pair)[1]
     candidates = [preferred] + [lang for lang in ("zh", "en") if lang != preferred]
     installed = []
     for lang in candidates:

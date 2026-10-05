@@ -87,8 +87,13 @@ def _build_draft_asr(
     Zipformer only supplies replaceable Smart Context drafts.  Missing or
     damaged optional draft files must not make the main recognizer unusable.
     """
-    if (not spec.tuning.get("context_enabled", False) or
-            not spec.tuning.get("live_draft_enabled", True)):
+    if not (spec.tuning.get("live_draft_enabled", True) and
+            spec.tuning.get("auxiliary_preview_enabled", False)):
+        return None
+    # The bundled preview recognizer is bilingual, not a universal language model.
+    # For auto on a broader model we cannot know whether the sidecar is suitable.
+    if spec.source_lang not in {"zh", "en"}:
+        logger.info("实时草稿旁路不支持当前源语言，保留所选模型终句: source=%s", spec.source_lang)
         return None
     tuning = dict(spec.tuning)
     tuning["beam_paths"] = min(2, max(1, int(tuning.get("beam_paths", 2))))
