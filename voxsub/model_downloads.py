@@ -69,7 +69,9 @@ class ModelDownloads:
     def _source_bytes(self, model: Any, source: Any) -> int:
         total = 0
         for path in self._source_paths(model, source):
-            part = path.with_name(path.name + ".part")
+            relative = str(path.relative_to(self.folder))
+            part = self._path(relative + ".part")
+            self._path(relative + ".part.resume.json")
             candidate = path if path.is_file() else part
             if candidate.is_file():
                 total += candidate.stat().st_size
@@ -123,6 +125,9 @@ class ModelDownloads:
                 "status": "paused", "stage": "已暂停", "source": "auto", "error": "", "_active_source": "auto"}
 
     def _load(self, model: Any) -> dict | None:
+        # Validate even cached sessions before following file metadata for progress.
+        self._assets(model)
+        self._record_path(model)
         if model.id in self.states:
             return self.states[model.id]
         data = self._read(model)

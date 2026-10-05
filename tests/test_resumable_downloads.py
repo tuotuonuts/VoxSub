@@ -419,3 +419,48 @@ def test_archive_rejects_redirected_staging_before_extraction(tmp_path, monkeypa
         market._install_archive(model, tmp_path / 'fake.tar', market.model_dir(model))
     assert keep.read_bytes() == b'unchanged'
     assert not staging.exists()
+
+
+@pytest.mark.parametrize("suffix", ["", ".part", ".part.resume.json"])
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize("multifile", [False, True])
+def test_download_link_validation_covers_progress_and_cached_sessions(tmp_path, server, suffix, cached, multifile):
+    url, handler = server
+    model = spec_for(url, handler.payload)
+    if multifile:
+        item = RemoteFile(url + "/file", "nested/model.bin", len(handler.payload))
+        model = replace(model, asset_name="", sources=(ModelSource("china", "中国", "", url, (item,)),))
+    downloads = ModelDownloads(ModelMarketplace(tmp_path))
+    if cached:
+        state = downloads.prepare(model, "china")
+        downloads.pause(model, state["token"])
+    relative = f"{model.id}/nested/model.bin" if multifile else "model.bin"
+    link = downloads.folder / (relative + suffix)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside-kept.bin"
+    outside.write_bytes(b"keep")
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("Windows symlink permission unavailable")
+    with pytest.raises(ValueError):
+        downloads.prepare(model, "china")
+    with pytest.raises(ValueError):
+        downloads.snapshot(model)
+    assert outside.read_bytes() == b"keep" and handler.requests == []
+
+
+def test_prepare_validates_asset_paths_even_without_symlink_privilege(tmp_path, monkeypatch):
+    model = spec_for("http://unused.invalid", b"keep")
+    downloads = ModelDownloads(ModelMarketplace(tmp_path))
+    original = downloads._path
+    seen = []
+    def checked(relative):
+        seen.append(relative)
+        if relative.endswith(".part"):
+            raise ValueError("simulated reparse-point rejection")
+        return original(relative)
+    monkeypatch.setattr(downloads, "_path", checked)
+    with pytest.raises(ValueError):
+        downloads.prepare(model, "china")
+    assert "model.bin.part" in seen and not downloads.states
