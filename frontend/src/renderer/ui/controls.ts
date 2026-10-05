@@ -1,5 +1,6 @@
 /** Stateless form primitives. Labels are translated by callers; no store or IPC dependencies. */
 import { h, on } from "../dom";
+import { replaceSelectOptions } from "./select-options";
 
 export function buildTextInput(value: string, onChange: ((v: string) => void) | undefined, opts?: { type?: string; placeholder?: string }): HTMLInputElement {
   const input = h("input", {
@@ -18,12 +19,7 @@ export function buildSelect<T extends string>(
   onChange?: (v: T) => void,
 ): HTMLSelectElement {
   const sel = h("select", { class: "select" });
-  for (const [val, label] of options) {
-    const opt = h("option", { value: val, text: label });
-    if (val === value) opt.selected = true;
-    sel.append(opt);
-  }
-  if (options.some(([val]) => val === value)) sel.value = value;
+  replaceSelectOptions(sel, value, options);
   if (onChange) on(sel, "change", () => onChange(sel.value as T));
   return sel;
 }

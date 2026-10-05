@@ -21,6 +21,7 @@ import {
 } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { initialMainWindowBounds } from "../shared/window-layout";
 import type { OverlayGlassState } from "../shared/overlay-glass";
 
 import { BackendBridge, type BackendEvent } from "./backend";
@@ -250,10 +251,7 @@ function createMainWindow(): BrowserWindow {
   // tsconfig 开了 exactOptionalPropertyTypes，Electron 的类型不接受 undefined。
   const icon = appIcon();
   const win = new BrowserWindow({
-    width: 1240,
-    height: 820,
-    minWidth: 1000,
-    minHeight: 660,
+    ...initialMainWindowBounds(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea),
     show: false,
     backgroundColor: "#101416",
     title: "语幕 VoxSub",

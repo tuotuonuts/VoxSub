@@ -292,7 +292,10 @@ class Store {
         break;
       case "download": {
         const root = document.documentElement.dataset["modelsRoot"] || this.state.modelsRoot;
-        this.patch({ downloads: mergeDownload(this.state.downloads, event.modelId, event, root) });
+        const before = this.state.downloads;
+        const downloads = mergeDownload(before, event.modelId, event, root);
+        this.patch({ downloads });
+        if (downloads !== before && event.status === "done") window.dispatchEvent(new Event("voxsub:models"));
         break;
       }
       case "log":
@@ -469,6 +472,9 @@ export async function callWithOutcome<T = unknown>(
     ? result.delivery
     : (result.ok || (!result.timedOut && !result.unavailable) ? "response" : "unknown");
   if (outcome === "ok") {
+    if ([CMD.installModel, CMD.uninstallModel, CMD.importModels].some(operation => operation === command)) {
+      window.dispatchEvent(new Event("voxsub:models"));
+    }
     return { outcome, data: (result.data ?? null) as T | null, delivery };
   }
 

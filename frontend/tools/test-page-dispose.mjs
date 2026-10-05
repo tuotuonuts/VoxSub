@@ -1151,8 +1151,8 @@ async function switchAll(rounds, disposeEach) {
   console.log(`       计时器不再随轮次增长（新的 startClock 会顺手停掉上一个），但切页结束后始终有 1 个在跑，\n       且它的回调指向已被换走的时钟节点\n`);
 
   check(
-    `当前代码省略 dispose：切页 ${ROUNDS} 轮后设置页 window 监听逐轮残留（工作区改用 store）`,
-    after.window - before.window === ROUNDS,
+    `当前代码省略 dispose：切页 ${ROUNDS} 轮后设置页两个 window 监听逐轮残留（settings + models）`,
+    after.window - before.window === ROUNDS * 2,
     `多出 ${after.window - before.window} 个`,
   );
   check(

@@ -7,6 +7,7 @@ import path from "node:path";
 import ts from "typescript";
 import { importShared, cleanupShared, ROOT } from "./esbuild-ts.mjs";
 const { createShortcutService } = await importShared("src/main/shortcuts.ts", { bundle: true });
+const layout = await importShared("src/shared/window-layout.ts");
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "voxsub-shortcut-main-"));
 assert.ok(path.resolve(directory).startsWith(path.join(path.resolve(os.tmpdir()), "voxsub-shortcut-main-")));
 const handlers = new Map(), appEvents = new Map(), registered = new Map(), windows = [];
@@ -24,12 +25,13 @@ const driver = { register(key, fn) { if (registered.has(key)) return false; regi
 const electron = {
   BrowserWindow: Window, globalShortcut: driver,
   app: { requestSingleInstanceLock: () => true, whenReady: () => ({ then: fn => { ready = fn; } }), on: (n, fn) => appEvents.set(n, fn), getPath: () => directory, setAppUserModelId() {}, quit() {} },
-  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) }, screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1200, height: 800 } }) },
+  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) }, screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1200, height: 800 } }), getCursorScreenPoint:()=>({x:0,y:0}), getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1200,height:800}}) },
   Menu: { setApplicationMenu() {} }, ipcMain: { handle: (n, fn) => handlers.set(n, fn), on() {} },
 };
 const context = vm.createContext({ exports: {}, __dirname: path.join(ROOT, "src/main"), process: { env: { VOXSUB_HEADLESS: "0" }, platform: "win32" }, console: { ...console, log() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
   require(name) {
     if (name === "electron") return electron;
+    if (name === "../shared/window-layout") return layout;
     if (name === "node:fs") return { existsSync: () => false };
     if (name === "node:path") return path;
     if (name === "./backend") return { BackendBridge: Backend };

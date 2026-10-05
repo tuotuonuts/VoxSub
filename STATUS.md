@@ -1,3 +1,12 @@
+## 分辨率适配与设置模型刷新（2026-10-05）
+
+- 修复启动缓存导致新下载 SenseVoice 不出现在设置：每次打开独立刷新，下载完成/安装卸载通知，原位更新公共Select选项，不重绘整页/重置草稿；缺失选择不假冒第一项，失败有重试，旧请求/旧导航/已销毁控件隔离。
+- 主窗按当前显示器DIP工作区居中限尺寸；小屏/低高度重排、设置诊断导航横排、卡片减列、长字段换行、OCR单列和可滚动；sticky返回栏避让标题拖拽区，保留原字体策略。
+- 实际只读模型handler返回本机SenseVoice已安装，配置哈希不变；真实模型数据输入隐藏renderer，380布局组合/模型控件与草稿焦点通过；855采样0可见/聚焦/renderer异常。
+- 前端check/build、设置17项/窗口尺寸10项/窗口生命周期47项通过；Python1161 passed/8 skipped/7 deselected/1既有xfail/0失败；构建CSS一致。
+- 完整生产stdio独立临时探针超时BLOCKED（未冒充通过）；物理DPI、用户现有应用重启、推理/真实音频、安装版/GitHubCI NOT_RUN。本轮本地commit，未push/打包，不改变用户当前模型或原任务。
+- 报告docs/RESPONSIVE_SETTINGS_MODELS_ACCEPTANCE.md及EVIDENCE.json；备份.backups/20261005-213312-responsive-settings-models；详细证据在仓库外responsive-sensevoice-diagnosis-20261005/caption-verified。
+
 ## SenseVoice 双源下载修复（2026-10-05）
 
 - 海外压缩包修正精确长度及SHA-256；大陆404改为固定revision的等价ONNX权重/词表，真实两源安装文件哈希一致；同步修正FunASR/Qwen3错误估算压缩包元数据（两款未实下载）。

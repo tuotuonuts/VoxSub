@@ -10,6 +10,12 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "语音识别": "Speech recognition",
+  "正在读取已安装模型…": "Reading installed models…",
+  "模型列表读取失败，请重试；已有设置未更改。": "Could not read the model list. Retry; your settings have not changed.",
+  "重新读取模型列表": "Reload model list",
+  "所选模型暂不可用，请重新选择": "The selected model is unavailable. Choose another model.",
+  "请选择模型": "Choose a model",
   "正在读取硬件型号…": "Reading hardware models…",
   "硬件信息未能读取，请重新进入此页重试。": "Hardware information is unavailable. Reopen this tab to retry.",
   "处理器": "Processor",

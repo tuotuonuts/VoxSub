@@ -1,3 +1,4 @@
+import { SettingsModelCatalog } from "./settings-models";
 import { buildPercentageSlider } from "../ui/percentage-slider";
 import { buildShortcutSettings } from "./shortcuts";
 import { buildTabNav } from "../ui/tab-nav";
@@ -14,7 +15,7 @@ import { h, on } from "../dom";
 import { buildTextInput as textInput, buildSelect as select, buildRadioGroup as radioGroup, buildToggleSwitch as toggleSwitch } from "../ui/controls";
 import { buildCardFrame, buildCard as card } from "../ui/card";
 import { call, store } from "../store";
-import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type ModelEntry, type TranslateTierMeta } from "../protocol";
+import { CMD, type AsrTuningMeta, type AudioDevice, type CaptureTarget, type HardwareProfile, type TranslateTierMeta } from "../protocol";
 import { tr, setLanguage, currentLanguage } from "../i18n";
 import { reopenWizard } from "./migration";
 import { PageLifecycle, type PageHandle } from "../../shared/page-lifecycle";
@@ -36,7 +37,7 @@ let config: Config = {};
 let microphones: AudioDevice[] = [];
 let loopbacks: AudioDevice[] = [];
 /** 模型清单：设置页要按用途列出可选的本地模型（识别/翻译/朗读）。 */
-let models: ModelEntry[] = [];
+const settingsModels = new SettingsModelCatalog();
 /** 可捕获的可见窗口（B 模式按应用隔离用）。 */
 let captureTargets: CaptureTarget[] = [];
 /** 配置是否已成功取回。用于决定设置页是否需要补一次重绘。 */
@@ -117,8 +118,7 @@ export async function loadConfig(): Promise<void> {
 
   // 模型清单：识别/翻译分页要用它列出可选的本地模型。
   // 与配置一起取，保证下拉里的"已安装模型"和真实情况一致。
-  const catalog = await call<{ models: ModelEntry[] }>(CMD.listModels, { models_root: null });
-  models = catalog?.models ?? [];
+  await settingsModels.refresh();
 
   // 调优元数据：界面据此决定哪些项要置灰、以及该显示哪个值。
   // 失败时不抛错 —— 拿不到就退化为"全部可改"，灰化只是提示。
@@ -214,33 +214,12 @@ function field(label: string, control: HTMLElement, hint?: string, disabledBy?: 
 
 /* ------------------------------------------------------------ 各分页 */
 
-/** 按用途取**已安装**的本地模型（设置页下拉只列能真正跑起来的）。 */
-function installedLocalModels(task: string): ModelEntry[] {
-  return models.filter((m) => m.task === task && m.installed);
-}
-
-/** 本地模型下拉：没有可选模型时给出明确的下一步，而不是留一个空框。 */
-function localModelField(
-  label: string,
-  task: string,
-  currentId: string,
-  onPick: (id: string) => void,
-  emptyHint: string,
-): HTMLElement {
-  const available = installedLocalModels(task);
-  if (available.length === 0) {
-    return h("p", { class: "field__hint field__hint--warn", text: emptyHint });
-  }
-  const value = available.some((m) => m.id === currentId) ? currentId : available[0]!.id;
-  return field(
-    label,
-    select<string>(
-      value,
-      available.map((m) => [m.id, m.name] as const),
-      onPick,
-    ),
-    tr("只列出已下载到本机的模型"),
-  );
+/** Installed-model controls update in place; never manufacture a new saved selection. */
+function localModelField(label: string, task: string, currentId: string,
+  onPick: (id: string) => void, emptyHint: string): HTMLElement {
+  const owner = settingsLifecycle;
+  return settingsModels.field(label, task, currentId, onPick, emptyHint,
+    () => owner !== null && settingsLifecycle === owner);
 }
 
 function translationTab(): HTMLElement {
@@ -1013,6 +992,8 @@ export function buildSettings(): PageHandle {
 
   let current = 0;
   const renderPane = (): void => {
+    if (lifecycle.disposed || settingsLifecycle !== lifecycle) return;
+    settingsModels.clearFields();
     shortcutPage?.dispose(); shortcutPage = null;
     panes.replaceChildren(tabs[current]![1]());
   };
@@ -1027,6 +1008,12 @@ export function buildSettings(): PageHandle {
 
   // 页面失效后（已被关闭/替换）不再重绘：在途的配置/设备请求回来时页面可能早就没了。
   const refreshPane = lifecycle.guard(() => { if (!shortcutPage) renderPane(); });
+
+  // Refresh every opening, even when boot already loaded config. No pane replacement.
+  const isCurrent = (): boolean => settingsLifecycle === lifecycle;
+  const refreshModels = (): void => { void settingsModels.refresh(isCurrent); };
+  if (isConfigReady()) refreshModels();
+  lifecycle.listen(window, "voxsub:models", refreshModels);
 
   // 配置与设备列表可能在 boot 之后才到齐，这里补一次刷新。
   // 只在配置**尚未就绪**时重绘：已就绪还重绘会把用户正在输入的内容清掉。
@@ -1058,7 +1045,7 @@ export function buildSettings(): PageHandle {
     dispose: () => {
       shortcutPage?.dispose(); shortcutPage = null;
       lifecycle.dispose();
-      if (settingsLifecycle === lifecycle) settingsLifecycle = null;
+      if (settingsLifecycle === lifecycle) { settingsLifecycle = null; settingsModels.clearFields(); }
     },
   };
 }

@@ -4,8 +4,9 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
-import { ROOT, createReporter } from './esbuild-ts.mjs';
+import { ROOT, createReporter, importShared } from './esbuild-ts.mjs';
 const { check, finish } = createReporter('Main quit owner isolation (fake Electron)');
+const layout = await importShared('src/shared/window-layout.ts');
 const handlers = new Map();
 const events = new Map();
 const windows = [];
@@ -28,6 +29,7 @@ const electron = {
     quit: () => { quitCalls++; },
   },
   BrowserWindow: FakeWindow,
+  screen: { getCursorScreenPoint: () => ({x:0,y:0}), getDisplayNearestPoint: () => ({workArea:{x:0,y:0,width:1280,height:900}}) },
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
   ipcMain: { handle: (name, fn) => handlers.set(name, fn), on: () => {} },
 };
@@ -39,6 +41,7 @@ const context = vm.createContext({
   process: { env: {}, platform: 'win32' }, console,
   require: (name) => {
     if (name === 'electron') return electron;
+    if (name === '../shared/window-layout') return layout;
     if (name === 'node:path') return path;
     if (name === 'node:fs') return new Proxy({}, { get() { throw Error('Real filesystem access forbidden'); } });
     if (name === './backend' || name === './capture' || name === './shortcuts') return {};

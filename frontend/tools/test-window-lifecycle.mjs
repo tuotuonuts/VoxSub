@@ -9,7 +9,7 @@ function makeRuntime({headless=false}={}) {
   const handlers=new Map(), appEvents=new Map(), warnings=[], windows=[];
   let ready;
   class Window {
-    constructor(){ this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
+    constructor(options){ this.options=options; this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
       this.webContents={on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
     assertLive(){if(this.dead)throw new TypeError('Object has been destroyed');}
     call(name,...args){if(this.raceMethod===name)this.dead=true;this.assertLive();if(this.errorMethod===name)throw this.methodError;this.calls.push([name,...args]);}
@@ -42,7 +42,7 @@ function makeRuntime({headless=false}={}) {
   }
   const electron={BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},
     app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){},getPath:()=>"fixture:/userData"},
-    screen:{getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
+    screen:{getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}}),getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
     ipcMain:{handle:(n,f)=>handlers.set(n,f),on:()=>{}}};
   const cache=new Map();let context;
   const load=(file)=>{
@@ -68,12 +68,13 @@ function makeRuntime({headless=false}={}) {
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
     if(name==='electron')return electron;if(name==='./capture')return {};if(name==='node:path')return path;if(name==='node:fs')return {};
-    if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');throw Error(name);
+    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');throw Error(name);
   };
   vm.runInContext(code,context);
   return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};
 }
 function test(name,fn,options){try{const r=makeRuntime(options);fn(r);checks++;console.log('PASS '+name);}catch(error){failures++;console.error('FAIL '+name,error);}}
+test('native main window uses fitted monitor DIP bounds and remains initially hidden',({api})=>{const w=api.createMain();assert.equal(w.options.width,1240);assert.equal(w.options.height,820);assert.equal(w.options.x,20);assert.equal(w.options.y,40);assert.equal(w.options.minWidth,640);assert.equal(w.options.minHeight,420);assert.equal(w.options.show,false);});
 const message=(bridge)=>bridge.handleLine(JSON.stringify({event:'status',text:'late backend message'}));
 test('live windows receive real BackendBridge.handleLine events',({api})=>{const a=api.createMain(),b=api.createOverlay();message(api.bridge());assert.equal(a.messages.length,1);assert.equal(b.messages.length,1);});
 test('main closed before late backend event',({api})=>{const a=api.createMain(),b=api.createOverlay();a.destroy();assert.doesNotThrow(()=>message(api.bridge()));assert.equal(b.messages.length,1);assert.equal(api.getMain(),null);});

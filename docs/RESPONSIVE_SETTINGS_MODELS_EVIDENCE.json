@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-05",
+  "timezone": "Asia/Singapore",
+  "appVersion": "0.9.0-beta",
+  "baseRevision": "f90bdd3",
+  "layout": {
+    "checks": 380,
+    "failures": 0,
+    "samples": 855,
+    "visibilityOrFocusViolations": 0,
+    "rendererErrors": 0
+  },
+  "modelControlChecks": 4,
+  "tuningDraftChecks": 4,
+  "settingsRegressionChecks": 17,
+  "windowGeometryChecks": 10,
+  "nativeWindowLifecycleChecks": 47,
+  "backendLookup": {
+    "status": "PASS",
+    "boundary": "actual backend list_models handler; isolated read-only composition",
+    "modelId": "asr-sensevoice-small-int8",
+    "installed": true,
+    "installedBytes": 240506435,
+    "userConfigHashUnchanged": true,
+    "downloadOrInferenceRequested": false
+  },
+  "python": {
+    "passed": 1161,
+    "skipped": 8,
+    "deselected": 7,
+    "xfailed": 1,
+    "failed": 0
+  },
+  "frontendCheck": "PASS",
+  "frontendBuild": "PASS",
+  "sourceAndBuiltCssMatch": true,
+  "limits": {
+    "productionStdioProcess": "BLOCKED: isolated ad-hoc full server probes timed out; stopped, not counted as passing",
+    "realUserApplicationRestart": "NOT_RUN",
+    "physicalDisplayDpiChanges": "NOT_RUN: tested equivalent Chromium viewports/zoom and DIP geometry",
+    "modelInference": "NOT_RUN",
+    "packagedInstaller": "NOT_RUN",
+    "githubCI": "NOT_RUN"
+  }
+}

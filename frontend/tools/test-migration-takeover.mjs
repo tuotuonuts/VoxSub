@@ -35,6 +35,7 @@ function harness() {
   const checkpoints = [];
   const sender = { on() {}, isDestroyed: () => false, send: (channel, payload) => currentRenderer?.emit(channel, payload) };
   const electron = {
+    screen: {getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},
     app: { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}),
       on: (n, f) => appEvents.set(n, f), quit: () => quitCalls++, getAppPath: () => ROOT },
     BrowserWindow: class { constructor() { this.webContents = sender; this.events = new Map(); }
