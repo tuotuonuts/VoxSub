@@ -1,0 +1,132 @@
+{
+  "boundary": "Actual CPU Zipformer/VAD/OPUS; public English samples repeated at 1x PCM cadence. No WASAPI, UI, speakers, mic, cloud or user config. No WER/reference-quality claim.",
+  "requested_s": 900.0,
+  "audio_s": 900.0,
+  "feed_wall_s": 900.0,
+  "drain_wall_s": 0.657,
+  "warmup_ms": 718.0,
+  "counts": {
+    "partials": 760,
+    "draft_updates": 1168,
+    "translated_drafts": 1069,
+    "finals": 49,
+    "empty_finals": 0,
+    "language_rejections": 14
+  },
+  "first_draft_from_first_partial_ms": {
+    "samples": 49,
+    "p50": 406.00000000267755,
+    "p95": 686.9999999995343
+  },
+  "quality_status": "NOT_RUN: no reference alignment/WER/translation review; language guard rejection counts are reported, not hidden",
+  "queue_peaks": {
+    "capture": 4,
+    "context": 0,
+    "translation": 1
+  },
+  "workers_alive": [],
+  "state": "running",
+  "latency": {
+    "stages": {
+      "callback": {
+        "count": 49,
+        "sample_count": 49,
+        "total_ms": 3.54,
+        "p50_ms": 0.06,
+        "p95_ms": 0.1,
+        "max_ms": 0.14
+      },
+      "recognition_decode": {
+        "count": 0,
+        "sample_count": 0,
+        "total_ms": 0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "max_ms": null
+      },
+      "draft_inference": {
+        "count": 425,
+        "sample_count": 256,
+        "total_ms": 97173.62,
+        "p50_ms": 184.96,
+        "p95_ms": 677.03,
+        "max_ms": 1217.77
+      },
+      "capture_wait": {
+        "count": 30000,
+        "sample_count": 256,
+        "total_ms": 264.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "context_wait": {
+        "count": 49,
+        "sample_count": 49,
+        "total_ms": 16.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "max_ms": 16.0
+      },
+      "translation_wait": {
+        "count": 49,
+        "sample_count": 49,
+        "total_ms": 3419.0,
+        "p50_ms": 0.0,
+        "p95_ms": 297.0,
+        "max_ms": 718.0
+      },
+      "recognition_feed": {
+        "count": 30000,
+        "sample_count": 256,
+        "total_ms": 32087.48,
+        "p50_ms": 0.54,
+        "p95_ms": 9.21,
+        "max_ms": 11.7
+      },
+      "final_inference": {
+        "count": 49,
+        "sample_count": 49,
+        "total_ms": 22912.14,
+        "p50_ms": 285.01,
+        "p95_ms": 1599.63,
+        "max_ms": 2739.08
+      },
+      "final_ready": {
+        "count": 49,
+        "sample_count": 49,
+        "total_ms": 26481.0,
+        "p50_ms": 281.0,
+        "p95_ms": 2125.0,
+        "max_ms": 2750.0
+      },
+      "recognition_wait": {
+        "count": 0,
+        "sample_count": 0,
+        "total_ms": 0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "max_ms": null
+      }
+    },
+    "backlogged": false,
+    "draft_interval_ms": 468.43,
+    "window_capacity": 256,
+    "boundary": "Recent bounded stage timings; not acoustic endpoint, device execution, renderer paint or translation quality verification"
+  },
+  "rss_mb": 630.61,
+  "status": "PASS",
+  "raw_result_sha256": "0dca88158df660ffc69c0f2064c16ef211b47b5e50029abf7c286d1013a7e45d",
+  "raw_result_path": "D:\\OneDrive\\app_dve\\realtime-latency-acceptance\\verified-15min\\result.json",
+  "revision_boundary": "900-second run precedes final language-rejection pending-slot cleanup. Cleanup verified by 51 targeted tests; subsequent full regression and 30-second smoke were interrupted and are NOT_RUN/incomplete.",
+  "validation": {
+    "python_before_cleanup": "1199 passed, 8 skipped, 7 deselected, 1 existing xfailed",
+    "targeted_after_cleanup": "51 passed",
+    "frontend_check": "PASS",
+    "frontend_build": "PASS",
+    "native_electron_overlay": "BLOCKED: ERR_FAILED (-2), no DOM result",
+    "post_cleanup_full_regression": "INCOMPLETE: stopped after user reported non-silent execution",
+    "translation_quality": "NOT_RUN",
+    "production_wasapi_ipc_ui": "NOT_RUN"
+  }
+}

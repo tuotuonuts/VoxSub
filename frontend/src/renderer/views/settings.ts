@@ -412,7 +412,7 @@ function devicesTab(): HTMLElement {
  *   · vad_threshold / silence_ms / max_utterance_ms / beam_paths
  *     在预设档下由 ASR_TUNING_PRESETS 覆盖，**只有"自定义"档才读用户值** ——
  *     选了"智能上下文"还去调"语音灵敏度"，改了等于没改。
- *   · context_hold_ms / context_correction / live_draft_enabled / filler_mode
+ *   · context_hold_ms / context_correction / filler_mode
  *     只作用于 ContextualTextProcessor，而它**仅在"智能上下文"档创建**。
  *   · hotwords / max_new_tokens 有非上下文的生效路径，任何时候都可改。
  *
@@ -567,6 +567,8 @@ function buildTuningContent(
     numField("asr_max_utterance_ms", "单句最长时长", 2000, 60000, 500, "超过这个时长会强制断句"),
     numField("asr_beam_paths", "识别候选数", 1, 12, 1, "越大越准，但更慢"),
     numField("asr_max_new_tokens", "单句最大文字量", 64, 4096, 64),
+    boolField("asr_live_draft_enabled", "实时双语草稿"),
+    h("p", { class: "field__hint", text: tr("实时模式下尽早显示原文和可修订译文；需要模型提供部分识别结果，文件翻译不使用草稿。") }),
     field(tr("常用词 / 专有名词"), textInput(String(displayValue("asr_hotwords") ?? ""), (v) => {
       tuningDraft["asr_hotwords"] = v;
       markDirty();
@@ -576,7 +578,6 @@ function buildTuningContent(
   const contextCard = card("智能上下文", [
     h("p", { class: "field__hint", text: "下面几项只在「智能上下文」档生效；其他档位下它们不会参与识别。" }),
     numField("asr_context_hold_ms", "上下文最长等待", 0, 4000, 100, "句子可能没说完时，最多多等多久"),
-    boolField("asr_live_draft_enabled", "实时双语草稿"),
     boolField("asr_context_correction", "上下文保守纠偏"),
     selectField("asr_filler_mode", "语气词清理", [
       ["off", "关闭（保留原话）"],

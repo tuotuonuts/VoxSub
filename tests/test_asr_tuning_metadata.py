@@ -39,12 +39,11 @@ BASE_KEYS = {
 CONTEXT_KEYS = {
     "context_hold_ms": (500, 3000),
     "context_correction": (True, False),
-    "live_draft_enabled": (True, False),
     "filler_mode": ("off", "light"),
 }
 
 # 与档位无关、任何档位都可改的键
-ALWAYS_KEYS = ("hotwords", "max_new_tokens")
+ALWAYS_KEYS = ("hotwords", "max_new_tokens", "live_draft_enabled")
 
 
 def _resolve(profile: str, overrides: dict) -> dict:

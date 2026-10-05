@@ -30,6 +30,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from voxsub.realtime_latency import DraftSkipped
 from voxsub.logging_setup import get_logger
 from voxsub.hardware import (
     HardwareProfile,
@@ -758,6 +759,45 @@ class QwenQualityTranslator(Translator):
                 raise TranslationError(f"质量档输出无效: {reason}")
             return cleaned
         raise TranslationError(f"本地翻译引擎所有后端均失败: {last_error}")
+
+    def translate_draft(self, text: str, src_lang: str, dst_lang: str, *,
+                        context: ContextPairs = (), timeout_ms: int = 1200) -> str:
+        """One bounded client request; no startup, retries or device fallback.
+
+        A client timeout is not proof that the server cancelled GPU work.
+        Final translations retain the full existing validation/recovery path.
+        """
+        src, dst = normalize_language(src_lang), normalize_language(dst_lang)
+        if src == dst:
+            return text
+        names = _LANG_NAMES.get((src, dst))
+        if names is None:
+            raise DraftSkipped("Unsupported preview language pair")
+        deadline = time.monotonic() + max(1, timeout_ms) / 1000
+        if not self._lifecycle_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("Preview lifecycle is busy")
+        try:
+            return self._request_draft(text, names, src, dst, context, deadline)
+        finally:
+            self._lifecycle_lock.release()
+
+    def _request_draft(self, text, names, src, dst, context, deadline):
+        if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise TimeoutError("Preview inference is busy")
+        try:
+            if self._endpoint is None or self._proc is None or self._proc.poll() is not None:
+                raise DraftSkipped("Final translator is not warmed up")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Preview deadline elapsed")
+            out = self._request_translation(self._endpoint, text, names,
+                                            max(1, int(remaining * 1000)), context=context)
+            cleaned = _clean(out, source=text)
+            if _translation_invalid_reason(text, cleaned, src, dst) is not None:
+                raise DraftSkipped("Preview output did not pass validation")
+            return cleaned
+        finally:
+            self._lock.release()
 
     def translate_many(
         self, texts: list[str], src_lang: str, dst_lang: str, *,

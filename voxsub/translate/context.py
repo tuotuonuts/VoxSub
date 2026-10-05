@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import inspect
 import re
 import threading
 import time
@@ -49,14 +50,23 @@ class TranslationContext:
 
 def translate_contextual(translator, text: str, src: str, dst: str, *,
                          memory: TranslationContext, scope: tuple,
-                         enabled: bool) -> str:
-    if not enabled:
-        return translator.translate(text, src, dst)
-    context = memory.recent(scope, text)
+                         enabled: bool, draft: bool = False) -> str:
+    context = memory.recent(scope, text) if enabled else ()
+    method = getattr(translator, "translate_draft", None) if draft else None
+    if callable(method):
+        return method(text, src, dst, context=context, timeout_ms=1200)
     method = getattr(translator, "translate_with_context", None)
     if context and callable(method):
-        return method(text, src, dst, context=context)
-    return translator.translate(text, src, dst)
+        return _invoke_translation(method, text, src, dst, draft, context=context)
+    return _invoke_translation(translator.translate, text, src, dst, draft)
+
+
+def _invoke_translation(method, text, src, dst, draft, **kwargs):
+    # Older/plugin adapters may not implement a timeout argument. Never turn a
+    # signature mismatch into model failure or pretend their call is bounded.
+    if draft and "timeout_ms" in inspect.signature(method).parameters:
+        kwargs["timeout_ms"] = 1200
+    return method(text, src, dst, **kwargs)
 
 
 def context_prefix(context: ContextPairs, *, byte_budget: int = 384) -> str:

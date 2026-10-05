@@ -1,3 +1,11 @@
+## 实时识别＋翻译延迟第一轮优化
+
+- 活动句稳定草稿、自适应节流、最终句优先与积压保护；同句精确草稿复用，配置/模型/上下文/跨句隔离；shared组件统一主窗与浮窗译文保留，各实时档位开关独立。
+- 有界阶段耗时诊断，OPUS软期限/Qwen预热单次草稿；语言拦截终句释放pending，日志不记录该路径正文。
+- 收尾补丁前真实CPU Zipformer/VAD/OPUS 900秒样本回放通过：49最终回调、0空译文，partial到首译文中位406ms/P95 687ms，翻译队列P95 297ms，无持续积压；14次语言拦截，不算准确率验收，不是声音到绘制延迟。
+- 补丁前Python1199 passed/8 skipped/7 deselected/1既有xfail，前端check/build通过；补丁后针对性51 passed。后续复验误写not audio导致真实音频测试选入，用户报告非静默后已停止，不能计通过；隐藏Electron ERR_FAILED为BLOCKED。
+- 完整视频/WASAPI/生产IPC与UI/当前用户模型组合/准确率/真实Qwen草稿/安装版/GitHubCI NOT_RUN。报告docs/REALTIME_LATENCY_ACCEPTANCE.md及EVIDENCE.json。
+
 ## 分辨率适配与设置模型刷新（2026-10-05）
 
 - 修复启动缓存导致新下载 SenseVoice 不出现在设置：每次打开独立刷新，下载完成/安装卸载通知，原位更新公共Select选项，不重绘整页/重置草稿；缺失选择不假冒第一项，失败有重试，旧请求/旧导航/已销毁控件隔离。

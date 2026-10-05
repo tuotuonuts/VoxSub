@@ -49,6 +49,7 @@ from voxsub.live_draft import DraftTranslationRequest, DraftView, LiveDraftState
 from voxsub.logging_setup import get_logger
 from voxsub.diagnostic_trace import record as trace_record, error as trace_error, model_result, traced_stage
 from voxsub.recording import WaveSessionRecorder
+from voxsub.realtime_latency import DraftSkipped, ExactDraftCache, RealtimeLatency, caused_by_timeout
 from voxsub.realtime_builder import RealtimeBuildSpec, build_realtime_components
 from voxsub.subtitles import SubtitleExporter, SubtitleLine
 from voxsub.translate.context import TranslationContext, translate_contextual
@@ -87,11 +88,10 @@ ASR_TUNING_PRESETS: dict[str, dict[str, float | int]] = {
 #   · 四个基础参数在预设档下由 ASR_TUNING_PRESETS 覆盖，只有 custom 才走用户值。
 #   · context_hold_ms / context_correction / filler_mode 只传给
 #     ContextualTextProcessor，而它仅在 context 档创建。
-#   · live_draft_enabled 由 _live_draft_enabled() 读，该函数要求
-#     profile == "context"。
+#   · live_draft_enabled 独立控制实时草稿；原生部分结果可用于各档位。
 PROFILE_CONTROLLED_KEYS: frozenset[str] = frozenset({
     "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
-    "context_hold_ms", "context_correction", "live_draft_enabled", "filler_mode",
+    "context_hold_ms", "context_correction", "filler_mode",
 })
 
 # 每个档位下，上述受控参数中**用户仍可改**的那些。
@@ -100,7 +100,7 @@ PROFILE_EDITABLE_KEYS: dict[str, frozenset[str]] = {
     "balanced": frozenset(),
     "accuracy": frozenset(),
     "context": frozenset({
-        "context_hold_ms", "context_correction", "live_draft_enabled", "filler_mode",
+        "context_hold_ms", "context_correction", "filler_mode",
     }),
     "custom": frozenset({
         "vad_threshold", "silence_ms", "max_utterance_ms", "beam_paths",
@@ -278,6 +278,8 @@ class _QueuedTranslation:
     text: str
     snapshot: _LangSnapshot
     queued_at: float | None = None
+    sentence_id: int | None = None
+    translation_enqueued_at: float | None = None
 
 
 @dataclass
@@ -570,7 +572,12 @@ class Pipeline:
         self._cb_status: list[Callable[[str], None]] = []
         self._cb_state: list[Callable[[], None]] = []
         self._cb_progress: list[Callable[[int, int, str], None]] = []
-        self._live_draft = LiveDraftState()
+        self._live_draft = LiveDraftState(stable_updates=True)
+        self._latency = RealtimeLatency()
+        self._draft_cache = ExactDraftCache()
+        self._active_translation_sentence_id: int | None = None
+        self._capture_times: deque[float] = deque(maxlen=_CAPTURE_QUEUE_MAX + 1)
+        self._capture_times_lock = threading.Lock()
 
         self._asr_tuning: dict = {"profile": "auto", "hotwords": ""}
         self._is_generative = False
@@ -1455,7 +1462,10 @@ class Pipeline:
         """
         if snapshot is None:
             snapshot = self._lang_snapshot()
+        sentence_id = self._live_draft.sentence_id
         self._live_draft.begin_final()
+        enqueued_at = time.monotonic()
+        self._latency.observe("context_wait", max(0.0, enqueued_at - queued_at) * 1000)
         with self._metrics_lock:
             self._translation_times[text].append(queued_at)
         logger.info("STT 终句入翻译队列: chars=%d lang=%s->%s generation=%d queue=%d",
@@ -1464,7 +1474,7 @@ class Pipeline:
         try:
             self._put_or_stop(
                 self._translation_queue,
-                _QueuedTranslation(text, snapshot, queued_at),
+                _QueuedTranslation(text, snapshot, queued_at, sentence_id, enqueued_at),
                 "翻译后端持续落后，字幕缓存已满；任务已停止，请切换更轻量的翻译模型",
             )
         except RuntimeError:
@@ -1564,13 +1574,13 @@ class Pipeline:
             if not segment.text or not segment.text.strip():
                 continue
             if snapshot.src != "auto" and not text_matches_language(segment.text, snapshot.src):
-                logger.warning("上下文稳定文本被语言约束拦截: source=%s text=%r", snapshot.src, segment.text[:160])
+                logger.warning("上下文稳定文本被语言约束拦截: source=%s chars=%d", snapshot.src, len(segment.text))
                 continue
             if segment.corrections or segment.fillers_removed:
                 logger.info(
-                    "上下文文本已稳定: raw=%r final=%r corrections=%s fillers=%d",
-                    segment.raw_text[:160], segment.text[:160],
-                    segment.corrections, segment.fillers_removed,
+                    "上下文文本已稳定: raw_chars=%d final_chars=%d corrections=%d fillers=%d",
+                    len(segment.raw_text), len(segment.text),
+                    len(segment.corrections), segment.fillers_removed,
                 )
             self._queue_translation(segment.text, queued_at, snapshot)
 
@@ -1628,8 +1638,13 @@ class Pipeline:
             snapshot = self._lang_snapshot()
         # 源语言约束：如果指定了源语言，但文本不符合该语言，直接丢弃不予翻译
         if snapshot.src != "auto" and not text_matches_language(text, snapshot.src):
-            logger.warning("翻译前拦截非指定源语言文本: expected=%s text=%r",
-                           snapshot.src, text[:160])
+            logger.warning("翻译前拦截非指定源语言文本: expected=%s chars=%d",
+                           snapshot.src, len(text))
+            # This final was already counted at enqueue time. Rejection must
+            # release that slot or all later optional drafts remain blocked.
+            view = self._live_draft.finish_final()
+            if view is not None:
+                self._emit_draft(view)
             return
         self._emit_status("翻译中…")
         started = time.perf_counter()
@@ -1647,23 +1662,40 @@ class Pipeline:
         self._present_translation(text, translation, snapshot, speak=can_speak)
 
     def _translate_contextual(self, text: str, snapshot: _LangSnapshot, *,
-                              commit: bool = False) -> str:
+                              commit: bool = False, sentence_id: int | None = None) -> str:
         enabled = (self._asr_tuning.get("profile") == "context"
                    and snapshot.generation == self.config_generation)
         scope = (snapshot.generation, snapshot.pair, id(self._translator))
-        started = time.perf_counter()
-        translation = translate_contextual(
-            self._translator, text, snapshot.src, snapshot.dst,
-            memory=self._translation_context, scope=scope, enabled=enabled)
+        translation, key, cached = self._infer_contextual(text, snapshot, scope, enabled, commit, sentence_id)
         model_result("translation" if commit else "draft_translation", translation,
                      expected=snapshot.dst, source=snapshot.src, target=snapshot.dst,
-                     generation=snapshot.generation,
-                     duration_ms=round((time.perf_counter() - started) * 1000, 2))
+                     generation=snapshot.generation, sentence_id=key[0])
         if self._trans_kind is not None:
             translation = guard_text(translation, snapshot.dst, kind="translation")
+        if cached:
+            trace_record("translation", "reused_draft", generation=snapshot.generation,
+                         sentence_id=self._active_translation_sentence_id, input_chars=len(text))
+        elif not commit and snapshot.generation == self.config_generation:
+            self._draft_cache.remember(key, translation)
         if commit and enabled and snapshot.generation == self.config_generation:
             self._translation_context.remember(scope, text, translation)
         return translation
+
+    def _infer_contextual(self, text, snapshot, scope, enabled, commit, sentence_id=None):
+        context = self._translation_context.recent(scope, text) if enabled else ()
+        sentence_id = (self._active_translation_sentence_id if commit
+                       else sentence_id if sentence_id is not None else self._live_draft.sentence_id)
+        key = (sentence_id, scope, enabled, context, text)
+        cached = self._draft_cache.take(key) if commit and sentence_id is not None else None
+        started = time.perf_counter()
+        try:
+            translation = cached if cached is not None else translate_contextual(
+                self._translator, text, snapshot.src, snapshot.dst,
+                memory=self._translation_context, scope=scope, enabled=enabled, draft=not commit)
+            return translation, key, cached is not None
+        finally:
+            self._latency.observe("final_inference" if commit else "draft_inference",
+                                  (time.perf_counter() - started) * 1000)
 
     @traced_stage("translation")
     def _run_translation(self, text: str, snapshot: _LangSnapshot,
@@ -1701,7 +1733,9 @@ class Pipeline:
         TTS 用的是**这条句子的**目标语言快照：否则"用中文语音读英文句子"
         这类错配会在用户切语言之后出现。
         """
+        callback_started = time.perf_counter()
         self._emit_utterance(text, translation)
+        self._latency.observe("callback", (time.perf_counter() - callback_started) * 1000)
         view = self._live_draft.finish_final()
         if view is not None:
             self._emit_draft(view)
@@ -1712,10 +1746,14 @@ class Pipeline:
             if worker is not None:
                 worker.submit(translation, snapshot.dst)
         if self._running:
-            self._emit_status(
-                "已暂停 · 点击继续恢复录音与翻译"
-                if self._pause_evt.is_set() else "拾音中"
-            )
+            self._emit_status(self._realtime_idle_status())
+
+    def _realtime_idle_status(self) -> str:
+        if self._pause_evt.is_set():
+            return "已暂停 · 点击继续恢复录音与翻译"
+        if self._latency.backlogged and not self._translation_queue.empty():
+            return "翻译暂时落后，正在追赶；可选择更轻量的模型"
+        return "拾音中"
 
     @traced_stage("draft_translation")
     def _translate_draft(self, request: DraftTranslationRequest,
@@ -1731,9 +1769,15 @@ class Pipeline:
             snapshot = self._lang_snapshot()
         if snapshot.src != "auto" and not text_matches_language(request.source, snapshot.src):
             return
+        if request.sentence_id is not None and request.sentence_id != self._live_draft.sentence_id:
+            return
         try:
-            translation = self._translate_contextual(request.source, snapshot)
+            translation = self._translate_contextual(request.source, snapshot, sentence_id=request.sentence_id)
         except Exception as exc:
+            if isinstance(exc, DraftSkipped) or caused_by_timeout(exc):
+                trace_record("draft_translation", "timeout" if caused_by_timeout(exc) else "skipped",
+                             generation=snapshot.generation, error_type=type(exc).__name__)
+                return  # optional preview budget is not a broken final model
             trace_error("draft_translation", exc, source=snapshot.src, target=snapshot.dst, generation=snapshot.generation)
             logger.debug("实时草稿翻译失败: chars=%d error_type=%s", len(request.source), type(exc).__name__,
                          exc_info=True)
@@ -1751,7 +1795,7 @@ class Pipeline:
 
     def _live_draft_enabled(self) -> bool:
         return (
-            str(self._asr_tuning.get("profile", "auto")) == "context"
+            self._mode != "c"
             and bool(self._asr_tuning.get("live_draft_enabled", True))
         )
 
@@ -1760,6 +1804,13 @@ class Pipeline:
             bool(self._cb_draft)
             and self._live_draft_enabled()
         )
+
+    def _draft_work_allowed(self) -> bool:
+        # Preserve all final work; shed only optional preview inference when
+        # upstream audio/recognition or final text is already waiting.
+        return (self._queue.qsize() * CHUNK_FRAMES / SAMPLE_RATE < 0.30
+                and self._recognition_queue.empty()
+                and self._context_queue.empty())
 
     def _translate_queued_item(self, item: object) -> None:
         """执行一条翻译队列条目，用的是**条目自带**的快照。
@@ -1778,7 +1829,20 @@ class Pipeline:
             text = str(item)
             snapshot = self._lang_snapshot()
             queued_at = self._take_translation_timestamp(text)
-        self._translate_sentence(text, queued_at, snapshot)
+        translation_enqueued_at = getattr(item, "translation_enqueued_at", None) or queued_at
+        if translation_enqueued_at is not None:
+            wait_ms = max(0.0, time.monotonic() - translation_enqueued_at) * 1000
+            self._latency.observe("translation_wait", wait_ms)
+            trace_record("translation_queue", "started", queue_wait_ms=round(wait_ms, 2),
+                         sentence_id=getattr(item, "sentence_id", None), generation=snapshot.generation,
+                         pipeline_session_id=self._diagnostic_session_id)
+        self._active_translation_sentence_id = getattr(item, "sentence_id", None)
+        try:
+            self._translate_sentence(text, queued_at, snapshot)
+            if queued_at is not None:
+                self._latency.observe("final_ready", max(0.0, time.monotonic() - queued_at) * 1000)
+        finally:
+            self._active_translation_sentence_id = None
 
     def _translation_loop(self) -> None:
         """Prioritize final sentences, then translate only the latest live draft."""
@@ -1797,8 +1861,9 @@ class Pipeline:
             if self._translation_input_done.is_set():
                 break
             request = (
-                self._live_draft.take_translation_request()
-                if self._live_draft_translation_enabled() else None
+                self._live_draft.take_translation_request(
+                    min_interval_seconds=self._latency.draft_interval_seconds)
+                if self._live_draft_translation_enabled() and self._draft_work_allowed() else None
             )
             if request is not None:
                 self._translate_draft(request, self._lang_snapshot())
@@ -1829,6 +1894,9 @@ class Pipeline:
                 if text is None:
                     continue
                 decode_ms = (time.perf_counter() - stt_started) * 1000.0
+                self._latency.observe("recognition_decode", decode_ms)
+                if wait_ms is not None:
+                    self._latency.observe("recognition_wait", max(0.0, wait_ms))
                 self._log_recognition(audio, text, wait_ms, decode_ms)
                 if text:
                     self._on_sentence(text)
@@ -1984,6 +2052,10 @@ class Pipeline:
         self._drain_queue(self._context_queue)
         self._drain_queue(self._translation_queue)
         self._live_draft.reset()
+        self._latency.reset()
+        self._draft_cache.clear()
+        with self._capture_times_lock:
+            self._capture_times.clear()
         self._clear_draft()
         with self._metrics_lock:
             self._translation_times.clear()
@@ -2445,8 +2517,12 @@ class Pipeline:
         if self._recorder is not None:
             self._recorder.write(chunk)
         try:
+            with self._capture_times_lock:
+                self._capture_times.append(time.monotonic())
             self._queue.put(chunk, timeout=0.5)
         except queue.Full as exc:
+            with self._capture_times_lock:
+                self._capture_times.pop()
             self._diagnostic_capture["queue_rejected_frames"] += int(chunk.size)
             trace_record("capture_queue", "failed", error_type="Full", error_code="queue_full")
             raise RuntimeError(
@@ -2484,7 +2560,13 @@ class Pipeline:
                 if chunk is _PAUSE_MARKER:
                     seg.flush()
                     continue
+                with self._capture_times_lock:
+                    captured_at = self._capture_times.popleft() if self._capture_times else None
+                if captured_at is not None:
+                    self._latency.observe("capture_wait", max(0.0, time.monotonic() - captured_at) * 1000)
+                feed_started = time.perf_counter()
                 seg.feed(chunk)
+                self._latency.observe("recognition_feed", (time.perf_counter() - feed_started) * 1000)
         except Exception as exc:
             trace_error("recognition", exc)
             logger.exception("ASR/VAD 处理线程失败")

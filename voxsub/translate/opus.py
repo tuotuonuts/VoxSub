@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -206,6 +207,7 @@ class _OpusModel:
 
     # ------------------------------------------------------------------
     def translate_str(self, text: str, timeout_ms: int = 15000) -> str:
+        deadline = time.monotonic() + max(1, timeout_ms) / 1000
         input_ids = np.expand_dims(np.array(self._tok.encode(text), dtype=np.int64), 0)
         enc_len = input_ids.shape[1]
         if enc_len > self._max_position:
@@ -220,6 +222,8 @@ class _OpusModel:
         decoder_ids = [self._decoder_start]
         out_tokens: list[int] = []
         for _ in range(self._max_length):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("OPUS decoding exceeded its time budget")
             dec_ids = np.expand_dims(np.array(decoder_ids, dtype=np.int64), 0)
             logits = self._dec.run(None, {
                 "encoder_attention_mask": attention_mask,

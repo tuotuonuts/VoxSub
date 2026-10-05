@@ -16,7 +16,7 @@ _PIPELINE_SESSION = contextvars.ContextVar("pipeline_session", default=None)
 _REQUEST_ID = contextvars.ContextVar("model_request", default=None)
 _LOCK = threading.RLock()
 _EVENTS: deque[dict[str, Any]] = deque(maxlen=500)
-_ALLOWED = frozenset({"stage", "model", "runtime", "provider", "source", "target", "generation", "duration_ms", "queue_wait_ms", "input_chars", "output_chars", "audio_ms", "error_type", "error_code", "outcome", "command", "fallback", "suspected_language", "request_id", "pipeline_session_id"})
+_ALLOWED = frozenset({"stage", "model", "runtime", "provider", "source", "target", "generation", "duration_ms", "queue_wait_ms", "input_chars", "output_chars", "audio_ms", "error_type", "error_code", "outcome", "command", "fallback", "suspected_language", "request_id", "pipeline_session_id", "sentence_id"})
 
 
 def record(stage: str, outcome: str, **metadata: Any) -> dict[str, Any]:

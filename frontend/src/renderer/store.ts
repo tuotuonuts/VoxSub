@@ -1,3 +1,4 @@
+import { mergePartialDraft } from "../shared/subtitle-draft";
 import { mergeDownload, type ModelDownloadMap } from "../shared/model-download-state";
 import { describeJobFeedback } from "../shared/command-feedback";
 import { recordIPC, setDeveloperEnabled } from "../shared/diagnostic-controls";
@@ -280,10 +281,8 @@ class Store {
         this.patch({ draft: { source: event.source, translation: event.translation } });
         break;
       case "partial":
-        // partial 只有原文，译文等待 draft
-        this.patch({
-          draft: { source: event.text, translation: this.state.draft?.translation ?? "" },
-        });
+        // Preserve a compatible preview; unrelated source never borrows it.
+        this.patch({ draft: mergePartialDraft(this.state.draft, event.text) });
         break;
       case "progress":
         this.patch({

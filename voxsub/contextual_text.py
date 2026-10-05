@@ -154,6 +154,8 @@ def _looks_incomplete_zh(text: str) -> bool:
         return True
     if any(compact.startswith(prefix) for prefix in _ZH_SUBORDINATE_PREFIXES):
         return not any(marker in compact[2:] for marker in ("所以", "就", "那么"))
+    if compact.endswith(("了", "吗", "吧", "呢", "完成", "结束")):
+        return False
     if len(compact) <= 5:
         return True
     if len(compact) >= 18:
@@ -173,6 +175,13 @@ def _looks_incomplete_en(text: str) -> bool:
     # auxiliaries and trailing prepositions waiting, without delaying every
     # four-word statement until the hard deadline.
     if any(word in {"is", "are", "was", "were", "has", "have"} for word in words[:-1]):
+        return False
+    # Do not impose a seven-word minimum on a complete everyday statement.
+    finite_verbs = {"go", "went", "see", "saw", "need", "want", "know",
+                    "work", "works", "arrived", "started", "finished",
+                    "reached", "opened", "closed", "said", "says", "feel",
+                    "feels", "left", "came", "happened"}
+    if len(words) >= 3 and any(word in finite_verbs for word in words[1:]):
         return False
     return len(words) < 7
 

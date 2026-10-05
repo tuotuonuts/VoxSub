@@ -10,6 +10,8 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "翻译暂时落后，正在追赶；可选择更轻量的模型": "Translation is catching up; consider a lighter model.",
+  "实时模式下尽早显示原文和可修订译文；需要模型提供部分识别结果，文件翻译不使用草稿。": "Show source text and revisable translations early in live mode. Partial recognition results are required; file translation does not use drafts.",
   "语音识别": "Speech recognition",
   "正在读取已安装模型…": "Reading installed models…",
   "模型列表读取失败，请重试；已有设置未更改。": "Could not read the model list. Retry; your settings have not changed.",

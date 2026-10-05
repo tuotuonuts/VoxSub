@@ -1,3 +1,4 @@
+import { mergePartialDraft } from "../shared/subtitle-draft";
 import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
 /**
  * 字幕浮窗渲染层。
@@ -507,8 +508,9 @@ function handleBackendEvent(event: {
   }
 
   if (event.type === "partial") {
-    // 实时部分识别：新句子开始
-    draft = { src: event.text ?? "", dst: "" };
+    // Do not blank a readable translation for every word-level source update.
+    const next = mergePartialDraft({ source: draft.src, translation: draft.dst }, event.text ?? "");
+    draft = { src: next.source, dst: next.translation };
     if (!isBrowsing()) paint();
     return;
   }

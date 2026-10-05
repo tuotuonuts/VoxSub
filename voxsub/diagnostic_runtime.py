@@ -31,6 +31,7 @@ def pipeline_snapshot(pipeline: Any) -> dict[str, Any]:
             "generation": getattr(pipeline, "config_generation", 0),
             "session_id": getattr(pipeline, "_diagnostic_session_id", ""),
             "capture": dict(getattr(pipeline, "_diagnostic_capture", {})),
+            "latency": pipeline._latency.snapshot() if hasattr(pipeline, "_latency") else {"status": "not_checked"},
             "hardware_dropped_frames": "unverified",
             "requested_provider": str(getattr(pipeline, "_provider", "unverified")),
             "effective_translation": str(getattr(pipeline, "_trans_kind", "not_loaded"))}
