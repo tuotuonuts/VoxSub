@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import { transformSync } from 'esbuild';
 import { installMiniDom } from './mini-dom.mjs';
 import { importShared, cleanupShared } from './esbuild-ts.mjs';
+const { OverlaySurface } = await importShared("src/main/overlay-surface.ts", {bundle:true});
 const dom = installMiniDom();
 const [{ h, on }, { buildPercentageSlider }, { buildToggleSwitch }, { glassTint }] = await importShared([
   'src/renderer/dom.ts', 'src/renderer/ui/percentage-slider.ts', 'src/renderer/ui/controls.ts', 'src/shared/overlay-glass.ts',
@@ -35,12 +36,13 @@ try {
     assert.ok(!read('renderer/overlay.css').includes('filter: blur(') || !read('renderer/overlay.css').match(/\.shell\s*\{[^}]*filter:/));
   });
   const main=read('main/main.ts');
-  const native=main.slice(main.indexOf('let overlayGlassEnabled'),main.indexOf('let overlayFontSize'));
+  const native=main.slice(main.indexOf('const overlaySurface'),main.indexOf('let overlayFontSize'));
   const ipc=main.slice(main.indexOf('  ipcMain.handle("overlay:get-glass"'),main.indexOf('  ipcMain.handle("overlay:set-opacity"'));
   const makeNative=(platform='win32',version='10.0.26300',fail=false,alive=true) => {
     const handlers=new Map(),materials=[],states=[];
-    run(native+ipc,{ process:{ platform,getSystemVersion:()=>version },
-      overlayWindow:{},useWindow:(_win,_op,fn)=>{if(!alive)return false;fn({setBackgroundMaterial:m=>{materials.push(m);if(fail&&m==='acrylic')throw Error('DWM unavailable');}});return true;},
+    const win={getBounds:()=>({x:0,y:0,width:860,height:140}),getContentSize:()=>[860,140],webContents:{getZoomFactor:()=>1},setShape(){},setBackgroundMaterial:m=>{materials.push(m);if(fail&&m==='acrylic')throw Error('DWM unavailable');}};
+    run(native+ipc,{ OverlaySurface, screen:{getDisplayMatching:()=>({scaleFactor:1})}, process:{ platform,getSystemVersion:()=>version },
+      overlayWindow:win,useWindow:(_win,_op,fn)=>{if(!alive)return false;fn(win);return true;},
       sendToWindow:(_w,_c,s)=>states.push(s),console:{warn(){}},ipcMain:{handle:(n,f)=>handlers.set(n,f)} });
     return { materials,states,get:()=>handlers.get('overlay:get-glass')(),set:(e,s)=>handlers.get('overlay:set-glass')({},e,s) };
   };

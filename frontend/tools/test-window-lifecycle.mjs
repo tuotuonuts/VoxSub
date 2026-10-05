@@ -10,7 +10,11 @@ function makeRuntime({headless=false}={}) {
   let ready;
   class Window {
     constructor(options){ this.options=options; this.dead=false; this.events=new Map(); this.messages=[]; this.calls=[]; this.contentsDead=false; this.race=false; this.visible=false; this.minimized=false;
-      this.webContents={on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
+      this.webContents={getZoomFactor:()=>1,on:()=>{},isDestroyed:()=>this.contentsDead, send:(...args)=>{this.assertLive(); if(this.contentsDead||this.race){this.contentsDead=true;throw new TypeError('Object has been destroyed');} if(this.sendError) throw this.sendError; this.messages.push(args);}};windows.push(this); }
+    getBounds(){return {x:0,y:0,width:860,height:140};}
+    getContentSize(){ return this.size ?? [860,140]; }
+    setShape(rects){ this.call("setShape",rects); }
+    setBackgroundMaterial(m){ this.call("setBackgroundMaterial",m); }
     assertLive(){if(this.dead)throw new TypeError('Object has been destroyed');}
     call(name,...args){if(this.raceMethod===name)this.dead=true;this.assertLive();if(this.errorMethod===name)throw this.methodError;this.calls.push([name,...args]);}
     isDestroyed(){return this.dead;} // Electron's safe liveness probe.
@@ -42,7 +46,7 @@ function makeRuntime({headless=false}={}) {
   }
   const electron={BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu(){}},
     app:{on:(n,f)=>appEvents.set(n,f),whenReady:()=>({then:f=>{ready=f;}}),requestSingleInstanceLock:()=>true,quit:()=>{},setAppUserModelId(){},getPath:()=>"fixture:/userData"},
-    screen:{getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}}),getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
+    screen:{getDisplayMatching:()=>({scaleFactor:1}),getPrimaryDisplay:()=>({workAreaSize:{width:1280,height:900}}),getCursorScreenPoint:()=>({x:0,y:0}),getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1280,height:900}})},nativeImage:{createFromPath:()=>({isEmpty:()=>false})},
     ipcMain:{handle:(n,f)=>handlers.set(n,f),on:()=>{}}};
   const cache=new Map();let context;
   const load=(file)=>{
@@ -62,13 +66,13 @@ function makeRuntime({headless=false}={}) {
     };
     vm.runInContext('(function(require,module,exports,__dirname){'+code+'\n})',context)(req,mod,mod.exports,path.dirname(full));return mod.exports;
   };
-  context=vm.createContext({console:{...console,log(){},warn:(...a)=>warnings.push(a)},process:{env:{VOXSUB_HEADLESS:headless?'1':'0'},platform:'win32'},setTimeout,clearTimeout,setInterval,clearInterval});
+  context=vm.createContext({console:{...console,log(){},warn:(...a)=>warnings.push(a)},process:{env:{VOXSUB_HEADLESS:headless?'1':'0'},platform:'win32',getSystemVersion:()=> '10.0.26300'},setTimeout,clearTimeout,setInterval,clearInterval});
   const mainFile=path.join(ROOT,'src/main/main.ts');
   const suffix=`\nglobalThis.api={createMain:()=>mainWindow=createMainWindow(),createOverlay:()=>overlayWindow=createOverlayWindow(),createTray,getMain:()=>mainWindow,getOverlay:()=>overlayWindow,quit:requestQuit,bridge:()=>{const b=new BackendBridge();wireBackendEvents(b);return b;}};registerIpc();`;
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
     if(name==='electron')return electron;if(name==='./capture')return {cancelScreenSelection(){}};if(name==='node:path')return path;if(name==='node:fs')return {};
-    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');throw Error(name);
+    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');if(name==='./overlay-surface')return load('src/main/overlay-surface.ts');throw Error(name);
   };
   vm.runInContext(code,context);
   return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};
@@ -208,6 +212,21 @@ test('recreated subtitle window keeps screenshots allowed and ignores stale read
   const calls = old.calls.length; old.events.get('ready-to-show')();
   assert.equal(old.calls.length, calls);
   assert.deepEqual(current.calls.filter(c => c[0] === 'setContentProtection'), [['setContentProtection', false]]);
+});
+test('glass owner recreation and stale geometry callbacks use real main wiring', r => {
+  const old=r.api.createOverlay();
+  assert.equal(r.ipc('overlay:set-glass',true,70).active,true);
+  old.events.get('ready-to-show')();
+  assert.equal(old.calls.filter(c=>c[0]==='setBackgroundMaterial').length,1);
+  old.size=[640,100];old.events.get('resize')();
+  assert.equal(old.calls.filter(c=>c[0]==='setShape').length,2);
+  old.destroy();const current=r.api.createOverlay();current.events.get('ready-to-show')();
+  assert.ok(current.calls.some(c=>c[0]==='setBackgroundMaterial'&&c[1]==='acrylic'));
+  const oldCount=old.calls.length;old.events.get('resize')();old.events.get('move')();
+  assert.equal(old.calls.length,oldCount);
+  assert.deepEqual(current.calls.filter(c=>c[0]==='setContentProtection'),[['setContentProtection',false]]);
+  r.ipc('overlay:set-glass',false,70);
+  assert.equal(current.calls.filter(c=>c[0]==='setShape').at(-1)[1].length,0);
 });
 console.log(`${checks} window lifecycle checks passed; ${failures} failed`);
 if (failures) process.exitCode = 1;

@@ -1,3 +1,10 @@
+## 字幕悬浮窗毛玻璃方形外圈修复（2026-10-05 UTC）
+
+- 根因：整窗原生acrylic未受CSS圆角/留白约束。共享几何+独立OverlaySurface，先裁剪后材质、关闭反序，WeakMap owner缓存、resize/zoom/跨屏scale更新与部分失败安全清理。
+- 字幕仍允许截图，OCR捕获排除保持；不改配置/正文、不重启用户应用。前端check/build、34新单测/51生命周期/14毛玻璃、Python安全1216 passed/8 skipped/7 deselected/1既有xfail。
+- 真实隐藏Electron HWND/GDI 2owner×5开启组合+前后共14次读回PASS，离屏透明角检查PASS；native DPI96，renderer zoom100/125/150/200%不是物理DPI验证。
+- 可见桌面DWM/物理DPI/真实截图录屏/鼠标拖拽边缘缩放/用户当前实例/安装版/CI NOT_RUN。报告docs/OVERLAY_SHAPE_ACCEPTANCE.md及EVIDENCE；已备份，本地commit，未push。
+
 ## 二级页面顶部遮挡 / 紧凑返回栏（2026-10-05 UTC）
 
 - 设置/诊断/模型共用公共PageFrame，返回栏固定在独立内容滚动区外，修复sticky盖正文与切页滚动残留；默认返回栏约37px，保留标题按钮安全区，迁移向导原间距保持。

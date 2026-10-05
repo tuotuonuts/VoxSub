@@ -1,3 +1,4 @@
+import { OVERLAY_FRAME_INSET, OVERLAY_FRAME_RADIUS } from "../shared/overlay-shape";
 import { mergePartialDraft } from "../shared/subtitle-draft";
 import { glassTint, type OverlayGlassState } from "../shared/overlay-glass";
 /**
@@ -536,6 +537,8 @@ function wireBackend(): void {
 /* -------------------------------------------------------------- 启动 */
 
 function boot(): void {
+  document.documentElement.style.setProperty("--overlay-frame-inset", `${OVERLAY_FRAME_INSET}px`);
+  document.documentElement.style.setProperty("--overlay-frame-radius", `${OVERLAY_FRAME_RADIUS}px`);
   applyVisuals();
   applyDisplayMode();
   paint();

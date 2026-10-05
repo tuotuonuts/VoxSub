@@ -8,6 +8,7 @@ import ts from "typescript";
 import { importShared, cleanupShared, ROOT } from "./esbuild-ts.mjs";
 const { createShortcutService } = await importShared("src/main/shortcuts.ts", { bundle: true });
 const ocrLive = await importShared("src/main/ocr-live.ts", { bundle: true });
+const surface = await importShared("src/main/overlay-surface.ts", {bundle:true});
 const layout = await importShared("src/shared/window-layout.ts");
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "voxsub-shortcut-main-"));
 assert.ok(path.resolve(directory).startsWith(path.join(path.resolve(os.tmpdir()), "voxsub-shortcut-main-")));
@@ -32,6 +33,7 @@ const electron = {
 const context = vm.createContext({ exports: {}, __dirname: path.join(ROOT, "src/main"), process: { env: { VOXSUB_HEADLESS: "0" }, platform: "win32" }, console: { ...console, log() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
   require(name) {
     if (name === "electron") return electron;
+    if (name === "./overlay-surface") return surface;
     if (name === "../shared/window-layout") return layout;
     if (name === "node:fs") return { existsSync: () => false };
     if (name === "node:path") return path;

@@ -1,0 +1,475 @@
+{
+  "recorded_at_utc": "2026-10-05T18:54:29.477609+00:00",
+  "base_commit": "0e8012a",
+  "frontend": {
+    "check": "PASS",
+    "build": "PASS",
+    "surface_checks": 34,
+    "glass_checks": 14,
+    "lifecycle_checks": 51
+  },
+  "python": {
+    "passed": 1216,
+    "skipped": 8,
+    "deselected": 7,
+    "xfailed": 1,
+    "failed": 0,
+    "seconds": 88.86,
+    "marker": "not hardware_audio"
+  },
+  "native": {
+    "status": "PASS",
+    "records": [
+      {
+        "owner": 0,
+        "phase": "before",
+        "kind": 0,
+        "dpi": 96,
+        "box": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false
+        ]
+      },
+      {
+        "owner": 0,
+        "width": 860,
+        "height": 140,
+        "zoom": 1,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          6,
+          6,
+          854,
+          134
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 0,
+        "width": 640,
+        "height": 100,
+        "zoom": 1,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          6,
+          6,
+          634,
+          94
+        ],
+        "client": [
+          640,
+          100
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 640,
+          "height": 100,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 0,
+        "width": 860,
+        "height": 140,
+        "zoom": 1.25,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          8,
+          8,
+          852,
+          132
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 0,
+        "width": 860,
+        "height": 140,
+        "zoom": 1.5,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          9,
+          9,
+          851,
+          131
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 0,
+        "width": 860,
+        "height": 140,
+        "zoom": 2,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          12,
+          12,
+          848,
+          128
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 0,
+        "phase": "disabled",
+        "kind": 0,
+        "dpi": 96,
+        "box": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false
+        ]
+      },
+      {
+        "owner": 1,
+        "phase": "before",
+        "kind": 0,
+        "dpi": 96,
+        "box": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false
+        ]
+      },
+      {
+        "owner": 1,
+        "width": 860,
+        "height": 140,
+        "zoom": 1,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          6,
+          6,
+          854,
+          134
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 1,
+        "width": 640,
+        "height": 100,
+        "zoom": 1,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          6,
+          6,
+          634,
+          94
+        ],
+        "client": [
+          640,
+          100
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 640,
+          "height": 100,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 1,
+        "width": 860,
+        "height": 140,
+        "zoom": 1.25,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          8,
+          8,
+          852,
+          132
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 1,
+        "width": 860,
+        "height": 140,
+        "zoom": 1.5,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          9,
+          9,
+          851,
+          131
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 1,
+        "width": 860,
+        "height": 140,
+        "zoom": 2,
+        "kind": 3,
+        "dpi": 96,
+        "box": [
+          12,
+          12,
+          848,
+          128
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false,
+          false,
+          true,
+          true,
+          false,
+          false
+        ],
+        "chromium": {
+          "width": 860,
+          "height": 140,
+          "cornerAlpha": 0,
+          "centerAlpha": 235
+        }
+      },
+      {
+        "owner": 1,
+        "phase": "disabled",
+        "kind": 0,
+        "dpi": 96,
+        "box": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "client": [
+          860,
+          140
+        ],
+        "visible": false,
+        "foregroundIsFixture": false,
+        "points": [
+          false
+        ]
+      }
+    ],
+    "visibleDwm": "NOT_RUN",
+    "desktopScreenshot": "NOT_RUN",
+    "interactiveResize": "NOT_RUN",
+    "boundary": "Hidden native HWND region + offscreen Chromium only; no audio, backend, desktop capture or focus."
+  },
+  "not_run": [
+    "visible_desktop_DWM",
+    "physical_monitor_DPI",
+    "desktop_screenshot",
+    "interactive_drag_resize_clickthrough",
+    "running_user_instance",
+    "installer",
+    "GitHub_CI"
+  ],
+  "evidence_files": {
+    "frontend-check-final.log": "a4ec0551516bfd0a2459bf2220674c8e215ba8043111656e779f889a7db6579b",
+    "frontend-build-final.log": "89e29b2b7631798ccbe3731b637c21f84eb14cc0541885dc72da819a0bb71851",
+    "python.log": "8cf36d94834ff7cca05cfb718ba51452075e964df8dfbe2f7a0b69c06e8384f7",
+    "native-final.json": "e593323df3980fcac6fa4fe04c98c5a01436d8c51a7d9ed4e96e29f29169abdb"
+  },
+  "source_files_sha256": {
+    "frontend/src/main/main.ts": "9c08854ea932d05da33210fc073ca197c8aba3e5ea613eb83634fccbc0ae4ef1",
+    "frontend/src/main/overlay-surface.ts": "706744f30d896c44064894b982874b5eba1a7098ef82adb5dc74b02ddf07c4ae",
+    "frontend/src/shared/overlay-shape.ts": "d90162e27d4010e07d88646fbb14640babfecc744f94782ce4cdc3826a191ef1",
+    "frontend/src/renderer/overlay.ts": "8e05e717578c3f458576fb8d0801479d55c8c971c39baf0298a2b145ccbb5e89",
+    "frontend/src/renderer/overlay.css": "895a8eb09d099f434fc594d5973e11d638bf7fe9ebc29c76abca734fc32d6064"
+  }
+}

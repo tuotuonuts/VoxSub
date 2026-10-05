@@ -1,3 +1,8 @@
+[本轮 字幕悬浮窗毛玻璃方边修复 2026-10-05 UTC]
+[x] 原生shape与CSS共用圆角/留白；owner缓存、resize/zoom/monitor scale、可选材质安全降级；保持字幕允许截图/OCR排除。
+[x] 34新geometry/surface、51生命周期、14既有glass；真实隐藏原生14读回+离屏角alpha；前端check/build，Python安全1216 passed/8 skipped/7 deselected/1既有xfail。
+[ ] 可见DWM/物理DPI/桌面截图录屏/鼠标拖拽缩放/用户实例/安装版/CI NOT_RUN；不重启用户应用，本地commit，未push，报告OVERLAY_SHAPE_ACCEPTANCE。
+
 [本轮 二级页面顶部遮挡与返回栏优化 2026-10-05 UTC]
 [x] 公共PageFrame+公共Button、紧凑固定header/独立body滚动，切页复位/focus不滚动，settings导航不重复叠加偏移，向导间距保留。
 [x] 组件4项；真实离屏Chromium440项/0失败、963静默采样0违规、三页PNG复核；前端check/build及Python安全1216 passed/8 skipped/7 deselected/1既有xfail。

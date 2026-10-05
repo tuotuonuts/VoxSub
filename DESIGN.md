@@ -406,3 +406,10 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 ## 二级页面公共外壳 / 滚动边界
 
 设置、诊断、模型通过ui/page-frame.ts统一构建：返回栏与page__content是同级节点，header占固定布局空间，不用sticky覆盖正文；page__content唯一负责内容滚动，settings导航sticky只相对此scrollport。PageFrame复用公共Button，router拥有标题翻译/返回/dispose/初始焦点；openPage复位layer滚动并preventScroll焦点。caption安全高度使用共同CSS变量，紧凑frame样式用结构选择器限定，不改变迁移向导直接挂载布局。不要逐页增加padding-top补遮挡。回归含真实离屏Chromium，见docs/PAGE_HEADER_ACCEPTANCE.md。
+
+
+## 字幕窗原生毛玻璃绘制区域
+
+shared/overlay-shape.ts是6px框内距/16px圆角的唯一代码常量，renderer通过CSS变量使用；main/overlay-surface.ts按窗口owner弱引用缓存材质与几何，先setShape再acrylic，禁用先none再setShape([])。失败保守保留区域，禁用/查询继续重试清理，不用全局active判断某个新HWND已配置。整数扫描行只遍历圆角带并合并，非法/极小几何返回null，绝不误用[]开放整窗。
+
+resize/move/zoom-changed/ready触发当前owner刷新；renderer zoom参与CSS→DIP换算，monitor scale仅使缓存失效，不再次乘DIP坐标。shape API实验性且限制区域外鼠标交互，检测/调用成功与可见DWM实测须分开；详见OVERLAY_SHAPE_ACCEPTANCE。字幕截图策略与OCR策略保持分离。

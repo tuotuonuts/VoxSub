@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { ROOT, createReporter, importShared } from './esbuild-ts.mjs';
 const { check, finish } = createReporter('Main quit owner isolation (fake Electron)');
+const surface = await importShared("src/main/overlay-surface.ts", {bundle:true});
 const layout = await importShared('src/shared/window-layout.ts');
 const ocrLive = await importShared('src/main/ocr-live.ts', {bundle: true});
 const handlers = new Map();
@@ -42,6 +43,7 @@ const context = vm.createContext({
   process: { env: {}, platform: 'win32' }, console,
   require: (name) => {
     if (name === 'electron') return electron;
+    if (name === './overlay-surface') return surface;
     if (name === '../shared/window-layout') return layout;
     if (name === 'node:path') return path;
     if (name === 'node:fs') return new Proxy({}, { get() { throw Error('Real filesystem access forbidden'); } });

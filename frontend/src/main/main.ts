@@ -24,6 +24,7 @@ import * as path from "node:path";
 import { initialMainWindowBounds } from "../shared/window-layout";
 import type { OverlayGlassState } from "../shared/overlay-glass";
 
+import { OverlaySurface } from "./overlay-surface";
 import { LiveOcrSession } from "./ocr-live";
 import { BackendBridge, type BackendEvent } from "./backend";
 import { createShortcutService } from "./shortcuts";
@@ -88,6 +89,7 @@ function showWindow(win: BrowserWindow | null): void {
 
 let overlayClickThrough = false;
 let overlayOpacity = 0.92;
+const overlaySurface = new OverlaySurface();
 let overlayGlassEnabled = false;
 let overlayGlassStrength = 50;
 let overlayGlassState: OverlayGlassState | null = null;
@@ -99,22 +101,17 @@ function applyOverlayGlass(): OverlayGlassState {
   const requested = overlayGlassEnabled && overlayGlassStrength > 0;
   let active = false;
   let reason: OverlayGlassState["reason"] = supported ? null : "unsupported";
-  if (supported && (requested || overlayGlassState?.active)) {
+  if (supported) {
     try {
       const applied = useWindow(overlayWindow, "overlay:glass", win => {
-        if (overlayGlassState?.active !== requested) {
-          win.setBackgroundMaterial(requested ? "acrylic" : "none");
-        }
+        active = overlaySurface.apply(win, requested, requested ? screen.getDisplayMatching(win.getBounds()).scaleFactor : 1);
       });
-      active = requested && applied;
+      active = active && applied;
       if (requested && !applied) reason = "unavailable";
     } catch (error) {
-      // Material is optional. Never replace/recreate the protected transparent window.
+      // Material is optional; the surface controller safely removes failed material.
       console.warn("[overlay:glass] native material request failed", error);
       reason = "unavailable";
-      useWindow(overlayWindow, "overlay:glass-fallback", win => {
-        try { win.setBackgroundMaterial("none"); } catch { /* retain original background */ }
-      });
     }
   }
   overlayGlassState = { enabled: overlayGlassEnabled, strength: overlayGlassStrength, supported, active, reason };
@@ -358,11 +355,18 @@ function createOverlayWindow(): BrowserWindow {
     if (HEADLESS || quitting || overlayWindow !== win) return;
     ignoreDestroyed("overlay:ready", () => {
       if (win.isDestroyed()) return;
+      applyOverlayGlass();
       win.showInactive();
       win.setContentProtection(false);
     });
   });
 
+  const refreshSurface = () => {
+    if (!quitting && !HEADLESS && overlayWindow === win && overlayGlassEnabled) applyOverlayGlass();
+  };
+  win.on("resize", refreshSurface);
+  win.on("move", refreshSurface); // Includes crossing monitors with different scale factors.
+  win.webContents.on("zoom-changed", refreshSurface);
   win.on("closed", () => { if (overlayWindow === win) overlayWindow = null; });
   void win.loadFile(path.join(RENDERER_DIR, "overlay.html"));
   return win;
