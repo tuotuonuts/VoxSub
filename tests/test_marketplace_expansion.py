@@ -151,21 +151,24 @@ def test_download_cache_lock_does_not_misreport_committed_model(tmp_path, monkey
     assert market._state_path.is_file()
 
 @pytest.mark.parametrize("preference", ["auto", "global", "china"])
-def test_marketplace_ipc_passes_source_and_real_progress_parameter(preference, monkeypatch):
-    import sys
+def test_marketplace_ipc_passes_source_and_real_progress_parameter(preference, monkeypatch, tmp_path):
+    import threading
     backend = Path(__file__).resolve().parents[1] / "frontend" / "backend"
     monkeypatch.syspath_prepend(str(backend))
     from handlers.models import ModelsHandlers
     import handlers.models as handlers
     install = Mock(); m = get_model(IDS[0])
     handler = ModelsHandlers()
-    handler._marketplace = lambda args: SimpleNamespace(install=install)
+    handler._lock = threading.RLock()
+    handler._model_downloads = {}
+    handler._marketplace = lambda args: SimpleNamespace(install=install, models_dir=tmp_path, is_installed=lambda model:False)
     handler._spec = lambda mid: m
     event = Mock(); monkeypatch.setattr(handlers, "_event", event)
-    assert handler._cmd_install_model(None, {"model_id": m.id, "source": preference}) == {"model_id": m.id}
+    result = handler._cmd_install_model({"model_id": m.id, "source": preference})
+    assert result["model_id"] == m.id and result["download"]["status"] == "done"
     assert install.call_args.kwargs["preference"] == preference
     assert "progress_callback" not in install.call_args.kwargs
-    install.call_args.kwargs["progress"](1, 2, "mirror")
-    event.assert_called_once_with("download", modelId=m.id, completed=1, total=2, stage="mirror")
-    with pytest.raises(ValueError): handler._cmd_install_model(None, {"model_id": m.id, "source": "invalid"})
+    assert callable(install.call_args.kwargs["cancelled"])
+    assert event.call_args.kwargs["status"] == "done"
+    with pytest.raises(ValueError): handler._cmd_install_model({"model_id": m.id, "source": "invalid"})
     assert install.call_count == 1

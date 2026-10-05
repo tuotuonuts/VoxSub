@@ -24,15 +24,16 @@
  * `setState` 只加状态类名（`is-running` / `is-done` / `is-failed`），不写文案 ——
  * 文案（完成 / 失败 / 进行中）由调用方经 `tr()` 给出。当前 app.css 没有这几条
  * 规则，因此外观不变；它让"失败/完成"在 DOM 上可断言，也让后续要给失败态上色时
- * 有一处统一的挂点。产品目前没有任何取消入口，所以这里**不发明**"取消中"状态。
+ * 有一处统一的挂点。暂停时只展示 is-paused；暂停中仍沿用运行状态，不把请求暂停当成写入已停止。
  */
 import { h } from "../dom";
 
-export type ProgressBarState = "idle" | "running" | "done" | "failed";
+export type ProgressBarState = "idle" | "running" | "paused" | "done" | "failed";
 
 const STATE_CLASS: Record<ProgressBarState, string> = {
   idle: "is-idle",
   running: "is-running",
+  paused: "is-paused",
   done: "is-done",
   failed: "is-failed",
 };

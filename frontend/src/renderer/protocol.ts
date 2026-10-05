@@ -1,3 +1,4 @@
+import type { ModelDownloadState, ModelDownloadStatus } from "../shared/model-download-state";
 /**
  * 后端命令名与事件类型的单一来源。
  *
@@ -49,6 +50,9 @@ export const CMD = {
   releaseNotes: "release_notes",
   recentLogs: "recent_logs",
   installModel: "install_model",
+  prepareModelDownload: "prepare_model_download",
+  pauseModelDownload: "pause_model_download",
+  deleteModelDownload: "delete_model_download",
   uninstallModel: "uninstall_model",
   modelDir: "model_dir",
 
@@ -102,6 +106,7 @@ export interface ModelCatalogResult {
 }
 
 export interface ModelEntry {
+  download?: ModelDownloadState | null;
   id: string;
   name: string;
   task: string;
@@ -338,6 +343,6 @@ export type BackendEvent =
   | { type: "draft"; source: string; translation: string }
   | { type: "partial"; text: string }
   | { type: "progress"; completed: number; total: number; stage: string }
-  | { type: "download"; modelId: string; completed: number; total: number; stage: string }
+  | { type: "download"; modelId: string; completed: number; total: number; stage: string; status?: ModelDownloadStatus; modelsRoot?: string; token?: string; revision?: number; source?: "auto" | "global" | "china"; error?: string }
   | { type: "log"; ts: string; level: string; message: string; run_id?: string | undefined; session_id?: string | undefined }
   | { type: "error"; message: string };

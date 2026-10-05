@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ipc_protocol import _event
+from ipc_protocol import _event, _cancel_requested
 from ipc_support import _dir_size, _human_size
 
 
@@ -63,6 +63,16 @@ def _catalog_item(model: Any, size: int, installed: bool, installed_bytes: int,
     }
 
 
+def _download_for_card(downloads: Any, model: Any, installed: bool, failures: list[str]) -> dict | None:
+    if installed:
+        return None
+    try:
+        return downloads.snapshot(model)
+    except Exception as error:  # noqa: BLE001 - one damaged task must not hide the entire catalog
+        failures.append(f"{model.id} 下载状态读取失败: {error}")
+        return None
+
+
 class ModelsHandlers:
     """模型库：列表、安装、卸载、目录、导入。"""
 
@@ -71,6 +81,7 @@ class ModelsHandlers:
 
         marketplace = self._marketplace(args)
 
+        downloads = self._downloads_for(args)
         items = []
         failures: list[str] = []
         profile = _profile_for_cards(failures)
@@ -95,32 +106,71 @@ class ModelsHandlers:
                     failures.append(f"{model.id} 体积统计失败: {error}")
 
             recommendation = _rating_for_card(model, profile, failures)
-            items.append(_catalog_item(model, size, installed, installed_bytes, recommendation))
+            item = _catalog_item(model, size, installed, installed_bytes, recommendation)
+            item["download"] = _download_for_card(downloads, model, installed, failures)
+            items.append(item)
 
         for line in failures:
             print(f"[list_models] {line}", file=sys.stderr)
 
         return {
             "models": items,
-            "modelsRoot": str(marketplace.models_dir),
+            "modelsRoot": str(marketplace.models_dir.resolve()),
             "lookupRoots": [str(p) for p in marketplace._lookup_roots],
             "diagnostics": failures,
         }
 
-    def _cmd_install_model(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
-        model_id = str(args.get("model_id", ""))
+    def _downloads_for(self, args: dict[str, Any]) -> Any:
+        from voxsub.model_downloads import ModelDownloads  # noqa: PLC0415
         marketplace = self._marketplace(args)
-        spec = self._spec(model_id)
+        # The writer always targets exactly this root. List/select may look up legacy roots,
+        # but an explicit download must not silently reuse a model in a different directory.
+        if getattr(marketplace, "_uses_default_root", False):
+            from voxsub.model_catalog import ModelMarketplace  # noqa: PLC0415
+            marketplace = ModelMarketplace(marketplace.models_dir)
+        key = str(marketplace.models_dir.resolve())
+        with self._lock:
+            if key not in self._model_downloads:
+                self._model_downloads[key] = ModelDownloads(marketplace, self._emit_model_download)
+            return self._model_downloads[key]
 
-        def _progress(done: int, total: int, stage: str) -> None:
-            _event("download", modelId=model_id, completed=done,
-                   total=total, stage=str(stage))
+    @staticmethod
+    def _emit_model_download(state: dict) -> None:
+        _event("download", modelId=state["modelId"], completed=state["completed"],
+               total=state["total"], stage=state["stage"], status=state["status"],
+               modelsRoot=state["modelsRoot"], token=state["token"], revision=state["revision"],
+               source=state["source"], error=state["error"])
 
-        preference = str(args.get("source", "auto"))
-        if preference not in {"auto", "global", "china"}:
-            raise ValueError("无效下载源，须为 auto / global / china")
-        marketplace.install(spec, preference=preference, progress=_progress)
-        return {"model_id": model_id}
+    def _cmd_prepare_model_download(self, args: dict[str, Any]) -> dict[str, Any]:
+        model = self._spec(str(args.get("model_id", "")))
+        downloads = self._downloads_for(args)
+        if self._marketplace(args).is_installed(model):
+            return {"model_id": model.id, "download": None}
+        state = downloads.prepare(model, str(args.get("source", "auto")))
+        return {"model_id": model.id, "download": state}
+
+    def _cmd_install_model(self, args: dict[str, Any]) -> dict[str, Any]:
+        model = self._spec(str(args.get("model_id", "")))
+        downloads = self._downloads_for(args)
+        token = str(args.get("token") or "")
+        if not token:
+            if self._marketplace(args).is_installed(model):
+                return {"model_id": model.id, "download": None}
+            token = downloads.prepare(model, str(args.get("source", "auto")))["token"]
+        state = downloads.run(model, token, _cancel_requested)
+        return {"model_id": model.id, "download": state}
+
+    def _cmd_pause_model_download(self, args: dict[str, Any]) -> dict[str, Any]:
+        model = self._spec(str(args.get("model_id", "")))
+        state = self._downloads_for(args).pause(model, str(args.get("token", "")))
+        return {"model_id": model.id, "download": state}
+
+    def _cmd_delete_model_download(self, args: dict[str, Any]) -> dict[str, Any]:
+        if args.get("confirm") is not True:
+            raise ValueError("删除未完成下载须确认")
+        model = self._spec(str(args.get("model_id", "")))
+        state = self._downloads_for(args).delete(model, str(args.get("token", "")))
+        return {"model_id": model.id, "download": state}
 
     def _cmd_uninstall_model(self, args: dict[str, Any]) -> dict[str, Any]:
         model_id = str(args.get("model_id", ""))

@@ -10,6 +10,22 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "删除": "Delete",
+  "校验并安装": "Verifying and installing",
+  "下载完成": "Download complete",
+
+  "准备模型下载": "Prepare model download",
+  "暂停模型下载": "Pause model download",
+  "删除未完成下载": "Delete unfinished download",
+  "准备下载": "Preparing download",
+  "等待下载": "Waiting to download",
+  "正在下载": "Downloading",
+  "正在暂停": "Pausing",
+  "已暂停": "Paused",
+  "下载模型": "Download model",
+  "下载中断，进度已保留": "Download interrupted; progress saved",
+  "删除未完成的下载？已下载的部分文件会被清理，已安装模型不受影响。": "Delete this unfinished download? Partial files will be removed. Installed models are not affected.",
+
   "未设置": "Not set",
   "放弃更改": "Discard changes",
   "当前暂不能执行会话操作，请稍后重试": "Session actions are currently unavailable. Please retry later.",

@@ -499,8 +499,8 @@
       }
     },
     "download": {
-      "summary": "模型下载进度（install_model 内的 progress_callback）。",
-      "emittedBy": "BackendService._cmd_install_model",
+      "summary": "模型下载进度与持久化状态；revision丢弃迟到事件，modelsRoot隔离目录。",
+      "emittedBy": "ModelsHandlers._emit_model_download",
       "payload": {
         "type": "object",
         "required": [
@@ -525,6 +525,37 @@
             "type": "number"
           },
           "stage": {
+            "type": "string"
+          },
+          "modelsRoot": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "downloading",
+              "pausing",
+              "verifying",
+              "paused",
+              "done",
+              "deleted"
+            ]
+          },
+          "source": {
+            "enum": [
+              "auto",
+              "global",
+              "china"
+            ]
+          },
+          "error": {
             "type": "string"
           }
         }

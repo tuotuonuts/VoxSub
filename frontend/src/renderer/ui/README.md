@@ -31,7 +31,7 @@
 | `percentage-slider.ts` | `buildPercentageSlider` | 带百分比读数的原生滑条，input 预览/change 提交、边界校验及禁用；无 IPC/配置 |
 | `field.ts` | `buildField` | 标签、控件、说明和禁用原因 |
 | `path-picker.ts` | `buildPathPicker` | 路径字段；选择取消不提交，按钮复用公共组件 |
-| `progress.ts` | `buildProgressBar` | 进度展示 |
+| `progress.ts` | `buildProgressBar` | 进度展示，含 running/paused/done/failed 状态；暂停/继续/删除复用公共按钮，由模型页面处理 IPC |
 | `status-row.ts` | `buildStatusRow` | 统一检测结果行 |
 
 ## 本轮收编范围

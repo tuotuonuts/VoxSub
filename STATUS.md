@@ -1,3 +1,11 @@
+## 模型下载断点续传（本轮，2026-10-05）
+
+- 下载→暂停，写入停止后继续/删除；持久化任务与断点，意外退出重启恢复暂停，不自动续传；删除需确认且不触及已安装模型。
+- 海外/中国大陆/自动源保留，ETag/If-Range/Range/SHA 安全恢复；慢链路响应、原源优先、归档原子发布、根目录规范化与迟到事件隔离；公共进度条复用。
+- 最终前端 check/build通过（下载UI20项、竞态15项），Python隔离安全回归1103 passed/6 skipped/17 deselected/1 xfailed；专项38 passed/1 skipped。
+- 最新真实Electron+Python两阶段21项通过：32MiB本地合成文件、强杀重启暂停、Range续传SHA一致、确认删除及窄窗布局；343次监测0显示/聚焦违规、无残留。
+- 报告 docs/RESUMABLE_DOWNLOADS_ACCEPTANCE.md；备份与仓库外证据/DELIVERY.json记录交付。真实CDN/权重/推理、安装版、断电NOT_RUN；本轮本地commit，未push/打包。
+
 ## 模型广场卡片优化（本轮）
 
 ## 模型广场搜索（本轮）

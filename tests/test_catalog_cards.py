@@ -46,7 +46,10 @@ def handler(monkeypatch,tmp_path):
     monkeypatch.setattr(hardware,"detect_hardware",lambda:PROFILE)
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]/"frontend/backend"))
     from handlers.models import ModelsHandlers
-    h=ModelsHandlers();market=SimpleNamespace(models_dir=tmp_path,_lookup_roots=[tmp_path],is_installed=lambda m:m.id==BASE.id,available_model_dir=lambda m:tmp_path)
+    h=ModelsHandlers()
+    import threading
+    h._lock=threading.RLock()
+    h._model_downloads={};market=SimpleNamespace(models_dir=tmp_path,_lookup_roots=[tmp_path],is_installed=lambda m:m.id==BASE.id,available_model_dir=lambda m:tmp_path)
     h._marketplace=lambda args:market
     return h
 

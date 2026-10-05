@@ -33,8 +33,10 @@ logger = get_logger("models")
 MANIFEST_NAME = "manifest.json"
 def _is_internal_artifact(rel: str) -> bool:
     """返回是否为模型管理器自己的锁/临时文件，而非模型资产。"""
+    if ".downloads" in Path(rel).parts or ".installing" in Path(rel).parts:
+        return True
     name = Path(rel).name
-    return name in {MANIFEST_NAME, ".fetch.lock", f"{MANIFEST_NAME}.tmp"} or name.endswith(".part")
+    return name in {MANIFEST_NAME, ".fetch.lock", f"{MANIFEST_NAME}.tmp"} or name.endswith((".part", ".part.resume.json"))
 
 
 def _safe_model_path(models_dir: Path, rel: str) -> tuple[str, Path]:

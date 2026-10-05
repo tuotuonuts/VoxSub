@@ -1,3 +1,4 @@
+import { mergeDownload, type ModelDownloadMap } from "../shared/model-download-state";
 import { describeJobFeedback } from "../shared/command-feedback";
 import { recordIPC, setDeveloperEnabled } from "../shared/diagnostic-controls";
 /**
@@ -68,7 +69,7 @@ export interface AppState {
   /** 文件模式进度 */
   progress: { completed: number; total: number; stage: string } | null;
   /** 模型下载进度：modelId -> 百分比 */
-  downloads: Record<string, { completed: number; total: number; stage: string }>;
+  downloads: ModelDownloadMap;
   logs: LogEntry[];
   theme: "dark" | "light";
   recording: boolean;
@@ -289,18 +290,11 @@ class Store {
           progress: { completed: event.completed, total: event.total, stage: event.stage },
         });
         break;
-      case "download":
-        this.patch({
-          downloads: {
-            ...this.state.downloads,
-            [event.modelId]: {
-              completed: event.completed,
-              total: event.total,
-              stage: event.stage,
-            },
-          },
-        });
+      case "download": {
+        const root = document.documentElement.dataset["modelsRoot"] || this.state.modelsRoot;
+        this.patch({ downloads: mergeDownload(this.state.downloads, event.modelId, event, root) });
         break;
+      }
       case "log":
         this.pushLog({ ts: event.ts, level: event.level, message: event.message, source: "backend", raw: JSON.stringify(event), run_id: event.run_id, session_id: event.session_id });
         break;

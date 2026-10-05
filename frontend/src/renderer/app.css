@@ -900,6 +900,11 @@ body::before {
   gap: 0.3077rem;
 }
 
+.cell__progress > .progress__track {
+  /* Column flex must not collapse the shared progress track to zero height. */
+  flex: 0 0 0.2308rem;
+}
+
 .cell__progress-label {
   font-size: 0.6923rem;
   color: var(--ink2);

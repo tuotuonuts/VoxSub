@@ -71,6 +71,8 @@ CONTROL_COMMANDS = frozenset({
     "job_status",
     "job_list",
     "cancel_job",
+    "prepare_model_download",
+    "pause_model_download",
     "developer_mode",
     "diagnostic_session",
 })

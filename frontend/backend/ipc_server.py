@@ -165,6 +165,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
         # 后台作业执行器。由 main() 在启动时注入 —— 命令实现只读它，
         # 不自己创建线程，避免"谁都能起线程"的失控。
         self._job_runner: Any = None
+        self._model_downloads: dict[str, Any] = {}
         self._developer_enabled = False
         self._diagnostic_results: list[dict[str, Any]] = []
 
@@ -644,7 +645,8 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
 
 # ---- 标记哪些命令不需要 pipeline --------------------------------------------
 for _name in (
-    "list_models", "uninstall_model", "model_dir", "get_config", "set_config",
+    "list_models", "install_model", "prepare_model_download", "pause_model_download",
+    "delete_model_download", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
     "developer_mode", "diagnostic_snapshot", "diagnostic_session",
     "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",

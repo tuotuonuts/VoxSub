@@ -1092,12 +1092,39 @@ class ModelMarketplace:
         except Exception:
             return float("inf")
 
+    def _source_has_partial(self, model: ModelSpec, source: ModelSource) -> bool:
+        assets = [(self._downloads / model.asset_name, source.url)]
+        if source.files:
+            assets = [(self._downloads / model.id / item.install_rel, item.url) for item in source.files]
+        for destination, url in assets:
+            part = destination.with_name(destination.name + ".part")
+            metadata = part.with_name(part.name + ".resume.json")
+            if self._partial_source_matches(part, metadata, url):
+                return True
+        return False
+
+    @staticmethod
+    def _partial_source_matches(part: Path, metadata: Path, url: str) -> bool:
+        try:
+            if not part.is_file() or not part.stat().st_size or metadata.stat().st_size > 16 * 1024:
+                return False
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+            return data.get("source") == hashlib.sha256(url.encode()).hexdigest()
+        except (OSError, ValueError, AttributeError):
+            return False
+
     def ordered_sources(self, model: ModelSpec, preference: str = "auto") -> list[ModelSource]:
         sources = list(model.sources)
         if preference in {"global", "china"}:
             return sorted(sources, key=lambda s: s.id != preference)
         if len(sources) < 2:
             return sources
+        # Auto resumes keep the previous proven origin. A new latency probe must not
+        # gratuitously switch mirrors and discard a valid no-SHA partial prefix.
+        resume = next((source for source in sources if self._source_has_partial(model, source)), None)
+        if resume is not None:
+            logger.info("续传优先使用上次下载源: model=%s source=%s", model.id, resume.id)
+            return [resume, *(source for source in sources if source is not resume)]
         timings: dict[str, float] = {}
         with ThreadPoolExecutor(max_workers=len(sources)) as pool:
             futures = {pool.submit(self._probe, source): source for source in sources}
@@ -1118,6 +1145,8 @@ class ModelMarketplace:
                 cancelled: Callable[[], bool] | None = None,
                 force: bool = False) -> Path:
         """Install a model; ``force`` revalidates every remote asset."""
+        if cancelled and cancelled():
+            raise DownloadCancelled("下载已暂停")
         missing = self.missing_paths(model)
         if not missing and not force:
             return self.available_model_dir(model)
@@ -1133,6 +1162,8 @@ class ModelMarketplace:
         self._downloads.mkdir(parents=True, exist_ok=True)
         errors: list[str] = []
         for source in sources:
+            if cancelled and cancelled():
+                raise DownloadCancelled("下载已暂停")
             try:
                 target = self._install_from_source(
                     model, source, progress=progress, cancelled=cancelled,
@@ -1171,7 +1202,7 @@ class ModelMarketplace:
 
         ok = fetch_file(source.url, download, expected_sha=model.sha256 or None,
                         expected_size=model.download_bytes or None,
-                        progress=_progress, cancelled=cancelled)
+                        progress=_progress, cancelled=cancelled, safe_resume=True)
         if not ok:
             raise RuntimeError("下载失败")
         if cancelled and cancelled():
@@ -1179,7 +1210,8 @@ class ModelMarketplace:
 
         target = self.model_dir(model)
         if model.archive:
-            self._install_archive(model, download, target)
+            self._commit_boundary(cancelled, progress, model.download_bytes, model.download_bytes)
+            self._install_archive(model, download, target, cancelled)
             download.unlink(missing_ok=True)
         else:
             target.mkdir(parents=True, exist_ok=True)
@@ -1214,6 +1246,7 @@ class ModelMarketplace:
                 progress, cancelled)
             completed += item.size or destination.stat().st_size
         target = self.model_dir(model)
+        self._commit_boundary(cancelled, progress, completed, total)
         self._commit_remote_files(source.files, download_root, target)
         return target
 
@@ -1241,7 +1274,7 @@ class ModelMarketplace:
 
         ok = fetch_file(
             item.url, destination, expected_sha=item.sha256 or None,
-            expected_size=item.size or None, progress=report, cancelled=cancelled,
+            expected_size=item.size or None, progress=report, cancelled=cancelled, safe_resume=True,
         )
         if not ok:
             raise RuntimeError(f"文件下载失败: {item.install_rel}")
@@ -1265,22 +1298,45 @@ class ModelMarketplace:
                 logger.warning("模型已提交，但下载缓存暂无法清理: path=%s error=%s",
                                download_root, exc)
 
-    def _install_archive(self, model: ModelSpec, archive: Path, target: Path) -> None:
-        staging_parent = self.models_dir / ".installing"
+    @staticmethod
+    def _commit_boundary(cancelled: Callable[[], bool] | None,
+                         progress: Callable[[int, int, str], None] | None,
+                         completed: int, total: int) -> None:
+        if progress:
+            progress(completed, total, "校验并安装")
+        if cancelled and cancelled():
+            raise DownloadCancelled("下载已暂停")
+
+    @staticmethod
+    def _extract_archive(archive: Path, staging: Path,
+                         cancelled: Callable[[], bool] | None) -> None:
+        with tarfile.open(archive, "r:bz2") as tf:
+            root = staging.resolve()
+            for member in tf.getmembers():
+                if cancelled and cancelled():
+                    raise DownloadCancelled("下载已暂停")
+                destination = (staging / member.name).resolve()
+                if root not in destination.parents and destination != root:
+                    raise RuntimeError("模型压缩包包含越界路径，已拒绝安装")
+                if member.issym() or member.islnk():
+                    raise RuntimeError("模型压缩包包含链接，已拒绝安装")
+                if not member.isfile() and not member.isdir():
+                    raise RuntimeError("模型压缩包包含不支持的特殊文件")
+                options = {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+                tf.extract(member, staging, **options)
+
+    def _install_archive(self, model: ModelSpec, archive: Path, target: Path,
+                         cancelled: Callable[[], bool] | None = None) -> None:
+        staging_parent = self.models_dir / ".installing" / model.id
+        expected = self.models_dir.resolve() / ".installing" / model.id
+        if staging_parent.resolve() != expected:
+            raise RuntimeError("模型安装临时目录不能重定向到其他位置")
         staging_parent.mkdir(parents=True, exist_ok=True)
+        if staging_parent.resolve() != expected:
+            raise RuntimeError("模型安装临时目录不能重定向到其他位置")
         with tempfile.TemporaryDirectory(prefix=f"{model.id}-", dir=staging_parent) as raw:
             staging = Path(raw)
-            with tarfile.open(archive, "r:bz2") as tf:
-                members = tf.getmembers()
-                root = staging.resolve()
-                for member in members:
-                    destination = (staging / member.name).resolve()
-                    if root not in destination.parents and destination != root:
-                        raise RuntimeError("模型压缩包包含越界路径，已拒绝安装")
-                    if member.issym() or member.islnk():
-                        raise RuntimeError("模型压缩包包含链接，已拒绝安装")
-                tf.extractall(staging, members=members)
-
+            self._extract_archive(archive, staging, cancelled)
             candidates = [staging]
             candidates.extend(path for path in staging.iterdir() if path.is_dir())
             source_root = next(
@@ -1288,10 +1344,13 @@ class ModelMarketplace:
                  if not self._missing_paths_at(path, model)), None)
             if source_root is None:
                 raise RuntimeError("模型压缩包结构与目录清单不匹配")
+            if cancelled and cancelled():
+                raise DownloadCancelled("下载已暂停")
             if target.exists():
                 shutil.rmtree(target)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(source_root, target)
+            # Same-volume rename publishes a complete directory, never half a copied weight.
+            replace_with_retry(source_root, target)
 
     def uninstall(self, model: ModelSpec, *, in_use: bool = False) -> None:
         if model.builtin:

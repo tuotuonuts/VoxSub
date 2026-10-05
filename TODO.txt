@@ -1,3 +1,11 @@
+[本轮 2026-10-05 模型下载断点续传]
+[x] 原子持久化下载会话、任务token/revision、Range/If-Range安全续传，意外退出重启恢复暂停且不联网续下。
+[x] 下载→暂停/正在暂停→继续/删除，确认删除仅任务暂存；公共ProgressBar复用，旧事件/回复与跨根目录隔离。
+[x] 双源/自动源保留、原源续传优先、低速响应暂停、归档原子发布与暂存重定向防护；语言同步与IPC契约。
+[x] 最终前端check/build；Python安全1103 passed及专项38 passed；真实隐藏32MiB HTTP/IPC两阶段21项通过，343窗口监测0违规/无残留。
+[x] 初始/修补/文档备份、docs/RESUMABLE_DOWNLOADS_ACCEPTANCE.md与本地commit；本轮未push/打包。
+[ ] NOT_RUN：真实公共CDN/模型/推理、可见桌面、安装版、真实symlink权限用例、断电与超大目录基准。
+
 [本轮 模型广场搜索]
 [x] 名称/ID/标签/描述/用途双语本地索引，归一化/轻微英文拼错/多词AND/引号短语与相关性排序。
 [x] 公共SearchField/EmptyState，范围与已下载/用途交集；IME安全、清空/Escape、结果计数/重置；不改变下载源、不保存查询。

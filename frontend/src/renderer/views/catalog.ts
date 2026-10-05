@@ -1,3 +1,5 @@
+import { downloadsForRoot, mergeDownload, visibleDownload, type ModelDownloadState } from "../../shared/model-download-state";
+import { runAfterConfirm } from "../../shared/confirm-action";
 import { buildSearchField } from "../ui/search-field";
 import { buildEmptyState } from "../ui/empty-state";
 import { buildSelect, buildToggleSwitch } from "../ui/controls";
@@ -30,6 +32,8 @@ const TASK_LABEL: Record<string, string> = {
 };
 
 let models: ModelEntry[] = [];
+const preparingDownloads = new Set<string>();
+const controllingDownloads = new Set<string>();
 let searchDocuments: SearchDocument<ModelEntry>[] = [];
 let searchQuery = "";
 let searchScope: ModelSearchScope = "all";
@@ -38,6 +42,7 @@ let searchField: ReturnType<typeof buildSearchField> | null = null;
 let scopeEl: HTMLSelectElement | null = null;
 let installedInput: HTMLInputElement | null = null;
 let downloadSource: "auto" | "global" | "china" = "auto";
+let downloadSourceChanged = false;
 let filter: TaskFilter = "all";
 let gridEl: HTMLElement | null = null;
 let countEl: HTMLElement | null = null;
@@ -66,7 +71,16 @@ export async function loadModels(pageId = activePageId): Promise<void> {
   }
   if (!isCurrent() || !result) return;
 
+  // Use the backend canonical root for runtime events, without rewriting saved config.
+  if ((document.documentElement.dataset["modelsRoot"] ?? "") !== modelsRoot) return;
+  document.documentElement.dataset["modelsRoot"] = result.modelsRoot;
   models = result.models;
+  let downloads = downloadsForRoot(store.get().downloads, result.modelsRoot);
+  for (const model of models) {
+    if (model.download) downloads = mergeDownload(downloads, model.id, model.download, result.modelsRoot);
+    else if (model.download === null && downloads[model.id]?.token === "") delete downloads[model.id];
+  }
+  store.patch({ downloads });
   const aliases = (text: string): string[] => [text, englishText(text)];
   searchDocuments = models.map(model => createSearchDocument(model, {
     names: [model.name, model.id],
@@ -107,7 +121,7 @@ function recommendationBadge(model: ModelEntry): HTMLElement {
 }
 
 function modelCell(model: ModelEntry): HTMLElement {
-  const active = store.get().downloads[model.id];
+  const active = visibleDownload(store.get().downloads[model.id]);
   const card = h("article", { class: "cell", "data-task": model.task, "data-id": model.id });
   if (model.installed) card.classList.add("is-installed");
 
@@ -143,11 +157,13 @@ function modelCell(model: ModelEntry): HTMLElement {
 
   // 下载进度（只在下载中显示）—— 内芯用 ProgressBar 组件，外层仍是本页的
   // `.cell__progress`（标签字号与独立页面不同，所以类名单独传）。
-  if (active) {
+  if (active && !model.installed) {
     const bar = buildProgressBar({ labelClass: "cell__progress-label" });
     bar.setPercent(active.total > 0 ? (active.completed / active.total) * 100 : null);
-    bar.setLabel(`${active.stage} ${percent(active.completed, active.total)}`);
-    bar.setState("running");
+    const label = active.status === "paused" ? tr(active.error ? "下载中断，进度已保留" : "已暂停")
+      : active.status === "pausing" ? tr("正在暂停") : tr(active.stage);
+    bar.setLabel(`${label} ${percent(active.completed, active.total)}`);
+    bar.setState(active.status === "paused" ? "paused" : "running");
     const box = h("div", { class: "cell__progress" }, [bar.track, bar.label]);
     card.append(box);
   }
@@ -170,7 +186,9 @@ function modelCell(model: ModelEntry): HTMLElement {
 
   const isActiveModel = isSelectedModel(model);
 
-  if (isActiveModel) {
+  if (active && !model.installed) {
+    foot.append(...downloadActions(model, active));
+  } else if (isActiveModel) {
     foot.append(h("span", { class: "cell__state", text: tr("使用中") }));
   } else if (model.builtin && !model.installed) {
     // 内置模型无需下载，直接可选
@@ -184,8 +202,10 @@ function modelCell(model: ModelEntry): HTMLElement {
     on(del, "click", () => void uninstallModel(model));
     foot.append(use, del);
   } else {
-    const dl = h("button", { class: "cell__action", type: "button", text: tr("下载") });
-    on(dl, "click", () => void installModel(model));
+    const owner = activePageId;
+    const dl = buildButton(tr("下载"), { small: true });
+    dl.classList.add("cell__action");
+    on(dl, "click", () => { if (owner === activePageId) void installModel(model); });
     foot.append(dl);
   }
 
@@ -288,47 +308,112 @@ async function selectModel(model: ModelEntry): Promise<void> {
   renderGrid();
 }
 
-async function installModel(model: ModelEntry): Promise<void> {
-  const modelsRoot = document.documentElement.dataset["modelsRoot"] ?? "";
-  store.patch({
-    downloads: {
-      ...store.get().downloads,
-      [model.id]: { completed: 0, total: model.sizeBytes || 1, stage: tr("开始下载") },
-    },
-  });
+interface DownloadReply { model_id: string; download: ModelDownloadState | null }
+
+function downloadActions(model: ModelEntry, state: ModelDownloadState): HTMLElement[] {
+  const owner = activePageId;
+  const busy = controllingDownloads.has(`${state.modelsRoot}:${model.id}:${state.token}`);
+  const action = (label: string, callback: () => void, disabled = false): HTMLButtonElement => {
+    const button = buildButton(tr(label), { small: true, disabled: disabled || busy, title: `${tr(label)} · ${model.name}` });
+    button.classList.add("cell__action");
+    on(button, "click", () => { if (owner === activePageId && !button.disabled) callback(); });
+    return button;
+  };
+  if (state.status === "paused") return [
+    action("继续", () => void installModel(model)),
+    action("删除", () => runAfterConfirm(
+      () => window.confirm(tr("删除未完成的下载？已下载的部分文件会被清理，已安装模型不受影响。")),
+      () => void controlDownload(model, state, CMD.deleteModelDownload))),
+  ];
+  return [action(state.status === "pausing" ? "正在暂停" : "暂停",
+    () => void controlDownload(model, state, CMD.pauseModelDownload),
+    !state.token || state.status === "pausing")];
+}
+
+function acceptDownload(modelId: string, state: ModelDownloadState | null): void {
+  if (!state) return;
+  const root = document.documentElement.dataset["modelsRoot"] || store.get().modelsRoot;
+  store.patch({ downloads: mergeDownload(store.get().downloads, modelId, state, root) });
   renderGrid();
+}
 
-  // 下载是长任务：30 秒超时**不是失败**（缺陷 #4）。
-  // 请求层到时限只发通知、请求保持挂起，后端送回真实结果时这里才继续 ——
-  // 因此中途不做任何"清理下载条目"的动作，否则界面会显示成"没在下载"，
-  // 而磁盘上其实还在写。
-  const { outcome, data } = await callWithOutcome<unknown>(CMD.installModel, {
-    model_id: model.id,
-    models_root: modelsRoot || null,
-    source: downloadSource,
-  });
-
-  if (isTaskRunning(outcome)) {
-    // 仍在下载：保留下载条目与进度，让 download 事件继续驱动界面
-    store.pushLog({
-      ts: new Date().toISOString(),
-      level: "WARNING",
-      message: describeOutcome(outcome, `${tr("下载")} ${model.id}`, tr),
+async function controlDownload(model: ModelEntry, state: ModelDownloadState,
+  command: typeof CMD.pauseModelDownload | typeof CMD.deleteModelDownload): Promise<void> {
+  const key = `${state.modelsRoot}:${model.id}:${state.token}`;
+  if (controllingDownloads.has(key)) return;
+  controllingDownloads.add(key); renderGrid();
+  try {
+    const modelsRoot = state.modelsRoot || document.documentElement.dataset["modelsRoot"] || null;
+    const result = await callWithOutcome<DownloadReply>(command, {
+      model_id: model.id, models_root: modelsRoot, token: state.token,
+      ...(command === CMD.deleteModelDownload ? { confirm: true } : {}),
     });
+    if (result.outcome === "ok") acceptDownload(model.id, result.data?.download ?? null);
+    if (result.outcome === "ok" && command === CMD.deleteModelDownload) await loadModels();
+  } finally { controllingDownloads.delete(key); renderGrid(); }
+
+}
+
+async function installModel(model: ModelEntry): Promise<void> {
+  const modelsRoot = document.documentElement.dataset["modelsRoot"] || store.get().modelsRoot || null;
+  const key = `${modelsRoot}:${model.id}`;
+  if (preparingDownloads.has(key)) return;
+  const previous = visibleDownload(store.get().downloads[model.id]);
+  if (previous && previous.status !== "paused") return;
+  preparingDownloads.add(key);
+  const optimistic: ModelDownloadState = {
+    ...previous, completed: previous?.completed ?? 0, total: model.sizeBytes || 1,
+    status: "queued", stage: tr("准备下载"), token: "",
+  };
+  store.patch({ downloads: { ...store.get().downloads, [model.id]: optimistic } });
+  renderGrid();
+  const prepared = await callWithOutcome<DownloadReply>(CMD.prepareModelDownload, {
+    model_id: model.id, models_root: modelsRoot, source: downloadSourceChanged ? downloadSource : (previous?.source ?? downloadSource),
+  });
+  preparingDownloads.delete(key);
+  if (prepared.outcome !== "ok" || !prepared.data?.download) {
+    // Only a confirmed response can restore the previous UI; unknown delivery is reconciled by refresh.
+    if (prepared.delivery === "response" && store.get().downloads[model.id] === optimistic) {
+      const downloads = { ...store.get().downloads };
+      if (previous) downloads[model.id] = previous; else delete downloads[model.id];
+      store.patch({ downloads });
+    }
+    await loadModels(); renderGrid(); return;
+  }
+  acceptDownload(model.id, prepared.data.download);
+  const result = await callWithOutcome<DownloadReply>(CMD.installModel, {
+    model_id: model.id, models_root: modelsRoot, token: prepared.data.download.token,
+  });
+  if (isTaskRunning(result.outcome)) {
+    store.pushLog({ ts: new Date().toISOString(), level: "WARNING",
+      message: describeOutcome(result.outcome, tr("下载模型"), tr) });
     return;
   }
-
-  const downloads = { ...store.get().downloads };
-  delete downloads[model.id];
-  store.patch({ downloads });
-  if (data !== null) await loadModels();
-  else renderGrid();
+  if (result.outcome === "ok") acceptDownload(model.id, result.data?.download ?? null);
+  // Failures retain persisted paused state and resumable assets; never erase progress on timeout.
+  await loadModels(); renderGrid();
 }
 
 async function uninstallModel(model: ModelEntry): Promise<void> {
   const modelsRoot = document.documentElement.dataset["modelsRoot"] ?? "";
   await call(CMD.uninstallModel, { model_id: model.id, models_root: modelsRoot || null });
   await loadModels();
+}
+
+/** Terminal events outlive request deadlines. Reconcile once per generation, outside rendering. */
+function watchDownloadCompletion(pageId: number): () => void {
+  const reconciled = new Set<string>();
+  return store.subscribe(() => {
+    if (pageId !== activePageId) return;
+    for (const model of models) {
+      const state = store.get().downloads[model.id];
+      if (model.installed || state?.status !== "done") continue;
+      const key = `${state.modelsRoot}:${model.id}:${state.token}:${state.revision}`;
+      if (reconciled.has(key)) continue;
+      reconciled.add(key);
+      void loadModels(pageId).then(() => updateDiskUsage(pageId));
+    }
+  });
 }
 
 /** 被 store 的下载事件驱动时只重绘网格，不整页重建。 */
@@ -373,8 +458,10 @@ export function buildModelCatalog(): PageHandle {
   }
   source.value = downloadSource;
   on(source, "change", () => {
+    if (pageId !== activePageId) return;
     if (source.value === "auto" || source.value === "global" || source.value === "china") {
       downloadSource = source.value;
+      downloadSourceChanged = true;
     }
   });
   sourceLabel.append(source);
@@ -405,6 +492,7 @@ export function buildModelCatalog(): PageHandle {
   gridEl = sheet;
   page.append(sheet);
 
+  const unsubscribeDownloads = watchDownloadCompletion(pageId);
   void loadModels(pageId).then(() => updateDiskUsage(pageId));
 
   // 每个页面都有独立代次；异步模型/缓存请求在每个 await 后检查页面与请求代次，
@@ -413,7 +501,7 @@ export function buildModelCatalog(): PageHandle {
   return {
     element: page,
     dispose: () => {
-      search.dispose();
+      search.dispose(); unsubscribeDownloads();
       if (activePageId !== pageId) return;
       activePageId = ++nextPageId;
       loadRequestId += 1;

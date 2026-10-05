@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://voxsub.local/contracts/commands.json",
   "title": "VoxSub IPC 命令契约",
-  "description": "每一条 IPC 命令的名称、参数、返回结果与可能错误码。命令集合由 ast 静态解析 frontend/backend/ipc_server.py 得到，共 59 条。与 frontend/src/renderer/protocol.ts 的 CMD 表逐项对齐（测试会断言双向相等）。",
+  "description": "每一条 IPC 命令的名称、参数、返回结果与可能错误码。命令集合由 ast 静态解析 frontend/backend/ipc_server.py 得到，共 62 条。与 frontend/src/renderer/protocol.ts 的 CMD 表逐项对齐（测试会断言双向相等）。",
   "protocolVersion": "2.0.0",
   "generatedFrom": {
     "python": [
@@ -220,6 +220,16 @@
         },
         "minRamGb": {
           "type": "number"
+        },
+        "download": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelDownloadState"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -563,6 +573,69 @@
         },
         "bytes": {
           "type": "integer"
+        }
+      }
+    },
+    "ModelDownloadState": {
+      "type": "object",
+      "required": [
+        "modelId",
+        "modelsRoot",
+        "token",
+        "revision",
+        "completed",
+        "total",
+        "status",
+        "stage",
+        "source",
+        "error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "modelId": {
+          "type": "string"
+        },
+        "modelsRoot": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
+          "type": "number",
+          "minimum": 0
+        },
+        "total": {
+          "type": "number",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "downloading",
+            "pausing",
+            "verifying",
+            "paused",
+            "done",
+            "deleted"
+          ]
+        },
+        "stage": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "auto",
+            "global",
+            "china"
+          ]
+        },
+        "error": {
+          "type": "string"
         }
       }
     }
@@ -1439,9 +1512,9 @@
     "install_model": {
       "implementedBy": "_cmd_install_model",
       "handleSpecial": false,
-      "needsPipeline": true,
+      "needsPipeline": false,
       "returnsNone": false,
-      "summary": "下载并安装模型。过程中持续发 download 事件。",
+      "summary": "下载并安装模型；持久化进度，暂停保留断点。准备命令返回token，避免排队与暂停竞态。",
       "source": "ipc_server.py:802",
       "args": {
         "type": [
@@ -1464,6 +1537,17 @@
             "type": "boolean",
             "default": false,
             "description": "通用可选参数，由 ipc_loop._submit 读取：true 时提交后立刻回执 {jobId, accepted, status}，最终结果靠 job 事件送达。命令实现本身不读它。"
+          },
+          "source": {
+            "enum": [
+              "auto",
+              "global",
+              "china"
+            ],
+            "default": "auto"
+          },
+          "token": {
+            "type": "string"
           }
         }
       },
@@ -1476,6 +1560,16 @@
         "properties": {
           "model_id": {
             "type": "string"
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelDownloadState"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -3705,6 +3799,209 @@
         "PermissionError",
         "OSError"
       ]
+    },
+    "prepare_model_download": {
+      "implementedBy": "_cmd_prepare_model_download",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "持久化下载准备状态；不启动网络。",
+      "source": "handlers/models.py::_cmd_prepare_model_download",
+      "args": {
+        "type": "object",
+        "required": [
+          "model_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "enum": [
+              "auto",
+              "global",
+              "china"
+            ],
+            "default": "auto"
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "download"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelDownloadState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "errors": [
+        "ValueError",
+        "RuntimeError",
+        "OSError"
+      ],
+      "sideEffects": [
+        "event:download"
+      ],
+      "controlCommand": true
+    },
+    "pause_model_download": {
+      "implementedBy": "_cmd_pause_model_download",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "快速请求暂停；pausing不等于paused，写入停止后才确认。",
+      "source": "handlers/models.py::_cmd_pause_model_download",
+      "args": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "token"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "download"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelDownloadState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "errors": [
+        "ValueError",
+        "RuntimeError",
+        "OSError"
+      ],
+      "sideEffects": [
+        "event:download"
+      ],
+      "controlCommand": true
+    },
+    "delete_model_download": {
+      "implementedBy": "_cmd_delete_model_download",
+      "handleSpecial": false,
+      "needsPipeline": false,
+      "returnsNone": false,
+      "summary": "仅确认后删除已暂停下载的临时文件，不触碰已安装模型。",
+      "source": "handlers/models.py::_cmd_delete_model_download",
+      "args": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "token",
+          "confirm"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "models_root": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confirm": {
+            "const": true
+          },
+          "async": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "result": {
+        "type": "object",
+        "required": [
+          "model_id",
+          "download"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string"
+          },
+          "download": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelDownloadState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "errors": [
+        "ValueError",
+        "RuntimeError",
+        "OSError"
+      ],
+      "sideEffects": [
+        "event:download"
+      ],
+      "controlCommand": false
     }
   }
 }

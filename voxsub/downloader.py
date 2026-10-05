@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from voxsub.file_io import replace_with_retry
+from voxsub.file_io import replace_with_retry, write_text_atomically
 from voxsub.logging_setup import get_logger
 
 logger = get_logger("downloader")
@@ -29,10 +31,12 @@ class DownloadCancelled(RuntimeError):
     """Raised when a marketplace download is cancelled by the user."""
 
 
-def sha256_of(path: Path | str) -> str:
+def sha256_of(path: Path | str, *, cancelled: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
         while block := handle.read(CHUNK):
+            if cancelled and cancelled():
+                raise DownloadCancelled("下载已暂停")
             digest.update(block)
     return digest.hexdigest()
 
@@ -52,11 +56,13 @@ class _DownloadTarget:
     expected_size: int | None
     progress: Callable[[int, int, str], None] | None
     cancelled: Callable[[], bool] | None
+    safe_resume: bool = False
 
     def __post_init__(self) -> None:
         self.destination = Path(self.destination)
         self.destination.parent.mkdir(parents=True, exist_ok=True)
         self.part = self.destination.with_name(self.destination.name + ".part")
+        self.metadata = self.part.with_name(self.part.name + ".resume.json")
 
     def check_cancelled(self) -> None:
         if self.cancelled and self.cancelled():
@@ -69,7 +75,7 @@ class _DownloadTarget:
             return False
         if self.expected_size is not None and path.stat().st_size != self.expected_size:
             return False
-        if self.expected_sha and sha256_of(path) != self.expected_sha:
+        if self.expected_sha and sha256_of(path, cancelled=self.cancelled) != self.expected_sha:
             return False
         return True
 
@@ -97,7 +103,7 @@ class _DownloadTarget:
         if self.expected_size is not None and self.part.stat().st_size != self.expected_size:
             return False
         if self.expected_sha:
-            actual = sha256_of(self.part)
+            actual = sha256_of(self.part, cancelled=self.cancelled)
             if actual != self.expected_sha:
                 print(f"  [错误] SHA256 不匹配: 期望 {self.expected_sha}, 实际 {actual}")
                 logger.error("SHA256 校验失败: %s 期望=%s 实际=%s",
@@ -105,7 +111,9 @@ class _DownloadTarget:
                 self.part.unlink(missing_ok=True)
                 return False
             print("  SHA256 校验通过")
+        self.check_cancelled()
         replace_with_retry(self.part, self.destination)
+        self.metadata.unlink(missing_ok=True)
         size_mb = self.destination.stat().st_size / 1e6
         print(f"  下载完成: {self.destination.name} ({size_mb:.1f} MB)")
         logger.info("下载完成: %s (%.1f MB)", self.destination.name, size_mb)
@@ -160,6 +168,14 @@ def _response_layout(response, existing: int, expected_size: int | None) -> _Res
     response_bytes = _integer_header(response.headers, "Content-Length")
     total = expected_size or reported_total or (
         resumed + response_bytes if response_bytes else 0)
+    if status == 206:
+        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+        if not match or int(match[1]) != existing or int(match[2]) < existing:
+            raise OSError("服务器续传范围与本地断点不一致")
+        if response_bytes and response_bytes != int(match[2]) - existing + 1:
+            raise OSError("服务器续传长度不一致")
+    elif status != 200:
+        raise OSError(f"不支持的下载响应: {status}")
     if expected_size is not None and reported_total and reported_total != expected_size:
         raise OSError(f"服务器总大小异常: {reported_total}, 预期 {expected_size}")
     return _ResponseLayout(status, resumed, response_bytes, total)
@@ -172,6 +188,8 @@ def _stream_response(
     layout: _ResponseLayout,
 ) -> int:
     received = 0
+    # read1 returns available bytes instead of waiting to fill a 1 MiB block on slow links.
+    read_block = getattr(response, "read1", response.read)
     mode = "ab" if layout.status == 206 else "wb"
     with target.part.open(mode) as output:
         written = layout.resumed
@@ -179,28 +197,78 @@ def _stream_response(
             target.progress(written, layout.total, source)
         while True:
             target.check_cancelled()
-            block = response.read(CHUNK)
+            block = read_block(CHUNK)
+            target.check_cancelled()
             if not block:
                 return received
             output.write(block)
+            output.flush()
             received += len(block)
             written += len(block)
             if target.progress:
                 target.progress(written, layout.total, source)
 
 
-def _download_attempt(target: _DownloadTarget, source: str) -> bool:
-    target.check_cancelled()
-    if target.matches_expected(target.part, require_constraint=True):
-        return target.commit()
+def _resume_metadata(target: _DownloadTarget, source: str) -> dict:
+    if not target.safe_resume:
+        return {}
+    try:
+        data = json.loads(target.metadata.read_text(encoding="utf-8"))
+        identity = hashlib.sha256(source.encode()).hexdigest()
+        if data.get("source") == identity and isinstance(data.get("validator"), str):
+            return data
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
+
+def _resume_headers(target: _DownloadTarget, source: str) -> tuple[dict, int, dict]:
     existing = target.part.stat().st_size if target.part.exists() else 0
-    headers = {"User-Agent": "VoxSub/0.3"}
+    metadata = _resume_metadata(target, source)
+    validator = metadata.get("validator", "")
+    if "\n" in validator or "\r" in validator:
+        validator = ""
+    if existing and target.safe_resume and not target.expected_sha and not validator:
+        target.part.unlink(missing_ok=True)
+        existing = 0
+    headers = {"User-Agent": "VoxSub/0.9", "Accept-Encoding": "identity"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
+        if validator:
+            headers["If-Range"] = validator
+    return headers, existing, metadata
+
+
+def _remember_response(target: _DownloadTarget, source: str, response, layout: _ResponseLayout,
+                       metadata: dict) -> None:
+    if not target.safe_resume:
+        return
+    etag = response.headers.get("ETag", "")
+    validator = etag if etag and not etag.startswith("W/") else response.headers.get("Last-Modified", "")
+    if layout.resumed and metadata.get("validator") and validator != metadata["validator"]:
+        target.part.unlink(missing_ok=True)
+        target.metadata.unlink(missing_ok=True)
+        raise OSError("远端文件已变化，安全重新下载")
+    if layout.status == 200:
+        # Truncate BEFORE publishing the new identity: a crash cannot bind old bytes to a new ETag.
+        target.part.write_bytes(b"")
+    data = {"source": hashlib.sha256(source.encode()).hexdigest(), "validator": validator}
+    write_text_atomically(target.metadata, json.dumps(data), encoding="utf-8")
+
+
+def _download_attempt(target: _DownloadTarget, source: str) -> bool:
+    target.check_cancelled()
+    can_promote = not target.safe_resume or bool(target.expected_sha)
+    if can_promote and target.matches_expected(target.part, require_constraint=True):
+        return target.commit()
+    headers, existing, metadata = _resume_headers(target, source)
     request = urlrequest.Request(source, headers=headers)
-    with urlrequest.urlopen(request, timeout=60) as response:
+    with urlrequest.urlopen(request, timeout=15) as response:
+        target.check_cancelled()
         layout = _response_layout(response, existing, target.expected_size)
+        _remember_response(target, source, response, layout, metadata)
         received = _stream_response(target, source, response, layout)
+    target.check_cancelled()
     target.validate_transfer(layout, received)
     return target.commit()
 
@@ -213,6 +281,7 @@ def _download_from_source(target: _DownloadTarget, source: str) -> bool:
             logger.info("下载已取消，保留断点文件: %s", target.part)
             raise
         except _DOWNLOAD_ERRORS as exc:
+            target.check_cancelled()
             print(f"  源 {source} 第 {attempt}/{DOWNLOAD_ATTEMPTS_PER_SOURCE} 次失败: {exc}")
             logger.warning(
                 "下载源失败: 目标=%s 源=%s attempt=%d/%d 已有字节=%d 错误=%s",
@@ -239,11 +308,12 @@ def fetch_file(
     expected_size: int | None = None,
     progress: Callable[[int, int, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    safe_resume: bool = False,
 ) -> bool:
     """Download one file with resume, verification, retries, and mirrors."""
     normalized_size = expected_size if expected_size and expected_size > 0 else None
     target = _DownloadTarget(
-        Path(destination), expected_sha, normalized_size, progress, cancelled)
+        Path(destination), expected_sha, normalized_size, progress, cancelled, safe_resume)
     sources = _candidate_sources(url, mirror, mirrors)
     logger.info("开始下载 %s (候选源 %d 个)", target.destination.name, len(sources))
     if target.prepare_existing():

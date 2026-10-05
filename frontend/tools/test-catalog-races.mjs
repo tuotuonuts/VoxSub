@@ -16,6 +16,7 @@ const catalog = await importShared("tools/test-catalog-entry.ts", { bundle: true
 const modelRequests = [];
 const cacheRequests = [];
 const installRequests = [];
+const prepareRequests = [];
 const eventListeners = new Set();
 
 window.voxsub = {
@@ -31,6 +32,13 @@ window.voxsub = {
       }
       if (command === catalog.CMD.ocrCacheDir) {
         return new Promise((resolve, reject) => cacheRequests.push({ args, resolve, reject }));
+      }
+      if (command === catalog.CMD.prepareModelDownload) {
+        prepareRequests.push(args);
+        return Promise.resolve({ok:true,data:{model_id:args.model_id,download:{
+          modelId:args.model_id,token:`fixture-${prepareRequests.length}`,revision:prepareRequests.length,
+          completed:0,total:100,status:"queued",stage:"等待下载",source:args.source,
+        }}});
       }
       if (command === catalog.CMD.installModel) {
         installRequests.push(args);
@@ -316,11 +324,13 @@ check("catalog offers auto overseas and mainland sources", sourceSelect &&
 for (const source of ["china", "global", "auto"]) {
   sourceSelect.value = source;
   sourceSelect.dispatchEvent(new Event("change"));
+  catalog.store.patch({downloads:{}});
+  samePageHandle.element.querySelector(".filter-chip").click();
   const download = [...samePageHandle.element.querySelectorAll("button")].find(b => b.textContent === "下载");
   download.click();
   await settle();
   const args = installRequests.at(-1);
-  check(`download button forwards ${source} preference`, args?.source === source &&
+  check(`download button forwards ${source} preference`, prepareRequests.at(-1)?.source === source && args?.token === `fixture-${prepareRequests.length}` &&
     args?.model_id === "asr-moonshine-tiny-en-v2" && args?.models_root === "C:/dual-source", JSON.stringify(args));
 }
 
