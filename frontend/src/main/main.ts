@@ -24,10 +24,11 @@ import * as path from "node:path";
 import { initialMainWindowBounds } from "../shared/window-layout";
 import type { OverlayGlassState } from "../shared/overlay-glass";
 
+import { LiveOcrSession } from "./ocr-live";
 import { BackendBridge, type BackendEvent } from "./backend";
 import { createShortcutService } from "./shortcuts";
 let shortcuts: ReturnType<typeof createShortcutService> | null = null;
-import { captureRegion, createOverlayForArea, pickScreenArea, type SelectionArea } from "./capture";
+import { cancelScreenSelection, captureRegion, createOverlayForArea, pickScreenArea, type SelectionArea } from "./capture";
 
 const RENDERER_DIR = path.join(__dirname, "..", "renderer");
 
@@ -180,7 +181,15 @@ async function guardedBackendCommand(source: BackendBridge, name: string, args: 
 /** 实时 OCR 定时器：仅在用户开启后运行 */
 let liveOcrTimer: NodeJS.Timeout | null = null;
 let liveOcrArea: SelectionArea | null = null;
-let liveOcrBusy = false;
+let liveOcrSelection = 0;
+const liveOcr = new LiveOcrSession({
+  capture: captureRegion,
+  command: (name, args) => bridge ? bridge.command(name, args) : Promise.resolve({ok: false}),
+  remove: file => fs.rmSync(file, {force: true}),
+  translated: payload => { sendToWindow(ocrOverlayWindow, "ocr:translated", payload); },
+  failed: () => { sendToWindow(ocrOverlayWindow, "ocr:frame-failed"); },
+  status: (state, details) => { sendToWindow(mainWindow, "ocr:live-status", {state, ...details}); },
+});
 
 /**
  * 退出请求的唯一入口：托盘退出、窗口关闭、快捷键都走这里。
@@ -424,31 +433,29 @@ function toggleOverlay(): boolean {
 /* ------------------------------------------------------------ 实时 OCR */
 
 function stopLiveOcr(): void {
+  cancelScreenSelection();
   if (liveOcrTimer) {
     clearInterval(liveOcrTimer);
     liveOcrTimer = null;
   }
   liveOcrArea = null;
-  liveOcrBusy = false;
-  if (ocrOverlayWindow && !ocrOverlayWindow.isDestroyed()) {
-    ocrOverlayWindow.destroy();
-  }
+  liveOcr.stop();
+  liveOcrSelection++;
+  if (bridge?.isRunning()) void bridge.command("ocr_release", {});
+  sendToWindow(mainWindow, "ocr:live-status", {state: "stopped"});
+  const oldOverlay = ocrOverlayWindow;
   ocrOverlayWindow = null;
+  if (oldOverlay && !oldOverlay.isDestroyed()) oldOverlay.destroy();
+}
+
+function validOcrLanguages(value: unknown): value is {source: string; target: string} {
+  if (!value || typeof value !== "object") return false;
+  const pair = value as {source: unknown; target: unknown};
+  return [pair.source, pair.target].every(lang => typeof lang === "string" && /^[a-z]{2,12}(?:-[A-Za-z]{2,8})?$/.test(lang));
 }
 
 async function runLiveOcrTick(): Promise<void> {
-  // 只保留一个在途任务：慢任务期间丢弃重复帧，不让采集积压
-  if (liveOcrBusy || !liveOcrArea || !mainWindow) return;
-  liveOcrBusy = true;
-  try {
-    const shot = await captureRegion(liveOcrArea);
-    if (!shot) return;
-    sendToWindow(mainWindow, "ocr:live-frame", { path: shot.path });
-  } catch {
-    // 单帧失败不中断循环；下一帧继续
-  } finally {
-    liveOcrBusy = false;
-  }
+  await liveOcr.tick();
 }
 
 /* ------------------------------------------------------------------ IPC */
@@ -483,6 +490,10 @@ function registerIpc(): void {
 
   ipcMain.handle("backend:command", (_e, name: string, args: unknown) => {
     if (!bridge) return { ok: false, error: "后端未初始化" };
+    if (["set_config", "set_translator", "set_langs"].includes(name)) {
+      liveOcr.invalidate();
+      sendToWindow(ocrOverlayWindow, "ocr:region-ready", liveOcrArea);
+    }
     return guardedBackendCommand(bridge, name, args);
   });
 
@@ -650,32 +661,52 @@ function registerIpc(): void {
   });
 
   /* ---- OCR ---- */
-  ipcMain.handle("ocr:select-area", async () => {
+  ipcMain.handle("ocr:select-area", async (event) => {
+    if (!owned(event)) return null;
     const area = await pickScreenArea(mainWindow);
     if (!area) return null;
-    const shot = await captureRegion(area);
-    return shot?.path ?? null;
+    const owner = mainWindow;
+    const visible = owner && !owner.isDestroyed() && owner.isVisible();
+    try {
+      if (visible) owner.hide();
+      await new Promise(resolve => setTimeout(resolve, 220));
+      const shot = await captureRegion(area);
+      return shot?.path ?? null;
+    } finally {
+      if (visible && owner && !owner.isDestroyed()) owner.showInactive();
+    }
   });
 
-  ipcMain.handle("ocr:start-live-region", async () => {
-    const area = await pickScreenArea(mainWindow);
-    if (!area) return null;
+  ipcMain.handle("ocr:start-live-region", async (event, languages: {source: string; target: string}) => {
+    if (!owned(event) || !validOcrLanguages(languages)) return null;
     stopLiveOcr();
+    const selection = liveOcrSelection;
+    const area = await pickScreenArea(mainWindow);
+    if (!area || selection !== liveOcrSelection || quitting) return null;
     liveOcrArea = area;
+    liveOcr.start(area, languages);
     const win = createOverlayForArea(area);
     ocrOverlayWindow = win;
     win.once("ready-to-show", () => {
-      if (ocrOverlayWindow === win) sendToWindow(win, "ocr:region-ready", area);
+      if (ocrOverlayWindow !== win || win.isDestroyed()) return;
+      sendToWindow(win, "ocr:region-ready", area);
+      // Wait for display/protection setup before the first capture; never poll a loading overlay.
+      liveOcrTimer = setInterval(() => void runLiveOcrTick(), 700);
     });
     win.on("closed", () => {
-      if (ocrOverlayWindow === win) ocrOverlayWindow = null;
+      if (ocrOverlayWindow === win) stopLiveOcr();
     });
-    // 轮询间隔与原 Qt 版一致（700ms），先比画面指纹再决定是否识别
-    liveOcrTimer = setInterval(() => void runLiveOcrTick(), 700);
     return area;
   });
 
-  ipcMain.handle("ocr:stop-live-region", () => {
+  ipcMain.handle("ocr:update-languages", (event, languages: {source: string; target: string}) => {
+    if (!owned(event) || !validOcrLanguages(languages)) return false;
+    liveOcr.configure(languages);
+    sendToWindow(ocrOverlayWindow, "ocr:region-ready", liveOcrArea);
+    return true;
+  });
+  ipcMain.handle("ocr:stop-live-region", (event) => {
+    if (!owned(event)) return false;
     stopLiveOcr();
     return true;
   });

@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 from voxsub.logging_setup import get_logger
+from voxsub.diagnostic_trace import error as trace_error
 from voxsub.translate.base import TranslationError
 from voxsub.translate.factory import TranslatorFactory
 
@@ -1059,8 +1060,9 @@ class OcrTranslationService:
             translated = str(translator.translate(
                 text, source_lang, target_lang, timeout_ms=12_000
             )).strip()
-        except (TranslationError, OSError, RuntimeError):
-            logger.warning("OCR 行翻译失败: %r", text, exc_info=True)
+        except (TranslationError, OSError, RuntimeError) as error:
+            trace_error("ocr_translation", error, source=source_lang, target=target_lang, input_chars=len(text))
+            logger.warning("OCR 行翻译失败: chars=%d", len(text))
             return "", True
         if translated:
             self._remember(key, translated)
@@ -1131,11 +1133,12 @@ class OcrTranslationService:
                 allow_single_fallback=allow_single_fallback,
             )
             if error is not None:
+                trace_error("ocr_translation", error, source=source_lang, target=target_lang,
+                            input_chars=sum(len(source) for source in chunk))
                 logger.warning(
-                    "OCR 批量翻译失败%s: lines=%d error=%s",
+                    "OCR 批量翻译失败%s: lines=%d error_type=%s",
                     "，跳过逐行回退" if not allow_single_fallback else "，回退逐行",
-                    len(chunk), error,
-                    exc_info=allow_single_fallback,
+                    len(chunk), type(error).__name__,
                 )
                 if not allow_single_fallback:
                     # Keep the OCR boxes visible without covering them with a

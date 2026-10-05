@@ -7,6 +7,7 @@ import path from "node:path";
 import ts from "typescript";
 import { importShared, cleanupShared, ROOT } from "./esbuild-ts.mjs";
 const { createShortcutService } = await importShared("src/main/shortcuts.ts", { bundle: true });
+const ocrLive = await importShared("src/main/ocr-live.ts", { bundle: true });
 const layout = await importShared("src/shared/window-layout.ts");
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "voxsub-shortcut-main-"));
 assert.ok(path.resolve(directory).startsWith(path.join(path.resolve(os.tmpdir()), "voxsub-shortcut-main-")));
@@ -20,7 +21,7 @@ class Window {
   show() { this.visible = true; this.calls.push("show"); } hide() { this.visible = false; this.calls.push("hide"); }
   restore() { this.minimized = false; this.calls.push("restore"); } focus() { this.calls.push("focus"); }
 }
-class Backend { isRunning() { return true; } onEvent() {} dispose() { disposed++; } }
+class Backend { command() { return Promise.resolve({ok: true, data: {released: true}}); } isRunning() { return true; } onEvent() {} dispose() { disposed++; } }
 const driver = { register(key, fn) { if (registered.has(key)) return false; registered.set(key, fn); return true; }, unregister(key) { registered.delete(key); } };
 const electron = {
   BrowserWindow: Window, globalShortcut: driver,
@@ -35,7 +36,8 @@ const context = vm.createContext({ exports: {}, __dirname: path.join(ROOT, "src/
     if (name === "node:fs") return { existsSync: () => false };
     if (name === "node:path") return path;
     if (name === "./backend") return { BackendBridge: Backend };
-    if (name === "./capture") return {};
+    if (name === "./capture") return { cancelScreenSelection() {} };
+    if (name === "./ocr-live") return ocrLive;
     if (name === "./shortcuts") return { createShortcutService(...args) { service = createShortcutService(...args); return service; } };
     throw Error("Unapproved import " + name);
   },

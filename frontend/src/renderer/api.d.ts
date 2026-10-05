@@ -93,8 +93,10 @@ export interface VoxSubApi {
   };
   ocr: {
     selectArea(): Promise<string | null>;
-    startLiveRegion(): Promise<SelectionAreaShape | null>;
+    startLiveRegion(languages: {source: string; target: string}): Promise<SelectionAreaShape | null>;
+    updateLanguages(languages: {source: string; target: string}): Promise<boolean>;
     stopLiveRegion(): Promise<boolean>;
+    onLiveStatus(handler: (payload: unknown) => void): () => void;
   };
   selector: {
     finish(area: SelectionAreaShape | null): void;

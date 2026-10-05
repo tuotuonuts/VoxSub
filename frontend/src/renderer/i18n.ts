@@ -10,6 +10,22 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "重新处理当前图片": "Retry current image",
+  "识别后自动翻译": "Translate after recognition",
+  "框选屏幕并识别": "Select screen area and recognize",
+  "图片或框选操作失败，请重试；如持续失败，请查看诊断。": "Image selection or screen capture failed. Retry, or check Diagnostics if it keeps failing.",
+  "上传图片并识别": "Choose image and recognize",
+  "识别完成，未调用翻译模型": "Recognition complete; translation model not used",
+  "关闭后只提取文字，不加载翻译模型，也不发送文字给云翻译服务。": "When off, extract text only. No translation model is loaded and no text is sent to a cloud translator.",
+  "释放图片翻译资源": "Release image translation resources",
+  "部分译文过长，图片中已省略；完整译文可复制。": "Some translations are too long for the image. Copy the text for the full translation.",
+  "已识别文字，但当前语言或处理上限下没有可显示的译文。": "Text recognized, but no translation is available for the current language or processing limits.",
+  "已识别，但译后图片生成失败；可以复制文字或重试。": "Text recognized, but the translated image could not be generated. Copy the text or retry.",
+  "部分文字因语言或处理上限未翻译": "Some text was not translated due to language or processing limits",
+  "部分翻译失败，可重试": "Some translations failed; retry is available",
+  "当前帧处理失败，正在重试；旧译文会自动过期。": "This frame failed. Retrying; previous translations expire automatically.",
+  "覆盖层已请求系统捕获排除；受保护内容可能无法截图。单帧失败会短暂保留译文，过期后自动清除。": "The overlay requests system capture exclusion. Protected content may not be capturable. Previous translations are briefly retained after a frame failure, then cleared.",
+  "支持副屏与高 DPI。跨屏选区会裁到主要所在的显示器，请分别选择不同显示器的区域。": "Secondary displays and high DPI are supported. Cross-screen selections are clipped to the dominant display; select each display separately.",
   "翻译暂时落后，正在追赶；可选择更轻量的模型": "Translation is catching up; consider a lighter model.",
   "实时模式下尽早显示原文和可修订译文；需要模型提供部分识别结果，文件翻译不使用草稿。": "Show source text and revisable translations early in live mode. Partial recognition results are required; file translation does not use drafts.",
   "语音识别": "Speech recognition",

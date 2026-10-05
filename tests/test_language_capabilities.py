@@ -66,7 +66,7 @@ def test_unknown_selection_fails_closed(key):
 
 def test_ocr_bypasses_asr_and_cloud_auto_is_not_promised():
     config = {"asr_model_id": "asr-moonshine-tiny-en-v2", "translate_tier": "cloud"}
-    assert language_capabilities(config, mode="d")["sources"] == ["zh", "en", "ja", "ko"]
+    assert language_capabilities(config, mode="d")["sources"] == ["zh", "en", "ja"]
     assert language_capabilities({"stt_provider": "cloud", "translate_tier": "cloud"})["sources"] == ["zh", "en", "ja", "ko"]
 
 
@@ -125,3 +125,20 @@ def test_invalid_and_alias_pairs():
     for source, target in [("fr", "zh"), ("en", "auto"), ("ja", "en")]:
         with pytest.raises(ValueError):
             validate_pair(meta, source, target)
+
+
+@pytest.mark.parametrize("model,sources", [
+    ("ocr-rapidocr-v6-small-builtin", ["zh", "en", "ja"]),
+    ("ocr-rapidocr-v6-tiny", ["zh", "en"]),
+    ("ocr-rapidocr-v6-medium", ["zh", "en", "ja"]),
+    ("ocr-rapidocr-v5-document", ["zh", "en"]),
+])
+def test_ocr_per_weight_language_contract_and_directional_targets(model, sources):
+    meta = language_capabilities({"ocr_model_id": model, "translate_tier": "cloud"}, mode="d")
+    assert meta["sources"] == sources
+    assert "ko" in meta["targets"]["en"]  # target is a translation capability, not an OCR input.
+    assert "auto" not in meta["sources"]
+
+
+def test_unknown_ocr_selection_fails_closed_without_using_asr():
+    assert not language_capabilities({"ocr_model_id": "missing", "translate_tier": "cloud"}, mode="d")["compatible"]

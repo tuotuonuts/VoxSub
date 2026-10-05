@@ -1,0 +1,192 @@
+{
+  "recorded_at_utc": "2026-10-05T17:58:51.064833+00:00",
+  "base_revision": "35512f3",
+  "status": "PASS within listed boundaries; NOT_RUN native desktop/full app/performance benchmark",
+  "python": {
+    "command": "isolated run_safe_regression.py -> pytest -q -m \"not hardware_audio\"",
+    "status": "PASS",
+    "passed": 1216,
+    "skipped": 8,
+    "deselected": 7,
+    "xfailed": 1,
+    "seconds": 80.46
+  },
+  "frontend": {
+    "commands": [
+      "npm run check",
+      "npm run build"
+    ],
+    "status": "PASS",
+    "ocr_runtime_checks": 21,
+    "ocr_capture_fixture_checks": 5,
+    "boundary": "Production TS modules with miniDOM/VM/fake Electron; not native or Chromium"
+  },
+  "real_models": {
+    "status": "PASS",
+    "boundary": "Real installed CPU models + synthetic images + actual in-process handler; not screen capture, Electron paint, production stdio or accuracy benchmark",
+    "cases": [
+      {
+        "case": "static",
+        "lines": 2,
+        "translated_lines": 2,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 1953,
+        "translation_ms": 656,
+        "wall_ms": 2615.41,
+        "translation_requests": 2
+      },
+      {
+        "case": "live-first",
+        "lines": 2,
+        "translated_lines": 2,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 3265,
+        "translation_ms": 0,
+        "wall_ms": 3265.49,
+        "translation_requests": 0
+      },
+      {
+        "case": "live-identical",
+        "lines": 2,
+        "translated_lines": 2,
+        "failed_lines": 0,
+        "unchanged": true,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 3265,
+        "translation_ms": 0,
+        "wall_ms": 2.5,
+        "translation_requests": 0
+      },
+      {
+        "case": "live-one-pixel-change",
+        "lines": 2,
+        "translated_lines": 2,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 2907,
+        "translation_ms": 0,
+        "wall_ms": 2907.11,
+        "translation_requests": 0
+      },
+      {
+        "case": "live-empty",
+        "lines": 0,
+        "translated_lines": 0,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 2467,
+        "translation_ms": 0,
+        "wall_ms": 2471.42,
+        "translation_requests": 0
+      },
+      {
+        "case": "recognition-only",
+        "lines": 2,
+        "translated_lines": 0,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 3157,
+        "translation_ms": 0,
+        "wall_ms": 3161.44,
+        "translation_requests": 0
+      },
+      {
+        "case": "live-after-release",
+        "lines": 2,
+        "translated_lines": 2,
+        "failed_lines": 0,
+        "unchanged": false,
+        "model": "ocr-rapidocr-v6-small-builtin",
+        "backend": "CPU",
+        "ocr_ms": 3094,
+        "translation_ms": 763,
+        "wall_ms": 3872.64,
+        "translation_requests": 2
+      }
+    ],
+    "rendered_lines": 2,
+    "export_size": [
+      1000,
+      240
+    ],
+    "cache_limit_verified": 2
+  },
+  "not_run": [
+    "native Electron capture/paint/content exclusion",
+    "physical multi-monitor DPI",
+    "production stdio full app",
+    "GPU/NPU",
+    "Tiny/Medium/v5 real weights",
+    "cloud MT",
+    "accuracy benchmark",
+    "long-running video",
+    "packaged release",
+    "GitHub CI"
+  ],
+  "cache_candidate_deviation": {
+    "status": "REPAIRED, earlier impact unknown",
+    "directory": "Cache/OCR/translated",
+    "cause": "resolve_ocr_cache_root called without ConfigStore in candidate handler",
+    "prune_limit": 2,
+    "old_inventory_recorded": false,
+    "old_cache_unaffected_proven": false,
+    "cleanup_performed": false,
+    "retained_synthetic_artifacts_not_committed": true
+  },
+  "external_evidence_root": "D:\\OneDrive\\app_dve\\ocr-deep-acceptance",
+  "log_sha256": {
+    "python-verified.log": "cffcfb500b1bd15e0a7d369ca30e108130b8f83b771c450795f3db7db54df612",
+    "frontend-verified.log": "a3248b83b32ed7524814924002a7ea0270ce88a5417f08dbd8b8baf16e916ec7",
+    "frontend-build.log": "fbb290dcda1f31fb4a27a0e215d06f02acb495aa67e27e18a5441caafbd758ba",
+    "verified.log": "2d585e79443dbdcdbcfb7f376cabc81ef8f64c3ea430ee1c11a14f01cb19f301",
+    "verified/result.json": "63038a369a50e57ea121a2ab017a151d5dfae2de50006b21caea484ee493f756"
+  },
+  "source_sha256": {
+    "contracts/commands.json": "20f1335d9ca52d7061defd6ab0da028d168c1fd108cfb54df40964cb4942ce42",
+    "frontend/backend/handlers/ocr.py": "ba34c2691020c51e09222d4dc0e01c024df724a91d117a011d9238e29cec336c",
+    "frontend/backend/ipc_server.py": "3778c7518bbcbaee0dcae8590f336b9c653204fc676c1cb92d28d6028b6e45ae",
+    "frontend/package.json": "1552c147c2bbaa7a39a28702d062d57e0b6dec6e8e0c41acf94bb45904032093",
+    "frontend/src/main/capture.ts": "3f37fe7e4175c94d3fc2f3828cdb11085f482cad543d57d53f85609d9f0c1f05",
+    "frontend/src/main/main.ts": "5080e613e0d82192d18c07d61cdaa48e9487a6e3f788b2a48c5da25f1aaafe1b",
+    "frontend/src/main/preload.ts": "aa8a609bb464196f9f281519c32ba70c527a1867ae14d96d5e446fb9bc2471c0",
+    "frontend/src/main/ocr-live.ts": "c61d53f1ed0649423ba1aaae767f14b03c4ad78a8b233868bc0aabac018e8ceb",
+    "frontend/src/renderer/api.d.ts": "bc6fc0428091497919b48d63dcabd1e6722a7fb1d14729d9312af34c39fc1321",
+    "frontend/src/renderer/i18n.ts": "7dd40125319a81926ea4df41a6d02461c6e602c81581f9d53e8d809059086c3c",
+    "frontend/src/renderer/ocr-overlay.css": "4b842249089481880f123b98333a51d55148d892c3bf06386b3e4aba740c8bcf",
+    "frontend/src/renderer/ocr-overlay.ts": "21b57f11a062e56301c61ffa168fd536820792b0f7c3c52323d18a7846c15d07",
+    "frontend/src/renderer/protocol.ts": "9acd64904d14a28ea1e7facd000859ff54fd82de06a6060ceaa42c2766595f36",
+    "frontend/src/renderer/store.ts": "57b107f25814d7f83e2c132a0f112d2581339796b11101c1ba643f4ffc8465e3",
+    "frontend/src/renderer/views/ocr.ts": "8ea080fecf73221e5423ace1bc4498b106f4127133a4a8751d45fb7f724c09af",
+    "frontend/src/shared/command-feedback.ts": "89924ad9c2ac18b93d56f881572cdcd3a191f8a3ff095beb01034f1b01546e35",
+    "frontend/src/shared/file-url.ts": "8b645249b9d1fb03fd1e122ac103f249d0f3017e823d3dfaf729ff577a951b8a",
+    "frontend/src/shared/ocr-geometry.ts": "9e8c9c79e3981797ba91304f4135a726ab99816d42ea88b9e087dd36188e64ac",
+    "frontend/tools/test-main-quit-guard.mjs": "c4f78dd9f026eebe1fe6f9a86dd1e47ee97ea09b1ead569510118bdebcf7cfad",
+    "frontend/tools/test-migration-takeover.mjs": "dc9644a13d8993247e232b4a16a5f7ded24116e5a6c6a8768dce71e6b1b3a3c5",
+    "frontend/tools/test-shortcut-main.mjs": "99fe4f8adde8f5128fa69c2f243ff86af67cb9bd1986fd5857ff339fa5fddec8",
+    "frontend/tools/test-window-lifecycle.mjs": "83ff9bd3c0367ecb81a821c6c611ebe0c0bad6ad250b43dabc0f7dafef3360c2",
+    "frontend/tools/test-ocr-runtime.mjs": "b858bc1df5308de26d14e17b08ac3e3b1cfa8b16d3002fae459410ba38f3d73a",
+    "frontend/tools/test-ocr-capture.mjs": "7226c8f5b5bc22aee94b8825ddff76469151f44ee3acac747407b049d60faed8",
+    "frontend/tools/test-ocr-workspace-entry.ts": "e5e6efae6ec8876bd249cc93549bb4e46a161880e067c781f2fe580c86b6a43b",
+    "scripts/ocr_silent_acceptance.py": "d219d7c2d7970cb6b3c0b7940b7e156484a895ef98a69d8e443e75239663c430",
+    "tests/test_ipc_commands.py": "3e7a10dc8684dbde537935e05a5db15c3f9821a627848dcc6e23794e67cf01e9",
+    "tests/test_language_capabilities.py": "f60421efa4414b410b4c39eaac49fad6798c4486639670d0d383478e6a001ca8",
+    "tests/test_ocr_session.py": "2cfb9fa6a770c1f99739bfd5d3fe3b6935051ee5f1fd02a1397eb58e9862f58d",
+    "voxsub/language_capabilities.py": "b25dddceceb1df186212fcf3f57fbcbfaaa75948aefa564e57902ba045541171",
+    "voxsub/ocr.py": "777e621aa3038ac41b505ca5eade850438686ebcee93d14f39efd3720bfe18d4",
+    "voxsub/ocr_session.py": "a78bace6b042786452456d2014bcdf43d2e78f25aeb43384f080feaf398ed3e2",
+    "voxsub/ocr_layout.py": "35f608b4fd566582a9466878138b149cb847358cda29615b59e12d0ad39b4d3b"
+  }
+}

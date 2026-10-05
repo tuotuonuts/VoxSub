@@ -5,15 +5,11 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
-from ipc_protocol import _event
 
 
 def _box_to_list(box: Any) -> list[int]:
@@ -38,20 +34,17 @@ def _box_to_list(box: Any) -> list[int]:
 
 def _normalize_box(box: Any, width: int, height: int) -> tuple[int, int, int, int] | None:
     """把框统一成 (left, top, right, bottom) 并夹到图像范围内。"""
-    if all(hasattr(box, name) for name in ("left", "top", "right", "bottom")):
-        flat = [int(box.left), int(box.top), int(box.right), int(box.bottom)]
-    elif isinstance(box, (list, tuple)) and len(box) >= 4:
+    try:
         flat = _box_to_list(box)
-    else:
+    except (TypeError, ValueError, OverflowError):
         return None
-
     if len(flat) < 4:
         return None
 
-    left = max(0, min(width - 1, flat[0]))
-    top = max(0, min(height - 1, flat[1]))
-    right = max(left + 1, min(width, flat[2]))
-    bottom = max(top + 1, min(height, flat[3]))
+    left, top = max(0, flat[0]), max(0, flat[1])
+    right, bottom = min(width, flat[2]), min(height, flat[3])
+    if right <= left or bottom <= top:
+        return None
     return left, top, right, bottom
 
 
@@ -114,78 +107,37 @@ class OcrHandlers:
         返回行级数据（文本 + 框 + 译文），供前端做预览与覆盖渲染。
         译文按行翻译：整段送出去会让模型重排语序，覆盖回原框时对不上位置。
         """
-        import numpy as np  # noqa: PLC0415
-        from PIL import Image  # noqa: PLC0415
-
-        from voxsub.ocr import RapidOcrEngine  # noqa: PLC0415
-
+        import numpy as np
+        from PIL import Image, ImageOps
+        from voxsub.config_store import ConfigStore
+        config = dict(ConfigStore().load())
+        pair = str(config.get("lang_pair") or "auto-zh").split("-", 1)
+        source = str(args.get("source") or pair[0])
+        target = str(args.get("target") or (pair[1] if len(pair) > 1 else "zh"))
         image_path = Path(str(args.get("path", "")))
         with Image.open(image_path) as handle:
-            frame = np.asarray(handle.convert("RGB"))
+            if handle.width * handle.height > 40_000_000:
+                raise ValueError("图片超过4000万像素，请裁剪后重试")
+            frame = np.asarray(ImageOps.exif_transpose(handle).convert("RGB"))
+        result = self._ocr_session().recognize(frame, config, source=source, target=target,
+            translate=str(args.get("translate", True)).lower() != "false", live=args.get("live") is True)
+        return {**result, "sourcePath": str(image_path)}
 
-        import time  # noqa: PLC0415
+    def _ocr_session(self):
+        from voxsub.ocr_session import OcrSession
+        with self._lock:
+            if getattr(self, "_ocr_runtime", None) is None:
+                # OCR translation owns its configuration/runtime independently;
+                # do not borrow a concurrently-changing audio model instance.
+                self._ocr_runtime = OcrSession()
+            return self._ocr_runtime
 
-        started = time.monotonic()
-        # 引擎必须在本次请求结束时回收（工作单 §3.4：OCR 独立运行时必须独立回收）。
-        #
-        # 此前这里 `engine = RapidOcrEngine()` 之后就再没人管它 —— 每做一次识别就
-        # 留下一组加载好的 ONNX 会话（旧版 RapidOcrEngine 连 close() 都没有，
-        # 于是泄漏是静默的）。`try/finally` 是**最小正确修复**：不改复用语义
-        # （仍然一次请求一个引擎），只是保证每次都用完放掉。
-        #
-        # 刻意不做实例复用：工作单说"第一阶段优先正确性，不为减少少量重复加载
-        # 引入复杂资源池"。要复用要单独一轮，并且得先证明复用不会让 GPU 回退状态
-        # 跨请求串味。
-        engine = RapidOcrEngine()
-        try:
-            result = engine.recognize(frame)
-        finally:
-            release = getattr(engine, "close", None)
-            if callable(release):
-                try:
-                    release()
-                except Exception as error:  # noqa: BLE001 - 回收失败不该丢掉识别结果
-                    print(f"[ocr] 引擎回收失败: {error}", file=sys.stderr)
-        ocr_ms = int((time.monotonic() - started) * 1000)
-
-        raw_lines = list(getattr(result, "lines", ()) or ())
-        lines = []
-        for line in raw_lines:
-            # OcrBox 是带 left/top/right/bottom 的对象，不是可迭代序列
-            lines.append({
-                "text": str(getattr(line, "text", "")),
-                "box": _box_to_list(getattr(line, "box", None)),
-                "translation": "",
-            })
-
-        # 翻译（可选）：逐行送，避免语序重排导致框位错配
-        translate_ms = 0
-        translator = self._translator()
-        if translator is not None and str(args.get("translate", True)).lower() != "false":
-            source = str(args.get("source", "auto"))
-            target = str(args.get("target", "zh"))
-            started = time.monotonic()
-            for item in lines:
-                if not item["text"].strip():
-                    continue
-                try:
-                    item["translation"] = str(
-                        translator.translate(item["text"], source, target) or "")
-                except Exception as error:  # noqa: BLE001 - 单行失败不丢整张
-                    item["translation"] = ""
-                    print(f"[ocr] 行翻译失败: {error}", file=sys.stderr)
-            translate_ms = int((time.monotonic() - started) * 1000)
-
-        return {
-            "text": "\n".join(item["text"] for item in lines),
-            "translation": "\n".join(item["translation"] for item in lines),
-            "lines": lines,
-            "ocrElapsedMs": ocr_ms,
-            "translateElapsedMs": translate_ms,
-            "width": int(frame.shape[1]),
-            "height": int(frame.shape[0]),
-            "sourcePath": str(image_path),
-        }
+    def _cmd_ocr_release(self, args: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            runtime, self._ocr_runtime = getattr(self, "_ocr_runtime", None), None
+        if runtime is not None:
+            runtime.close()
+        return {"released": True}
 
     def _cmd_render_ocr_image(self, args: dict[str, Any]) -> dict[str, Any]:
         """把译文画回原图，生成「译后图片」（Qt 版 render_translated_image 的等价实现）。
@@ -196,22 +148,34 @@ class OcrHandlers:
           · 文字颜色按背景亮度在浅/深之间二选一
           · 圆角矩形填充 + 内缩绘制文字
         """
-        from PIL import Image, ImageDraw, ImageFont  # noqa: PLC0415
+        from PIL import Image, ImageOps  # noqa: PLC0415
 
         source_path = Path(str(args.get("source", "")))
-        target_path = Path(str(args.get("target", "")))
+        target_value = str(args.get("target") or "")
+        cache = None
+        if target_value:
+            target_path = Path(target_value)
+        else:
+            from voxsub.ocr_cache import OcrImageCache, resolve_ocr_cache_root
+            from voxsub.config_store import ConfigStore
+            config = dict(ConfigStore().load())
+            cache = OcrImageCache(resolve_ocr_cache_root(ConfigStore()), limit=int(config.get("ocr_cache_limit", 15)))
+            target_path = cache.allocate("translated", ".png")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         raw = args.get("lines") or []
 
         with Image.open(source_path) as handle:
-            canvas = handle.convert("RGB").copy()
+            canvas = ImageOps.exif_transpose(handle).convert("RGB").copy()
 
         if not raw:
             canvas.save(target_path)
+            if cache is not None:
+                cache.finalize("translated", target_path)
             return {"path": str(target_path), "lines": 0}
 
-        draw = ImageDraw.Draw(canvas)
         width, height = canvas.size
         painted = 0
+        truncated = 0
 
         for item in raw:
             text = str(item.get("translation") or "").strip()
@@ -225,33 +189,17 @@ class OcrHandlers:
             background = _sample_background(canvas, (left, top, right, bottom))
             text_color = (17, 24, 39) if _luminance(background) >= 150 else (249, 250, 251)
 
-            radius = min(7, (bottom - top) // 3)
-            draw.rounded_rectangle((left, top, right - 1, bottom - 1),
-                                   radius=max(0, radius), fill=background)
-
-            # 字号以框高为基准，逐级缩小直到文字能放进框内
-            size = max(8, int((bottom - top) * 0.68))
-            font = _load_font(size)
-            inset = max(2, (bottom - top) // 8)
-            while size > 8:
-                measured = draw.textbbox((0, 0), text, font=font)
-                if (measured[2] - measured[0]) <= (right - left - 2 * inset):
-                    break
-                size -= 1
-                font = _load_font(size)
-
-            draw.multiline_text(
-                (left + inset, top + inset),
-                text,
-                font=font,
-                fill=text_color,
-                spacing=max(1, size // 5),
-            )
+            from voxsub.ocr_layout import paint_translation
+            truncated += int(paint_translation(canvas, (left, top, right, bottom), text,
+                                               background, text_color, _load_font))
             painted += 1
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         canvas.save(target_path)
-        return {"path": str(target_path), "lines": painted, "width": width, "height": height}
+        if cache is not None:
+            cache.finalize("translated", target_path)
+        return {"path": str(target_path), "lines": painted, "width": width, "height": height,
+                "truncatedLines": truncated}
 
     def _cmd_ocr_translate(self, pipeline: Any, args: dict[str, Any]) -> dict[str, Any]:
         """把已识别的文本交给当前翻译配置。
@@ -274,18 +222,11 @@ class OcrHandlers:
 
     def _cmd_ocr_cache_dir(self, args: dict[str, Any]) -> dict[str, Any]:
         """OCR 临时图片目录（译后图与截图落盘位置，供界面拼输出路径）。"""
-        try:
-            from voxsub.ocr_cache import resolve_ocr_cache_root  # noqa: PLC0415
-
-            path = resolve_ocr_cache_root()
-            path.mkdir(parents=True, exist_ok=True)
-            return {"path": str(path)}
-        except Exception as error:  # noqa: BLE001 - 缓存目录不可用时给明确兜底
-            print(f"[ocr] 缓存目录解析失败，改用兜底路径: {error}", file=sys.stderr)
-        local = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        fallback = Path(local) / "VoxSub" / "cache" / "ocr"
-        fallback.mkdir(parents=True, exist_ok=True)
-        return {"path": str(fallback), "fallback": True}
+        from voxsub.ocr_cache import resolve_ocr_cache_root
+        from voxsub.config_store import ConfigStore
+        path = resolve_ocr_cache_root(ConfigStore())
+        path.mkdir(parents=True, exist_ok=True)
+        return {"path": str(path)}
 
     def _cmd_copy_file(self, args: dict[str, Any]) -> dict[str, Any]:
         """复制文件（导出译后图片等）。目标已存在时覆盖。"""

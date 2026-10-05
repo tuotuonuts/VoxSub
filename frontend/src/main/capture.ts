@@ -13,6 +13,8 @@ import { BrowserWindow, desktopCapturer, screen } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { bestDisplay, intersect, thumbnailRect, virtualBounds } from "../shared/ocr-geometry";
+import { randomUUID } from "node:crypto";
 
 export interface SelectionArea {
   x: number;
@@ -28,14 +30,18 @@ export interface CaptureResult {
   scaleFactor: number;
 }
 
+let activeSelector: BrowserWindow | null = null;
+export function cancelScreenSelection(): void {
+  const selector = activeSelector;
+  activeSelector = null;
+  if (selector && !selector.isDestroyed()) selector.destroy();
+}
+
 /** 截取指定区域并写入临时 PNG，返回路径。 */
 export async function captureRegion(area: SelectionArea): Promise<CaptureResult | null> {
-  const display = screen.getDisplayNearestPoint({
-    x: Math.round(area.x),
-    y: Math.round(area.y),
-  });
+  const display = bestDisplay(area, screen.getAllDisplays());
+  if (!display) return null;
   const scaleFactor = display.scaleFactor || 1;
-
   const thumbnailSize = {
     width: Math.round(display.bounds.width * scaleFactor),
     height: Math.round(display.bounds.height * scaleFactor),
@@ -46,34 +52,22 @@ export async function captureRegion(area: SelectionArea): Promise<CaptureResult 
     thumbnailSize,
   });
   const source =
-    sources.find((s) => s.display_id === String(display.id)) ?? sources[0];
+    sources.find((s) => s.display_id === String(display.id));
   if (!source) return null;
 
   const full = source.thumbnail;
   const size = full.getSize();
 
-  // 逻辑坐标 → 物理像素
-  const rect = {
-    x: Math.round((area.x - display.bounds.x) * scaleFactor),
-    y: Math.round((area.y - display.bounds.y) * scaleFactor),
-    width: Math.round(area.width * scaleFactor),
-    height: Math.round(area.height * scaleFactor),
-  };
-
-  const clamped = {
-    x: Math.max(0, Math.min(rect.x, size.width - 1)),
-    y: Math.max(0, Math.min(rect.y, size.height - 1)),
-    width: Math.max(1, Math.min(rect.width, size.width - Math.max(0, rect.x))),
-    height: Math.max(1, Math.min(rect.height, size.height - Math.max(0, rect.y))),
-  };
-
+  // Electron may return a thumbnail smaller than requested: use actual dimensions.
+  const clamped = thumbnailRect(area, display.bounds, size);
+  if (!clamped) return null;
   const cropped = full.crop(clamped);
   const dir = path.join(os.tmpdir(), "voxsub-ocr");
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `capture-${Date.now()}.png`);
+  const file = path.join(dir, `capture-${randomUUID()}.png`);
   fs.writeFileSync(file, cropped.toPNG());
 
-  return { path: file, area: clamped, scaleFactor };
+  return { path: file, area: intersect(area, display.bounds)!, scaleFactor };
 }
 
 /**
@@ -81,8 +75,9 @@ export async function captureRegion(area: SelectionArea): Promise<CaptureResult 
  * 实现方式：一个覆盖全部显示器的透明窗，内部 HTML 负责拖拽绘制矩形。
  */
 export async function pickScreenArea(parent: BrowserWindow | null): Promise<SelectionArea | null> {
-  const primary = screen.getPrimaryDisplay();
-  const bounds = primary.bounds;
+  cancelScreenSelection();
+  const bounds = virtualBounds(screen.getAllDisplays().map(display => display.bounds));
+  const parentWasVisible = Boolean(parent && !parent.isDestroyed() && parent.isVisible());
 
   const selector = new BrowserWindow({
     x: bounds.x,
@@ -106,28 +101,35 @@ export async function pickScreenArea(parent: BrowserWindow | null): Promise<Sele
     },
   });
 
+  activeSelector = selector;
   selector.setAlwaysOnTop(true, "screen-saver");
 
-  // 主窗必须先让出画面，否则截图会带上自身的虚影。
-  // 隐藏后等一帧 DWM 合成完成，这是原 Qt 版踩过的坑。
-  if (parent) parent.hide();
-  await new Promise((resolve) => setTimeout(resolve, 220));
-
-  await selector.loadFile(path.join(__dirname, "..", "renderer", "selector.html"));
-  selector.showInactive();
-  selector.focus();
-
-  const area = await new Promise<SelectionArea | null>((resolve) => {
-    const onResult = (_e: unknown, payload: SelectionArea | null) => {
-      resolve(payload);
-    };
-    selector.webContents.ipc.once("selector:result", onResult);
-    selector.once("closed", () => resolve(null));
-  });
-
-  selector.destroy();
-  if (parent) parent.show();
-  return area;
+  try {
+    if (parentWasVisible) parent!.hide();
+    await new Promise(resolve => setTimeout(resolve, 220));
+    if (selector.isDestroyed()) return null;
+    // Register before showing/loading: fast cancellation must not be lost.
+    const result = new Promise<SelectionArea | null>(resolve => {
+      selector.webContents.ipc.once("selector:result", (_event, payload: SelectionArea | null) => resolve(payload));
+      selector.once("closed", () => resolve(null));
+    });
+    await selector.loadFile(path.join(__dirname, "..", "renderer", "selector.html"));
+    if (selector.isDestroyed()) return null;
+    selector.showInactive();
+    selector.focus(); // Interactive picker only, never invoked by silent tests.
+    const area = await result;
+    if (!area || Object.keys(area).length !== 4) return null;
+    const display = bestDisplay(area, screen.getAllDisplays());
+    // A mixed-DPI cross-screen area is clipped to its dominant screen.
+    return display ? intersect(area, display.bounds) : null;
+  } catch (error) {
+    if (selector.isDestroyed()) return null;
+    throw error;
+  } finally {
+    if (activeSelector === selector) activeSelector = null;
+    if (!selector.isDestroyed()) selector.destroy();
+    if (parentWasVisible && parent && !parent.isDestroyed()) parent.showInactive();
+  }
 }
 
 /**
@@ -165,10 +167,14 @@ export function createOverlayForArea(area: SelectionArea): BrowserWindow {
 
   // 时序：必须先显示再设捕获排除（Electron 44 实测结论）
   win.once("ready-to-show", () => {
+    if (win.isDestroyed()) return;
     win.showInactive();
     win.setContentProtection(true);
   });
 
-  void win.loadFile(path.join(__dirname, "..", "renderer", "ocr-overlay.html"));
+  void win.loadFile(path.join(__dirname, "..", "renderer", "ocr-overlay.html")).catch(() => {
+    // Closing the failed overlay also stops its owning live session.
+    if (!win.isDestroyed()) win.destroy();
+  });
   return win;
 }

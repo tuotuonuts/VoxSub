@@ -77,6 +77,7 @@ export const CMD = {
   renderOcrImage: "render_ocr_image",
   copyFile: "copy_file",
   ocrCacheDir: "ocr_cache_dir",
+  ocrRelease: "ocr_release",
 
   // 旧版迁移
   detectLegacy: "detect_legacy",
@@ -272,6 +273,11 @@ export interface OcrResult {
   height?: number;
   /** 识别源图路径：预览切到「原图」时用它 */
   sourcePath: string;
+  failedLines?: number;
+  untranslatedLines?: number;
+  ocrBackend?: string;
+  ocrModelId?: string;
+  unchanged?: boolean;
   ocrElapsedMs?: number;
   translateElapsedMs?: number;
 }

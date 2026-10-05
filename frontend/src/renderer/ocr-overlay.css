@@ -37,6 +37,7 @@ body {
   font-weight: 500;
   line-height: 1.25;
   overflow-wrap: anywhere;
+  overflow: hidden;
   /* 覆盖框之间不重叠由 JS 保证，这里只负责呈现 */
 }
 

@@ -422,7 +422,7 @@ function changesLanguageModels(command: CommandName, args: unknown): boolean {
   if ([CMD.setAsrModel, CMD.setStt, CMD.setTranslator].some(value => value === command)) return true;
   if (command !== CMD.setConfig || !args || typeof args !== "object") return false;
   const updates = (args as { updates?: Record<string, unknown> }).updates ?? {};
-  return ["asr_model_id", "translate_model_id", "translate_tier", "stt_provider", "stt_model", "translate_model"]
+  return ["asr_model_id", "ocr_model_id", "translate_model_id", "translate_tier", "stt_provider", "stt_model", "translate_model"]
     .some(key => key in updates);
 }
 

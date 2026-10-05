@@ -21,6 +21,17 @@ _ASR_CONTRACTS = {
 }
 
 
+# Declared per-weight contracts, not the framework's multilingual model family.
+# PP-OCRv6 Tiny excludes Japanese; no v6 unified tier includes Korean.
+# v5 document stays at the narrower currently integrated/catalogued contract.
+_OCR_CONTRACTS = {
+    "rapidocr-v6-small": ("zh", "en", "ja"),
+    "rapidocr-v6-tiny": ("zh", "en"),
+    "rapidocr-v6-medium": ("zh", "en", "ja"),
+    "rapidocr-v5-server": ("zh", "en"),
+}
+
+
 def build_options(asr_languages: Iterable[str], pairs: Iterable[tuple[str, str]],
                   auto_languages: Iterable[str] = ()) -> dict:
     """Intersect only sources; targets remain directional translator outputs."""
@@ -65,9 +76,9 @@ def language_capabilities(config: Mapping, *, mode: str = "a",
     from voxsub.model_catalog import get_model
 
     if mode == "d":
-        # OCR has no ASR dependency; its text routing shares the four-language guard.
-        explicit = tuple(code for code in LANGUAGE_NAMES if code != "auto")
-        automatic = ()
+        model = get_model(str(config.get("ocr_model_id") or "ocr-rapidocr-v6-small-builtin"))
+        explicit = _OCR_CONTRACTS.get(model.runtime if model is not None and model.task == "ocr" else "", ())
+        automatic = ()  # OCR can recognize Latin languages outside current translation routing.
     elif str(config.get("stt_provider") or "local") == "cloud":
         # Cloud adapter exposes the application's four-language routing contract.
         explicit = tuple(code for code in LANGUAGE_NAMES if code != "auto")

@@ -1,3 +1,12 @@
+## OCR 前后端深度修复 / 研究与静默验收（2026-10-05 UTC）
+
+- 打通Electron实时OCR识别/翻译/覆盖链路，所选模型/置信度生效；单任务背压、epoch隔离、实时实例/精确帧缓存/有界翻译缓存、失败退避与stop释放。
+- 修复DIP/实际thumbnail、虚拟桌面副屏负坐标/错源、同页竞态/导出源、EXIF/越界布局、配置缓存目录、语言能力与MT配置失效；新增公共组件仅识别/重试，不伪导出/伪成功。
+- 研究LunaTranslator/Translumo/PowerToys/Text Grab/Pot/ScreenTranslator/DeepL/RapidOCR/PaddleOCR；采用适合离线普通设备的保守方案，未默认多模型或转云。
+- Python安全全量1216 passed/8 skipped/7 deselected/1既有xfail；前端check/build，OCR运行逻辑21项/捕获fixture5项；真实已装Small+OPUS CPU 7个合成场景、导出与limit2缓存PASS。
+- 真实CPU新帧仍2.5–3.9秒；native多屏/捕获排除/绘制、productionstdio、GPU/其它OCR型号/云/准确率/长视频/安装版/CI NOT_RUN。候选缓存落盘偏差与影响不确定性已披露，不宣称全程隔离。
+- 报告docs/OCR_RESEARCH_AND_DESIGN.md、OCR_DEEP_ACCEPTANCE.md及EVIDENCE.json；本地commit，不自动push。
+
 ## 实时识别＋翻译延迟第一轮优化
 
 - 活动句稳定草稿、自适应节流、最终句优先与积压保护；同句精确草稿复用，配置/模型/上下文/跨句隔离；shared组件统一主窗与浮窗译文保留，各实时档位开关独立。

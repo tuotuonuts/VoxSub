@@ -387,3 +387,12 @@ def export_report() -> str: ...           # 纯文本报告(诊断页一键导�
 - "说一句翻一句"句子级节奏，非逐词；翻译预取使感知延迟 ≈ 识别延迟 + 400ms
 - 云 STT 与云翻译仅允许用户显式配置的 OpenAI 兼容端点，凭据分开保存在本地 config；云 STT 只上传已完成的语音片段
 - 默认音频仅存在于内存流水线；只有用户明确打开同传录音时才本地落盘（C 模式仅处理用户主动导入的文件）
+
+
+## Electron OCR 当前链路（2026-10-05 UTC）
+
+旧Qt OCR workspace/worker说明只作为历史。当前D页：renderer/views/ocr.ts（公共组件、请求/页面生命周期）→ preload主窗owner API → main/capture.ts（虚拟桌面单屏裁切、实际thumbnail）/main/ocr-live.ts（单在途、epoch、退避）→ stdio ocr_recognize → backend/handlers/ocr.py → voxsub/ocr_session.py → RapidOcrEngine + 独立OcrTranslationService → ocr:translated → ocr-overlay.ts（像素到DIP、2500ms截止）。
+
+静态识别每次释放OCR引擎；实时复用一个引擎；ocr_release移除并关闭OCR/MT/cache，backend shutdown同样回收。图片导出使用ocr_layout.py独立tile，不越框，尊重ConfigStore缓存根/上限。精确帧缓存仅单条2秒、失败不缓存；行缓存使用既有512条有界服务，不借并行音频模型。禁翻译不加载MT。所有新增IPC字段与ocr_release登记contracts/commands.json；日志新增事件不存正文。
+
+语言源是当前OCR合同与MT方向的兼容子集，目标按MT能力，未知OCR不猜；v6 Tiny中英、Small/Medium中英日。当前跨屏仅裁到主要单屏，不是拼图；相交块保守跳过，不做复杂版式恢复。研究与验收边界见docs/OCR_RESEARCH_AND_DESIGN.md、OCR_DEEP_ACCEPTANCE.md。

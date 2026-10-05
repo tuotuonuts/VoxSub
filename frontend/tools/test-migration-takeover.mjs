@@ -84,7 +84,7 @@ function harness() {
         if (name === 'node:child_process') return { spawn };
         if (name === 'node:readline') return readline;
         if (name === 'node:path') return path;
-        if (name === './capture') return {};
+        if (name === './capture') return {cancelScreenSelection(){}};
         if (name.startsWith('.')) return load(path.resolve(path.dirname(file), name + '.ts'));
         return createRequire(import.meta.url)(name);
       } });

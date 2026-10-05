@@ -54,6 +54,7 @@ const LABELS: Record<CommandName, string> = {
   render_ocr_image: "生成翻译图片",
   copy_file: "保存文件",
   ocr_cache_dir: "查询图片缓存位置",
+  ocr_release: "释放图片翻译资源",
   detect_legacy: "查找旧版数据",
   plan_migration: "准备数据迁移",
   start_migration: "迁移数据",

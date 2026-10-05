@@ -73,8 +73,10 @@ const api = {
     /** 框选屏幕区域，返回截图的临时路径。 */
     selectArea: () => ipcRenderer.invoke("ocr:select-area"),
     /** 开始实时区域 OCR，返回区域信息或 null。 */
-    startLiveRegion: () => ipcRenderer.invoke("ocr:start-live-region"),
+    startLiveRegion: (languages: {source: string; target: string}) => ipcRenderer.invoke("ocr:start-live-region", languages),
+    updateLanguages: (languages: {source: string; target: string}) => ipcRenderer.invoke("ocr:update-languages", languages),
     stopLiveRegion: () => ipcRenderer.invoke("ocr:stop-live-region"),
+    onLiveStatus: (handler: (payload: unknown) => void) => subscribe("ocr:live-status", handler),
   },
 
   /** 框选窗专用：把用户拖出的矩形交回主进程。 */

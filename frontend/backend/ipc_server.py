@@ -557,8 +557,15 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             if translator is not None:
                 return translator
 
-        if getattr(self, "_ocr_translator", None) is not None:
-            return self._ocr_translator
+        from voxsub.config_store import ConfigStore
+        from voxsub.ocr import translator_config_signature
+        config = dict(ConfigStore().load())
+        signature = translator_config_signature(config)
+        cached = getattr(self, "_ocr_translator", None)
+        if cached is not None and getattr(self, "_ocr_translator_signature", None) == signature:
+            return cached
+        self._ocr_translator = None
+        self._close_quietly(cached, label="旧 OCR 翻译器")
 
         try:
             from voxsub.pipeline import _load_translator  # noqa: PLC0415
@@ -583,6 +590,7 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             translator = result[0] if isinstance(result, tuple) else result
             if translator is not None:
                 self._ocr_translator = translator
+                self._ocr_translator_signature = signature
             return translator
         except Exception as error:  # noqa: BLE001 - 失败只降级，不阻断识别
             print(f"[ocr] 翻译器不可用，仅返回识别结果: {error}", file=sys.stderr)
@@ -596,6 +604,8 @@ class BackendService(SessionHandlers, ModelsHandlers, MigrationHandlers, OcrHand
             # A false result means active workers still own runtime resources.
             pipeline = self._pipeline
             ocr_translator, self._ocr_translator = getattr(self, "_ocr_translator", None), None
+
+        self._close_quietly(getattr(self, "_ocr_runtime", None), label="OCR runtime")
 
         # OCR 自建的翻译器**必须自己收**（工作单 §3.4：一个资源只有一个负责人）。
         # 以前的写法是 `if pipeline is None: return` —— 而 OCR 是独立工作区，
@@ -649,7 +659,7 @@ for _name in (
     "delete_model_download", "uninstall_model", "model_dir", "get_config", "set_config",
     "run_self_check", "export_diagnostics", "recent_logs",
     "developer_mode", "diagnostic_snapshot", "diagnostic_session",
-    "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir",
+    "clear_logs", "log_path", "import_models", "release_notes", "render_ocr_image", "copy_file", "ocr_cache_dir", "ocr_release",
     "detect_legacy", "plan_migration", "start_migration", "verify_copy",
     "write_model_snapshot", "cleanup_migrated_source", "migration_decision",
     # 后台作业查询/取消只是读执行器状态，不该为此拉起推理栈。

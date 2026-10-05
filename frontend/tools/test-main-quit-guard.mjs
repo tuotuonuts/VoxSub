@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { ROOT, createReporter, importShared } from './esbuild-ts.mjs';
 const { check, finish } = createReporter('Main quit owner isolation (fake Electron)');
 const layout = await importShared('src/shared/window-layout.ts');
+const ocrLive = await importShared('src/main/ocr-live.ts', {bundle: true});
 const handlers = new Map();
 const events = new Map();
 const windows = [];
@@ -44,10 +45,12 @@ const context = vm.createContext({
     if (name === '../shared/window-layout') return layout;
     if (name === 'node:path') return path;
     if (name === 'node:fs') return new Proxy({}, { get() { throw Error('Real filesystem access forbidden'); } });
-    if (name === './backend' || name === './capture' || name === './shortcuts') return {};
+    if (name === './ocr-live') return ocrLive;
+    if (name === './capture') return {cancelScreenSelection(){}};
+    if (name === './backend' || name === './shortcuts') return {};
     throw Error(`Unexpected import: ${name}`);
   },
-  fakeBridge: { dispose: () => { disposals++; } },
+  fakeBridge: { isRunning: () => false, dispose: () => { disposals++; } },
 });
 vm.runInContext(compile('src/main/main.ts') + '\nregisterIpc(); mainWindow = createMainWindow(); bridge = fakeBridge;', context);
 const setBusy = (...args) => handlers.get('app:set-busy')({}, ...args);

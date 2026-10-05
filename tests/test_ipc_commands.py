@@ -721,6 +721,9 @@ class TestOcrResourceOwnership:
         released: list[str] = []
 
         class _ExplodingEngine:
+            def __init__(self, **kwargs):
+                pass
+
             def recognize(self, _frame):  # noqa: ANN001
                 raise RuntimeError("识别炸了")
 
@@ -747,6 +750,9 @@ class TestOcrResourceOwnership:
         released: list[str] = []
 
         class _Engine:
+            def __init__(self, **kwargs):
+                pass
+
             def recognize(self, _frame):  # noqa: ANN001
                 from types import SimpleNamespace
 

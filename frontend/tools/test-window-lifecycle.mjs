@@ -52,7 +52,7 @@ function makeRuntime({headless=false}={}) {
     const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
     const req=(name)=>{
       if(name==='electron')return electron;
-      if(name==='./capture')return {};
+      if(name==='./capture')return {cancelScreenSelection(){}};
       if(name.startsWith('.'))return load(path.relative(ROOT,path.resolve(path.dirname(full),name+'.ts')));
       if(name==='node:path')return path;
       if(name==='node:fs')return {existsSync:()=>false};
@@ -67,8 +67,8 @@ function makeRuntime({headless=false}={}) {
   const suffix=`\nglobalThis.api={createMain:()=>mainWindow=createMainWindow(),createOverlay:()=>overlayWindow=createOverlayWindow(),createTray,getMain:()=>mainWindow,getOverlay:()=>overlayWindow,quit:requestQuit,bridge:()=>{const b=new BackendBridge();wireBackendEvents(b);return b;}};registerIpc();`;
   const code=ts.transpileModule(readFileSync(mainFile,'utf8')+suffix,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   context.exports={};context.__dirname=path.dirname(mainFile);context.require=(name)=>{
-    if(name==='electron')return electron;if(name==='./capture')return {};if(name==='node:path')return path;if(name==='node:fs')return {};
-    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');throw Error(name);
+    if(name==='electron')return electron;if(name==='./capture')return {cancelScreenSelection(){}};if(name==='node:path')return path;if(name==='node:fs')return {};
+    if(name==='../shared/window-layout')return load('src/shared/window-layout.ts');if(name==='./backend')return load('src/main/backend.ts');if(name==='./shortcuts')return load('src/main/shortcuts.ts');if(name==='./ocr-live')return load('src/main/ocr-live.ts');throw Error(name);
   };
   vm.runInContext(code,context);
   return {api:context.api,appEvents,warnings,handlers,windows,boot:()=>ready(),ipc:(name,...args)=>handlers.get(name)({},...args)};
