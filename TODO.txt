@@ -1,3 +1,10 @@
+[本轮 Quality CI 修复 2026-10-05]
+[x] 实际Python3.11复现并修复diagnostics f-string语法；发布CLI双流UTF-8、导入不改宿主流，工作流编码明确，所有原门禁保留。
+[x] 新增8项CI回归；复验发现真实PID碰撞测试偶发失败，隔离进程元数据并新增真实进程族提升去重回归，生产录音逻辑不变。
+[x] 全新检出/锁依赖：3.11与3.12各1139 passed/8 skipped/7 deselected/1既有xfail/0失败；IPC72 passed，发布60 passed/1既有xfail，集成8 passed/5 skipped。
+[x] 全新npm ci、完整check/build、精确构建后git status为空；全程静默；验收报告、备份与本地commit。
+[ ] NOT_RUN：GitHub新提交CI、真实音频/推理、可见UI、打包/安装版；未push。
+[ ] 独立待办：npm audit报告3个既有依赖漏洞（1 moderate/2 high），本轮不自动升级；既有安装脚本输出名字面量strict xfail未改。
 [本轮 2026-10-05 详细硬件型号画像]
 [x] 真实CPU名、主板/每条内存/DDR/速率、多显卡/EDID显示器/磁盘/声卡/网卡与OS/BIOS/驱动；未知诚实显示，不猜规格。
 [x] 单一只读隐私采集器、隐藏限时/分类状态/缓存与环境快照复用，契约同步；公共KeyValueRow多行复用/中英文/生命周期守卫。

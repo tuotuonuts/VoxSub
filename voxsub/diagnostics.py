@@ -571,7 +571,7 @@ def export_report(results: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ..
         if item.get("suggestion") and item["suggestion"] != "无需处理":
             lines.append(f"       建议: {item['suggestion']}")
     lines.append("-" * 56)
-    lines.append(f"共 {len(items)} 项: {sum(1 for i in items if i.get("status") == "ok")} ok / {n_warn} warn / {n_fail} fail")
+    lines.append(f"共 {len(items)} 项: {sum(1 for i in items if i.get('status') == 'ok')} ok / {n_warn} warn / {n_fail} fail")
     return "\n".join(lines) + "\n"
 
 

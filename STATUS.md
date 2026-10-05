@@ -1,3 +1,10 @@
+## Quality CI 兼容性修复（2026-10-05）
+
+- 修复 diagnostics f-string 的 Python 3.11 语法兼容性及发布 CLI 的 Windows CP1252 中文输出崩溃；工作流显式 UTF-8，保留五项检查与全部门禁。
+- 新增8项CI回归，隔离既有进程窗口去重测试的真实PID碰撞，再补进程族去重测试；不修改生产录音逻辑、不放宽断言。
+- 全新检出/锁定3.11依赖验收：Python3.11与3.12各1139 passed/8 skipped/7 deselected/1既有xfail/0失败；IPC72 passed，发布60 passed/1既有xfail，集成8 passed/5 skipped；npm ci/check/build通过、构建后源码干净。
+- 缺模型/样本与符号链接权限跳过不计通过；npm ci报告3个依赖漏洞留待独立处置。本轮静默、未触碰用户配置/模型/历史/日志、未打包/推送；GitHub新提交CI NOT_RUN。
+- 报告docs/CI_QUALITY_FIX_ACCEPTANCE.md，备份.backups/ci-quality-fix-20261005-152654；仓库外ci-quality-37239162634记录原始故障、最终结果与DELIVERY.json；本轮本地commit。
 ## 详细硬件型号画像（2026-10-05）
 
 - CPU显示真实产品名，不再Family/Model架构代号；主板、每条内存/DDR/速率、所有显示适配器/显示器、磁盘、声卡、网卡、OS/BIOS/驱动，未知参数明确状态，不猜芯片组/显存/品牌。

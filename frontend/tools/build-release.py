@@ -1039,7 +1039,20 @@ def manifest_only(root: Path = REPO) -> int:
     return 0
 
 
+def _configure_console() -> None:
+    """CLI pipes must support Chinese even on a Windows CP1252 runner.
+
+    Only called by main: importing the build helpers must not mutate the host's
+    capture streams. Preserve streams without reconfigure (e.g. StringIO).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> int:
+    _configure_console()
     parser = argparse.ArgumentParser()
     parser.add_argument("--skip-tests", action="store_true", help="跳过 pytest")
     parser.add_argument("--dir-only", action="store_true", help="只出免安装目录")

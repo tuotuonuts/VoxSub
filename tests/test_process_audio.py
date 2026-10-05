@@ -85,12 +85,28 @@ def test_same_process_children_promote_to_their_root() -> None:
 
 def test_list_capture_targets_deduplicates_pid(monkeypatch) -> None:
     import recap.discovery
+    import psutil
 
     class _Window:
         def __init__(self, pid: int, title: str):
             self.pid, self.title = pid, title
 
     pid = os.getpid() + 10000
+
+    # Fake windows must use fake process metadata too: this PID can collide
+    # with a real WebView/browser process and get promoted to its real parent.
+    class _Proc:
+        def __init__(self, requested_pid):
+            assert requested_pid == pid
+            self.pid = requested_pid
+
+        def name(self):
+            return "Meeting.exe"
+
+        def parent(self):
+            return None
+
+    monkeypatch.setattr(psutil, "Process", _Proc)
     monkeypatch.setattr(recap.discovery, "list_windows", lambda: [
         _Window(pid, "短标题"),
         _Window(pid, "信息更完整的会议窗口"),
@@ -101,6 +117,7 @@ def test_list_capture_targets_deduplicates_pid(monkeypatch) -> None:
     assert len(targets) == 1
     assert targets[0].pid == pid
     assert targets[0].window_title == "信息更完整的会议窗口"
+    assert targets[0].process_name == "Meeting.exe"
 
 
 @pytest.mark.integration
@@ -173,3 +190,34 @@ def test_process_loopback_excludes_other_process_tone() -> None:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+def test_list_capture_targets_deduplicates_promoted_process_family(monkeypatch):
+    """Mock metadata, not the promotion helper, so host dedup stays covered."""
+    import psutil
+    import recap.discovery
+    from types import SimpleNamespace
+
+    class Proc:
+        def __init__(self, pid, parent=None):
+            self.pid = pid
+            self._parent = parent
+
+        def name(self):
+            return "ms-teams.exe" if self._parent is None else "msedgewebview2.exe"
+
+        def parent(self):
+            return self._parent
+
+    host = Proc(100)
+    processes = {200: Proc(200, host), 201: Proc(201, host)}
+    monkeypatch.setattr(psutil, "Process", processes.__getitem__)
+    monkeypatch.setattr(recap.discovery, "list_windows", lambda: [
+        SimpleNamespace(pid=200, title="会议"),
+        SimpleNamespace(pid=201, title="信息更完整的会议窗口"),
+    ])
+    targets = list_capture_targets()
+    assert len(targets) == 1
+    assert targets[0].pid == host.pid
+    assert targets[0].process_name == "msedgewebview2.exe"
+    assert targets[0].window_title == "信息更完整的会议窗口"
