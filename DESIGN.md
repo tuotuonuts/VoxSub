@@ -442,3 +442,7 @@ recognition_language记录hint_applied/auto/hint_unavailable，源结果language
 - 错误：不足内存、超时、模型文件不完整、截断/错误时间戳、worker 异常退出均不得落成功。取消保留已完成字幕，完整输入文件仍由用户持有。不自动切到云端或另一模型。
 - UI：`ui/file-translation-form.ts` 为无 IPC 公共组件；workspace 的连接层与 settings 既有模型目录 owner 分别承接数据，避免多重监听。`utterance` 新增可选 startMs/endMs；重复文字在不同媒体时间不得去重。旧实时事件保持兼容。
 - 分发：轻量 ONNX backend 与 `.venv-speech` / frozen `VoxSubSpeechWorker` 分离；发布构建必须包含 `backend/speech-runtime`，不运行时下载依赖。
+
+### 主页可搜索语言控件（2026-10-05 UTC）
+
+`ui/searchable-select.ts` 为无 store/IPC 的受控公共组合框，复用输入框/按钮；输入仅匹配，显式选项提交，支持 IME、方向键、Escape/Tab、无结果和 disabled。弹出层由组件唯一拥有，使用 top layer 防裁切，关闭/dispose 清理临时 document/window 监听。`language-capabilities.ts` 提供后端矩阵内选项与中英文/代码别名，缓存选项避免字幕更新打断输入；不扩展语言能力，不绕过保存确认、方向验证与运行锁定。验收见 docs/LANGUAGE_SEARCH_ACCEPTANCE.md。

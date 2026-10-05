@@ -370,3 +370,6 @@ Granite 4.0 1B Speech / Index-Echo S2TT 2B 固定版本官方完整下载与 SHA
 Granite 英→中、Index-Echo 中→英/日/西已接入文件生产路线和模型广场。单/双模型公共控件、语言矩阵、双源固定权重下载、独立进程、取消/异常释放、媒体时间戳、导出、诊断、打包门禁已适配。A/B/D 保持原路线，不把受限 CPU 单模型当成实时加速。
 
 真实源码 Pipeline、IPC、冻结组件（含 Index 两窗）通过；Python 1347 passed，前端 check 通过，24 项离屏布局/0 聚焦违规。完整安装包、GPU/NPU、统计质量与长达数小时文件仍 NOT_RUN。详见 docs/SINGLE_MODEL_SPEECH_ACCEPTANCE.md 及同名 EVIDENCE.json。未重启用户实例、未修改用户配置历史；本轮未自行 push。
+
+### 2026-10-05 UTC：主页语言输入匹配＋列表选择
+识别/翻译语言迁移到公共受控 searchable-select，中文名/英文名/代码搜索，仅展示模型方向矩阵内语言；选择后才保存。保留 pending/运行锁/模型切换保护，输入法与字幕刷新不冲掉搜索。前端 check/build、20 项组件用例、实际 Chromium 32 项离屏布局与静默 Python 回归通过。证据与边界：docs/LANGUAGE_SEARCH_ACCEPTANCE.md；无用户配置变更、无音频/可见窗口、未重启现有应用。

@@ -87,8 +87,12 @@ await main.ev(`(async () => {
 
 /** 读当前语言对（用于测试自清理）。 */
 const originalLangs = await main.ev(`(() => {
-  const s = [...document.querySelectorAll('.lang-box select')];
-  return { source: s[0]?.value, target: s[1]?.value };
+  const selected = selector => {
+    const input = document.querySelector(selector); input?.click();
+    const value = input?.closest('.searchable-select').querySelector('[aria-selected="true"]')?.dataset.value;
+    input?.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape'})); return value;
+  };
+  return { source: selected('[data-language-source]'), target: selected('[data-language-target]') };
 })()`);
 
 /**
@@ -138,14 +142,16 @@ const readTierUi = `(() => {
 /** 把主屏语言设成给定值（模拟用户改语言）。 */
 async function setLangs(source, target) {
   return main.ev(`(async () => {
-    const s = [...document.querySelectorAll('.lang-box select')];
-    if (!s[0] || !s[1]) return false;
-    s[0].value = ${JSON.stringify(source)};
-    s[0].dispatchEvent(new Event('change'));
+    const choose = (selector, value) => {
+      const input = document.querySelector(selector);
+      if (!input || input.disabled) return false;
+      input.click();
+      const option = [...input.closest('.searchable-select').querySelectorAll('[role="option"]')].find(el => el.dataset.value === value);
+      option?.click(); return !!option;
+    };
+    if (!choose('[data-language-source]', ${JSON.stringify(source)})) return false;
     await new Promise(r => setTimeout(r, 600));
-    const s2 = [...document.querySelectorAll('.lang-box select')];
-    s2[1].value = ${JSON.stringify(target)};
-    s2[1].dispatchEvent(new Event('change'));
+    if (!choose('[data-language-target]', ${JSON.stringify(target)})) return false;
     await new Promise(r => setTimeout(r, 800));
     return true;
   })()`);

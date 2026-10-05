@@ -10,6 +10,9 @@ import { ROOT } from './esbuild-ts.mjs';
 // Bundle real controls/store/workspace: no copied controller logic, GUI or audio.
 const scratch = mkdtempSync(join(tmpdir(), 'voxsub-language-matrix-'));
 const dom = installMiniDom();
+// Geometry is supplied only by the DOM fixture; behavior below is the production component.
+Object.getPrototypeOf(dom.document.createElement('input')).getBoundingClientRect = () => ({left:20,top:80,bottom:110,width:160});
+dom.window.innerWidth=1000; dom.window.innerHeight=700;
 const listeners = new Set();
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r)); };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -51,16 +54,17 @@ try {
   const src = () => dom.document.querySelector('[data-language-source]');
   const dst = () => dom.document.querySelector('[data-language-target]');
   const hint = () => dom.document.querySelector('[data-language-hint]').textContent;
-  const codes = el => Array.from(el.children).map(o => o.value);
+  const options = el => { if (el.getAttribute('aria-expanded') !== 'true') el.click(); return [...el.closest('.searchable-select').querySelectorAll('[role="option"]')]; };
+  const codes = el => options(el).map(o => o.dataset.value);
   const cta = () => page.element.querySelector('.btn--primary');
-  const change = (el, value) => { el.value = value; el.dispatchEvent(new Event('change')); };
+  const change = (el, value) => { const option = options(el).find(o => o.dataset.value === value); assert.ok(option, 'requested language must be offered'); option.click(); };
 
   await refreshLanguageCapabilities(); await settle(); updateStatus();
   assert.deepEqual(codes(src()), bilingual.sources);
   assert.equal(store.get().languageCompatible, true, 'void successful set_langs must be acknowledged');
   assert.equal(cta().disabled, false);
-  const original = src().children[0]; src().focus(); store.patch({ statusText: 'unrelated' });
-  assert.equal(src().children[0], original); assert.equal(dom.document.activeElement, src());
+  const original = options(src())[0]; src().focus(); store.patch({ statusText: 'unrelated' });
+  assert.equal(options(src())[0], original); assert.equal(dom.document.activeElement, src());
 
   matrix = english;
   await callWithOutcome('set_asr_model', { model_id: 'english' }); await settle(); updateStatus();
@@ -138,7 +142,7 @@ try {
   read = async () => ({ ok: true, data: expanded });
   await refreshLanguageCapabilities(); await settle();
   assert.deepEqual(codes(src()), expanded.sources);
-  assert.ok(Array.from(src().children).some(o => o.value === 'fr' && o.textContent === '法语'));
+  assert.ok(options(src()).some(o => o.dataset.value === 'fr' && o.textContent.includes('法语')));
   change(src(), 'fr'); await settle(); change(dst(), 'zh-hant'); await settle();
   assert.ok(calls.some(c => c.name === 'set_config' && c.args.updates.lang_pair === 'fr-zh-hant'));
   await refreshLanguageCapabilities(); await settle();
@@ -148,5 +152,21 @@ try {
   assert.equal(src().disabled, true); assert.equal(dst().disabled, false);
   assert.match(hint(), /停止/);
   store.patch({ running: false }); await settle(); assert.equal(src().disabled, false);
+  // Search is local-only, preserves drafts across subtitle/log events, and honors directional capabilities.
+  const query = (el, value) => { el.value=value; el.dispatchEvent(new Event('input')); };
+  const beforeSearch = calls.length;
+  query(src(), 'FREN'); store.patch({statusText:'subtitle tick'});
+  assert.equal(src().value, 'FREN'); assert.deepEqual(codes(src()), ['fr']);
+  assert.equal(calls.length, beforeSearch, 'typing must not persist or query the backend');
+  options(src())[0].click(); await settle(); assert.equal(store.get().sourceLang, 'fr');
+  query(dst(), '繁体'); assert.deepEqual(codes(dst()), ['zh-hant']);
+  options(dst())[0].click(); await settle(); assert.equal(store.get().targetLang, 'zh-hant');
+  query(src(), 'unsupported'); assert.deepEqual(codes(src()), []);
+  read = async () => ({ok:true,data:english}); await refreshLanguageCapabilities(); await settle();
+  assert.equal(src().getAttribute('aria-expanded'), 'false', 'model refresh discards stale search');
+  assert.deepEqual(codes(src()), ['en']);
+  store.patch({mode:'c'}); await settle(); store.patch({running:true});
+  assert.equal(src().disabled,true); assert.equal(dst().disabled,true);
+  store.patch({running:false}); await settle();
   console.log('PASS production language controls: direction, preservation, adjustment, pending/failure, stale replies, OCR, reconnect, Start/Stop and focus');
 } finally { page?.dispose(); clean?.(); off?.(); dom.restore(); rmSync(scratch, { recursive: true, force: true }); }

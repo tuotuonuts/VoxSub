@@ -10,6 +10,9 @@ import { store } from "./store";
 type Dict = Record<string, string>;
 
 const EN: Dict = {
+  "输入语言名称或代码": "Type a language name or code",
+  "当前模型没有匹配的语言": "No matching language supported by the current model",
+  "展开或收起语言列表": "Expand or collapse language list",
   "文件翻译方式": "File translation method",
   "识别＋翻译（双模型）": "Recognition + translation (two models)",
   "语音直接翻译（单模型）": "Direct speech translation (one model)",

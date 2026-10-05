@@ -1685,3 +1685,20 @@ body::before {
   .workspace { min-height: 24rem; }
   .ocr-preview { min-height: 8rem; }
 }
+
+/* Searchable choice popup uses Chromium's top layer, outside scroll clipping. */
+.searchable-select { position: relative; min-width: 0; }
+.searchable-select__input { padding-right: 2rem; min-height: 2rem; font-size: 0.8462rem; }
+.searchable-select__toggle { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 1.8rem;
+  border: 0; min-height: 0; padding: 0; background: transparent; color: var(--ink2); cursor: pointer; }
+.searchable-select__toggle:disabled { cursor: not-allowed; opacity: 0.5; }
+.searchable-select__input:disabled { opacity: 0.6; cursor: not-allowed; }
+.searchable-select__popup { position: fixed; inset: auto; margin: 0; padding: 0.3rem;
+  border: 1px solid var(--rule); border-radius: 0.3077rem; background: var(--surface); color: var(--ink);
+  overflow-y: auto; overscroll-behavior: contain; box-shadow: 0 4px 16px color-mix(in srgb, var(--ink) 15%, transparent); }
+.searchable-select__option { display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+  padding: 0.4rem 0.6rem; border-radius: 0.15rem; cursor: pointer; overflow-wrap: anywhere; }
+.searchable-select__option:hover, .searchable-select__option.is-active { background: var(--mark); }
+.searchable-select__option[aria-selected="true"] { font-weight: 600; color: var(--accent); }
+.searchable-select__code { color: var(--ink2); font-size: 0.85em; flex-shrink: 0; }
+.searchable-select__empty { padding: 0.6rem; color: var(--ink2); font-size: 0.9em; }

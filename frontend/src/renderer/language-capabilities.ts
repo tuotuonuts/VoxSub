@@ -1,5 +1,6 @@
 /** Backend-owned language matrix. Source intersection and directional targets. */
-import { h, on } from "./dom";
+import { h } from "./dom";
+import { buildSearchableSelect, type SearchableSelect, type SearchableOption } from "./ui/searchable-select";
 import { CMD } from "./protocol";
 import { callWithOutcome, setLanguageModelListener, store } from "./store";
 import { persistLanguagePair } from "./language-selection";
@@ -23,8 +24,8 @@ export function languageLabel(code: string): string {
 }
 let matrix: LanguageCapabilities | null = null;
 let generation = 0;
-let sourceSelect: HTMLSelectElement | null = null;
-let targetSelect: HTMLSelectElement | null = null;
+let sourceSelect: SearchableSelect | null = null;
+let targetSelect: SearchableSelect | null = null;
 let hint: HTMLElement | null = null;
 let initialized = false;
 let modelChanges = 0;
@@ -38,27 +39,44 @@ export function chooseLanguagePair(meta: LanguageCapabilities, source: string, t
   return [src, targets.includes(target) ? target : targets[0]!];
 }
 
-function renderOptions(select: HTMLSelectElement | null, codes: string[], selected: string): void {
-  if (!select) return;
-  // Keep DOM/focus untouched for irrelevant store updates (logs, subtitles, etc.).
-  const key = JSON.stringify(codes.map(code => [code, languageLabel(code)]));
-  if (select.dataset["languageOptions"] !== key) {
-    select.replaceChildren(...codes.map(code => h("option", { value: code, text: languageLabel(code) })));
-    select.dataset["languageOptions"] = key;
+function languageAliases(code: string): string[] {
+  const aliases = Object.values(matrix?.labels?.[code] ?? {});
+  if (code === "auto") return [...aliases, "自动识别", "Automatic detection"];
+  for (const locale of ["zh", "en"]) {
+    try { aliases.push(new Intl.DisplayNames([locale], { type: "language" }).of(code) ?? code); }
+    catch { /* Unknown registry codes remain searchable by code. */ }
   }
-  select.value = selected;
-  select.disabled = store.get().languagePending || !codes.length;
+  return aliases;
+}
+
+let optionMatrix: LanguageCapabilities | null = null;
+let optionLocale = "";
+const optionCache = new Map<string, SearchableOption[]>();
+function languageOptions(codes: string[]): SearchableOption[] {
+  const locale = currentLanguage();
+  if (optionMatrix !== matrix || optionLocale !== locale) {
+    optionCache.clear(); optionMatrix = matrix; optionLocale = locale;
+  }
+  const key = codes.join(",");
+  let options = optionCache.get(key);
+  if (!options) {
+    options = codes.map(code => ({ value: code, label: languageLabel(code), aliases: languageAliases(code) }));
+    optionCache.set(key, options);
+  }
+  return options;
+}
+
+function renderOptions(select: SearchableSelect | null, codes: string[], selected: string, locked: boolean): void {
+  select?.update(languageOptions(codes),
+    selected, store.get().languagePending || locked || !codes.length);
 }
 
 function syncControls(): void {
   const state = store.get();
-  renderOptions(sourceSelect, matrix?.sources ?? [], state.sourceLang);
-  renderOptions(targetSelect, matrix?.targets[state.sourceLang] ?? [], state.targetLang);
-  if (sourceSelect && state.running && matrix?.sourceLanguageHint === "load_time") sourceSelect.disabled = true;
-  if (state.running && state.mode === "c") {
-    if (sourceSelect) sourceSelect.disabled = true;
-    if (targetSelect) targetSelect.disabled = true;
-  }
+  const fileLocked = state.running && state.mode === "c";
+  const sourceLocked = fileLocked || (state.running && matrix?.sourceLanguageHint === "load_time");
+  renderOptions(sourceSelect, matrix?.sources ?? [], state.sourceLang, sourceLocked);
+  renderOptions(targetSelect, matrix?.targets[state.sourceLang] ?? [], state.targetLang, fileLocked);
   if (hint) hint.textContent = state.languagePending ? tr("正在确认模型支持的语言…") : state.languageNotice ||
     (state.running && matrix?.sourceLanguageHint === "load_time" ? tr("此模型需停止会话后切换识别语言") :
       matrix?.sourceLanguageHint === "unavailable" ? tr("此模型自动判断语种，不支持强制指定识别语言") : "");
@@ -149,30 +167,32 @@ export function initializeLanguageCapabilities(): () => void {
       if (!modelChanges) void refreshLanguageCapabilities();
     }
   });
-  cleanup = () => { unsubscribe(); setLanguageModelListener(null); generation++; initialized = false; modelChanges = 0; };
+  cleanup = () => { sourceSelect?.dispose(); targetSelect?.dispose(); unsubscribe(); setLanguageModelListener(null); generation++; initialized = false; modelChanges = 0; };
   return cleanup;
 }
 
 export function buildLanguageControls(): HTMLElement {
+  sourceSelect?.dispose(); targetSelect?.dispose();
   const box = h("div", { class: "lang-box" });
-  sourceSelect = h("select", { class: "select select--sm", "aria-label": tr("识别语言"), "data-language-source": "" });
-  targetSelect = h("select", { class: "select select--sm", "aria-label": tr("翻译为"), "data-language-target": "" });
-  hint = h("p", { class: "field__hint", role: "status", "data-language-hint": "" });
-  on(sourceSelect, "change", () => {
-    if (!matrix || store.get().languagePending || !matrix.sources.includes(sourceSelect!.value)) return;
-    const pair = chooseLanguagePair(matrix, sourceSelect!.value, store.get().targetLang);
+  const labels = (label: string) => ({ label: tr(label), placeholder: tr("输入语言名称或代码"),
+    empty: tr("当前模型没有匹配的语言"), toggle: tr("展开或收起语言列表") });
+  sourceSelect = buildSearchableSelect(labels("识别语言"), source => {
+    if (!matrix || sourceSelect?.input.disabled || !matrix.sources.includes(source)) return;
+    const pair = chooseLanguagePair(matrix, source, store.get().targetLang);
     if (!pair) return;
     store.patch({ sourceLang: pair[0], targetLang: pair[1], languageNotice: "" });
     syncControls(); void savePair(pair[0], pair[1]);
   });
-  on(targetSelect, "change", () => {
+  targetSelect = buildSearchableSelect(labels("翻译为"), target => {
     const state = store.get();
-    const target = targetSelect!.value;
-    if (!matrix || state.languagePending || !matrix.targets[state.sourceLang]?.includes(target)) return;
+    if (!matrix || targetSelect?.input.disabled || !matrix.targets[state.sourceLang]?.includes(target)) return;
     store.patch({ targetLang: target, languageNotice: "" });
     syncControls(); void savePair(state.sourceLang, target);
   });
-  box.append(h("span", { class: "lang-box__label", text: tr("识别语言") }), sourceSelect,
-    h("span", { class: "lang-box__label", text: tr("翻译为") }), targetSelect, hint);
+  sourceSelect.input.setAttribute("data-language-source", "");
+  targetSelect.input.setAttribute("data-language-target", "");
+  hint = h("p", { class: "field__hint", role: "status", "data-language-hint": "" });
+  box.append(h("span", { class: "lang-box__label", text: tr("识别语言") }), sourceSelect.element,
+    h("span", { class: "lang-box__label", text: tr("翻译为") }), targetSelect.element, hint);
   syncControls(); return box;
 }

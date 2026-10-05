@@ -24,6 +24,7 @@
 | `repository-link.ts` | `buildRepositoryLink` | 安全 GitHub/Hugging Face 仓库图标链接，本地图标不联网；打开回调由页面注入 |
 | `card.ts` | `buildCard` / `buildCardFrame` | 标题与正文卡片；Frame 返回 body 引用供增量填充，保留 section/div 语义 |
 | `controls.ts` | `buildTextInput` | 文本/密码输入，change 提交值；实时 input 事件由调用方绑定 |
+| `searchable-select.ts` | `buildSearchableSelect` | 可输入筛选的受控组合框；中文/英文别名、代码匹配、输入法、键盘选择、顶层弹出定位；候选/文案由调用方注入，无 store/IPC，dispose 清理临时监听 |
 | `controls.ts` | `buildSelect` | 有类型的值/标签列表及初始选择，change 回调可省略 |
 | `controls.ts` | `buildRadioGroup` | 单选项互斥、aria-checked、可选说明徽标；徽标不自动禁用选项 |
 | `controls.ts` | `buildToggleSwitch` | label + checkbox + track + label；支持页面生命周期管理监听 |
