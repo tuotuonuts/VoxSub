@@ -1,3 +1,11 @@
+## 诊断实时日志级别多选（2026-10-05）
+
+- 单选下拉改为公共MultiFilter独立多选按钮，默认全部、可选WARNING+ERROR、允许空选、一键全部恢复；关键词/运行/模型会话取交集，历史与导出一致，选择只留内存。
+- 复用公共FilterChip/样式，aria-pressed/中文English/稳定节点；暂停自动刷新仍受控，手动筛选不跳底，迟到元数据与旧控件不污染新页。
+- 公共UI22项、诊断23项（合计新增17项）及完整前端check/build通过；Python安全1131 passed/6 skipped/17 deselected/1既有xfail/0失败；构建未改写源码。
+- 全程无可见窗口/音频/实际文件清除与导出，未重启用户应用；真实Electron/视觉/音频/安装版/GitHubCI NOT_RUN；本轮本地commit、未push。SenseVoice下载问题未混入本轮。
+- 报告docs/LOG_LEVEL_MULTISELECT_ACCEPTANCE.md，备份.backups/log-level-multi-20261005-160206，外部log-level-multi-20261005/DELIVERY.json。
+
 ## Quality CI 兼容性修复（2026-10-05）
 
 - 修复 diagnostics f-string 的 Python 3.11 语法兼容性及发布 CLI 的 Windows CP1252 中文输出崩溃；工作流显式 UTF-8，保留五项检查与全部门禁。

@@ -28,8 +28,10 @@ export function checkSummary(items: readonly { status: string }[]): "not_run" | 
   if (!items.length) return "not_run";
   return items.every(item => item.status === "ok") ? "ok" : "attention";
 }
-export function matchesLog(entry: { level: string; message: string; run_id?: string | undefined }, level: string, query: string, runId: string): boolean {
-  return (level === "all" || entry.level.toUpperCase() === level) &&
+export function matchesLog(entry: { level: string; message: string; run_id?: string | undefined }, levels: string | readonly string[], query: string, runId: string): boolean {
+  const level = String(entry.level ?? "info").toUpperCase();
+  const selected = typeof levels === "string" ? levels === "all" || level === levels : levels.includes(level);
+  return selected &&
     (!query || entry.message.toLowerCase().includes(query.toLowerCase())) &&
     (!runId || entry.run_id === runId);
 }

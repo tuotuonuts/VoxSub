@@ -7,9 +7,9 @@ import { installMiniDom } from "./mini-dom.mjs";
 import { importShared, cleanupShared, ROOT } from "./esbuild-ts.mjs";
 
 const dom = installMiniDom();
-const [buttons, cards, controls, tabs] = await importShared([
+const [buttons, cards, controls, tabs, multi] = await importShared([
   "src/renderer/ui/button.ts", "src/renderer/ui/card.ts",
-  "src/renderer/ui/controls.ts", "src/renderer/ui/tab-nav.ts",
+  "src/renderer/ui/controls.ts", "src/renderer/ui/tab-nav.ts", "src/renderer/ui/multi-filter.ts",
 ], { bundle: true });
 let passed = 0;
 function test(name, run) { run(); passed++; console.log(`PASS ${name}`); }
@@ -94,7 +94,7 @@ try {
     assert.equal(b.children[0].getAttribute("aria-selected"), "true"); assert.equal(tabs.buildTabNav([], () => {}).children.length, 0);
   });
   test("UI primitives have no business or IPC dependencies", () => {
-    for (const name of ["button", "card", "controls", "tab-nav"]) {
+    for (const name of ["button", "card", "controls", "tab-nav", "multi-filter"]) {
       const source = readFileSync(join(ROOT, `src/renderer/ui/${name}.ts`), "utf8");
       assert.doesNotMatch(source, /from\s+["'][^"']*(?:store|protocol|views|i18n)["']|window\.voxsub/);
     }
@@ -109,5 +109,37 @@ try {
       assert.doesNotMatch(source, /h\("nav",\s*\{\s*class:\s*"settings__nav"/s, path);
     }
   });
+
+  const makeFilter=(initial, onChange=()=>{})=>multi.buildMultiFilter([["WARNING","Warning"],["ERROR","Error"]],initial,{label:"Levels (select multiple)",allLabel:"All",onChange});
+  const chip=(group,label)=>[...group.querySelectorAll("button")].find(b=>b.textContent===label);
+  test("multi-filter exposes independent native pressed buttons, not radio options",()=>{
+    let calls=0;const group=makeFilter(["WARNING","ERROR"],()=>calls++);
+    assert.equal(group.getAttribute("role"),"group");assert.equal(group.getAttribute("aria-label"),"Levels (select multiple)");assert.equal(calls,0);
+    for(const b of group.querySelectorAll("button")){assert.equal(b.type,"button");assert.equal(b.getAttribute("role"),null);assert.equal(b.getAttribute("aria-pressed"),"true");}
+  });
+  test("multi-filter toggles independently and keeps stable button identity",()=>{
+    const changes=[];const group=makeFilter(["WARNING"],v=>changes.push([...v]));const error=chip(group,"Error");error.click();
+    assert.deepEqual(changes.at(-1),["WARNING","ERROR"]);assert.equal(chip(group,"Warning").getAttribute("aria-pressed"),"true");
+    error.click();assert.equal(chip(group,"Error"),error);assert.deepEqual(changes.at(-1),["WARNING"]);assert.equal(error.classList.contains("is-active"),false);
+    assert.equal(chip(group,"All").getAttribute("aria-pressed"),"false");
+  });
+  test("zero selection is distinct from all; one-click restore emits only changes",()=>{
+    const changes=[];const group=makeFilter(["WARNING"],v=>changes.push([...v]));chip(group,"Warning").click();assert.deepEqual(changes.at(-1),[]);
+    assert.ok([...group.querySelectorAll("button")].every(b=>b.getAttribute("aria-pressed")==="false"));chip(group,"All").click();assert.deepEqual(changes.at(-1),["WARNING","ERROR"]);
+    const n=changes.length;chip(group,"All").click();assert.equal(changes.length,n);
+  });
+  test("multi-filter state is isolated from initial arrays, callbacks and other instances",()=>{
+    const initial=["WARNING"],received=[];const left=makeFilter(initial,v=>{received.push([...v]);v.length=0;}),right=makeFilter(["ERROR"]);
+    chip(left,"Error").click();chip(left,"Warning").click();assert.deepEqual(initial,["WARNING"]);assert.deepEqual(received.at(-1),["ERROR"]);
+    assert.equal(chip(right,"Warning").getAttribute("aria-pressed"),"false");assert.equal(chip(right,"Error").getAttribute("aria-pressed"),"true");
+  });
+  test("multi-filter normalizes duplicate/unknown values and keeps labels as plain text",()=>{
+    const group=multi.buildMultiFilter([["X","<img src=x>"],["X","duplicate"]],["bad","X","X"],{label:"<label>",allLabel:"All",onChange:()=>{}});
+    assert.equal(group.querySelectorAll("button").length,2);assert.equal(chip(group,"<img src=x>").children.length,0);assert.equal(chip(group,"All").getAttribute("aria-pressed"),"true");
+  });
+  test("empty multi-filter never claims all or emits a false change",()=>{
+    let calls=0;const group=multi.buildMultiFilter([],[],{label:"Empty",allLabel:"All",onChange:()=>calls++});assert.equal(chip(group,"All").getAttribute("aria-pressed"),"false");chip(group,"All").click();assert.equal(calls,0);
+  });
+
   console.log(`PASS shared UI ${passed}/${passed}`);
 } finally { cleanupShared(); }

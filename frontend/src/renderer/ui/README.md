@@ -15,6 +15,7 @@
 | 文件 | 接口 | 边界 / 使用场景 |
 |---|---|---|
 | `button.ts` | `buildButton` | 标准 ghost/primary 按钮，small/block、disabled/hidden/title；页面绑定业务事件 |
+| `multi-filter.ts` | `buildMultiFilter` | 独立多选筛选按钮组，全部恢复/空选择、aria-pressed与稳定焦点；文案/回调由页面注入，无IPC/全局监听 |
 | `button.ts` | `buildFilterChip` | 紧凑筛选/切换按钮，初始激活样式与 aria-pressed；页面同步后续选择状态 |
 | `search-field.ts` | `buildSearchField` | IME安全搜索输入、清空/Escape、去重提交和dispose；无全局热键/IPC/保存 |
 | `empty-state.ts` | `buildEmptyState` | 空结果标题/说明/可选动作，业务筛选由页面管理 |

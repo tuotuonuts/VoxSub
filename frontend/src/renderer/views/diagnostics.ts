@@ -2,8 +2,9 @@ import { buildKeyValueRow } from "../ui/key-value";
 import { hardwareRows } from "../../shared/hardware-profile";
 import { buildTabNav } from "../ui/tab-nav";
 import { buildCardFrame } from "../ui/card";
-import { buildSelect, buildTextInput } from "../ui/controls";
+import { buildTextInput } from "../ui/controls";
 import { buildButton } from "../ui/button";
+import { buildMultiFilter } from "../ui/multi-filter";
 import { developerEnabled, checkSummary, matchesLog, pipelineSession } from "../../shared/diagnostic-controls";
 import { buildDeveloperTab } from "./developer";
 /**
@@ -36,7 +37,8 @@ let deviceEl: HTMLElement | null = null;
 let logStateEl: HTMLElement | null = null;
 let checkRevision = 0;
 let fileRevision = 0;
-let logLevel = "all";
+const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] as const;
+let logLevels: "all" | readonly string[] = "all";
 let logQuery = "";
 let currentRunOnly = false;
 let currentRunId = "";
@@ -48,7 +50,7 @@ let developerPage: PageHandle | null = null;
 function visibleLogs(): LogEntry[] {
   const entries = logSource === "file" ? fileEntries : store.get().logs.slice(-300);
   if (pipelineSessionOnly) currentPipelineSession = [...entries].reverse().map(e => pipelineSession(e.message)).find(Boolean) || "";
-  return entries.filter(entry => matchesLog(entry, logLevel, logQuery, currentRunOnly ? currentRunId || "unknown" : "") &&
+  return entries.filter(entry => matchesLog(entry, logLevels, logQuery, currentRunOnly ? currentRunId || "unknown" : "") &&
     (!pipelineSessionOnly || pipelineSession(entry.message) === (currentPipelineSession || "unknown")));
 }
 
@@ -114,15 +116,15 @@ async function exportReport(): Promise<void> {
   await call(CMD.exportDiagnostics, { path: target });
 }
 
-function renderLog(): void {
+function renderLog(force = false): void {
   if (!logEl) return;
 
   if (logSource === "file") return; // 文件模式由 renderFileLog 负责
 
-  if (logPaused) return;
+  if (logPaused && !force) return;
   const logs = visibleLogs();
   if (logs.length === 0) {
-    logEl.replaceChildren(h("p", { class: "hint", text: tr("暂无日志") }));
+    logEl.replaceChildren(h("p", { class: "hint", text: tr(store.get().logs.length ? "暂无匹配日志" : "暂无日志") }));
     return;
   }
 
@@ -301,8 +303,16 @@ function buildLogTab(): HTMLElement {
   const page = h("div", { class: "tab-page" });
 
   const filters = h("div", { class: "tuning-actions diagnostic-actions" });
-  const level = buildSelect(logLevel, ["all", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map(value => [value, value === "all" ? tr("全部级别") : value] as const));
-  level.setAttribute("aria-label", tr("日志级别"));
+  const level = buildMultiFilter<string>(LOG_LEVELS.map(value => [value, value] as const),
+    logLevels === "all" ? LOG_LEVELS : logLevels, {
+      label: tr("日志级别（可多选）"), allLabel: tr("全部级别"),
+      onChange: values => {
+        // Old controls must not change a replacement page's filters.
+        if (detached || logEl?.parentElement !== page) return;
+        logLevels = values.length === LOG_LEVELS.length ? "all" : values;
+        redraw();
+      },
+    });
   const query = buildTextInput(logQuery, undefined, { placeholder: tr("搜索日志关键词") });
   query.setAttribute("aria-label", tr("搜索日志关键词"));
   const session = buildButton(tr("仅本次运行"));
@@ -316,13 +326,17 @@ function buildLogTab(): HTMLElement {
     taskSession.setAttribute("aria-pressed", String(pipelineSessionOnly)); redraw();
   });
   const pause = buildButton(tr(logPaused ? "恢复滚动" : "暂停滚动"));
-  const redraw = (): void => { if (logSource === "file") renderFileEntries(); else renderLog(); };
-  on(level, "change", () => { logLevel = level.value; redraw(); });
+  const redraw = (): void => { if (logSource === "file") renderFileEntries(); else renderLog(true); };
   on(query, "input", () => { logQuery = query.value; redraw(); });
   on(session, "click", () => { currentRunOnly = !currentRunOnly; session.setAttribute("aria-pressed", String(currentRunOnly)); redraw(); });
   on(pause, "click", () => { logPaused = !logPaused; pause.textContent = tr(logPaused ? "恢复滚动" : "暂停滚动"); if (!logPaused) redraw(); });
-  filters.append(level, query, session, taskSession, pause); page.append(filters);
-  void call<{ run_id: string }>(CMD.recentLogs, { limit: 1 }).then(result => { if (!detached && result?.run_id) { currentRunId = result.run_id; redraw(); } });
+  filters.append(query, session, taskSession, pause); page.append(level, filters);
+  void call<{ run_id: string }>(CMD.recentLogs, { limit: 1 }).then(result => {
+    if (detached || logEl?.parentElement !== page || !result?.run_id) return;
+    currentRunId = result.run_id;
+    // Metadata delivery is not a deliberate user refresh: respect paused live logs.
+    if (logSource === "file") renderFileEntries(); else renderLog();
+  });
 
   // 来源切换：实时（本次运行） / 文件（含历史运行）
   const actions = h("div", { class: "tuning-actions" });
